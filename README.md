@@ -299,6 +299,8 @@ The server runs TypeScript directly with Node's type stripping, so there is no b
 
 ## Roadmap
 
+- Sound cues on live widgets (a bell when a new order arrives), specified in
+  [docs/proposals/0002-sound-cues.md](docs/proposals/0002-sound-cues.md), not implemented yet.
 - Incremental live updates (send appended rows instead of whole tables): specified in
   [docs/proposals/0001-sse-deltas.md](docs/proposals/0001-sse-deltas.md), not implemented yet.
 - Dashboard-level filters and variables (date range, city) that agents can bind widgets to.

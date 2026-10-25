@@ -25,7 +25,7 @@ import { useAutosave, useLiveEvents } from '../state/sync.ts';
 import { ConnectAiPanel } from './ConnectAiPanel.tsx';
 import { DatasetsPanel } from './DatasetsPanel.tsx';
 import { Grid } from './Grid.tsx';
-import { PresentationControls, useIdle, usePresentation } from './presentation.tsx';
+import { PresentationControls, TvInfo, useIdle, usePresentation } from './presentation.tsx';
 import { SharePanel } from './SharePanel.tsx';
 import { VersionsPanel } from './VersionsPanel.tsx';
 import { WidgetEditor } from './WidgetEditor.tsx';
@@ -254,6 +254,7 @@ function Editor({ id }: { id: string }) {
           <IconButton label="Present on a screen (F)" onClick={() => void presentation.start()}>
             <MonitorPlay className="size-4" />
           </IconButton>
+          <TvInfo dashboardId={id} isPrivate={meta.visibility === 'private'} />
           {access.canEdit ? (
             <Button
               size="sm"
