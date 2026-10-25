@@ -6,9 +6,27 @@
  */
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
+import type { DatabaseSync } from 'node:sqlite';
 
-export type DB = Database.Database;
+/**
+ * Node's built-in SQLite: no native add-on to compile, so `pnpm install` works
+ * on every platform without a C++ toolchain.
+ */
+export type DB = DatabaseSync;
+
+let warningFilterInstalled = false;
+
+/** node:sqlite still prints an ExperimentalWarning; hide that one, keep all others. */
+function silenceSqliteWarning() {
+  if (warningFilterInstalled) return;
+  warningFilterInstalled = true;
+  const original = process.emitWarning.bind(process);
+  process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
+    const text = typeof warning === 'string' ? warning : warning.message;
+    if (/SQLite is an experimental feature/.test(text)) return;
+    return (original as (...args: unknown[]) => void)(warning, ...rest);
+  }) as typeof process.emitWarning;
+}
 
 const MIGRATIONS: string[] = [
   `
@@ -104,16 +122,22 @@ const MIGRATIONS: string[] = [
 
 export function openDatabase(file: string): DB {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
-  const db = new Database(file);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  db.pragma('busy_timeout = 5000');
-  const current = db.pragma('user_version', { simple: true }) as number;
+  silenceSqliteWarning();
+  // Loaded lazily so the warning filter above is in place first.
+  const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
+  const db = new DatabaseSync(file);
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  const current = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
   for (let v = current; v < MIGRATIONS.length; v++) {
-    db.transaction(() => {
+    db.exec('BEGIN');
+    try {
       db.exec(MIGRATIONS[v]!);
-      db.pragma(`user_version = ${v + 1}`);
-    })();
+      db.exec(`PRAGMA user_version = ${v + 1}`);
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
   }
   return db;
 }

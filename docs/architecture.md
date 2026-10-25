@@ -71,7 +71,8 @@ logs, and would force a rename whenever an anonymous dashboard is claimed. The o
 Writes are atomic (`write tmp` + `rename`) and serialised per dashboard with an in-process lock. Concurrency between
 clients is handled with optimistic versioning (`baseVersion`), not locks.
 
-_Rejected:_ Postgres (an extra service for data that is naturally document-shaped and per-dashboard), storing documents
+SQLite is Node's built-in `node:sqlite`, not a native add-on: installing the project never needs a C++ toolchain,
+which matters for contributors on Windows. _Rejected:_ Postgres (an extra service for data that is naturally document-shaped and per-dashboard), storing documents
 inside SQLite (loses the "a dashboard is a folder" property and easy inspection). _Accepted cost:_ one process owns the
 data directory, so scaling is vertical. A Postgres-backed index plus object storage would be the path to multiple
 instances.
