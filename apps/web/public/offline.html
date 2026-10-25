@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Offline · Patchbay</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: system-ui, sans-serif;
+        background: #f9f9f7; color: #0b0b0b; text-align: center; padding: 16px; box-sizing: border-box; }
+      @media (prefers-color-scheme: dark) { body { background: #0d0d0d; color: #f0efec; } }
+      p { color: #898781; max-width: 32rem; }
+      button { font: inherit; padding: 10px 16px; border-radius: 10px; border: 0; background: #e8501a; color: #fff; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/icons/icon-192.png" width="64" height="64" alt="" />
+      <h1>You are offline</h1>
+      <p>Patchbay shows live data, so it needs a connection. It will pick up where you left off as soon as you are back online.</p>
+      <button type="button" id="retry">Try again</button>
+    </main>
+    <script src="/offline.js"></script>
+  </body>
+</html>

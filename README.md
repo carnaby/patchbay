@@ -46,6 +46,11 @@ It is free, needs no API keys, and runs as a single process you can host anywher
   and proposes fitting widgets with a one-line rationale. Agents get the same suggestions as ready-to-apply operations.
 - ↩️ **Undo everything.** Undo/redo in the editor, a version for every save, one-click restore. When an agent changes
   a dashboard you have open, the change appears live, highlighted, with an _Undo_ button.
+- 📺 **Made for wall screens.** Presentation mode (press `F`, or link to `/d/<id>?present=1` for kiosks): full screen,
+  no toolbar, the cursor hides, and the Screen Wake Lock keeps the display on. Any widget can be maximised.
+- 📱 **Installable.** A lightweight PWA: install it on a phone, tablet or desktop and it opens in its own window.
+  Deliberately not offline-first, since live data needs the network; the service worker only caches the immutable
+  build assets and shows a friendly offline page.
 - 🔐 **Yours.** Sign in with Google; dashboards are private or public. Anyone can build a public dashboard without an
   account and claim it later.
 - 🗂️ **Boring storage.** One folder per dashboard. Delete the folder and the dashboard is gone. SQLite only indexes.

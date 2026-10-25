@@ -51,6 +51,8 @@ interface EditorState {
   pendingLabels: string[];
   lastCoalesce: { key: string; at: number } | null;
   editing: boolean;
+  /** Widget shown maximised over the dashboard (view state, not saved). */
+  expanded: string | null;
   saving: boolean;
   saveError: string | null;
   conflict: DashboardEnvelope | null;
@@ -60,6 +62,7 @@ interface EditorState {
 
   load(envelope: DashboardEnvelope): void;
   setEditing(editing: boolean): void;
+  setExpanded(id: string | null): void;
   apply(ops: OpInput[], label: string, options?: { coalesce?: string }): string | null;
   undo(): void;
   redo(): void;
@@ -105,6 +108,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   pendingLabels: [],
   lastCoalesce: null,
   editing: false,
+  expanded: null,
   saving: false,
   saveError: null,
   conflict: null,
@@ -131,6 +135,10 @@ export const useEditor = create<EditorState>((set, get) => ({
       lastRemote: null,
       editing: get().id === envelope.meta.id ? get().editing : false,
     });
+  },
+
+  setExpanded(expanded) {
+    set({ expanded });
   },
 
   setEditing(editing) {

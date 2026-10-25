@@ -167,7 +167,16 @@ export function createApp(deps: Deps) {
     );
     // A missing hashed asset is a 404, never the SPA shell (avoids MIME-type confusion).
     app.get('/assets/*', (c) => c.text('Not found', 404));
-    app.use('*', serveStatic({ root: dist }));
+    app.use(
+      '*',
+      serveStatic({
+        root: dist,
+        // The service worker and manifest must be revalidated, or browsers keep an old app version alive.
+        onFound: (path, c) => {
+          if (/(sw\.js|\.webmanifest|offline\.(html|js))$/.test(path)) c.header('Cache-Control', 'no-cache');
+        },
+      }),
+    );
     app.get('*', (c) => {
       c.header('Cache-Control', 'no-cache');
       return c.html(indexHtml());
