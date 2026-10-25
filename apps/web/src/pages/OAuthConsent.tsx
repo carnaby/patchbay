@@ -1,0 +1,147 @@
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { AlertTriangle, BadgeCheck, Bot, Eye, PencilLine } from 'lucide-react';
+import type { ComponentType } from 'react';
+import { Navigate, useLocation, useSearchParams } from 'react-router';
+import { Button, Card, EmptyState, Spinner } from '../components/ui.tsx';
+import { api, errorMessage } from '../lib/api.ts';
+import { useDocumentTitle, useMe } from '../lib/hooks.ts';
+
+interface ConsentRequest {
+  id: string;
+  clientName: string;
+  clientKind: 'dcr' | 'cimd';
+  clientId: string;
+  redirectHost: string;
+  scopes: string[];
+}
+
+const SCOPES: Record<string, { icon: ComponentType<{ className?: string }>; title: string; body: string }> = {
+  'dashboards:read': {
+    icon: Eye,
+    title: 'See your dashboards and data',
+    body: 'List and open your dashboards, read their datasets and render previews.',
+  },
+  'dashboards:write': {
+    icon: PencilLine,
+    title: 'Create and change dashboards',
+    body: 'Add data sources and widgets, upload files and change visibility. Every change is a new version you can undo.',
+  },
+};
+
+export default function OAuthConsent() {
+  useDocumentTitle('Authorize access');
+  const [params] = useSearchParams();
+  const location = useLocation();
+  const requestId = params.get('request') ?? '';
+  const { data: user, isLoading: userLoading } = useMe();
+  const request = useQuery({
+    queryKey: ['oauth-request', requestId],
+    queryFn: () => api<ConsentRequest>(`/api/oauth/requests/${encodeURIComponent(requestId)}`),
+    enabled: Boolean(user && requestId),
+    retry: false,
+  });
+  const decide = useMutation({
+    mutationFn: (approve: boolean) =>
+      api<{ redirect: string }>(`/api/oauth/requests/${encodeURIComponent(requestId)}`, {
+        body: { approve },
+      }),
+    onSuccess: (r) => {
+      window.location.href = r.redirect;
+    },
+  });
+
+  if (userLoading) {
+    return (
+      <div className="flex justify-center py-24">
+        <Spinner />
+      </div>
+    );
+  }
+  if (!user)
+    return (
+      <Navigate to={`/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`} replace />
+    );
+
+  return (
+    <div className="flex min-h-[calc(100vh-3.5rem)] items-center justify-center px-4 py-12">
+      <div className="w-full max-w-md">
+        {request.isLoading ? (
+          <div className="flex justify-center">
+            <Spinner />
+          </div>
+        ) : request.error || !request.data ? (
+          <EmptyState icon={<AlertTriangle className="size-6" />} title="This request is no longer valid">
+            {request.error ? errorMessage(request.error) : 'Missing authorization request.'} Start the
+            connection again from your AI client.
+          </EmptyState>
+        ) : (
+          <Card className="p-6">
+            <div className="mb-5 flex items-center gap-3">
+              <span className="flex size-11 items-center justify-center rounded-xl bg-surface-2">
+                <Bot className="size-5" />
+              </span>
+              <div className="min-w-0">
+                <h1 className="truncate text-lg font-semibold">{request.data.clientName}</h1>
+                <p className="text-sm text-ink-2">wants to access your Patchbay account</p>
+              </div>
+            </div>
+
+            {request.data.clientKind === 'cimd' ? (
+              <p className="mb-4 flex gap-2 text-sm text-ink-2">
+                <BadgeCheck className="mt-0.5 size-4 shrink-0 text-good" />
+                <span>
+                  Identity published at{' '}
+                  <span className="font-mono text-[12px] break-all text-ink">{request.data.clientId}</span>
+                </span>
+              </p>
+            ) : (
+              <p className="mb-4 flex gap-2 rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-ink-2">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-ink" />
+                <span>
+                  This app registered itself and its name is not verified. Only continue if you just started
+                  connecting it.
+                </span>
+              </p>
+            )}
+
+            <ul className="space-y-3 border-y border-line py-4">
+              {request.data.scopes.map((s) => {
+                const info = SCOPES[s];
+                const Icon = info?.icon ?? Eye;
+                return (
+                  <li key={s} className="flex gap-3">
+                    <Icon className="mt-0.5 size-4 shrink-0 text-ink-2" />
+                    <div>
+                      <div className="text-sm font-medium">{info?.title ?? s}</div>
+                      {info ? <div className="text-xs text-ink-2">{info.body}</div> : null}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+
+            <p className="mt-4 text-xs text-muted">
+              Signed in as <span className="text-ink-2">{user.email}</span>. After approving you return to{' '}
+              <span className="font-mono text-ink-2">{request.data.redirectHost}</span>. You can revoke access
+              any time in AI connections.
+            </p>
+
+            <div className="mt-6 grid grid-cols-2 gap-2">
+              <Button size="lg" onClick={() => decide.mutate(false)} disabled={decide.isPending}>
+                Deny
+              </Button>
+              <Button
+                size="lg"
+                variant="primary"
+                loading={decide.isPending && decide.variables === true}
+                onClick={() => decide.mutate(true)}
+              >
+                Approve
+              </Button>
+            </div>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}

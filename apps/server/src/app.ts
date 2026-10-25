@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
@@ -131,16 +131,24 @@ export function createApp(deps: Deps) {
   // The built web app, with SPA fallback.
   const dist = resolve(config.webDist ?? join(import.meta.dirname, '../../web/dist'));
   if (existsSync(join(dist, 'index.html'))) {
-    const indexHtml = readFileSync(join(dist, 'index.html'), 'utf8');
+    // Re-read index.html when it changes on disk (a rebuild), so it never points at stale asset hashes.
+    let cached = { mtime: 0, html: '' };
+    const indexHtml = () => {
+      const mtime = statSync(join(dist, 'index.html')).mtimeMs;
+      if (mtime !== cached.mtime) cached = { mtime, html: readFileSync(join(dist, 'index.html'), 'utf8') };
+      return cached.html;
+    };
     app.use(
       '/assets/*',
-      serveStatic({
-        root: dist,
-        onFound: (_p, c) => c.header('Cache-Control', 'public, max-age=31536000, immutable'),
-      }),
+      serveStatic({ root: dist, onFound: (_p, c) => c.header('Cache-Control', 'public, max-age=31536000, immutable') }),
     );
+    // A missing hashed asset is a 404, never the SPA shell (avoids MIME-type confusion).
+    app.get('/assets/*', (c) => c.text('Not found', 404));
     app.use('*', serveStatic({ root: dist }));
-    app.get('*', (c) => c.html(indexHtml));
+    app.get('*', (c) => {
+      c.header('Cache-Control', 'no-cache');
+      return c.html(indexHtml());
+    });
   } else {
     app.get('/', (c) =>
       c.text('Patchbay API is running. Build the web app with `pnpm build`, or run `pnpm dev`.'),

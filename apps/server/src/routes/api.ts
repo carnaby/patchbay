@@ -43,6 +43,50 @@ export function apiRoutes(deps: Deps) {
   app.get('/connectors', (c) => c.json(connectors.list()));
   app.get('/templates', (c) => c.json(listTemplates()));
 
+  /** Fixed, server-defined demo data for the landing page (no user input reaches a connector). */
+  const showcase = [
+    DatasetSchema.parse({
+      id: 'signal',
+      name: 'Signal',
+      source: {
+        kind: 'connector',
+        connector: 'demo.signal',
+        params: { shape: 'traffic', points: 90, series: 2 },
+      },
+    }),
+    DatasetSchema.parse({
+      id: 'revenue',
+      name: 'Revenue',
+      source: { kind: 'connector', connector: 'demo.sales', params: { days: 120 } },
+      transforms: [
+        { type: 'timeBucket', field: 'date', unit: 'week' },
+        {
+          type: 'aggregate',
+          groupBy: ['date', 'region'],
+          metrics: [{ op: 'sum', field: 'revenue', as: 'revenue' }],
+        },
+        { type: 'sort', by: [{ field: 'date' }] },
+      ],
+    }),
+    DatasetSchema.parse({
+      id: 'products',
+      name: 'Products',
+      source: { kind: 'connector', connector: 'demo.sales', params: { days: 120 } },
+      transforms: [
+        {
+          type: 'aggregate',
+          groupBy: ['product'],
+          metrics: [{ op: 'sum', field: 'revenue', as: 'revenue' }],
+        },
+        { type: 'sort', by: [{ field: 'revenue', dir: 'desc' }] },
+      ],
+    }),
+  ];
+  app.get('/showcase', async (c) => {
+    const results = await Promise.all(showcase.map((d) => data.resolve('showcase00', d)));
+    return c.json(Object.fromEntries(results.map((r) => [r.datasetId, r])));
+  });
+
   app.get('/dashboards', (c) => c.json(dashboards.listMine(c.get('principal'))));
 
   app.post('/dashboards', async (c) => {

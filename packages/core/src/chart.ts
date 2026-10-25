@@ -282,7 +282,8 @@ function proportionOption(
     formatter: (p: { name: string; percent?: number; value: number }) =>
       config.kind === 'funnel'
         ? `${p.name}: ${formatNumber(p.value, config.format)}`
-        : `${p.name} ${Math.round(p.percent ?? 0)}%`,
+        : // Names live in the legend; labels carry only the share so they never clip in small cards.
+          `${Math.round(p.percent ?? 0)}%`,
   };
   const series: Option =
     config.kind === 'funnel'
@@ -300,8 +301,8 @@ function proportionOption(
       : {
           type: 'pie',
           data: items,
-          radius: config.kind === 'donut' ? ['52%', '78%'] : [0, '78%'],
-          center: ['50%', '54%'],
+          radius: config.kind === 'donut' ? ['44%', '68%'] : [0, '68%'],
+          center: ['50%', '45%'],
           padAngle: 1,
           itemStyle: { borderColor: theme.surface, borderWidth: 2, borderRadius: 4 },
           label: { ...label, show: opts.static || items.length <= 6 },
@@ -317,9 +318,12 @@ function proportionOption(
       valueFormatter: (v: unknown) => (typeof v === 'number' ? formatNumber(v, config.format) : String(v)),
     },
     legend: {
-      show: config.showLegend ?? false,
+      show: config.showLegend ?? config.kind !== 'funnel',
       bottom: 0,
       type: 'scroll',
+      icon: 'roundRect',
+      itemWidth: 10,
+      itemHeight: 10,
       textStyle: { color: theme.textSecondary },
     },
     series: [series],
