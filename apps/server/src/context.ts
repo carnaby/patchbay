@@ -9,6 +9,7 @@ import type { DB } from './db.ts';
 import type { LiveHub } from './live/hub.ts';
 import type { DashboardService, Principal } from './services/dashboards.ts';
 import type { DataService } from './services/data.ts';
+import type { PipelineRunner } from './services/pipeline-pool.ts';
 import type { DashboardIndex } from './store/dashboard-index.ts';
 import type { FolderStore } from './store/folder-store.ts';
 import { forbidden, unauthorized } from './util/errors.ts';
@@ -23,6 +24,7 @@ export interface Deps {
   index: DashboardIndex;
   connectors: ConnectorService;
   data: DataService;
+  pipeline: PipelineRunner;
   hub: LiveHub;
   dashboards: DashboardService;
   limits: {

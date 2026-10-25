@@ -556,7 +556,7 @@ function PreviewTable({ result }: { result: DatasetResult }) {
 
 function DatasetEditor({
   dashboardId,
-  initial,
+  initial: live,
   onDone,
 }: {
   dashboardId: string;
@@ -564,6 +564,10 @@ function DatasetEditor({
   onDone: () => void;
 }) {
   const apply = useEditor((s) => s.apply);
+  // The version the user started editing from. The prop keeps updating when an
+  // agent changes the dataset meanwhile; diffing against that would silently
+  // revert the agent's edit, so the diff must be against this snapshot.
+  const [initial] = useState(live);
   const [draft, setDraft] = useState<DraftDataset>(
     () =>
       initial ?? {

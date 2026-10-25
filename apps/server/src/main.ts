@@ -39,6 +39,7 @@ const server = serve({ fetch: app.fetch, hostname: config.host, port: config.por
 const shutdown = () => {
   console.log('[patchbay] shutting down');
   deps.hub.close();
+  void deps.pipeline.close();
   server.close(() => {
     deps.db.close();
     process.exit(0);

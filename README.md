@@ -39,7 +39,9 @@ It is free, needs no API keys, and runs as a single process you can host anywher
 - ⚡ **Real time.** Datasets refresh on the server while someone is watching and are pushed over Server-Sent Events,
   only when the data actually changed. "Current value" sources can accumulate into live time series.
 - 🧪 **Declarative processing.** Filter, derive, group/aggregate, time buckets, rolling windows and more, with a small
-  sandboxed expression language (no `eval`, ever). The same pipeline runs for the browser, the agent and the renderer.
+  sandboxed expression language (no `eval`, ever). The same pipeline runs for the browser, the agent and the renderer,
+  in worker threads when the data is large. Steps have stable ids, so an agent and a person can edit different steps
+  of the same pipeline at the same time.
 - 💡 **Suggestions without an LLM.** A rules engine profiles any dataset (time, measures, dimensions, coordinates…)
   and proposes fitting widgets with a one-line rationale. Agents get the same suggestions as ready-to-apply operations.
 - ↩️ **Undo everything.** Undo/redo in the editor, a version for every save, one-click restore. When an agent changes
@@ -242,17 +244,19 @@ after every step.
 
 ## Configuration
 
-| Variable                                   | Default                 | Purpose                                                              |
-| ------------------------------------------ | ----------------------- | -------------------------------------------------------------------- |
-| `PUBLIC_URL`                               | `http://localhost:8787` | Canonical origin; OAuth issuer and MCP resource are derived from it. |
-| `PORT`, `HOST`                             | `8787`, `0.0.0.0`       | Where the server listens.                                            |
-| `DATA_DIR`                                 | `./data`                | Dashboard folders and `patchbay.db`.                                 |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | –                       | Google sign-in. Redirect URI: `PUBLIC_URL/auth/google/callback`.     |
-| `ADMIN_EMAILS`                             | –                       | Comma-separated emails with access to `/admin`.                      |
-| `DEV_LOGIN`                                | off                     | Passwordless login for development. Refused in production.           |
-| `OFFLINE`                                  | off                     | Serve synthetic connector data.                                      |
-| `PRUNE_ANONYMOUS_AFTER_DAYS`               | `0`                     | Auto-delete anonymous dashboards nobody opened for N days.           |
-| `TRUST_PROXY`                              | off                     | Use `X-Forwarded-For` for rate limiting behind a reverse proxy.      |
+| Variable                                   | Default                 | Purpose                                                               |
+| ------------------------------------------ | ----------------------- | --------------------------------------------------------------------- |
+| `PUBLIC_URL`                               | `http://localhost:8787` | Canonical origin; OAuth issuer and MCP resource are derived from it.  |
+| `PORT`, `HOST`                             | `8787`, `0.0.0.0`       | Where the server listens.                                             |
+| `DATA_DIR`                                 | `./data`                | Dashboard folders and `patchbay.db`.                                  |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | –                       | Google sign-in. Redirect URI: `PUBLIC_URL/auth/google/callback`.      |
+| `ADMIN_EMAILS`                             | –                       | Comma-separated emails with access to `/admin`.                       |
+| `DEV_LOGIN`                                | off                     | Passwordless login for development. Refused in production.            |
+| `OFFLINE`                                  | off                     | Serve synthetic connector data.                                       |
+| `PRUNE_ANONYMOUS_AFTER_DAYS`               | `0`                     | Auto-delete anonymous dashboards nobody opened for N days.            |
+| `TRUST_PROXY`                              | off                     | Use `X-Forwarded-For` for rate limiting behind a reverse proxy.       |
+| `PIPELINE_WORKERS`                         | CPUs − 1, max 4         | Worker threads for data processing; `0` processes on the main thread. |
+| `PIPELINE_TIMEOUT_MS`                      | `10000`                 | Hard time limit for one pipeline run in a worker.                     |
 
 ## Deployment
 
@@ -289,6 +293,8 @@ The server runs TypeScript directly with Node's type stripping, so there is no b
 
 ## Roadmap
 
+- Incremental live updates (send appended rows instead of whole tables): specified in
+  [docs/proposals/0001-sse-deltas.md](docs/proposals/0001-sse-deltas.md), not implemented yet.
 - Dashboard-level filters and variables (date range, city) that agents can bind widgets to.
 - A map widget for coordinate data.
 - Shared editing with named collaborators.
