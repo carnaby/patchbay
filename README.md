@@ -65,7 +65,8 @@ It is free, needs no API keys, and runs as a single process you can host anywher
 
 ## Quick start
 
-Requirements: Node.js 22.18+ (24 recommended) and pnpm 10.
+Requirements: Node.js 22.18+ (24 recommended) and pnpm 10. Works on Linux, macOS and Windows; there are no native
+add-ons to compile (SQLite is Node's built-in `node:sqlite`), so no C++ toolchain is needed.
 
 ```bash
 git clone https://github.com/carnaby/patchbay.git
@@ -286,7 +287,7 @@ pnpm test        # Vitest: core unit tests + server integration tests (OAuth flo
 pnpm typecheck   # TypeScript, strict, in every package
 pnpm lint        # Biome
 pnpm build       # production build of the web app
-pnpm start       # serve API + built web app on one port
+pnpm start       # serve API + built web app on one port (production mode)
 ```
 
 The server runs TypeScript directly with Node's type stripping, so there is no build step on the backend.
