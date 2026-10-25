@@ -23,3 +23,7 @@ Monorepo (pnpm): `packages/core` (pure domain logic, shared), `apps/server` (Hon
   `registry.ts`.
 - English only: UI text, comments, docs. Comments explain why, not what.
 - Charts: fixed categorical palette order (packages/core/src/theme.ts), no dual axes, colour follows the entity.
+- Pipelines run through `PipelineRunner` (apps/server/src/services/pipeline-pool.ts), never by calling
+  `runPipeline` from request code: large inputs must stay off the main thread.
+- Editing a pipeline means step ops (`diffSteps` in core), not replacing `transforms`, so rebases merge per step.
+- Planned but not implemented work is specified in docs/proposals/.

@@ -60,9 +60,14 @@ Prompts: `build_dashboard { topic }`, `analyze_my_data { dashboardId? }`. Resour
 { "op": "removeWidget", "id": "strongest" }
 { "op": "moveWidget", "id": "strongest", "x": 0, "y": 0, "w": 4 }
 { "op": "setLayout", "layout": [ { "i": "strongest", "x": 0, "y": 0, "w": 3, "h": 2 } ] }
+{ "op": "addStep", "datasetId": "quakes", "step": { "type": "filter", "expr": "magnitude >= 4" }, "before": "s2" }
+{ "op": "updateStep", "datasetId": "quakes", "stepId": "s1", "set": { "expr": "magnitude >= 5" } }
+{ "op": "removeStep", "datasetId": "quakes", "stepId": "s3" }
+{ "op": "moveStep", "datasetId": "quakes", "stepId": "s3", "before": null }
 ```
 
-`updateWidget.set.config` is shallow-merged into the current config. Positions are optional everywhere; omitted ones are
+`updateWidget.set.config` is shallow-merged into the current config. Pipeline steps have stable ids (`s1`, `s2`, …, or
+your own); prefer the step operations over replacing `transforms` wholesale, so concurrent edits by the user survive. Positions are optional everywhere; omitted ones are
 auto-placed.
 
 ## Example: calling the server from a script

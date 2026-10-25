@@ -88,6 +88,12 @@ instances.
   instead of an empty widget.
 - **Pipelines run on the server.** The browser, the MCP agent and the PNG renderer therefore always agree on the numbers,
   and the browser never downloads more than it displays (10,000 rows max).
+- **Large pipelines run in worker threads** (`services/pipeline-pool.ts`). Inputs under 20,000 cells run inline,
+  because copying them to a worker costs more than processing them; larger ones go to a pool of `worker_threads`
+  (CPUs − 1, at most 4), so one heavy dashboard never blocks the API for everyone else. Each job has a hard time limit:
+  a runaway job's worker is terminated and replaced, the only reliable way to stop a computation in JavaScript.
+  Workers report readiness before receiving jobs, so start-up never counts against the limit, and a bounded queue
+  turns overload into a clear "busy" error instead of unbounded memory. `PIPELINE_WORKERS=0` disables the pool.
 - **Accumulate** turns "current value" sources (current weather, a spot price, the ISS position) into rolling time
   series by appending each new reading with a `fetched_at` column. The buffer is in memory by design; it is a live view,
   not a database.
@@ -111,6 +117,12 @@ often an agent), the server answers `409` with the current version. The editor t
 newer document**. Ops address things by id, so "I moved widget A" and "the agent added widget B" merge cleanly. Only if
 replay fails, or the local delta is not replayable (after an undo), does the user get an explicit choice: keep mine or
 use theirs. Nothing is silently discarded, and the other side's version stays in history either way.
+
+The same holds for processing rules. Every pipeline step has a stable id (assigned automatically, `s1`, `s2`, …, which
+also migrated older documents on read), and the editor saves a dataset edit as step operations computed by `diffSteps`
+(`addStep`, `updateStep`, `removeStep`, `moveStep`) plus only the dataset fields that actually changed. If an agent
+tightened the filter while the user was reordering the sort, both edits survive the rebase. Before step ids, the
+pipeline was replaced as a whole and the last writer won.
 
 Remote changes arriving over SSE while the user has no unsaved edits are applied immediately, the affected widgets
 glow briefly, and the change becomes an undo step: _undo what the agent just did_ is a single Ctrl+Z.
@@ -152,11 +164,20 @@ renderer and is rasterised with `resvg` into a PNG, with no headless browser inv
 colour-vision-deficiency-validated categorical order with separate light and dark steps; series colours follow the
 series, never their rank, and there are no dual-axis charts.
 
-## 9. Testing strategy
+## 9. Known limits and next steps
+
+- Live updates send the whole processed table on every change. For rolling windows that is mostly redundant;
+  [proposal 0001](proposals/0001-sse-deltas.md) specifies incremental deltas. It needs no new infrastructure and is
+  deliberately left for when the traffic is measurable.
+- One process owns the data directory (see §3). Horizontal scaling would need Postgres, object storage and a pub/sub
+  for the live hub; nothing below that scale needs an extra service.
+
+## 10. Testing strategy
 
 - `packages/core`: unit tests for the expression language (including injection attempts), every transform, op atomicity,
   layout normalisation, profiling and suggestions.
-- `apps/server`: integration tests through `app.request()` against a real temporary data directory: permissions,
+- `apps/server`: worker pool tests (identical results to inline, main thread stays responsive, timeouts replace the
+  worker, queue limit), and integration tests through `app.request()` against a real temporary data directory: permissions,
   conflicts, claims, uploads, versioning, folder deletion, admin access, the complete OAuth flow, and MCP tools driven by
   the official MCP client.
 - The web app was verified end to end with Playwright during development (editing, undo, live agent edits arriving in an

@@ -23,6 +23,10 @@ const EnvSchema = z.object({
   PRUNE_ANONYMOUS_AFTER_DAYS: z.coerce.number().int().min(0).default(0),
   WEB_DIST: z.string().optional(),
   TRUST_PROXY: bool,
+  /** Worker threads for data processing; 0 runs pipelines on the main thread. Default: CPUs - 1, max 4. */
+  PIPELINE_WORKERS: z.coerce.number().int().min(0).max(32).optional(),
+  /** Hard time limit per pipeline run in a worker. */
+  PIPELINE_TIMEOUT_MS: z.coerce.number().int().min(100).default(10_000),
 });
 
 export type Config = ReturnType<typeof loadConfig>;
@@ -61,5 +65,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     webDist: parsed.WEB_DIST,
     trustProxy: parsed.TRUST_PROXY,
     mcpResource: `${publicUrl}/mcp`,
+    pipelineWorkers: parsed.PIPELINE_WORKERS,
+    pipelineTimeoutMs: parsed.PIPELINE_TIMEOUT_MS,
   };
 }
