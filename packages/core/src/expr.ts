@@ -27,6 +27,14 @@ export class ExprError extends Error {
 
 const MAX_LENGTH = 2000;
 const MAX_NODES = 400;
+/** Strings produced by expressions are capped so repeated derive steps cannot grow memory exponentially. */
+export const MAX_STRING = 10_000;
+
+function capped(text: string): string {
+  if (text.length > MAX_STRING)
+    throw new ExprError(`Text values are limited to ${MAX_STRING.toLocaleString('en')} characters`);
+  return text;
+}
 
 type Token =
   | { t: 'num'; v: number; p: number }
@@ -313,7 +321,7 @@ export const FUNCTIONS: Record<string, { args: string; doc: string; fn: (...a: S
   upper: { args: 's', doc: 'Uppercase', fn: (s) => (s === null ? null : str(s).toUpperCase()) },
   trim: { args: 's', doc: 'Strip whitespace', fn: (s) => (s === null ? null : str(s).trim()) },
   len: { args: 's', doc: 'String length', fn: (s) => (s === null ? null : str(s).length) },
-  concat: { args: 'a, b, ...', doc: 'Join as strings', fn: (...a) => a.map(str).join('') },
+  concat: { args: 'a, b, ...', doc: 'Join as strings', fn: (...a) => capped(a.map(str).join('')) },
   substr: {
     args: 's, start, length?',
     doc: 'Substring',
@@ -392,7 +400,7 @@ export function evaluate(ast: Node, row: Row): Scalar {
         (typeof a === 'string' || typeof b === 'string') &&
         (num(a) === null || num(b) === null)
       ) {
-        return str(a) + str(b);
+        return capped(str(a) + str(b));
       }
       const x = num(a);
       const y = num(b);

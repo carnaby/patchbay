@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
 import { secureHeaders } from 'hono/secure-headers';
 import { SCOPES, Tokens } from './auth/tokens.ts';
 import { Users } from './auth/users.ts';
@@ -47,6 +48,8 @@ export async function createDeps(config: Config): Promise<Deps> {
       writes: new RateLimiter(60, 120),
       auth: new RateLimiter(20, 30),
       mcp: new RateLimiter(60, 120),
+      // Creating dashboards (anonymous ones especially) is the main way to fill the disk.
+      creates: new RateLimiter(20, 1),
     },
   };
 }
@@ -81,6 +84,14 @@ export function createApp(deps: Deps) {
     if (details && typeof details.error === 'string') return c.json(details, httpErr.status);
     return c.json({ error: httpErr.message, ...(details ?? {}) }, httpErr.status);
   });
+
+  // Request size limits: uploads get room for a 5 MB file (JSON-escaped), everything else 1 MB.
+  const tooLarge = (c: Context) => c.json({ error: 'Request body too large' }, 413);
+  const uploadLimit = bodyLimit({ maxSize: 8 * 1024 * 1024, onError: tooLarge });
+  const defaultLimit = bodyLimit({ maxSize: 1024 * 1024, onError: tooLarge });
+  app.use('*', (c, next) =>
+    c.req.path.endsWith('/files') || c.req.path === '/mcp' ? uploadLimit(c, next) : defaultLimit(c, next),
+  );
 
   app.get('/healthz', (c) => c.json({ ok: true }));
 
@@ -140,7 +151,10 @@ export function createApp(deps: Deps) {
     };
     app.use(
       '/assets/*',
-      serveStatic({ root: dist, onFound: (_p, c) => c.header('Cache-Control', 'public, max-age=31536000, immutable') }),
+      serveStatic({
+        root: dist,
+        onFound: (_p, c) => c.header('Cache-Control', 'public, max-age=31536000, immutable'),
+      }),
     );
     // A missing hashed asset is a 404, never the SPA shell (avoids MIME-type confusion).
     app.get('/assets/*', (c) => c.text('Not found', 404));

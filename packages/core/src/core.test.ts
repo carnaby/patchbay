@@ -118,6 +118,18 @@ describe('pipeline', () => {
     );
   });
 
+  it('stops exponential string growth and ranks large inputs quickly', () => {
+    const doubling = Array.from({ length: 30 }, () => t({ type: 'derive', as: 's', expr: 'concat(s, s)' }));
+    const seed = inferTable([{ s: 'xxxxxxxxxx' }]);
+    expect(() => runPipeline(seed, doubling)).toThrow(/limited to/);
+    const big = inferTable(Array.from({ length: 50_000 }, (_, i) => ({ v: (i * 7919) % 1000 })));
+    const startedAt = Date.now();
+    const { table } = runPipeline(big, [t({ type: 'window', op: 'rank', field: 'v', as: 'r' })]);
+    expect(Date.now() - startedAt).toBeLessThan(1500);
+    const max = table.rows.find((r) => r.v === 999)!;
+    expect(max.r).toBe(1);
+  });
+
   it('rejects invalid expressions at validation time', () => {
     expect(TransformSchema.safeParse({ type: 'derive', as: 'x', expr: 'a +' }).success).toBe(false);
   });

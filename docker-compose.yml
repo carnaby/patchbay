@@ -1,0 +1,27 @@
+# Production-style setup: Patchbay behind Caddy (automatic HTTPS).
+# 1. Point a DNS record at your server.  2. cp .env.example .env and fill it in.
+# 3. PATCHBAY_DOMAIN=dash.example.com docker compose up -d
+services:
+  patchbay:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PUBLIC_URL: https://${PATCHBAY_DOMAIN:?set PATCHBAY_DOMAIN}
+      TRUST_PROXY: "1"
+    volumes:
+      - patchbay-data:/data
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    command: caddy reverse-proxy --from ${PATCHBAY_DOMAIN} --to patchbay:8787
+    volumes:
+      - caddy-data:/data
+
+volumes:
+  patchbay-data:
+  caddy-data:

@@ -1,0 +1,163 @@
+# Architecture
+
+This document explains how Patchbay is put together and, more importantly, why. Each decision lists the alternatives
+that were rejected, so future changes can revisit the reasoning instead of guessing it.
+
+## 1. Shape of the system
+
+```
+packages/core   pure TypeScript, no I/O       ← used by the server AND the browser
+apps/server     Hono on Node, one process     ← REST, SSE, MCP, OAuth AS, connectors, storage, PNG renderer
+apps/web        React SPA (Vite)              ← landing, editor, settings, admin
+```
+
+`@patchbay/core` is the heart. It owns the dashboard document schema, the edit operations, the layout algorithm, the
+expression language, the transform pipeline, dataset profiling, widget suggestions and the ECharts option builders. It
+has no dependencies besides Zod, so it runs unchanged in Node and in the browser, and almost all of the interesting
+logic is covered by fast unit tests.
+
+## 2. The document and the operation layer
+
+A dashboard is one JSON document:
+
+```ts
+{ schemaVersion: 1, title, description, datasets: Dataset[], widgets: Widget[], layout: LayoutItem[] }
+```
+
+- **Datasets** describe where data comes from (`source`) and how it is processed (`transforms`), plus live behaviour
+  (`refreshSec`, `accumulate`).
+- **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `text`). Several widgets can share one dataset.
+- **Layout** is a single 12-column grid. Small screens stack widgets in reading order; there is deliberately no second,
+  hand-maintained mobile layout to drift out of sync.
+
+All schemas are `z.strictObject`: unknown keys are errors. A typo in an agent's config (`colour` instead of `colors`)
+fails loudly instead of being silently ignored.
+
+Changes are expressed as **operations**: `addDataset`, `updateWidget { id, set }`, `moveWidget`, … `applyOps(doc, ops)`
+applies a batch atomically and then validates the whole result (schema + integrity: unique ids, references, layout
+consistency). Either the entire batch succeeds or nothing changes, and the error names the failing operation.
+
+Why ops rather than "send me the whole new document"?
+
+- Models produce small, id-addressed edits far more reliably than large documents.
+- A change log falls out for free (`changes: ["Added kpi widget …"]`), which feeds version history and the "the agent
+  changed X" toast.
+- Ops can be **replayed** on a newer version. That is what makes concurrent human + agent editing pleasant (see §5).
+
+Agents never send coordinates unless they want to: `addWidget` without a position is placed by `findSlot`, the same
+function the editor uses, so a widget lands in the same spot no matter who added it.
+
+## 3. Storage: a folder per dashboard
+
+```
+data/
+  patchbay.db                  SQLite: users, sessions, tokens, OAuth clients/codes, dashboard index
+  dashboards/<id>/
+    meta.json                  owner, visibility, edit-key hash, version, timestamps
+    dashboard.json             the document
+    versions/<n>.json          last 50 versions, each with actor and change log
+    files/<fileId>.json        uploaded datasets, parsed once into typed tables
+```
+
+**The folder is the source of truth; SQLite is an index.** Listing "my dashboards" or the admin overview needs queries,
+so the index exists, but it can always be rebuilt from the folders (`DashboardIndex.reconcile`). It runs at startup,
+every 15 minutes, and whenever the admin page is opened. Deleting a folder by hand is therefore a supported way to delete
+a dashboard, which is exactly what the brief asked for.
+
+Folder names are random ids, not user names. Encoding the owner in the path would leak identities into backups and
+logs, and would force a rename whenever an anonymous dashboard is claimed. The owner's id and email are stored inside
+`meta.json`, so ownership survives even the loss of the SQLite file.
+
+Writes are atomic (`write tmp` + `rename`) and serialised per dashboard with an in-process lock. Concurrency between
+clients is handled with optimistic versioning (`baseVersion`), not locks.
+
+_Rejected:_ Postgres (an extra service for data that is naturally document-shaped and per-dashboard), storing documents
+inside SQLite (loses the "a dashboard is a folder" property and easy inspection). _Accepted cost:_ one process owns the
+data directory, so scaling is vertical. A Postgres-backed index plus object storage would be the path to multiple
+instances.
+
+## 4. Data: connectors, pipelines, live updates
+
+`DataService.resolve(dataset)` = load source → (optionally) accumulate → run pipeline → cap rows.
+
+- **Connectors** are small modules with a parameter spec, a `fetch` against a fixed upstream host, and a `sample` that
+  produces deterministic synthetic data of the same shape. `OFFLINE=1` switches every connector to `sample`, which keeps
+  CI, demos and screenshots independent of third-party uptime.
+- A **TTL cache with in-flight de-duplication** sits in front of connectors. The TTL is the connector's minimum refresh
+  interval, chosen to respect each free tier. If upstream fails, a copy up to an hour old is served with a warning
+  instead of an empty widget.
+- **Pipelines run on the server.** The browser, the MCP agent and the PNG renderer therefore always agree on the numbers,
+  and the browser never downloads more than it displays (10,000 rows max).
+- **Accumulate** turns "current value" sources (current weather, a spot price, the ISS position) into rolling time
+  series by appending each new reading with a `fetched_at` column. The buffer is in memory by design; it is a live view,
+  not a database.
+
+**Live updates.** `LiveHub` keeps a "room" per dashboard while at least one browser is subscribed over SSE. Each live
+dataset gets its own interval; results are hashed and pushed only when the hash changed. N viewers share one refresh
+loop and an unwatched dashboard costs nothing. SSE was chosen over WebSockets because traffic is one-directional
+(writes go through normal HTTP requests), it works through every proxy, and reconnection is built into `EventSource`.
+
+## 5. The editor: undo/redo and live collaboration with agents
+
+The editor state (`apps/web/src/state/editor.ts`, Zustand) keeps:
+
+- `doc`: the working document, changed only via `applyOps` from core;
+- `past` / `future`: whole-document snapshots for undo/redo (cheap thanks to structural sharing; exact by construction);
+- `saved` + `version`: what the server has;
+- `pendingOps`: the ops applied since the last save.
+
+Autosave sends the document with `baseVersion` 600 ms after the last change. When someone else saved in between (very
+often an agent), the server answers `409` with the current version. The editor then **replays `pendingOps` on top of the
+newer document**. Ops address things by id, so "I moved widget A" and "the agent added widget B" merge cleanly. Only if
+replay fails, or the local delta is not replayable (after an undo), does the user get an explicit choice: keep mine or
+use theirs. Nothing is silently discarded, and the other side's version stays in history either way.
+
+Remote changes arriving over SSE while the user has no unsaved edits are applied immediately, the affected widgets
+glow briefly, and the change becomes an undo step: _undo what the agent just did_ is a single Ctrl+Z.
+
+## 6. The MCP server
+
+Built on the official TypeScript SDK v2 (`createMcpHandler`), which serves the 2026-07-28 protocol and falls back to
+stateless 2025-era handling for older clients. A fresh `McpServer` is created per request with the caller's identity.
+
+Design rules for the tools:
+
+- **Same service, same rules.** Tools call `DashboardService`, exactly like the REST API. There is no separate "AI
+  permission model" to drift.
+- **Validate before saving.** `apply_operations` has `dryRun`; `preview_data` runs any source and pipeline without
+  saving; after saving, every touched dataset is executed and its row count or error is returned immediately.
+- **Close the loop visually.** `render_snapshot` renders what the user sees.
+- **Explain the data.** `preview_data`, `get_data` and `suggest_widgets` return a column profile (types, roles, ranges,
+  null counts) and suggestions expressed as ready-to-apply operations, each with a rationale.
+- **No destructive tools.** Agents cannot delete dashboards. Everything they change is versioned and restorable.
+
+## 7. Authentication and authorization
+
+- People sign in with Google (OIDC through `arctic`), sessions are random tokens stored as SHA-256 hashes, cookies are
+  HttpOnly and SameSite=Lax, and cookie-authenticated writes must carry our own `Origin`.
+- MCP clients use the built-in OAuth 2.1 authorization server. The MCP specification asks resource servers to
+  delegate to an identity provider; here the identity provider (Google) only authenticates the person, while Patchbay
+  issues its own audience-bound tokens. Doing this in-process keeps self-hosting to a single container, at the cost of
+  owning ~400 lines of security-sensitive code, which are covered by an end-to-end test of the full flow, including
+  PKCE failure, code replay and refresh-token reuse detection.
+- Permission rules live in one place (`DashboardService.canView/canEdit`): owners edit their dashboards, public
+  dashboards are readable by anyone, private ones look like 404 to everyone else (no existence leak), anonymous
+  dashboards are editable with an edit key, and admins can view and delete everything but not edit.
+
+## 8. Rendering
+
+Charts use Apache ECharts. In the browser the canvas renderer handles tens of thousands of points; option updates are
+merged so live data animates rather than redraws. On the server the same option object goes through ECharts' SSR SVG
+renderer and is rasterised with `resvg` into a PNG, with no headless browser involved. The colour palette is a fixed,
+colour-vision-deficiency-validated categorical order with separate light and dark steps; series colours follow the
+series, never their rank, and there are no dual-axis charts.
+
+## 9. Testing strategy
+
+- `packages/core`: unit tests for the expression language (including injection attempts), every transform, op atomicity,
+  layout normalisation, profiling and suggestions.
+- `apps/server`: integration tests through `app.request()` against a real temporary data directory: permissions,
+  conflicts, claims, uploads, versioning, folder deletion, admin access, the complete OAuth flow, and MCP tools driven by
+  the official MCP client.
+- The web app was verified end to end with Playwright during development (editing, undo, live agent edits arriving in an
+  open browser, mobile and dark layouts).

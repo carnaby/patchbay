@@ -98,6 +98,8 @@ const MIGRATIONS: string[] = [
   CREATE INDEX dashboards_owner ON dashboards(owner_id);
   CREATE INDEX dashboards_viewed ON dashboards(last_viewed_at);
   `,
+  // 2: remember which grant a code produced, so replaying the code can revoke it (RFC 6749 §4.1.2).
+  `ALTER TABLE oauth_codes ADD COLUMN grant_id TEXT;`,
 ];
 
 export function openDatabase(file: string): DB {

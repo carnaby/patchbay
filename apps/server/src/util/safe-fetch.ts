@@ -6,7 +6,7 @@
  * size are capped. Connector hosts are fixed in code and use `fetchJson` directly.
  */
 import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
-import { isIP } from 'node:net';
+import { BlockList, isIP } from 'node:net';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { HttpError } from './errors.ts';
 
@@ -14,37 +14,48 @@ const MAX_BYTES = 5 * 1024 * 1024;
 const TIMEOUT_MS = 10_000;
 const USER_AGENT = 'Patchbay/0.1 (+https://github.com/carnaby/patchbay)';
 
-function isPrivateIPv4(ip: string): boolean {
-  const [a = 0, b = 0] = ip.split('.').map(Number);
-  return (
-    a === 0 ||
-    a === 10 ||
-    a === 127 ||
-    (a === 100 && b >= 64 && b <= 127) ||
-    (a === 169 && b === 254) ||
-    (a === 172 && b >= 16 && b <= 31) ||
-    (a === 192 && b === 168) ||
-    (a === 198 && (b === 18 || b === 19)) ||
-    a >= 224
-  );
+/**
+ * Every range that must never be reached from user-supplied URLs. IPv6 forms
+ * that embed IPv4 (mapped, compatible, NAT64, 6to4) are blocked wholesale,
+ * because the URL parser normalises them into shapes that string checks miss.
+ */
+const BLOCKED = new BlockList();
+for (const [net, prefix] of [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.0.2.0', 24],
+  ['192.168.0.0', 16],
+  ['198.18.0.0', 15],
+  ['198.51.100.0', 24],
+  ['203.0.113.0', 24],
+  ['224.0.0.0', 3],
+] as const) {
+  BLOCKED.addSubnet(net, prefix, 'ipv4');
+}
+for (const [net, prefix] of [
+  ['::', 96], // unspecified, loopback and IPv4-compatible (IPv4-mapped is matched against the IPv4 rules by Node)
+  ['64:ff9b::', 96], // NAT64
+  ['64:ff9b:1::', 48],
+  ['100::', 64], // discard
+  ['2001:db8::', 32], // documentation
+  ['2002::', 16], // 6to4
+  ['fc00::', 7], // unique local
+  ['fe80::', 10], // link local
+  ['ff00::', 8], // multicast
+] as const) {
+  BLOCKED.addSubnet(net, prefix, 'ipv6');
 }
 
-export function isPrivateAddress(ip: string): boolean {
-  if (isIP(ip) === 4) return isPrivateIPv4(ip);
-  const v6 = ip.toLowerCase();
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v6);
-  if (mapped) return isPrivateIPv4(mapped[1]!);
-  return (
-    v6 === '::' ||
-    v6 === '::1' ||
-    v6.startsWith('fc') ||
-    v6.startsWith('fd') ||
-    v6.startsWith('fe8') ||
-    v6.startsWith('fe9') ||
-    v6.startsWith('fea') ||
-    v6.startsWith('feb') ||
-    v6.startsWith('ff')
-  );
+export function isPrivateAddress(raw: string): boolean {
+  const ip = raw.replace(/^\[|\]$/g, '').split('%')[0]!;
+  const family = isIP(ip);
+  if (family === 0) return true; // not an IP at all: refuse rather than guess
+  return BLOCKED.check(ip, family === 4 ? 'ipv4' : 'ipv6');
 }
 
 async function assertPublicUrl(raw: string): Promise<URL> {
