@@ -1,5 +1,5 @@
 import type { Widget } from '@patchbay/core';
-import { Copy, GripVertical, Image, Settings2, Trash2 } from 'lucide-react';
+import { Copy, GripVertical, Image, Maximize2, Minimize2, Settings2, Trash2 } from 'lucide-react';
 import { memo, useEffect, useState } from 'react';
 import { cx, IconButton, toast } from '../components/ui.tsx';
 import { relativeTime } from '../lib/hooks.ts';
@@ -21,13 +21,17 @@ export const WidgetFrame = memo(function WidgetFrame({
   live,
   editing,
   onEdit,
+  expanded = false,
 }: {
   dashboardId: string;
   widget: Widget;
   live: boolean;
   editing: boolean;
   onEdit: (id: string) => void;
+  /** Rendered as the maximised overlay. */
+  expanded?: boolean;
 }) {
+  const setExpanded = useEditor((s) => s.setExpanded);
   const dataset = useEditor((s) =>
     'datasetId' in widget ? s.doc?.datasets.find((d) => d.id === widget.datasetId) : undefined,
   );
@@ -127,15 +131,26 @@ export const WidgetFrame = memo(function WidgetFrame({
             </IconButton>
           </div>
         ) : (
-          <a
-            href={`/api/dashboards/${dashboardId}/snapshot.png?widget=${encodeURIComponent(widget.id)}`}
-            target="_blank"
-            rel="noreferrer"
-            className="pb-no-drag hidden size-7 items-center justify-center rounded-md text-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface-2 hover:text-ink sm:flex"
-            title="Open as image"
-          >
-            <Image className="size-3.5" />
-          </a>
+          <div className="pb-no-drag flex items-center">
+            <IconButton
+              label={expanded ? 'Close (Esc)' : 'Maximise'}
+              onClick={() => setExpanded(expanded ? null : widget.id)}
+              className={
+                expanded ? '' : 'opacity-0 transition group-hover:opacity-100 focus-visible:opacity-100'
+              }
+            >
+              {expanded ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+            </IconButton>
+            <a
+              href={`/api/dashboards/${dashboardId}/snapshot.png?widget=${encodeURIComponent(widget.id)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="pb-no-drag hidden size-7 items-center justify-center rounded-md text-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface-2 hover:text-ink sm:flex"
+              title="Open as image"
+            >
+              <Image className="size-3.5" />
+            </a>
+          </div>
         )}
       </header>
       <div className="pb-no-drag min-h-0 flex-1 px-3 pb-3">

@@ -5,6 +5,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router';
 import { AppShell } from './components/AppShell.tsx';
 import { Spinner, Toaster, toast } from './components/ui.tsx';
 import { ApiError } from './lib/api.ts';
+import { registerServiceWorker } from './lib/pwa.ts';
 import './styles.css';
 
 const Landing = lazy(() => import('./pages/Landing.tsx'));
@@ -54,6 +55,8 @@ const router = createBrowserRouter([
     ],
   },
 ]);
+
+registerServiceWorker();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

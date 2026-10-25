@@ -1,7 +1,8 @@
-import { LayoutGrid, LogOut, Moon, Settings, Shield, Sun } from 'lucide-react';
+import { Download, LayoutGrid, LogOut, Moon, Settings, Shield, Sun } from 'lucide-react';
 import { type ReactNode, useState } from 'react';
 import { Link, Outlet, useLocation } from 'react-router';
 import { setTheme, useLogout, useMe, useTheme } from '../lib/hooks.ts';
+import { useInstallPrompt } from '../lib/pwa.ts';
 import { Button, cx, IconButton } from './ui.tsx';
 
 export function Logo({ className }: { className?: string }) {
@@ -23,6 +24,17 @@ export function Logo({ className }: { className?: string }) {
       </svg>
       <span className="text-[17px]">Patchbay</span>
     </Link>
+  );
+}
+
+/** Shown only when the browser offers to install Patchbay as an app. */
+export function InstallButton() {
+  const { available, install } = useInstallPrompt();
+  if (!available) return null;
+  return (
+    <Button size="sm" variant="ghost" icon={<Download className="size-4" />} onClick={install}>
+      <span className="hidden sm:inline">Install app</span>
+    </Button>
   );
 }
 
@@ -152,6 +164,7 @@ export function AppShell() {
             </a>
           </nav>
           <div className="ml-auto flex items-center gap-2">
+            <InstallButton />
             <ThemeToggle />
             <UserMenu />
           </div>

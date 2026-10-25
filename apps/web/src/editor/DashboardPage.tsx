@@ -1,6 +1,19 @@
 import type { DashboardEnvelope } from '@patchbay/core';
 import { useQuery } from '@tanstack/react-query';
-import { Bot, Check, Database, Globe, History, Lock, Pencil, Plus, Redo2, Share2, Undo2 } from 'lucide-react';
+import {
+  Bot,
+  Check,
+  Database,
+  Globe,
+  History,
+  Lock,
+  MonitorPlay,
+  Pencil,
+  Plus,
+  Redo2,
+  Share2,
+  Undo2,
+} from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router';
 import { Logo, ThemeToggle, UserMenu } from '../components/AppShell.tsx';
@@ -12,9 +25,11 @@ import { useAutosave, useLiveEvents } from '../state/sync.ts';
 import { ConnectAiPanel } from './ConnectAiPanel.tsx';
 import { DatasetsPanel } from './DatasetsPanel.tsx';
 import { Grid } from './Grid.tsx';
+import { PresentationControls, useIdle, usePresentation } from './presentation.tsx';
 import { SharePanel } from './SharePanel.tsx';
 import { VersionsPanel } from './VersionsPanel.tsx';
 import { WidgetEditor } from './WidgetEditor.tsx';
+import { WidgetFrame } from './WidgetFrame.tsx';
 
 type Panel = 'data' | 'versions' | 'share' | 'ai' | null;
 
@@ -104,6 +119,33 @@ function Editor({ id }: { id: string }) {
   }, [search, setSearch, access.canEdit, setEditing]);
   useDocumentTitle(doc.title);
 
+  // Presentation mode for wall screens; /d/:id?present=1 opens straight into it (kiosk links).
+  const presentation = usePresentation(search.get('present') === '1');
+  const { presenting } = presentation;
+  const idle = useIdle(presenting);
+  useEffect(() => {
+    if (presenting) setEditing(false);
+  }, [presenting, setEditing]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.closest('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey)
+        return;
+      if (e.key === 'Escape' && useEditor.getState().expanded) {
+        useEditor.getState().setExpanded(null);
+        return;
+      }
+      if (e.key.toLowerCase() === 'f' && !useEditor.getState().editing) {
+        e.preventDefault();
+        void (presentation.presenting ? presentation.stop() : presentation.start());
+      } else if (e.key === 'Escape' && presentation.presenting) {
+        void presentation.stop();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [presentation]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -133,8 +175,21 @@ function Editor({ id }: { id: string }) {
   const status = saving ? 'Saving…' : dirty ? 'Unsaved' : `Saved ${relativeTime(meta.updatedAt)}`;
 
   return (
-    <div className="min-h-screen">
-      <header className="sticky top-0 z-30 border-b border-line bg-page/90 backdrop-blur">
+    <div className={cx('min-h-screen', presenting && idle && 'cursor-none')}>
+      {presenting ? (
+        <PresentationControls
+          title={doc.title}
+          idle={idle}
+          onExit={() => void presentation.stop()}
+          onFullscreen={() => void presentation.requestFullscreen()}
+        />
+      ) : null}
+      <header
+        className={cx(
+          'sticky top-0 z-30 border-b border-line bg-page/90 backdrop-blur',
+          presenting && 'hidden',
+        )}
+      >
         <div className="flex h-14 items-center gap-2 px-3 sm:px-4">
           <Logo className="[&>span]:hidden sm:[&>span]:inline" />
           <div className="mx-2 hidden h-6 w-px bg-line sm:block" />
@@ -196,6 +251,9 @@ function Editor({ id }: { id: string }) {
           <IconButton label="Share" onClick={() => setPanel('share')}>
             <Share2 className="size-4" />
           </IconButton>
+          <IconButton label="Present on a screen (F)" onClick={() => void presentation.start()}>
+            <MonitorPlay className="size-4" />
+          </IconButton>
           {access.canEdit ? (
             <Button
               size="sm"
@@ -229,10 +287,10 @@ function Editor({ id }: { id: string }) {
         ) : null}
       </header>
 
-      {conflict ? <ConflictBanner /> : null}
+      {conflict && !presenting ? <ConflictBanner /> : null}
 
-      <main className="px-3 py-4 sm:px-4">
-        {doc.description && !editing ? (
+      <main className={cx('px-3 sm:px-4', presenting ? 'py-3' : 'py-4')}>
+        {doc.description && !editing && !presenting ? (
           <p className="mb-4 max-w-3xl text-sm text-ink-2">{doc.description}</p>
         ) : null}
         {editing ? <DescriptionInput /> : null}
@@ -286,10 +344,35 @@ function Editor({ id }: { id: string }) {
       <VersionsPanel open={panel === 'versions'} onClose={() => setPanel(null)} dashboardId={id} />
       <SharePanel open={panel === 'share'} onClose={() => setPanel(null)} dashboardId={id} />
       <ConnectAiPanel open={panel === 'ai'} onClose={() => setPanel(null)} dashboardId={id} />
+      <ExpandedWidget dashboardId={id} live={live} />
       <WidgetEditor
         widgetId={widgetId}
         onClose={() => setWidgetId(null)}
         onCreated={(wid) => setWidgetId(wid)}
+      />
+    </div>
+  );
+}
+
+/** One widget maximised over the dashboard; Esc or the button closes it. */
+function ExpandedWidget({ dashboardId, live }: { dashboardId: string; live: boolean }) {
+  const expanded = useEditor((s) => s.expanded);
+  const widget = useEditor((s) => s.doc?.widgets.find((w) => w.id === s.expanded));
+  if (!expanded || !widget) return null;
+  return (
+    <div
+      className="fixed inset-0 z-40 bg-page p-3 sm:p-6"
+      role="dialog"
+      aria-modal="true"
+      aria-label={widget.title ?? widget.id}
+    >
+      <WidgetFrame
+        dashboardId={dashboardId}
+        widget={widget}
+        live={live}
+        editing={false}
+        onEdit={() => {}}
+        expanded
       />
     </div>
   );
