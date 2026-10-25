@@ -6,6 +6,7 @@
 import { Copy, Info, Minimize2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, cx, toast } from '../components/ui.tsx';
+import { EnableSoundButton, MuteButton } from './sound-controls.tsx';
 
 const IDLE_MS = 2500;
 
@@ -109,11 +110,13 @@ export function PresentationControls({
   idle,
   onExit,
   onFullscreen,
+  hasSounds,
 }: {
   title: string;
   idle: boolean;
   onExit: () => void;
   onFullscreen: () => void;
+  hasSounds: boolean;
 }) {
   const fullscreenAvailable = typeof document !== 'undefined' && document.fullscreenEnabled;
   const [inFullscreen, setInFullscreen] = useState(Boolean(document.fullscreenElement));
@@ -131,6 +134,12 @@ export function PresentationControls({
     >
       <span className="truncate text-sm font-semibold">{title}</span>
       <span className="flex-1" />
+      {hasSounds ? (
+        <>
+          <EnableSoundButton />
+          <MuteButton />
+        </>
+      ) : null}
       {fullscreenAvailable && !inFullscreen ? (
         <Button size="sm" onClick={onFullscreen}>
           Full screen
@@ -177,6 +186,10 @@ export function TvInfo({ dashboardId, isPrivate }: { dashboardId: string; isPriv
               <li>Open this link in the TV's (or wall tablet's) browser. It starts without the toolbar.</li>
               <li>Click once, or press OK on the remote, and choose Full screen.</li>
               <li>The screen stays on and live data updates by itself. Nobody needs to touch it.</li>
+              <li>
+                Widgets with sounds stay silent until the page is clicked once: choose Enable sound, and it
+                stays on.
+              </li>
             </ol>
             <div className="mt-3 flex gap-2">
               <input
