@@ -146,15 +146,13 @@ export function createMcp(deps: Deps) {
       { title: 'List my dashboards', description: "The signed-in user's dashboards.", annotations: read },
       tool(SCOPES.read, async (_args, p) =>
         json(
-          dashboards
-            .listMine(p)
-            .map((d) => ({
-              id: d.id,
-              title: d.title,
-              visibility: d.visibility,
-              updatedAt: d.updatedAt,
-              url: urlOf(d.id),
-            })),
+          dashboards.listMine(p).map((d) => ({
+            id: d.id,
+            title: d.title,
+            visibility: d.visibility,
+            updatedAt: d.updatedAt,
+            url: urlOf(d.id),
+          })),
         ),
       ),
     );

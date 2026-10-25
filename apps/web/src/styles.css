@@ -1,0 +1,126 @@
+@import "tailwindcss";
+@import "react-grid-layout/css/styles.css";
+
+/* Colour scheme follows data-theme on <html>, set before first paint by /theme-init.js. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  --color-page: var(--pb-page);
+  --color-surface: var(--pb-surface);
+  --color-surface-2: var(--pb-surface-2);
+  --color-ink: var(--pb-ink);
+  --color-ink-2: var(--pb-ink-2);
+  --color-muted: var(--pb-muted);
+  --color-line: var(--pb-line);
+  --color-line-strong: var(--pb-line-strong);
+  --color-accent: var(--pb-accent);
+  --color-accent-ink: var(--pb-accent-ink);
+  --color-data: var(--pb-data);
+  --color-good: var(--pb-good);
+  --color-bad: var(--pb-bad);
+  --color-warn: #fab219;
+}
+
+:root {
+  color-scheme: light;
+  --pb-page: #f9f9f7;
+  --pb-surface: #fcfcfb;
+  --pb-surface-2: #f1f0ec;
+  --pb-ink: #0b0b0b;
+  --pb-ink-2: #52514e;
+  --pb-muted: #898781;
+  --pb-line: #e1e0d9;
+  --pb-line-strong: #c3c2b7;
+  /* Brand accent: "patch cable orange". Reserved for brand + primary actions, never for data. */
+  --pb-accent: #e8501a;
+  --pb-accent-ink: #ffffff;
+  --pb-data: #2a78d6;
+  --pb-good: #006300;
+  --pb-bad: #d03b3b;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --pb-page: #0d0d0d;
+  --pb-surface: #1a1a19;
+  --pb-surface-2: #242423;
+  --pb-ink: #f0efec;
+  --pb-ink-2: #c3c2b7;
+  --pb-muted: #898781;
+  --pb-line: #2c2c2a;
+  --pb-line-strong: #383835;
+  --pb-accent: #ff6a33;
+  --pb-accent-ink: #0b0b0b;
+  --pb-data: #3987e5;
+  --pb-good: #0ca30c;
+  --pb-bad: #e66767;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  background: var(--pb-page);
+  color: var(--pb-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--pb-accent) 25%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--pb-accent);
+  outline-offset: 2px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* react-grid-layout: keep its placeholder and handles on-brand. */
+.react-grid-item.react-grid-placeholder {
+  background: var(--pb-accent);
+  opacity: 0.12;
+  border-radius: 12px;
+}
+.react-grid-item > .react-resizable-handle::after {
+  border-color: var(--pb-muted);
+}
+
+/* A short glow when another client (e.g. an AI agent) changed a widget. */
+@keyframes pb-flash {
+  0% {
+    box-shadow: 0 0 0 2px var(--pb-accent);
+  }
+  100% {
+    box-shadow: 0 0 0 2px transparent;
+  }
+}
+.pb-flash {
+  animation: pb-flash 2.4s ease-out;
+}
+
+@keyframes pb-dash {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+.pb-cable {
+  stroke-dasharray: 6 6;
+  animation: pb-dash 1.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pb-flash,
+  .pb-cable {
+    animation: none;
+  }
+}
