@@ -47,6 +47,7 @@ export const OpSchema = z.discriminatedUnion('op', [
       source: SourceSchema.optional(),
       transforms: z.array(TransformSchema).optional(),
       refreshSec: z.number().int().min(0).max(86_400).optional(),
+      accumulate: z.number().int().min(0).max(5000).optional(),
     }),
   }),
   z.strictObject({

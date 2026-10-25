@@ -114,7 +114,15 @@ export class TransformError extends Error {
 const numeric = (values: Scalar[]) =>
   values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
 
+/** Removes binary floating point noise (0.1 + 0.2) from aggregated results. */
+const clean = (n: number) => (Number.isInteger(n) ? n : Math.round(n * 1e9) / 1e9);
+
 function aggregate(op: AggregateOp, values: Scalar[]): Scalar {
+  const result = aggregateRaw(op, values);
+  return typeof result === 'number' ? clean(result) : result;
+}
+
+function aggregateRaw(op: AggregateOp, values: Scalar[]): Scalar {
   switch (op) {
     case 'count':
       return values.length;
