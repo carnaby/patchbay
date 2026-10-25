@@ -18,6 +18,7 @@ import { authRoutes } from './routes/auth.ts';
 import { oauthRoutes } from './routes/oauth.ts';
 import { DashboardService } from './services/dashboards.ts';
 import { DataService } from './services/data.ts';
+import { defaultPoolSize, InlineRunner, type PipelineRunner, WorkerPool } from './services/pipeline-pool.ts';
 import { DashboardIndex } from './store/dashboard-index.ts';
 import { FolderStore } from './store/folder-store.ts';
 import { HttpError, toHttpError } from './util/errors.ts';
@@ -29,7 +30,14 @@ export async function createDeps(config: Config): Promise<Deps> {
   await store.init();
   const index = new DashboardIndex(db);
   const connectors = new ConnectorService({ offline: config.offline });
-  const data = new DataService(connectors, store);
+  const pipeline: PipelineRunner =
+    config.pipelineWorkers === 0
+      ? new InlineRunner()
+      : new WorkerPool({
+          size: config.pipelineWorkers ?? defaultPoolSize(),
+          timeoutMs: config.pipelineTimeoutMs,
+        });
+  const data = new DataService(connectors, store, pipeline);
   const hub = new LiveHub(data, (id) => store.readDoc(id));
   const dashboards = new DashboardService(store, index, hub);
   return {
@@ -40,6 +48,7 @@ export async function createDeps(config: Config): Promise<Deps> {
     store,
     index,
     connectors,
+    pipeline,
     data,
     hub,
     dashboards,

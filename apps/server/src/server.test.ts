@@ -29,8 +29,9 @@ beforeAll(async () => {
   app = createApp(deps);
 });
 
-afterAll(() => {
+afterAll(async () => {
   deps.hub.close();
+  await deps.pipeline.close();
   deps.db.close();
   rmSync(dir, { recursive: true, force: true });
 });

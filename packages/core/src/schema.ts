@@ -7,7 +7,7 @@
  * than a widget that mysteriously ignores its config.
  */
 import { z } from 'zod';
-import { TransformSchema } from './transforms.ts';
+import { TransformSchema, withStepIds } from './transforms.ts';
 
 export const SCHEMA_VERSION = 1;
 export const GRID_COLUMNS = 12;
@@ -64,7 +64,8 @@ export const DatasetSchema = z.strictObject({
   id: IdSchema,
   name: z.string().min(1).max(120),
   source: SourceSchema,
-  transforms: z.array(TransformSchema).max(LIMITS.transforms).default([]),
+  // Steps saved before ids existed get them on read, which doubles as the migration.
+  transforms: z.array(TransformSchema).max(LIMITS.transforms).default([]).transform(withStepIds),
   refreshSec: z
     .number()
     .int()
@@ -221,6 +222,14 @@ export function integrityIssues(doc: DashboardDoc): string[] {
   for (const d of doc.datasets) {
     if (datasetIds.has(d.id)) issues.push(`Duplicate dataset id "${d.id}"`);
     datasetIds.add(d.id);
+  }
+  for (const d of doc.datasets) {
+    const stepIds = new Set<string>();
+    for (const step of d.transforms) {
+      if (step.id && stepIds.has(step.id))
+        issues.push(`Dataset "${d.id}" has two steps with id "${step.id}"`);
+      if (step.id) stepIds.add(step.id);
+    }
   }
   const widgetIds = new Set<string>();
   for (const w of doc.widgets) {

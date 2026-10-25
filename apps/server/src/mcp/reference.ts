@@ -45,6 +45,8 @@ ${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows.
   Use it to chart sources that only return the current value (weather.current, crypto.price, iss.position).
 
 ## Transforms (run in order, on the server)
+Every step has a stable id ("s1", "s2", … assigned automatically, or your own). Address steps by id with the step
+operations below instead of resending the whole pipeline.
 - filter { expr }                         keep rows where expr is truthy
 - select { fields } / drop { fields } / rename { map: { old: new } }
 - derive { as, expr }                     computed column
@@ -73,7 +75,10 @@ format: { style: number|compact|percent|currency, decimals?, currency?, prefix?,
 ## Operations (apply_operations)
 setMeta, addDataset, updateDataset { id, set }, removeDataset { id, cascade? }, addWidget { widget, position? },
 updateWidget { id, set: { title?, description?, datasetId?, config? (shallow-merged) } }, replaceWidget { widget },
-removeWidget { id }, moveWidget { id, x?, y?, w?, h? }, setLayout { layout }.
+removeWidget { id }, moveWidget { id, x?, y?, w?, h? }, setLayout { layout },
+addStep { datasetId, step, before? }, updateStep { datasetId, stepId, set } (merged; type cannot change),
+removeStep { datasetId, stepId }, moveStep { datasetId, stepId, before: stepId | null }.
+Prefer step operations over updateDataset { set: { transforms } }: they do not overwrite steps the user changed meanwhile.
 Omit positions to auto-place. Typical sizes: kpi 3x2, gauge 3x3, chart 6x4, table 6x5, text 4x2 (w x h, row = 80 px).
 
 ## Design guidance
