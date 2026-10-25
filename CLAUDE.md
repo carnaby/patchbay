@@ -27,3 +27,8 @@ Monorepo (pnpm): `packages/core` (pure domain logic, shared), `apps/server` (Hon
   `runPipeline` from request code: large inputs must stay off the main thread.
 - Editing a pipeline means step ops (`diffSteps` in core), not replacing `transforms`, so rebases merge per step.
 - Planned but not implemented work is specified in docs/proposals/.
+- The service worker (apps/web/public/sw.js) must never cache `/api`, `/auth`, `/oauth`, `/mcp` or live streams:
+  dashboards show live data and must not go stale. It only caches hashed `/assets/*` and the offline page. Bump
+  `VERSION` in sw.js when its caching logic changes. The server serves sw.js and the manifest with `no-cache`.
+- Presentation mode (apps/web/src/editor/presentation.tsx) must keep working without user input after the first
+  click: it is used unattended on wall screens and TVs.
