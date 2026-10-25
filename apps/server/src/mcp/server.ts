@@ -1,0 +1,563 @@
+/**
+ * The MCP server: Patchbay's primary interface.
+ *
+ * Every tool goes through the same DashboardService as the web UI, so the
+ * permission rules, validation and versioning are identical. Writes require the
+ * `dashboards:write` scope; reads only `dashboards:read`.
+ */
+
+import { type AuthInfo, createMcpHandler, McpServer } from '@modelcontextprotocol/server';
+import {
+  type Dataset,
+  type DatasetResult,
+  DatasetSchema,
+  type DataTable,
+  OpSchema,
+  profileTable,
+  SourceSchema,
+  type Suggestion,
+  suggestWidgets,
+  TransformSchema,
+} from '@patchbay/core';
+import { z } from 'zod';
+import { SCOPES } from '../auth/tokens.ts';
+import type { Deps } from '../context.ts';
+import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
+import type { Principal } from '../services/dashboards.ts';
+import { listTemplates } from '../services/templates.ts';
+import { HttpError, toHttpError } from '../util/errors.ts';
+import { referenceText, SERVER_INSTRUCTIONS } from './reference.ts';
+
+type ToolResult = {
+  content: ({ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string })[];
+  isError?: boolean;
+};
+
+const json = (value: unknown): ToolResult => ({
+  content: [{ type: 'text', text: JSON.stringify(value, null, 1) }],
+});
+const fail = (message: string): ToolResult => ({ content: [{ type: 'text', text: message }], isError: true });
+
+/** A compact, model-friendly view of a table: columns + the first rows. */
+function sampleTable(table: DataTable, limit: number) {
+  return { columns: table.columns, rowCount: table.rows.length, rows: table.rows.slice(0, limit) };
+}
+
+let idCounter = 0;
+const slug = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 28) || 'w';
+
+/** Turns engine suggestions into ready-to-apply operations. */
+function suggestionOps(dataset: Dataset, suggestions: Suggestion[]) {
+  return suggestions.map((s) => {
+    const base = `${slug(s.title)}-${(++idCounter % 1000).toString(36)}`;
+    const ops: unknown[] = [];
+    let datasetId = dataset.id;
+    if (s.transforms.length) {
+      datasetId = `${dataset.id.slice(0, 20)}-${base}`.slice(0, 40);
+      ops.push({
+        op: 'addDataset',
+        dataset: {
+          ...dataset,
+          id: datasetId,
+          name: `${dataset.name}: ${s.title}`.slice(0, 120),
+          transforms: [...dataset.transforms, ...s.transforms],
+        },
+      });
+    }
+    ops.push({ op: 'addWidget', widget: { ...s.widget, id: base.slice(0, 40), datasetId } });
+    return { title: s.title, rationale: s.rationale, ops };
+  });
+}
+
+export function createMcp(deps: Deps) {
+  const { dashboards, data, connectors, config, users } = deps;
+  const urlOf = (id: string) => `${config.publicUrl}/d/${id}`;
+
+  const factory = ({ authInfo }: { authInfo?: AuthInfo }) => {
+    const server = new McpServer(
+      { name: 'patchbay', version: '0.1.0' },
+      { instructions: SERVER_INSTRUCTIONS },
+    );
+    const userId = authInfo?.extra?.userId as string | undefined;
+    const clientName = (authInfo?.extra?.clientName as string | undefined) ?? 'AI agent';
+    const scopes = new Set(authInfo?.scopes ?? []);
+
+    const principal = (): Principal => {
+      const user = userId ? users.byId(userId) : null;
+      if (!user) throw new HttpError(401, 'Not authenticated');
+      return { user, isAdmin: false, mcpClient: clientName };
+    };
+
+    /** Wraps a handler with scope checks, rate limiting and uniform error reporting. */
+    const tool = <A>(scope: string, run: (args: A, p: Principal) => Promise<ToolResult>) => {
+      return async (args: A): Promise<ToolResult> => {
+        if (!scopes.has(scope))
+          return fail(`This connection lacks the "${scope}" scope. Reconnect and grant it.`);
+        if (!deps.limits.mcp.take(`${userId}:${scope}`, scope === SCOPES.write ? 2 : 1)) {
+          return fail('Rate limit reached. Wait a moment and batch your operations.');
+        }
+        try {
+          return await run(args, principal());
+        } catch (e) {
+          const err = toHttpError(e);
+          if (err.status === 500) console.error('[mcp]', e);
+          return fail(err.message);
+        }
+      };
+    };
+
+    const read = { readOnlyHint: true, openWorldHint: false } as const;
+    const write = {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+    } as const;
+    const dashboardId = z.string().describe('Dashboard id (the last part of its URL)');
+
+    server.registerTool(
+      'get_reference',
+      {
+        title: 'Authoring reference',
+        description:
+          'Full schema of datasets, transforms, expressions, widgets and operations, plus design guidance. Read this once before building.',
+        annotations: read,
+      },
+      tool(SCOPES.read, async () => ({ content: [{ type: 'text', text: referenceText() }] })),
+    );
+
+    server.registerTool(
+      'list_connectors',
+      {
+        title: 'List data connectors',
+        description: 'Built-in public data sources (no API keys needed) with their parameters.',
+        annotations: read,
+      },
+      tool(SCOPES.read, async () => json(connectors.list())),
+    );
+
+    server.registerTool(
+      'list_dashboards',
+      { title: 'List my dashboards', description: "The signed-in user's dashboards.", annotations: read },
+      tool(SCOPES.read, async (_args, p) =>
+        json(
+          dashboards
+            .listMine(p)
+            .map((d) => ({
+              id: d.id,
+              title: d.title,
+              visibility: d.visibility,
+              updatedAt: d.updatedAt,
+              url: urlOf(d.id),
+            })),
+        ),
+      ),
+    );
+
+    server.registerTool(
+      'get_dashboard',
+      {
+        title: 'Get a dashboard',
+        description: 'The full dashboard document (datasets, widgets, layout) and its metadata.',
+        inputSchema: z.object({ dashboardId }),
+        annotations: read,
+      },
+      tool(SCOPES.read, async ({ dashboardId: id }: { dashboardId: string }, p) => {
+        const env = await dashboards.get(id, p);
+        return json({ url: urlOf(id), meta: env.meta, canEdit: env.access.canEdit, doc: env.doc });
+      }),
+    );
+
+    server.registerTool(
+      'create_dashboard',
+      {
+        title: 'Create a dashboard',
+        description: `Creates a dashboard owned by the user. Optionally start from a template: ${listTemplates()
+          .map((t) => t.id)
+          .join(', ')}.`,
+        inputSchema: z.object({
+          title: z.string().min(1).max(120),
+          description: z.string().max(1000).optional(),
+          visibility: z.enum(['private', 'public']).default('private'),
+          template: z.string().optional(),
+        }),
+        annotations: write,
+      },
+      tool(
+        SCOPES.write,
+        async (
+          args: { title: string; description?: string; visibility: 'private' | 'public'; template?: string },
+          p,
+        ) => {
+          const { envelope } = await dashboards.create(p, {
+            title: args.title,
+            template: args.template,
+            visibility: args.visibility,
+          });
+          let env = envelope;
+          if (args.description)
+            env = (
+              await dashboards.applyOps(env.meta.id, p, [{ op: 'setMeta', description: args.description }])
+            ).envelope;
+          return json({
+            dashboardId: env.meta.id,
+            url: urlOf(env.meta.id),
+            version: env.meta.version,
+            doc: env.doc,
+          });
+        },
+      ),
+    );
+
+    server.registerTool(
+      'apply_operations',
+      {
+        title: 'Edit a dashboard',
+        description:
+          'Applies a batch of operations atomically (all or nothing) and saves a new version. The user sees the change live. Use dryRun to validate without saving. Ops address datasets/widgets by id.',
+        inputSchema: z.object({
+          dashboardId,
+          operations: z.array(OpSchema).min(1).max(100),
+          dryRun: z.boolean().default(false),
+          baseVersion: z
+            .number()
+            .int()
+            .optional()
+            .describe('Fail if the dashboard changed since this version'),
+        }),
+        annotations: write,
+      },
+      tool(
+        SCOPES.write,
+        async (
+          args: { dashboardId: string; operations: unknown[]; dryRun: boolean; baseVersion?: number },
+          p,
+        ) => {
+          const options: { dryRun: boolean; baseVersion?: number } = { dryRun: args.dryRun };
+          if (args.baseVersion !== undefined) options.baseVersion = args.baseVersion;
+          const result = await dashboards.applyOps(args.dashboardId, p, args.operations, options);
+          // Check every dataset the batch touched, so broken sources surface immediately.
+          const touched = new Set(
+            (args.operations as { op: string; dataset?: { id: string }; id?: string }[])
+              .filter((o) => o.op === 'addDataset' || o.op === 'updateDataset')
+              .map((o) => o.dataset?.id ?? o.id!),
+          );
+          const dataChecks = await Promise.all(
+            result.envelope.doc.datasets
+              .filter((d) => touched.has(d.id))
+              .map(async (d) => {
+                const r = await data.resolve(args.dashboardId, d, { maxRows: 5 });
+                return {
+                  datasetId: d.id,
+                  rows: r.table.rows.length,
+                  columns: r.table.columns.map((c) => `${c.name}:${c.type}`),
+                  error: r.error,
+                };
+              }),
+          );
+          return json({
+            dryRun: args.dryRun,
+            version: result.envelope.meta.version,
+            changes: result.changes,
+            dataChecks,
+            url: urlOf(args.dashboardId),
+            hint: args.dryRun
+              ? 'Valid. Call again with dryRun: false to save.'
+              : 'Saved. Call render_snapshot to check how it looks.',
+          });
+        },
+      ),
+    );
+
+    server.registerTool(
+      'preview_data',
+      {
+        title: 'Preview a data source',
+        description:
+          'Loads a source and runs transforms WITHOUT saving: returns columns, sample rows, a column profile and widget suggestions. Pass dashboardId when the source is an uploaded file.',
+        inputSchema: z.object({
+          source: SourceSchema,
+          transforms: z.array(TransformSchema).default([]),
+          dashboardId: dashboardId.optional(),
+          sampleRows: z.number().int().min(1).max(100).default(15),
+        }),
+        annotations: { ...read, openWorldHint: true },
+      },
+      tool(
+        SCOPES.read,
+        async (
+          args: { source: unknown; transforms: unknown[]; dashboardId?: string; sampleRows: number },
+          p,
+        ) => {
+          if (args.dashboardId) await dashboards.loadViewable(args.dashboardId, p);
+          const dataset = DatasetSchema.parse({
+            id: 'preview',
+            name: 'Preview',
+            source: args.source,
+            transforms: args.transforms,
+          });
+          if (dataset.source.kind === 'upload' && !args.dashboardId)
+            return fail('Uploaded files need dashboardId');
+          if (dataset.source.kind === 'connector')
+            connectors.validateParams(dataset.source.connector, dataset.source.params);
+          const result = await data.resolve(args.dashboardId ?? 'preview00', dataset, { maxRows: 5000 });
+          if (result.error && result.table.rows.length === 0) return fail(result.error);
+          const profile = profileTable(result.table);
+          return json({
+            ...sampleTable(result.table, args.sampleRows),
+            trace: result.trace,
+            profile: profile.columns.map(({ sample: _s, ...c }) => c),
+            suggestions: suggestionOps(dataset, suggestWidgets(profile)),
+          });
+        },
+      ),
+    );
+
+    server.registerTool(
+      'get_data',
+      {
+        title: 'Read a dataset',
+        description: 'The processed rows of a saved dataset (what its widgets show), with a profile.',
+        inputSchema: z.object({
+          dashboardId,
+          datasetId: z.string(),
+          limit: z.number().int().min(1).max(500).default(50),
+        }),
+        annotations: read,
+      },
+      tool(SCOPES.read, async (args: { dashboardId: string; datasetId: string; limit: number }, p) => {
+        const { doc } = await dashboards.loadViewable(args.dashboardId, p);
+        const dataset = doc.datasets.find((d) => d.id === args.datasetId);
+        if (!dataset)
+          return fail(
+            `No dataset "${args.datasetId}". Datasets: ${doc.datasets.map((d) => d.id).join(', ') || 'none'}`,
+          );
+        const result = await data.resolve(args.dashboardId, dataset);
+        const profile = profileTable(result.table);
+        return json({
+          ...sampleTable(result.table, args.limit),
+          fetchedAt: result.fetchedAt,
+          error: result.error,
+          profile: profile.columns.map(({ sample: _s, ...c }) => c),
+        });
+      }),
+    );
+
+    server.registerTool(
+      'suggest_widgets',
+      {
+        title: 'Suggest visualisations',
+        description:
+          'Profiles a saved dataset and returns suggested widgets as ready-to-apply operations, each with a rationale.',
+        inputSchema: z.object({ dashboardId, datasetId: z.string() }),
+        annotations: read,
+      },
+      tool(SCOPES.read, async (args: { dashboardId: string; datasetId: string }, p) => {
+        const { doc } = await dashboards.loadViewable(args.dashboardId, p);
+        const dataset = doc.datasets.find((d) => d.id === args.datasetId);
+        if (!dataset) return fail(`No dataset "${args.datasetId}"`);
+        const result = await data.resolve(args.dashboardId, dataset);
+        const profile = profileTable(result.table);
+        return json({
+          rows: profile.rows,
+          columns: profile.columns.map(({ sample: _s, ...c }) => c),
+          suggestions: suggestionOps(dataset, suggestWidgets(profile)),
+        });
+      }),
+    );
+
+    server.registerTool(
+      'upload_data',
+      {
+        title: 'Upload data',
+        description:
+          'Stores CSV or JSON content as a file inside a dashboard and returns its fileId, a profile and suggested operations (including the addDataset op). Max 5 MB.',
+        inputSchema: z.object({
+          dashboardId,
+          name: z.string().min(1).max(200).describe('File name, e.g. "sales-2026.csv"'),
+          format: z.enum(['csv', 'json']),
+          content: z.string().min(1),
+        }),
+        annotations: write,
+      },
+      tool(
+        SCOPES.write,
+        async (args: { dashboardId: string; name: string; format: 'csv' | 'json'; content: string }, p) => {
+          const file = await dashboards.uploadFile(args.dashboardId, p, args);
+          const datasetId = slug(args.name.replace(/\.(csv|json)$/i, '')).slice(0, 30) || 'data';
+          const dataset = DatasetSchema.parse({
+            id: datasetId,
+            name: args.name,
+            source: { kind: 'upload', fileId: file.id },
+          });
+          const result = await data.resolve(args.dashboardId, dataset);
+          const profile = profileTable(result.table);
+          return json({
+            file,
+            addDatasetOp: { op: 'addDataset', dataset },
+            profile: profile.columns.map(({ sample: _s, ...c }) => c),
+            sample: result.table.rows.slice(0, 5),
+            suggestions: suggestionOps(dataset, suggestWidgets(profile)),
+            hint: 'Apply addDatasetOp first, then the ops of the suggestions you like (or your own).',
+          });
+        },
+      ),
+    );
+
+    server.registerTool(
+      'render_snapshot',
+      {
+        title: 'See the dashboard',
+        description:
+          'Renders the dashboard (or one widget) to a PNG image so you can check what the user sees.',
+        inputSchema: z.object({
+          dashboardId,
+          widgetId: z.string().optional(),
+          theme: z.enum(['light', 'dark']).default('light'),
+        }),
+        annotations: read,
+      },
+      tool(
+        SCOPES.read,
+        async (args: { dashboardId: string; widgetId?: string; theme: 'light' | 'dark' }, p) => {
+          const { doc } = await dashboards.loadViewable(args.dashboardId, p);
+          const results = new Map<string, DatasetResult>();
+          const needed = args.widgetId ? doc.widgets.filter((w) => w.id === args.widgetId) : doc.widgets;
+          if (args.widgetId && needed.length === 0) return fail(`No widget "${args.widgetId}"`);
+          const ids = new Set(needed.flatMap((w) => ('datasetId' in w ? [w.datasetId] : [])));
+          await Promise.all(
+            doc.datasets
+              .filter((d) => ids.has(d.id))
+              .map(async (d) => results.set(d.id, await data.resolve(args.dashboardId, d))),
+          );
+          const widget = needed[0];
+          const png =
+            args.widgetId && widget
+              ? renderWidgetPng(widget, 'datasetId' in widget ? results.get(widget.datasetId) : undefined, {
+                  theme: args.theme,
+                })
+              : renderDashboardPng(doc, results, { theme: args.theme });
+          const problems = [...results.values()]
+            .filter((r) => r.error)
+            .map((r) => `${r.datasetId}: ${r.error}`);
+          return {
+            content: [
+              { type: 'image', data: png.toString('base64'), mimeType: 'image/png' },
+              {
+                type: 'text',
+                text: problems.length
+                  ? `Data problems: ${problems.join('; ')}`
+                  : `Rendered ${needed.length} widget(s).`,
+              },
+            ],
+          };
+        },
+      ),
+    );
+
+    server.registerTool(
+      'list_versions',
+      {
+        title: 'Version history',
+        description: 'Recent versions with who changed what. Use restore_version to roll back.',
+        inputSchema: z.object({ dashboardId }),
+        annotations: read,
+      },
+      tool(SCOPES.read, async ({ dashboardId: id }: { dashboardId: string }, p) =>
+        json(await dashboards.versions(id, p)),
+      ),
+    );
+
+    server.registerTool(
+      'restore_version',
+      {
+        title: 'Restore a version',
+        description: 'Restores an earlier version (as a new version, so it is itself undoable).',
+        inputSchema: z.object({ dashboardId, version: z.number().int().min(1) }),
+        annotations: write,
+      },
+      tool(SCOPES.write, async (args: { dashboardId: string; version: number }, p) => {
+        const r = await dashboards.restore(args.dashboardId, p, args.version);
+        return json({ version: r.envelope.meta.version, changes: r.changes });
+      }),
+    );
+
+    server.registerTool(
+      'set_visibility',
+      {
+        title: 'Change visibility',
+        description: 'public = anyone with the link can view; private = only the owner (after signing in).',
+        inputSchema: z.object({ dashboardId, visibility: z.enum(['public', 'private']) }),
+        annotations: write,
+      },
+      tool(SCOPES.write, async (args: { dashboardId: string; visibility: 'public' | 'private' }, p) => {
+        const env = await dashboards.setVisibility(args.dashboardId, p, args.visibility);
+        return json({ visibility: env.meta.visibility, url: urlOf(args.dashboardId) });
+      }),
+    );
+
+    server.registerResource(
+      'reference',
+      'patchbay://reference',
+      {
+        title: 'Patchbay authoring reference',
+        description: 'Schema and design guidance',
+        mimeType: 'text/markdown',
+      },
+      async (uri: URL) => ({
+        contents: [{ uri: uri.href, mimeType: 'text/markdown', text: referenceText() }],
+      }),
+    );
+
+    server.registerPrompt(
+      'build_dashboard',
+      {
+        title: 'Build a dashboard',
+        description: 'Design and build a live dashboard about a topic from public data.',
+        argsSchema: z.object({ topic: z.string().describe('What the dashboard should be about') }),
+      },
+      ({ topic }: { topic: string }) => ({
+        messages: [
+          {
+            role: 'user' as const,
+            content: {
+              type: 'text' as const,
+              text: `Build a Patchbay dashboard about: ${topic}.\n\n1. Call get_reference and list_connectors.\n2. Preview the sources you plan to use with preview_data.\n3. Create the dashboard and add datasets and 4-8 widgets in one apply_operations batch.\n4. render_snapshot, critique the image like a designer (empty widgets, unreadable labels, wrong chart type) and fix it.\n5. Reply with the URL and a two-sentence summary.`,
+            },
+          },
+        ],
+      }),
+    );
+
+    server.registerPrompt(
+      'analyze_my_data',
+      {
+        title: 'Analyse my data',
+        description: 'Turn the user’s own CSV/JSON into a dashboard with sensible processing.',
+        argsSchema: z.object({
+          dashboardId: z.string().optional().describe('Existing dashboard to add to (optional)'),
+        }),
+      },
+      ({ dashboardId: id }: { dashboardId?: string }) => ({
+        messages: [
+          {
+            role: 'user' as const,
+            content: {
+              type: 'text' as const,
+              text: `I want to visualise my own data in Patchbay${id ? ` (dashboard ${id})` : ''}. Ask me for the file content if you do not have it yet. Then: upload_data, study the profile (column roles, ranges, nulls), propose a processing pipeline (cleaning, derived columns, time buckets, aggregations) and 3-6 widgets, explain each choice in one line, apply them, and verify with render_snapshot.`,
+            },
+          },
+        ],
+      }),
+    );
+
+    return server;
+  };
+
+  return createMcpHandler(factory, { onerror: (e) => console.error('[mcp]', e.message) });
+}

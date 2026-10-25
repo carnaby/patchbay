@@ -72,6 +72,15 @@ export const DatasetSchema = z.strictObject({
     .max(86_400)
     .default(0)
     .describe('Live refresh interval in seconds; 0 = only on load'),
+  accumulate: z
+    .number()
+    .int()
+    .min(0)
+    .max(5000)
+    .default(0)
+    .describe(
+      'Keep the last N rows across refreshes (adds a "fetched_at" time column). Turns "current value" sources into live time series. 0 = off',
+    ),
 });
 export type Dataset = z.infer<typeof DatasetSchema>;
 
