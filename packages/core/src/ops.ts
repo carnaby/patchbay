@@ -21,6 +21,7 @@ import {
   type Widget,
   WidgetSchema,
 } from './schema.ts';
+import { SoundRuleSchema } from './sound.ts';
 import { StepIdSchema, type Transform, TransformSchema, withStepIds } from './transforms.ts';
 
 const position = z
@@ -92,6 +93,7 @@ export const OpSchema = z.discriminatedUnion('op', [
         .record(z.string(), z.unknown())
         .optional()
         .describe('Shallow-merged into the existing config'),
+      sound: SoundRuleSchema.nullable().optional().describe('Replaces the sound cue; null removes it'),
     }),
   }),
   z
@@ -224,12 +226,14 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
     }
     case 'updateWidget': {
       const current = widget(op.id);
-      const { config, ...rest } = op.set;
-      const merged = {
+      const { config, sound, ...rest } = op.set;
+      const merged: Record<string, unknown> = {
         ...current,
         ...rest,
         ...(config ? { config: { ...current.config, ...config } } : {}),
+        ...(sound ? { sound } : {}),
       };
+      if (sound === null) delete merged.sound;
       const next = WidgetSchema.safeParse(merged);
       if (!next.success) fail(formatZodIssues(next.error).join('; '));
       changes.push(`Updated widget "${current.title ?? current.id}" (${Object.keys(op.set).join(', ')})`);

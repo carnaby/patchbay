@@ -64,6 +64,10 @@ export function useAutosave() {
 export const datasetKey = (dashboardId: string, dataset: Dataset) =>
   ['data', dashboardId, dataset.id, JSON.stringify(dataset)] as const;
 
+let reconnects = 0;
+/** How often the live channel reconnected; results after a reconnect only set a new sound baseline. */
+export const liveReconnects = () => reconnects;
+
 /** Subscribes to the dashboard's live channel. Returns whether it is connected. */
 export function useLiveEvents(id: string | undefined) {
   const qc = useQueryClient();
@@ -75,6 +79,7 @@ export function useLiveEvents(id: string | undefined) {
     if (!id) return;
     const source = new EventSource(`/api/dashboards/${id}/events`, { withCredentials: true });
     let stopped = false;
+    let greeted = false;
 
     const pullRemote = async (event: Extract<LiveEvent, { type: 'doc' }>) => {
       const state = useEditor.getState();
@@ -123,6 +128,9 @@ export function useLiveEvents(id: string | undefined) {
       } else if (event.type === 'doc') {
         void pullRemote(event);
       } else if (event.type === 'hello') {
+        // Results after a gap must not ring for everything that happened while we were away.
+        if (greeted) reconnects++;
+        greeted = true;
         // Reconnected after a gap: catch up if we missed changes.
         if (event.version > useEditor.getState().version)
           void pullRemote({
