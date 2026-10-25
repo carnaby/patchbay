@@ -41,28 +41,41 @@ export type TimeUnit = (typeof TIME_UNITS)[number];
 
 export const WINDOW_OPS = ['rolling_avg', 'rolling_sum', 'cumsum', 'diff', 'pct_change', 'rank'] as const;
 
+/**
+ * Steps carry a stable id so edits can address "the filter step" rather than
+ * "step #3": concurrent changes to different steps then merge instead of one
+ * overwriting the other. Ids are filled in automatically when missing.
+ */
+export const StepIdSchema = z
+  .string()
+  .regex(/^[a-z0-9][a-z0-9_-]{0,39}$/, 'Step ids are 1-40 chars of a-z, 0-9, "_" or "-"');
+
 export const TransformSchema = z.discriminatedUnion('type', [
   z
-    .object({ type: z.literal('filter'), expr: expression })
+    .object({ id: StepIdSchema.optional(), type: z.literal('filter'), expr: expression })
     .describe('Keep rows where the expression is truthy, e.g. `mag >= 4 && contains(place, "Japan")`'),
   z
-    .object({ type: z.literal('select'), fields: z.array(field).min(1) })
+    .object({ id: StepIdSchema.optional(), type: z.literal('select'), fields: z.array(field).min(1) })
     .describe('Keep only these columns, in order'),
-  z.object({ type: z.literal('drop'), fields: z.array(field).min(1) }).describe('Remove these columns'),
   z
-    .object({ type: z.literal('rename'), map: z.record(field, field) })
+    .object({ id: StepIdSchema.optional(), type: z.literal('drop'), fields: z.array(field).min(1) })
+    .describe('Remove these columns'),
+  z
+    .object({ id: StepIdSchema.optional(), type: z.literal('rename'), map: z.record(field, field) })
     .describe('Rename columns: { "old": "new" }'),
   z
-    .object({ type: z.literal('derive'), as: field, expr: expression })
+    .object({ id: StepIdSchema.optional(), type: z.literal('derive'), as: field, expr: expression })
     .describe('Add or overwrite a column computed per row, e.g. `round(price * qty, 2)`'),
   z
     .object({
+      id: StepIdSchema.optional(),
       type: z.literal('sort'),
       by: z.array(z.object({ field, dir: z.enum(['asc', 'desc']).default('asc') })).min(1),
     })
     .describe('Sort rows'),
   z
     .object({
+      id: StepIdSchema.optional(),
       type: z.literal('limit'),
       n: z.number().int().min(1).max(100_000),
       from: z.enum(['start', 'end']).default('start'),
@@ -70,6 +83,7 @@ export const TransformSchema = z.discriminatedUnion('type', [
     .describe('Keep the first (or last) n rows'),
   z
     .object({
+      id: StepIdSchema.optional(),
       type: z.literal('aggregate'),
       groupBy: z.array(field).default([]),
       metrics: z
@@ -78,10 +92,17 @@ export const TransformSchema = z.discriminatedUnion('type', [
     })
     .describe('Group rows and compute metrics; `count` needs no field'),
   z
-    .object({ type: z.literal('timeBucket'), field, unit: z.enum(TIME_UNITS), as: field.optional() })
+    .object({
+      id: StepIdSchema.optional(),
+      type: z.literal('timeBucket'),
+      field,
+      unit: z.enum(TIME_UNITS),
+      as: field.optional(),
+    })
     .describe('Truncate a time column to the start of its bucket (UTC), usually followed by aggregate'),
   z
     .object({
+      id: StepIdSchema.optional(),
       type: z.literal('window'),
       op: z.enum(WINDOW_OPS),
       field,
@@ -92,6 +113,7 @@ export const TransformSchema = z.discriminatedUnion('type', [
     .describe('Running calculations in current row order (sort first)'),
   z
     .object({
+      id: StepIdSchema.optional(),
       type: z.literal('fillNull'),
       fields: z.array(field).min(1),
       value: z.union([z.number(), z.string(), z.boolean()]),
@@ -427,4 +449,17 @@ export function runPipeline(input: DataTable, transforms: Transform[]): Pipeline
     trace.push({ step: i, type: t.type, rows: table.rows.length });
   });
   return { table, trace };
+}
+
+/** Gives every step without an id a deterministic one (`s1`, `s2`, ...), unique within the pipeline. */
+export function withStepIds<T extends { id?: string | undefined }>(steps: T[]): (T & { id: string })[] {
+  const taken = new Set(steps.map((s) => s.id).filter((id): id is string => Boolean(id)));
+  let n = 1;
+  return steps.map((step) => {
+    if (step.id) return step as T & { id: string };
+    while (taken.has(`s${n}`)) n++;
+    const id = `s${n}`;
+    taken.add(id);
+    return { ...step, id };
+  });
 }

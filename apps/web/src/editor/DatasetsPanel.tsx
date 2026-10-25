@@ -2,6 +2,7 @@ import {
   type ConnectorInfo,
   type Dataset,
   type DatasetResult,
+  diffSteps,
   formatValue,
   type ParamSpec,
   type Source,
@@ -618,21 +619,24 @@ function DatasetEditor({
     const id = initial?.id ?? slug(draft.name, datasetIds);
     datasetIds.add(id);
     const dataset = { ...draft, id };
-    const ops: Parameters<typeof apply>[0] = initial
-      ? [
-          {
-            op: 'updateDataset',
-            id,
-            set: {
-              name: draft.name,
-              source: draft.source,
-              transforms: draft.transforms,
-              refreshSec: draft.refreshSec,
-              accumulate: draft.accumulate,
-            },
-          },
-        ]
-      : [{ op: 'addDataset', dataset }];
+    // For an existing dataset send only what changed, and pipeline edits as
+    // per-step ops: if an agent changed other fields or steps meanwhile, the
+    // rebase keeps both edits instead of overwriting theirs.
+    const ops: Parameters<typeof apply>[0] = [];
+    if (initial) {
+      const set: Record<string, unknown> = {};
+      for (const key of ['name', 'source', 'refreshSec', 'accumulate'] as const) {
+        if (JSON.stringify(initial[key]) !== JSON.stringify(draft[key])) set[key] = draft[key];
+      }
+      if (Object.keys(set).length) ops.push({ op: 'updateDataset', id, set });
+      ops.push(...diffSteps(id, initial.transforms, draft.transforms));
+      if (ops.length === 0 && extraWidgets.length === 0) {
+        onDone();
+        return;
+      }
+    } else {
+      ops.push({ op: 'addDataset', dataset });
+    }
     const widgetIds = new Set(doc.widgets.map((w) => w.id));
     for (const { widget, transforms } of extraWidgets) {
       let target = id;

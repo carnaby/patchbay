@@ -556,8 +556,7 @@ export function TransformEditor({
         const cols = columnsAfter(baseColumns, steps.slice(0, i));
         const rows = trace?.find((t) => t.step === i)?.rows;
         return (
-          // biome-ignore lint/suspicious/noArrayIndexKey: steps are positional
-          <div key={i} className="rounded-xl border border-line bg-surface p-3">
+          <div key={step.id ?? `new-${i}`} className="rounded-xl border border-line bg-surface p-3">
             <div className="mb-2 flex items-center gap-2">
               <span className="flex size-5 items-center justify-center rounded-full bg-surface-2 text-[11px] font-semibold text-ink-2">
                 {i + 1}

@@ -5,6 +5,7 @@ import {
   compile,
   computeKpi,
   DocumentError,
+  diffSteps,
   ExprError,
   emptyDashboard,
   inferTable,
@@ -201,6 +202,78 @@ describe('operations', () => {
 
   it('rejects unknown op shapes', () => {
     expect(() => applyOps(base, [{ op: 'dropTable' }])).toThrow(OpError);
+  });
+});
+
+describe('pipeline steps with stable ids', () => {
+  const base = applyOps(emptyDashboard(), [
+    {
+      op: 'addDataset',
+      dataset: {
+        id: 'ds',
+        name: 'Data',
+        source: { kind: 'inline', rows: [{ a: 1, b: 'x' }] },
+        transforms: [
+          { type: 'filter', expr: 'a > 0' },
+          { type: 'sort', by: [{ field: 'a' }] },
+        ],
+      },
+    },
+  ]).doc;
+  const steps = () => base.datasets[0]!.transforms;
+
+  it('assigns ids to steps that have none (migration on read)', () => {
+    expect(steps().map((s) => s.id)).toEqual(['s1', 's2']);
+    const reparsed = parseDashboard(JSON.parse(JSON.stringify(base)));
+    expect(reparsed.datasets[0]!.transforms.map((s) => s.id)).toEqual(['s1', 's2']);
+  });
+
+  it('adds, updates, moves and removes single steps by id', () => {
+    const { doc } = applyOps(base, [
+      { op: 'addStep', datasetId: 'ds', step: { type: 'limit', n: 5 }, before: 's2' },
+      { op: 'updateStep', datasetId: 'ds', stepId: 's1', set: { expr: 'a > 1' } },
+      { op: 'moveStep', datasetId: 'ds', stepId: 's2', before: 's1' },
+      { op: 'removeStep', datasetId: 'ds', stepId: 's3' },
+    ]);
+    expect(doc.datasets[0]!.transforms).toMatchObject([
+      { id: 's2', type: 'sort' },
+      { id: 's1', type: 'filter', expr: 'a > 1' },
+    ]);
+    expect(() => applyOps(base, [{ op: 'updateStep', datasetId: 'ds', stepId: 'nope', set: {} }])).toThrow(
+      /no step "nope"/,
+    );
+    expect(() =>
+      applyOps(base, [{ op: 'updateStep', datasetId: 'ds', stepId: 's1', set: { expr: 'a +' } }]),
+    ).toThrow(OpError);
+  });
+
+  it('turns an edited pipeline into step ops that survive a concurrent edit', () => {
+    // The user edits locally: changes the sort, adds a limit at the end, reorders.
+    const mine = [
+      { id: 's2', type: 'sort', by: [{ field: 'a', dir: 'desc' }] },
+      { id: 's1', type: 'filter', expr: 'a > 0' },
+      { type: 'limit', n: 10 },
+    ];
+    const ops = diffSteps('ds', steps(), mine);
+    expect(applyOps(base, ops).doc.datasets[0]!.transforms.map((s) => s.type)).toEqual([
+      'sort',
+      'filter',
+      'limit',
+    ]);
+    // Meanwhile an agent changed the filter. Replaying my ops keeps its change.
+    const theirs = applyOps(base, [
+      { op: 'updateStep', datasetId: 'ds', stepId: 's1', set: { expr: 'a > 100' } },
+    ]).doc;
+    const merged = applyOps(theirs, ops).doc.datasets[0]!.transforms;
+    expect(merged).toMatchObject([
+      { id: 's2', type: 'sort', by: [{ field: 'a', dir: 'desc' }] },
+      { id: 's1', expr: 'a > 100' },
+      { type: 'limit', n: 10 },
+    ]);
+  });
+
+  it('produces no ops for an unchanged pipeline', () => {
+    expect(diffSteps('ds', steps(), steps())).toEqual([]);
   });
 });
 
