@@ -2,7 +2,7 @@
 
 |                    |                                                                                                                                        |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Status             | **Proposed, not implemented.**                                                                                                         |
+| Status             | **Implemented.** See "Implementation notes" at the end.                                                                                |
 | Area               | `packages/core` (schema, rule evaluation), `apps/web` (playback, widget editor, presentation mode), `apps/server/src/mcp/reference.ts` |
 | Effort             | About a day including tests                                                                                                            |
 | New infrastructure | None. No server work at runtime, no push, no audio files.                                                                              |
@@ -122,3 +122,27 @@ Strict schema as everywhere; `expr` is validated with the existing parser. Older
 - **Autoplay confusion** ("why is it silent?"). Mitigated by the explicit "Enable sound" button and the TV tooltip.
 - **Background tabs.** Browsers may delay timers in hidden tabs; that is acceptable because the feature targets a
   visible wall screen.
+
+## Implementation notes
+
+Where this proposal left a detail open, the implementation decided as follows:
+
+- **Conditions look at the last row**, the newest reading of a live source. Evaluating "any row" would stay true while
+  an old reading is still inside a rolling window, so the edge would never re-arm. An empty result counts as false.
+- **A trigger inside the cooldown is consumed**, not postponed: the baseline moves on, so a burst never turns into a
+  late second sound.
+- **One place decides.** Results from SSE and from queries both land in the TanStack Query cache; the web app listens
+  there (`apps/web/src/state/sound-cues.ts`) instead of in each handler, so a result is decided exactly once however
+  many frames show the widget, and editor panes reading the same data never trigger anything.
+- **Baselines** are reset after an SSE reconnect and whenever the widget's rule or its dataset definition changes.
+  Results that carry an error (stale copies) are ignored. A rule added while data is already on screen takes the
+  current result as its baseline, so the next change can play.
+- **Flash without sound.** A widget that fires still flashes when the screen is muted, audio is locked or the global
+  throttle swallowed the sound, so people can still see what happened.
+- **Turning it off over MCP**: `updateWidget { set: { sound: null } }` removes the rule.
+- **Unlocking**: on a dashboard with sounds, the first click or key press anywhere unlocks audio; the "Enable sound"
+  button is the explicit fallback for screens nobody touches. Dashboards without sounds never create an
+  `AudioContext`.
+- The Playwright check (stubbed `AudioContext`, controlled live events, plus real SSE from `demo.signal`) was run
+  during development and is not part of CI, like the other browser checks (see architecture §10). The manual
+  listening test on a phone and a TV is still open.

@@ -48,6 +48,9 @@ It is free, needs no API keys, and runs as a single process you can host anywher
   a dashboard you have open, the change appears live, highlighted, with an _Undo_ button.
 - 📺 **Made for wall screens.** Presentation mode (press `F`, or link to `/d/<id>?present=1` for kiosks): full screen,
   no toolbar, the cursor hides, and the Screen Wake Lock keeps the display on. Any widget can be maximised.
+- 🔔 **Sound cues.** A widget can play a short built-in sound when its live data changes: a bell when a new order
+  arrives, an alert when a price crosses a threshold. Synthesised in the browser (no audio files), edge-triggered,
+  never on load, with a cooldown, a global throttle and a per-screen mute.
 - 📱 **Installable.** A lightweight PWA: install it on a phone, tablet or desktop and it opens in its own window.
   Deliberately not offline-first, since live data needs the network; the service worker only caches the immutable
   build assets and shows a friendly offline page.
@@ -299,8 +302,6 @@ The server runs TypeScript directly with Node's type stripping, so there is no b
 
 ## Roadmap
 
-- Sound cues on live widgets (a bell when a new order arrives), specified in
-  [docs/proposals/0002-sound-cues.md](docs/proposals/0002-sound-cues.md), not implemented yet.
 - Incremental live updates (send appended rows instead of whole tables): specified in
   [docs/proposals/0001-sse-deltas.md](docs/proposals/0001-sse-deltas.md), not implemented yet.
 - Dashboard-level filters and variables (date range, city) that agents can bind widgets to.

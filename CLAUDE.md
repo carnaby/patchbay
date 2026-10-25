@@ -30,5 +30,8 @@ Monorepo (pnpm): `packages/core` (pure domain logic, shared), `apps/server` (Hon
 - The service worker (apps/web/public/sw.js) must never cache `/api`, `/auth`, `/oauth`, `/mcp` or live streams:
   dashboards show live data and must not go stale. It only caches hashed `/assets/*` and the offline page. Bump
   `VERSION` in sw.js when its caching logic changes. The server serves sw.js and the manifest with `no-cache`.
+- Sound cue rules live in `soundDecision` (packages/core/src/sound.ts), not in components. The web app decides once
+  per result by listening to the query cache (apps/web/src/state/sound-cues.ts); never trigger sounds from a widget
+  render or an editor preview. The first result after load, reconnect or a definition change is only a baseline.
 - Presentation mode (apps/web/src/editor/presentation.tsx) must keep working without user input after the first
   click: it is used unattended on wall screens and TVs.

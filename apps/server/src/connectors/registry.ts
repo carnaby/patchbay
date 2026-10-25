@@ -111,11 +111,15 @@ export class ConnectorService {
           };
         }
         throw e;
-      } finally {
-        this.inflight.delete(key);
       }
     })();
     this.inflight.set(key, run);
+    // Cleanup must be chained after set: an offline sample resolves synchronously, so a
+    // `finally` inside the IIFE ran before set and left a settled promise cached forever.
+    const settle = () => {
+      if (this.inflight.get(key) === run) this.inflight.delete(key);
+    };
+    run.then(settle, settle);
     return run;
   }
 
