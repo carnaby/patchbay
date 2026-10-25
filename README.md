@@ -122,30 +122,35 @@ Full tool reference: [docs/mcp.md](docs/mcp.md).
 ```mermaid
 flowchart LR
   subgraph Clients
-    B[Browser<br/>React editor]
-    A[AI agent<br/>MCP client]
+    B["Browser<br/>React editor"]
+    A["AI agent<br/>MCP client"]
   end
   subgraph Server["Patchbay server (one Node process)"]
-    API[REST API + SSE]
-    MCP[MCP server<br/>+ OAuth 2.1 AS]
-    SVC[DashboardService<br/>permissions · versions]
-    CORE[[@patchbay/core<br/>schema · ops · pipeline · charts]]
-    DATA[DataService<br/>connectors · cache · accumulate]
-    HUB[LiveHub<br/>refresh loops]
-    PNG[Snapshot renderer<br/>ECharts SSR + resvg]
+    API["REST API + SSE"]
+    MCP["MCP server<br/>+ OAuth 2.1 AS"]
+    SVC["DashboardService<br/>permissions · versions"]
+    CORE[["#64;patchbay/core<br/>schema · ops · pipeline · charts"]]
+    DATA["DataService<br/>connectors · cache · accumulate"]
+    HUB["LiveHub<br/>refresh loops"]
+    PNG["Snapshot renderer<br/>ECharts SSR + resvg"]
   end
-  FS[(data/dashboards/&lt;id&gt;/<br/>one folder each)]
-  DB[(SQLite<br/>users · tokens · index)]
-  EXT[(Public APIs)]
+  FS[("data/dashboards/#lt;id#gt;/<br/>one folder each")]
+  DB[("SQLite<br/>users · tokens · index")]
+  EXT[("Public APIs")]
 
-  B -- edits, undo/redo --> API
-  A -- tools --> MCP
-  API & MCP --> SVC --> CORE
+  B -- "edits, undo/redo" --> API
+  A -- "tools" --> MCP
+  API --> SVC
+  MCP --> SVC
+  SVC --> CORE
   SVC --> FS
   SVC --> DB
-  SVC -- changed --> HUB -- SSE --> B
-  HUB --> DATA --> EXT
-  MCP --> PNG --> CORE
+  SVC -- "changed" --> HUB
+  HUB -- "SSE" --> B
+  HUB --> DATA
+  DATA --> EXT
+  MCP --> PNG
+  PNG --> CORE
 ```
 
 The core idea: **one validated operation layer**. The browser editor, the REST API and the MCP agent all change
