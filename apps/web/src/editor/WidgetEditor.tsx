@@ -4,6 +4,9 @@ import {
   type Column,
   type Format,
   KPI_AGGS,
+  parse,
+  SOUND_IDS,
+  type SoundRule,
   type Suggestion,
   type TableProfile,
   type Widget,
@@ -21,12 +24,13 @@ import {
   Hash,
   LineChart,
   PieChart,
+  Play,
   Radar,
   Sparkles,
   Table2,
   Type,
 } from 'lucide-react';
-import { type ReactNode, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import {
   Button,
   Card,
@@ -42,6 +46,7 @@ import {
   toast,
 } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
+import { previewSound, SOUND_LABELS } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
 import { useDatasetResult } from '../state/sync.ts';
 
@@ -278,6 +283,7 @@ function EditWidget({ widget }: { widget: Widget }) {
       type,
       title: widget.title,
       ...(type === 'text' ? {} : { datasetId: datasetId ?? datasets[0]?.id }),
+      ...(type !== 'text' && 'sound' in widget && widget.sound ? { sound: widget.sound } : {}),
       config: defaultsFor(type, columns, widget),
     } as WidgetInput;
     const err = apply([{ op: 'replaceWidget', widget: next }], `Changed widget to ${type}`);
@@ -358,6 +364,14 @@ function EditWidget({ widget }: { widget: Widget }) {
         <FormatFields
           format={'format' in widget.config ? widget.config.format : undefined}
           setConfig={setConfig}
+        />
+      ) : null}
+
+      {'datasetId' in widget ? (
+        <SoundFields
+          sound={widget.sound}
+          columns={columns}
+          onChange={(sound, label, coalesce) => update({ sound }, label, coalesce)}
         />
       ) : null}
 
@@ -801,5 +815,218 @@ function FormatFields({ format, setConfig }: { format: Format | undefined; setCo
         </Button>
       </div>
     </details>
+  );
+}
+
+function starterCondition(columns: Column[]) {
+  const name = columns.find((c) => c.type === 'number')?.name ?? 'value';
+  return `${/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : `\`${name}\``} > 0`;
+}
+
+const DEFAULT_SOUND: SoundRule = {
+  trigger: { kind: 'newRows' },
+  sound: 'bell',
+  volume: 0.7,
+  cooldownSec: 10,
+};
+
+function SoundFields({
+  sound,
+  columns,
+  onChange,
+}: {
+  sound: SoundRule | undefined;
+  columns: Column[];
+  onChange: (sound: SoundRule | null, label: string, coalesce?: string) => void;
+}) {
+  const set = (patch: Partial<SoundRule>, label = 'Changed sound', coalesce?: string) =>
+    onChange({ ...(sound ?? DEFAULT_SOUND), ...patch }, label, coalesce);
+  return (
+    <details className="group rounded-xl border border-line bg-surface p-4" open={Boolean(sound)}>
+      <summary className="cursor-pointer text-[13px] font-medium text-ink-2">Sound</summary>
+      <div className="mt-4 space-y-4">
+        <Toggle
+          label="Play a sound when the live data changes"
+          checked={Boolean(sound)}
+          onChange={(on) => onChange(on ? DEFAULT_SOUND : null, on ? 'Added a sound' : 'Removed the sound')}
+        />
+        {sound ? (
+          <>
+            <div className="space-y-1.5">
+              <div className="text-[13px] font-medium text-ink-2">Play when</div>
+              <Segmented
+                value={sound.trigger.kind}
+                onChange={(kind) =>
+                  set(
+                    { trigger: kind === 'newRows' ? { kind } : { kind, expr: starterCondition(columns) } },
+                    'Changed sound trigger',
+                  )
+                }
+                options={[
+                  { value: 'newRows', label: 'New rows arrive' },
+                  { value: 'condition', label: 'A condition becomes true' },
+                ]}
+              />
+            </div>
+            {sound.trigger.kind === 'newRows' ? (
+              <ColumnSelect
+                label="Rows are identified by"
+                value={sound.trigger.key}
+                columns={columns}
+                optional
+                onChange={(key) =>
+                  set(
+                    { trigger: key ? { kind: 'newRows', key } : { kind: 'newRows' } },
+                    'Changed sound trigger',
+                  )
+                }
+              />
+            ) : (
+              <ConditionInput
+                expr={sound.trigger.expr}
+                onChange={(expr) =>
+                  set({ trigger: { kind: 'condition', expr } }, 'Changed sound condition', 'sound-expr')
+                }
+              />
+            )}
+            <p className="-mt-2 text-xs text-muted">
+              {sound.trigger.kind === 'newRows'
+                ? sound.trigger.key
+                  ? 'Plays when a value appears that was not in the previous result, e.g. a new order.'
+                  : 'Without a column, plays when the number of rows grew.'
+                : 'Checked on the last row (the newest reading). Plays once when it becomes true.'}
+            </p>
+            <div className="space-y-1.5">
+              <div className="text-[13px] font-medium text-ink-2">Which sound</div>
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
+                {SOUND_IDS.map((id) => (
+                  <div
+                    key={id}
+                    className={cx(
+                      'flex items-center rounded-lg border text-[13px] transition',
+                      sound.sound === id
+                        ? 'border-ink bg-surface-2 text-ink'
+                        : 'border-line text-ink-2 hover:border-ink-2',
+                    )}
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={sound.sound === id}
+                      className="min-w-0 flex-1 truncate py-1.5 pl-2.5 text-left"
+                      onClick={() => {
+                        previewSound(id, sound.volume);
+                        if (sound.sound !== id) set({ sound: id }, `Changed sound to ${SOUND_LABELS[id]}`);
+                      }}
+                    >
+                      {SOUND_LABELS[id]}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Play ${SOUND_LABELS[id]}`}
+                      title={`Play ${SOUND_LABELS[id]}`}
+                      className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted hover:text-ink"
+                      onClick={() => previewSound(id, sound.volume)}
+                    >
+                      <Play className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label={`Volume ${Math.round(sound.volume * 100)} %`}>
+                {(fid) => (
+                  <div className="flex h-9 items-center gap-2">
+                    <input
+                      id={fid}
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={Math.round(sound.volume * 100)}
+                      onChange={(e) =>
+                        set({ volume: Number(e.target.value) / 100 }, 'Changed sound volume', 'sound-volume')
+                      }
+                      // Preview on release, not on every step of the drag.
+                      onPointerUp={() => previewSound(sound.sound, sound.volume)}
+                      onKeyUp={() => previewSound(sound.sound, sound.volume)}
+                      className="min-w-0 flex-1 accent-accent"
+                    />
+                    <button
+                      type="button"
+                      aria-label="Play at this volume"
+                      title="Play at this volume"
+                      className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-ink"
+                      onClick={() => previewSound(sound.sound, sound.volume)}
+                    >
+                      <Play className="size-3.5" />
+                    </button>
+                  </div>
+                )}
+              </Field>
+              <Field label="At most once every" hint="Seconds, 0 to 3600.">
+                {(fid) => (
+                  <Input
+                    id={fid}
+                    type="number"
+                    min={0}
+                    max={3600}
+                    value={sound.cooldownSec}
+                    onChange={(e) => {
+                      const n = Math.round(Number(e.target.value));
+                      if (e.target.value !== '' && Number.isFinite(n))
+                        set(
+                          { cooldownSec: Math.min(3600, Math.max(0, n)) },
+                          'Changed sound cooldown',
+                          'sound-cooldown',
+                        );
+                    }}
+                  />
+                )}
+              </Field>
+            </div>
+            <p className="text-xs text-muted">
+              Sounds play only on screens showing this dashboard, never when it first loads. Each viewer can
+              mute their own screen. Use them sparingly.
+            </p>
+          </>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+/** Keeps the typed text locally and saves only expressions that parse, so typing never fails an operation. */
+function ConditionInput({ expr, onChange }: { expr: string; onChange: (expr: string) => void }) {
+  const [draft, setDraft] = useState(expr);
+  useEffect(() => setDraft(expr), [expr]);
+  let error: string | null = null;
+  try {
+    parse(draft);
+  } catch (e) {
+    error = e instanceof Error ? e.message : 'Invalid expression';
+  }
+  return (
+    <Field label="Condition" error={draft.trim() ? error : 'Enter an expression, e.g. price > 100000'}>
+      {(fid) => (
+        <Input
+          id={fid}
+          value={draft}
+          maxLength={2000}
+          spellCheck={false}
+          className="font-mono text-[13px]"
+          placeholder="price > 100000"
+          onChange={(e) => {
+            setDraft(e.target.value);
+            try {
+              parse(e.target.value);
+              onChange(e.target.value);
+            } catch {
+              // Shown below the field; the saved rule keeps the last valid expression.
+            }
+          }}
+        />
+      )}
+    </Field>
   );
 }
