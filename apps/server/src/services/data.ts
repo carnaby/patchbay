@@ -11,7 +11,6 @@ import {
   type DataTable,
   hashTable,
   inferTable,
-  runPipeline,
   type Source,
   TransformError,
 } from '@patchbay/core';
@@ -19,6 +18,7 @@ import type { ConnectorService } from '../connectors/registry.ts';
 import type { FolderStore } from '../store/folder-store.ts';
 import { HttpError } from '../util/errors.ts';
 import { safeFetchJson } from '../util/safe-fetch.ts';
+import { InlineRunner, type PipelineRunner } from './pipeline-pool.ts';
 
 export const MAX_ROWS_OUT = 10_000;
 /** Upper bound on live history buffers kept in memory (least recently used are dropped). */
@@ -64,9 +64,16 @@ export class DataService {
     { rows: DataTable['rows']; lastFetchedAt: number; source: string }
   >();
 
-  constructor(connectors: ConnectorService, store: FolderStore) {
+  private readonly pipeline: PipelineRunner;
+
+  constructor(
+    connectors: ConnectorService,
+    store: FolderStore,
+    pipeline: PipelineRunner = new InlineRunner(),
+  ) {
     this.connectors = connectors;
     this.store = store;
+    this.pipeline = pipeline;
   }
 
   async loadSource(
@@ -139,7 +146,7 @@ export class DataService {
         dataset.accumulate > 0
           ? this.accumulate(dashboardId, dataset, loaded.table, loaded.fetchedAt)
           : loaded.table;
-      const { table, trace } = runPipeline(input, dataset.transforms);
+      const { table, trace } = await this.pipeline.run(input, dataset.transforms);
       const max = options.maxRows ?? MAX_ROWS_OUT;
       const truncated = table.rows.length > max;
       const out: DataTable = truncated ? { columns: table.columns, rows: table.rows.slice(-max) } : table;
