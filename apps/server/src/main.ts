@@ -2,7 +2,10 @@ import { serve } from '@hono/node-server';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 
-const config = loadConfig();
+// `--production` instead of `NODE_ENV=production node ...`, which does not work in Windows shells.
+const config = loadConfig(
+  process.argv.includes('--production') ? { ...process.env, NODE_ENV: 'production' } : process.env,
+);
 const deps = await createDeps(config);
 const app = createApp(deps);
 

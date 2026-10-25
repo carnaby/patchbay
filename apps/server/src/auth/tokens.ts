@@ -121,7 +121,7 @@ export class Tokens {
       .prepare(
         "SELECT * FROM tokens WHERE user_id = ? AND kind = 'pat' AND revoked_at IS NULL ORDER BY created_at DESC",
       )
-      .all(userId) as TokenRow[];
+      .all(userId) as unknown as TokenRow[];
     return rows.map((r) => ({
       id: r.id,
       name: r.name ?? 'Token',
