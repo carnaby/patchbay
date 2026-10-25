@@ -7,6 +7,7 @@
  * than a widget that mysteriously ignores its config.
  */
 import { z } from 'zod';
+import { SoundRuleSchema } from './sound.ts';
 import { TransformSchema, withStepIds } from './transforms.ts';
 
 export const SCHEMA_VERSION = 1;
@@ -175,12 +176,14 @@ const widgetBase = {
   title: z.string().max(120).optional(),
   description: z.string().max(500).optional(),
 };
+// Text widgets have no data, so only data-bound widgets can make a sound.
+const dataWidgetBase = { ...widgetBase, datasetId: IdSchema, sound: SoundRuleSchema.optional() };
 
 export const WidgetSchema = z.discriminatedUnion('type', [
-  z.strictObject({ ...widgetBase, type: z.literal('chart'), datasetId: IdSchema, config: ChartConfigSchema }),
-  z.strictObject({ ...widgetBase, type: z.literal('kpi'), datasetId: IdSchema, config: KpiConfigSchema }),
-  z.strictObject({ ...widgetBase, type: z.literal('gauge'), datasetId: IdSchema, config: GaugeConfigSchema }),
-  z.strictObject({ ...widgetBase, type: z.literal('table'), datasetId: IdSchema, config: TableConfigSchema }),
+  z.strictObject({ ...dataWidgetBase, type: z.literal('chart'), config: ChartConfigSchema }),
+  z.strictObject({ ...dataWidgetBase, type: z.literal('kpi'), config: KpiConfigSchema }),
+  z.strictObject({ ...dataWidgetBase, type: z.literal('gauge'), config: GaugeConfigSchema }),
+  z.strictObject({ ...dataWidgetBase, type: z.literal('table'), config: TableConfigSchema }),
   z.strictObject({ ...widgetBase, type: z.literal('text'), config: TextConfigSchema }),
 ]);
 export type Widget = z.infer<typeof WidgetSchema>;

@@ -6,6 +6,7 @@ import {
   GRID_COLUMNS,
   KPI_AGGS,
   LIMITS,
+  SOUND_IDS,
   TIME_UNITS,
   WINDOW_OPS,
 } from '@patchbay/core';
@@ -72,9 +73,24 @@ ${fns}
 - text { markdown }   (no raw HTML)
 format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }
 
+## Sound cues (chart, kpi, gauge, table)
+An optional \`sound\` field makes browsers showing the dashboard play a short built-in sound when live data changes:
+{ trigger, sound, volume, cooldownSec }
+- trigger { kind: "newRows", key? }: plays when a row with a new \`key\` value appears (e.g. "order_id"); rows that
+  drop out of a rolling window never play. Without key it plays when the row count grew.
+- trigger { kind: "condition", expr }: plays once when expr, evaluated on the LAST row (the newest reading), becomes
+  true. It must become false again before it can play again.
+- sound: ${SOUND_IDS.join(', ')} (default bell). volume 0..1 (default 0.7). cooldownSec 0..3600 (default 10).
+- Never plays on page load, after a reconnect or after the dataset changed: the first result is the baseline.
+  Viewers can mute their own screen; browsers stay silent until the page is clicked once.
+Example: { "op": "updateWidget", "id": "orders", "set": { "sound": { "trigger": { "kind": "newRows", "key": "order_id" }, "sound": "bell" } } }
+Remove with set: { sound: null }. Only add a sound when the user asks for it or the dashboard is clearly a wall screen
+for events people must notice. Use sounds sparingly: at most one or two widgets per dashboard, a distinct sound per
+meaning (bell/cash for new orders or sales, alert for a threshold), and a cooldown long enough not to annoy.
+
 ## Operations (apply_operations)
 setMeta, addDataset, updateDataset { id, set }, removeDataset { id, cascade? }, addWidget { widget, position? },
-updateWidget { id, set: { title?, description?, datasetId?, config? (shallow-merged) } }, replaceWidget { widget },
+updateWidget { id, set: { title?, description?, datasetId?, config? (shallow-merged), sound? (replaced; null removes) } }, replaceWidget { widget },
 removeWidget { id }, moveWidget { id, x?, y?, w?, h? }, setLayout { layout },
 addStep { datasetId, step, before? }, updateStep { datasetId, stepId, set } (merged; type cannot change),
 removeStep { datasetId, stepId }, moveStep { datasetId, stepId, before: stepId | null }.

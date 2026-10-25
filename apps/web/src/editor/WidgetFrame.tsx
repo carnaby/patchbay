@@ -1,8 +1,19 @@
-import type { Widget } from '@patchbay/core';
-import { Copy, GripVertical, Image, Maximize2, Minimize2, Settings2, Trash2 } from 'lucide-react';
+import { type SoundRule, soundRuleMissingColumns, type Widget } from '@patchbay/core';
+import {
+  Copy,
+  GripVertical,
+  Image,
+  Maximize2,
+  Minimize2,
+  Settings2,
+  Trash2,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import { memo, useEffect, useState } from 'react';
 import { cx, IconButton, toast } from '../components/ui.tsx';
 import { relativeTime } from '../lib/hooks.ts';
+import { SOUND_LABELS, useSoundSettings } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
 import { useDatasetResult } from '../state/sync.ts';
 import { WidgetBody } from '../widgets/WidgetBody.tsx';
@@ -42,9 +53,14 @@ export const WidgetFrame = memo(function WidgetFrame({
 
   useEffect(() => {
     if (!flashAt) return;
-    setFlashing(true);
+    // Off for one frame first, so a second ring while still glowing restarts the animation.
+    setFlashing(false);
+    const frame = requestAnimationFrame(() => setFlashing(true));
     const t = setTimeout(() => setFlashing(false), 2400);
-    return () => clearTimeout(t);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(t);
+    };
   }, [flashAt]);
 
   const isLive = Boolean(dataset && dataset.refreshSec > 0);
@@ -96,6 +112,12 @@ export const WidgetFrame = memo(function WidgetFrame({
             <span className={cx('size-1.5 rounded-full', live ? 'animate-pulse bg-good' : 'bg-muted')} />
             live
           </span>
+        ) : null}
+        {'sound' in widget && widget.sound ? (
+          <SoundBadge
+            sound={widget.sound}
+            missing={result ? soundRuleMissingColumns(widget.sound, result.table) : []}
+          />
         ) : null}
         {result?.error && result.table.rows.length > 0 ? (
           <span className="shrink-0 text-[11px] text-warn" title={result.error}>
@@ -159,3 +181,27 @@ export const WidgetFrame = memo(function WidgetFrame({
     </section>
   );
 });
+
+function SoundBadge({ sound, missing }: { sound: SoundRule; missing: string[] }) {
+  const { muted } = useSoundSettings();
+  const when =
+    sound.trigger.kind === 'condition'
+      ? `when ${sound.trigger.expr} becomes true`
+      : sound.trigger.key
+        ? `when a new ${sound.trigger.key} arrives`
+        : 'when new rows arrive';
+  const title = missing.length
+    ? `Sound cue cannot work: column ${missing.map((m) => `"${m}"`).join(', ')} is not in the data`
+    : `${muted ? 'Muted on this screen. ' : ''}Plays "${SOUND_LABELS[sound.sound]}" ${when}`;
+  const Icon = muted ? VolumeX : Volume2;
+  return (
+    <span
+      role="img"
+      aria-label={title}
+      title={title}
+      className={cx('flex shrink-0 items-center', missing.length ? 'text-warn' : 'text-muted')}
+    >
+      <Icon className="size-3.5" />
+    </span>
+  );
+}

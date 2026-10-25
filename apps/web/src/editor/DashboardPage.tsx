@@ -21,12 +21,14 @@ import { Badge, Button, cx, EmptyState, IconButton, Kbd, Spinner } from '../comp
 import { ApiError, api } from '../lib/api.ts';
 import { relativeTime, useDocumentTitle } from '../lib/hooks.ts';
 import { useEditor } from '../state/editor.ts';
+import { soundWidgets, useSoundCues } from '../state/sound-cues.ts';
 import { useAutosave, useLiveEvents } from '../state/sync.ts';
 import { ConnectAiPanel } from './ConnectAiPanel.tsx';
 import { DatasetsPanel } from './DatasetsPanel.tsx';
 import { Grid } from './Grid.tsx';
 import { PresentationControls, TvInfo, useIdle, usePresentation } from './presentation.tsx';
 import { SharePanel } from './SharePanel.tsx';
+import { MuteButton } from './sound-controls.tsx';
 import { VersionsPanel } from './VersionsPanel.tsx';
 import { WidgetEditor } from './WidgetEditor.tsx';
 import { WidgetFrame } from './WidgetFrame.tsx';
@@ -108,6 +110,8 @@ function Editor({ id }: { id: string }) {
   const [widgetId, setWidgetId] = useState<string | null>(null);
   const live = useLiveEvents(id);
   useAutosave();
+  useSoundCues(id);
+  const hasSounds = soundWidgets(doc.widgets).length > 0;
   const [search, setSearch] = useSearchParams();
   // Fresh dashboards open straight in edit mode (/d/:id?edit=1).
   useEffect(() => {
@@ -182,6 +186,7 @@ function Editor({ id }: { id: string }) {
           idle={idle}
           onExit={() => void presentation.stop()}
           onFullscreen={() => void presentation.requestFullscreen()}
+          hasSounds={hasSounds}
         />
       ) : null}
       <header
@@ -251,6 +256,7 @@ function Editor({ id }: { id: string }) {
           <IconButton label="Share" onClick={() => setPanel('share')}>
             <Share2 className="size-4" />
           </IconButton>
+          {hasSounds ? <MuteButton /> : null}
           <IconButton label="Present on a screen (F)" onClick={() => void presentation.start()}>
             <MonitorPlay className="size-4" />
           </IconButton>
