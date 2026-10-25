@@ -56,13 +56,15 @@ interface EditorState {
   saving: boolean;
   saveError: string | null;
   conflict: DashboardEnvelope | null;
-  /** widget id -> timestamp, for the "changed elsewhere" highlight */
+  /** widget id -> timestamp, for the "changed elsewhere" and "this widget rang" highlight */
   flash: Record<string, number>;
   lastRemote: RemoteChange | null;
 
   load(envelope: DashboardEnvelope): void;
   setEditing(editing: boolean): void;
   setExpanded(id: string | null): void;
+  /** Highlights widgets that just played their sound cue. */
+  ring(ids: string[]): void;
   apply(ops: OpInput[], label: string, options?: { coalesce?: string }): string | null;
   undo(): void;
   redo(): void;
@@ -135,6 +137,11 @@ export const useEditor = create<EditorState>((set, get) => ({
       lastRemote: null,
       editing: get().id === envelope.meta.id ? get().editing : false,
     });
+  },
+
+  ring(ids) {
+    const at = Date.now();
+    set({ flash: { ...get().flash, ...Object.fromEntries(ids.map((id) => [id, at])) } });
   },
 
   setExpanded(expanded) {

@@ -390,6 +390,8 @@ describe('MCP tools', () => {
     );
     const ref = await client.callTool({ name: 'get_reference', arguments: {} });
     expect(text(ref)).toContain('timeBucket');
+    expect(text(ref)).toContain('Sound cues');
+    expect(text(ref)).toContain('sparingly');
   });
 
   it('builds a dashboard end to end and renders it', async () => {
