@@ -1,0 +1,5 @@
+# Keep LF everywhere, also in Windows checkouts, so the formatter and the
+# shell scripts behave the same on every machine.
+* text=auto eol=lf
+*.png binary
+*.svg text eol=lf

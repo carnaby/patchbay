@@ -68,7 +68,7 @@ export class DashboardIndex {
     return (
       this.db
         .prepare('SELECT * FROM dashboards WHERE owner_id = ? ORDER BY last_viewed_at DESC')
-        .all(ownerId) as Row[]
+        .all(ownerId) as unknown as Row[]
     ).map(toMeta);
   }
 
@@ -78,7 +78,7 @@ export class DashboardIndex {
         `SELECT d.*, u.email AS owner_email FROM dashboards d
          LEFT JOIN users u ON u.id = d.owner_id ORDER BY d.last_viewed_at DESC`,
       )
-      .all() as Row[];
+      .all() as unknown as Row[];
     return rows.map((r) => ({
       ...toMeta(r),
       ownerEmail: r.owner_email ?? null,
