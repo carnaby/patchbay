@@ -268,7 +268,8 @@ export class Tokens {
     );
   }
 
-  private revokeGrantById(grantId: string) {
+  /** Revokes every token of a grant regardless of user (used on authorization code replay). */
+  revokeGrantById(grantId: string) {
     this.db
       .prepare('UPDATE tokens SET revoked_at = ? WHERE grant_id = ? AND revoked_at IS NULL')
       .run(now(), grantId);

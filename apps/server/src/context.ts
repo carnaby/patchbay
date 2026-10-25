@@ -1,7 +1,7 @@
 import type { Context } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
-import type { Tokens, VerifiedToken } from './auth/tokens.ts';
+import { SCOPES, type Tokens, type VerifiedToken } from './auth/tokens.ts';
 import { SESSION_COOKIE, type UserRow, type Users } from './auth/users.ts';
 import type { Config } from './config.ts';
 import type { ConnectorService } from './connectors/registry.ts';
@@ -25,7 +25,13 @@ export interface Deps {
   data: DataService;
   hub: LiveHub;
   dashboards: DashboardService;
-  limits: { api: RateLimiter; writes: RateLimiter; auth: RateLimiter; mcp: RateLimiter };
+  limits: {
+    api: RateLimiter;
+    writes: RateLimiter;
+    auth: RateLimiter;
+    mcp: RateLimiter;
+    creates: RateLimiter;
+  };
 }
 
 export type Env = {
@@ -53,11 +59,16 @@ export function identify(deps: Deps) {
     } else {
       user = deps.users.userForSession(getCookie(c, SESSION_COOKIE));
     }
+    // A token's scopes bound what it can do over REST too, not only over MCP.
+    if (token && !['GET', 'HEAD', 'OPTIONS'].includes(c.req.method) && !token.scopes.includes(SCOPES.write)) {
+      throw forbidden('This token is read-only (missing the dashboards:write scope)');
+    }
     c.set('user', user);
     c.set('token', token);
     c.set('principal', {
       user,
-      isAdmin: deps.users.isAdmin(user),
+      // Admin powers are for interactive sessions only, never for tokens.
+      isAdmin: token ? false : deps.users.isAdmin(user),
       editKey: c.req.header('x-edit-key') || undefined,
     });
     await next();
@@ -92,7 +103,8 @@ export function requireUser(c: Ctx): UserRow {
 
 export function clientIp(c: Ctx, trustProxy: boolean): string {
   if (trustProxy) {
-    const forwarded = c.req.header('x-forwarded-for')?.split(',')[0]?.trim();
+    // The right-most entry is the one added by our own proxy; left entries are client-controlled.
+    const forwarded = c.req.header('x-forwarded-for')?.split(',').at(-1)?.trim();
     if (forwarded) return forwarded;
   }
   const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;

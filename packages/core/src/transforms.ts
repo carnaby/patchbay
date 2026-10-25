@@ -337,6 +337,19 @@ function applyStep(table: DataTable, t: Transform, step: number): DataTable {
           return typeof v === 'number' ? v : null;
         });
         let running = 0;
+        // Descending sorted copy for rank: rank = 1 + number of strictly greater values.
+        const desc =
+          t.op === 'rank' ? values.filter((x): x is number => x !== null).sort((a, b) => b - a) : [];
+        const rankOf = (v: number) => {
+          let lo = 0;
+          let hi = desc.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (desc[mid]! > v) lo = mid + 1;
+            else hi = mid;
+          }
+          return lo + 1;
+        };
         values.forEach((v, j) => {
           const target = indexes[j]!;
           switch (t.op) {
@@ -355,7 +368,8 @@ function applyStep(table: DataTable, t: Transform, step: number): DataTable {
               break;
             }
             case 'rank': {
-              result[target] = v === null ? null : values.filter((o) => o !== null && o > v).length + 1;
+              // Precomputed below in O(n log n); a per-row scan would be O(n²).
+              result[target] = v === null ? null : rankOf(v);
               break;
             }
             default: {
@@ -387,10 +401,23 @@ export interface PipelineResult {
   trace: { step: number; type: Transform['type']; rows: number }[];
 }
 
+/** Hard limits per pipeline run, so a hostile or careless pipeline cannot stall the server. */
+export const PIPELINE_LIMITS = { maxCells: 5_000_000, maxMillis: 3_000 };
+
 export function runPipeline(input: DataTable, transforms: Transform[]): PipelineResult {
   let table = input;
   const trace: PipelineResult['trace'] = [];
+  const started = Date.now();
   transforms.forEach((t, i) => {
+    if (Date.now() - started > PIPELINE_LIMITS.maxMillis) {
+      throw new TransformError(
+        `Processing took longer than ${PIPELINE_LIMITS.maxMillis / 1000} s; simplify the rules or filter earlier`,
+        i,
+      );
+    }
+    if (table.rows.length * Math.max(table.columns.length, 1) > PIPELINE_LIMITS.maxCells) {
+      throw new TransformError('Too much data to process; filter or aggregate earlier', i);
+    }
     try {
       table = applyStep(table, t, i);
     } catch (e) {

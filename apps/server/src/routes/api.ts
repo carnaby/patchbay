@@ -90,6 +90,9 @@ export function apiRoutes(deps: Deps) {
   app.get('/dashboards', (c) => c.json(dashboards.listMine(c.get('principal'))));
 
   app.post('/dashboards', async (c) => {
+    if (!deps.limits.creates.take(clientIp(c, config.trustProxy))) {
+      throw new HttpError(429, 'Too many new dashboards from your network. Try again later.');
+    }
     const body = CreateBody.parse(await c.req.json().catch(() => ({})));
     const created = await dashboards.create(c.get('principal'), body);
     return c.json(created, 201);
@@ -139,9 +142,12 @@ export function apiRoutes(deps: Deps) {
   app.post('/dashboards/:id/claim', async (c) =>
     c.json(await dashboards.claim(c.req.param('id'), c.get('principal'))),
   );
-  app.post('/dashboards/:id/duplicate', async (c) =>
-    c.json(await dashboards.duplicate(c.req.param('id'), c.get('principal')), 201),
-  );
+  app.post('/dashboards/:id/duplicate', async (c) => {
+    if (!deps.limits.creates.take(clientIp(c, config.trustProxy))) {
+      throw new HttpError(429, 'Too many new dashboards from your network. Try again later.');
+    }
+    return c.json(await dashboards.duplicate(c.req.param('id'), c.get('principal')), 201);
+  });
   app.delete('/dashboards/:id', async (c) => {
     await dashboards.delete(c.req.param('id'), c.get('principal'));
     return c.json({ ok: true });
@@ -203,43 +209,64 @@ export function apiRoutes(deps: Deps) {
   });
 
   /** Live updates: document changes by anyone (including agents) and refreshed data. */
+  const openStreams = new Map<string, number>();
   app.get('/dashboards/:id/events', async (c) => {
     const id = c.req.param('id');
-    const { meta } = await dashboards.loadViewable(id, c.get('principal'));
+    const principal = c.get('principal');
+    const { meta } = await dashboards.loadViewable(id, principal);
+    const ip = clientIp(c, config.trustProxy);
+    if ((openStreams.get(ip) ?? 0) >= 30) throw new HttpError(429, 'Too many open live connections');
+    openStreams.set(ip, (openStreams.get(ip) ?? 0) + 1);
     return streamSSE(c, async (stream) => {
       const queue: LiveEvent[] = [];
       let wake: (() => void) | null = null;
-      const unsubscribe = hub.subscribe(id, (event) => {
-        queue.push(event);
-        wake?.();
+      let closed = false;
+      const unsubscribe = hub.subscribe(id, {
+        principal,
+        send: (event) => {
+          queue.push(event);
+          wake?.();
+        },
+        // Access was revoked (e.g. the dashboard became private): end the stream.
+        close: () => {
+          closed = true;
+          wake?.();
+        },
       });
       stream.onAbort(() => {
-        unsubscribe();
+        closed = true;
         wake?.();
       });
-      await stream.writeSSE({
-        event: 'message',
-        data: JSON.stringify({ type: 'hello', version: meta.version }),
-      });
-      while (!stream.aborted && !stream.closed) {
-        if (queue.length === 0) {
-          await Promise.race([
-            new Promise<void>((resolve) => {
-              wake = resolve;
-            }),
-            stream.sleep(25_000),
-          ]);
-          wake = null;
+      try {
+        await stream.writeSSE({
+          event: 'message',
+          data: JSON.stringify({ type: 'hello', version: meta.version }),
+        });
+        while (!closed && !stream.aborted && !stream.closed) {
           if (queue.length === 0) {
-            await stream.writeSSE({ event: 'ping', data: '' });
-            continue;
+            await Promise.race([
+              new Promise<void>((resolve) => {
+                wake = resolve;
+              }),
+              stream.sleep(25_000),
+            ]);
+            wake = null;
+            if (closed) break;
+            if (queue.length === 0) {
+              await stream.writeSSE({ event: 'ping', data: '' });
+              continue;
+            }
           }
+          const event = queue.shift()!;
+          await stream.writeSSE({ event: 'message', data: JSON.stringify(event) });
+          if (event.type === 'deleted') break;
         }
-        const event = queue.shift()!;
-        await stream.writeSSE({ event: 'message', data: JSON.stringify(event) });
-        if (event.type === 'deleted') break;
+      } finally {
+        unsubscribe();
+        const left = (openStreams.get(ip) ?? 1) - 1;
+        if (left > 0) openStreams.set(ip, left);
+        else openStreams.delete(ip);
       }
-      unsubscribe();
     });
   });
 

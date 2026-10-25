@@ -44,6 +44,8 @@ interface RequestRow {
 const CODE_TTL_MS = 60_000;
 const REQUEST_TTL_MS = 10 * 60_000;
 const CIMD_REFRESH_MS = 24 * 3_600_000;
+const CIMD_FAILURE_TTL_MS = 5 * 60_000;
+const cimdFailures = new Map<string, number>();
 
 /** Redirect URIs: https, loopback http (RFC 8252), or a private-use app scheme. */
 export function isAcceptableRedirect(raw: string): boolean {
@@ -160,8 +162,17 @@ export function oauthRoutes(deps: Deps) {
         redirectUris: JSON.parse(existing.redirect_uris),
       };
     if (!/^https:\/\/[^/]+\/.+/.test(clientId)) throw oauthError(400, 'invalid_client', 'Unknown client_id');
+    // Failed metadata fetches are remembered briefly so /authorize cannot be used as a fetch amplifier.
+    const failedAt = cimdFailures.get(clientId);
+    if (failedAt && Date.now() - failedAt < CIMD_FAILURE_TTL_MS) {
+      throw oauthError(400, 'invalid_client', 'Client metadata document is unavailable');
+    }
     const doc = CimdSchema.safeParse(await safeFetchJson(clientId).catch(() => null));
-    if (!doc.success) throw oauthError(400, 'invalid_client', 'Client metadata document is invalid');
+    if (!doc.success) {
+      cimdFailures.set(clientId, Date.now());
+      if (cimdFailures.size > 1000) cimdFailures.delete(cimdFailures.keys().next().value!);
+      throw oauthError(400, 'invalid_client', 'Client metadata document is invalid');
+    }
     if (doc.data.client_id !== clientId)
       throw oauthError(400, 'invalid_client', 'client_id in the metadata document does not match its URL');
     const uris = doc.data.redirect_uris.filter(isAcceptableRedirect);
@@ -210,6 +221,9 @@ export function oauthRoutes(deps: Deps) {
   });
 
   app.get('/oauth/authorize', async (c) => {
+    if (!deps.limits.auth.take(`authorize:${clientIp(c, config.trustProxy)}`)) {
+      return c.redirect('/oauth/error?reason=Too%20many%20requests');
+    }
     const q = c.req.query();
     const clientId = q.client_id ?? '';
     const redirectUri = q.redirect_uri ?? '';
@@ -306,8 +320,8 @@ export function oauthRoutes(deps: Deps) {
     );
     const code = randomToken('pb_code_');
     db.prepare(
-      `INSERT INTO oauth_codes (code_hash, client_id, user_id, redirect_uri, code_challenge, scopes, resource, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO oauth_codes (code_hash, client_id, user_id, redirect_uri, code_challenge, scopes, resource, expires_at, grant_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       sha256(code),
       row.client_id,
@@ -317,6 +331,7 @@ export function oauthRoutes(deps: Deps) {
       granted.join(' '),
       row.resource,
       new Date(Date.now() + CODE_TTL_MS).toISOString(),
+      `grant_${newId()}`,
     );
     url.searchParams.set('code', code);
     return c.json({ redirect: url.toString() });
@@ -345,14 +360,20 @@ export function oauthRoutes(deps: Deps) {
             resource: string;
             expires_at: string;
             used_at: string | null;
+            grant_id: string | null;
           }
         | undefined;
+      if (row?.used_at && row.grant_id) {
+        // A code used twice was intercepted: revoke whatever the first use produced.
+        tokens.revokeGrantById(row.grant_id);
+      }
       if (!row || row.used_at || row.expires_at < now())
         throw oauthError(400, 'invalid_grant', 'The authorization code is invalid or expired');
       db.prepare('UPDATE oauth_codes SET used_at = ? WHERE code_hash = ?').run(now(), sha256(code));
       if (row.client_id !== clientId)
         throw oauthError(400, 'invalid_grant', 'Code was issued to another client');
-      if (f('redirect_uri') && f('redirect_uri') !== row.redirect_uri)
+      // OAuth 2.1: redirect_uri must be repeated and match when it was part of the authorization request.
+      if (f('redirect_uri') !== row.redirect_uri)
         throw oauthError(400, 'invalid_grant', 'redirect_uri mismatch');
       if (!verifyPkce(verifier, row.code_challenge))
         throw oauthError(400, 'invalid_grant', 'PKCE verification failed');
@@ -360,7 +381,13 @@ export function oauthRoutes(deps: Deps) {
       if (resource && resource !== config.mcpResource && resource !== config.publicUrl) {
         throw oauthError(400, 'invalid_target', 'Unknown resource');
       }
-      const issued = tokens.issueOAuth(row.user_id, clientId, row.scopes.split(' '), row.resource);
+      const issued = tokens.issueOAuth(
+        row.user_id,
+        clientId,
+        row.scopes.split(' '),
+        row.resource,
+        row.grant_id ?? undefined,
+      );
       return c.json({
         access_token: issued.accessToken,
         token_type: 'Bearer',

@@ -30,10 +30,14 @@ export type Config = ReturnType<typeof loadConfig>;
 export function loadConfig(env: Record<string, string | undefined> = process.env) {
   const parsed = EnvSchema.parse(env);
   const production = parsed.NODE_ENV === 'production';
-  if (production && parsed.DEV_LOGIN) {
-    throw new Error('DEV_LOGIN must not be enabled in production');
-  }
   const publicUrl = parsed.PUBLIC_URL.replace(/\/+$/, '');
+  // Passwordless login is only ever acceptable on a developer's machine.
+  if (
+    parsed.DEV_LOGIN &&
+    (production || !['localhost', '127.0.0.1', '[::1]'].includes(new URL(publicUrl).hostname))
+  ) {
+    throw new Error('DEV_LOGIN is only allowed with NODE_ENV != production and a localhost PUBLIC_URL');
+  }
   return {
     env: parsed.NODE_ENV,
     production,

@@ -257,6 +257,7 @@ describe('OAuth 2.1 for MCP', () => {
       code,
       client_id: clientId,
       code_verifier: pkce().verifier,
+      redirect_uri: 'http://127.0.0.1:4444/callback',
     });
     expect(wrongVerifier.status).toBe(400);
 
@@ -268,15 +269,8 @@ describe('OAuth 2.1 for MCP', () => {
     const code2 = new URL(
       (await call(`/api/oauth/requests/${req2}`, { body: { approve: true }, cookie })).json.redirect,
     ).searchParams.get('code')!;
-    const tokenRes = await form({
-      grant_type: 'authorization_code',
-      code: code2,
-      client_id: clientId,
-      code_verifier: verifier,
-    });
-    expect(tokenRes.status).toBe(200);
-    const tokens = (await tokenRes.json()) as { access_token: string; refresh_token: string; scope: string };
-    expect(tokens.scope).toBe('dashboards:read dashboards:write');
+    const redirectUri = 'http://127.0.0.1:3333/callback';
+    // redirect_uri must be repeated at the token endpoint (OAuth 2.1).
     expect(
       (
         await form({
@@ -287,7 +281,23 @@ describe('OAuth 2.1 for MCP', () => {
         })
       ).status,
     ).toBe(400);
-
+    const again2 = await app.request(
+      `${BASE}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${challenge}&code_challenge_method=S256`,
+    );
+    const req3 = new URL(again2.headers.get('location')!, BASE).searchParams.get('request')!;
+    const code3 = new URL(
+      (await call(`/api/oauth/requests/${req3}`, { body: { approve: true }, cookie })).json.redirect,
+    ).searchParams.get('code')!;
+    const tokenRes = await form({
+      grant_type: 'authorization_code',
+      code: code3,
+      client_id: clientId,
+      code_verifier: verifier,
+      redirect_uri: redirectUri,
+    });
+    expect(tokenRes.status).toBe(200);
+    const tokens = (await tokenRes.json()) as { access_token: string; refresh_token: string; scope: string };
+    expect(tokens.scope).toBe('dashboards:read dashboards:write');
     const me = await call('/api/me', { headers: { authorization: `Bearer ${tokens.access_token}` } });
     expect(me.json.user.email).toBe('oauth-user@example.com');
 
@@ -298,6 +308,18 @@ describe('OAuth 2.1 for MCP', () => {
       refresh_token: string;
     };
     expect(rotated.refresh_token).not.toBe(tokens.refresh_token);
+    // Replaying an authorization code revokes everything issued from it.
+    const replay = await form({
+      grant_type: 'authorization_code',
+      code: code3,
+      client_id: clientId,
+      code_verifier: verifier,
+      redirect_uri: redirectUri,
+    });
+    expect(replay.status).toBe(400);
+    expect(
+      (await call('/api/me', { headers: { authorization: `Bearer ${rotated.access_token}` } })).status,
+    ).toBe(401);
     // Replaying the old refresh token revokes the whole grant.
     expect(
       (await form({ grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: clientId }))
@@ -489,6 +511,16 @@ describe('SSRF protection', () => {
     ]) {
       expect(isPrivateAddress(ip), ip).toBe(true);
     }
+    for (const ip of [
+      '::ffff:7f00:1',
+      '::ffff:a9fe:a9fe',
+      '::7f00:1',
+      '64:ff9b::7f00:1',
+      '2002:7f00:1::',
+      '[::1]',
+    ]) {
+      expect(isPrivateAddress(ip), ip).toBe(true);
+    }
     for (const ip of ['8.8.8.8', '1.1.1.1', '2606:4700::1111']) expect(isPrivateAddress(ip), ip).toBe(false);
   });
 
@@ -496,5 +528,77 @@ describe('SSRF protection', () => {
     await expect(safeFetchJson('http://example.com/data.json')).rejects.toThrow(/https/);
     await expect(safeFetchJson('https://127.0.0.1/x')).rejects.toThrow(/private/);
     await expect(safeFetchJson('https://user:pw@example.com/x')).rejects.toThrow(/credentials/);
+    await expect(safeFetchJson('https://[::ffff:127.0.0.1]/x')).rejects.toThrow(/private/);
+  });
+});
+
+describe('hardening (security review regressions)', () => {
+  it('enforces token scopes on the REST API and never grants admin to tokens', async () => {
+    const admin = await login('admin@example.com');
+    const ro = (
+      await call('/api/tokens', { body: { name: 'ro', scopes: ['dashboards:read'] }, cookie: admin })
+    ).json.token;
+    const owner = await login('victim@example.com');
+    const id = (await call('/api/dashboards', { body: { visibility: 'private' }, cookie: owner })).json
+      .envelope.meta.id;
+    const auth = { authorization: `Bearer ${ro}` };
+    expect((await call(`/api/dashboards/${id}`, { headers: auth })).status).toBe(404);
+    expect((await call(`/api/dashboards/${id}`, { method: 'DELETE', headers: auth })).status).toBe(403);
+    expect((await call('/api/dashboards', { body: {}, headers: auth })).status).toBe(403);
+  });
+
+  it('disconnects live streams when a dashboard becomes private', async () => {
+    const cookie = await login('streamer@example.com');
+    const id = (
+      await call('/api/dashboards', { body: { visibility: 'public', template: 'live-signal' }, cookie })
+    ).json.envelope.meta.id;
+    const res = await app.request(`${BASE}/api/dashboards/${id}/events`);
+    const reader = res.body!.getReader();
+    await reader.read(); // hello
+    expect(deps.hub.watchers(id)).toBe(1);
+    await call(`/api/dashboards/${id}/settings`, {
+      method: 'PATCH',
+      body: { visibility: 'private' },
+      cookie,
+    });
+    // The stream ends instead of continuing to deliver data.
+    for (;;) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+    expect(deps.hub.watchers(id)).toBe(0);
+  });
+
+  it('does not leak refresh loops when viewers come and go quickly', async () => {
+    const id = (await call('/api/dashboards', { body: { template: 'live-signal' } })).json.envelope.meta.id;
+    const sub = () => ({ send: () => {}, close: () => {}, principal: { user: null, isAdmin: false } });
+    for (let i = 0; i < 20; i++) deps.hub.subscribe(id, sub())();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(deps.hub.watchers(id)).toBe(0);
+    expect(deps.hub.activeTimers()).toBe(0);
+  });
+
+  it('keeps uploaded files away from mere viewers', async () => {
+    const cookie = await login('uploader@example.com');
+    const id = (await call('/api/dashboards', { body: { visibility: 'public' }, cookie })).json.envelope.meta
+      .id;
+    await call(`/api/dashboards/${id}/files`, {
+      body: { name: 'secret.csv', content: 'a,b\n1,2\n' },
+      cookie,
+    });
+    expect((await call(`/api/dashboards/${id}/files`)).status).toBe(403);
+    expect((await call(`/api/dashboards/${id}/files`, { cookie })).json).toHaveLength(1);
+  });
+
+  it('rejects oversized request bodies', async () => {
+    const res = await call('/api/dashboards', { body: { title: 'x'.repeat(2 * 1024 * 1024) } });
+    expect(res.status).toBe(413);
+  });
+
+  it('refuses DEV_LOGIN outside localhost', () => {
+    expect(() => loadConfig({ DEV_LOGIN: '1', PUBLIC_URL: 'https://dash.example.com' })).toThrow(/DEV_LOGIN/);
+    expect(() =>
+      loadConfig({ DEV_LOGIN: '1', NODE_ENV: 'production', PUBLIC_URL: 'http://localhost:8787' }),
+    ).toThrow(/DEV_LOGIN/);
   });
 });

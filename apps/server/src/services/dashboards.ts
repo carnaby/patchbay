@@ -35,6 +35,8 @@ export interface Principal {
 }
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
+export const MAX_FILES = 20;
+export const MAX_DASHBOARD_BYTES = 25 * 1024 * 1024;
 const TOUCH_INTERVAL_MS = 10 * 60_000;
 
 export class ConflictError extends HttpError {
@@ -252,13 +254,11 @@ export class DashboardService {
       this.index.upsert(updated, { title: doc.title, widgets: doc.widgets.length });
       return this.envelope(updated, doc, p);
     });
-    if (visibility === 'private')
-      this.hub.publish(id, {
-        type: 'doc',
-        version: result.meta.version,
-        actor: actorOf(p),
-        changes: ['Made private'],
-      });
+    if (visibility === 'private') {
+      // Live streams opened while it was public must not keep receiving data.
+      const meta = await this.store.readMeta(id);
+      if (meta) this.hub.revalidate(id, (viewer) => this.canView(meta, viewer));
+    }
     return result;
   }
 
@@ -288,7 +288,9 @@ export class DashboardService {
   async duplicate(id: string, p: Principal) {
     const { doc } = await this.loadViewable(id, p);
     const created = await this.create(p, { doc: { ...doc, title: `${doc.title} (copy)` } });
-    for (const file of await this.store.listFiles(id)) {
+    // Copy only files the copied datasets actually use: unreferenced uploads stay private to editors.
+    const used = new Set(doc.datasets.flatMap((d) => (d.source.kind === 'upload' ? [d.source.fileId] : [])));
+    for (const file of (await this.store.listFiles(id)).filter((f) => used.has(f.id))) {
       const table = await this.store.readFileTable(id, file.id);
       if (table) await this.store.saveFile(created.envelope.meta.id, { ...file, table });
     }
@@ -332,6 +334,13 @@ export class DashboardService {
     const { meta } = await this.load(id);
     if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
     if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) throw badRequest('Files are limited to 5 MB');
+    const existing = await this.store.listFiles(id);
+    const usedBytes = existing.reduce((sum, f) => sum + f.size, 0);
+    if (existing.length >= MAX_FILES || usedBytes + Buffer.byteLength(input.content) > MAX_DASHBOARD_BYTES) {
+      throw badRequest(
+        `A dashboard can hold up to ${MAX_FILES} files and ${MAX_DASHBOARD_BYTES / 1024 / 1024} MB of uploads. Delete unused files first.`,
+      );
+    }
     const format =
       input.format ?? (/\.json$/i.test(input.name) || /^\s*[[{]/.test(input.content) ? 'json' : 'csv');
     let records: unknown[];
@@ -367,8 +376,10 @@ export class DashboardService {
     return file;
   }
 
+  /** Uploaded files are visible to editors only; viewers see data only through datasets. */
   async listFiles(id: string, p: Principal) {
-    await this.loadViewable(id, p);
+    const { meta } = await this.loadViewable(id, p);
+    if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
     return this.store.listFiles(id);
   }
 

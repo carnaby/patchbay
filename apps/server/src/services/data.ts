@@ -21,6 +21,8 @@ import { HttpError } from '../util/errors.ts';
 import { safeFetchJson } from '../util/safe-fetch.ts';
 
 export const MAX_ROWS_OUT = 10_000;
+/** Upper bound on live history buffers kept in memory (least recently used are dropped). */
+const MAX_BUFFERS = 500;
 const MAX_ROWS_IN = 100_000;
 
 function pick(json: unknown, path: string | undefined): unknown {
@@ -57,7 +59,10 @@ export class DataService {
   private readonly store: FolderStore;
   private readonly httpCache = new Map<string, HttpCacheEntry>();
   /** Rolling buffers for `accumulate`, keyed by dashboard + dataset. In memory by design. */
-  private readonly buffers = new Map<string, { rows: DataTable['rows']; lastFetchedAt: number }>();
+  private readonly buffers = new Map<
+    string,
+    { rows: DataTable['rows']; lastFetchedAt: number; source: string }
+  >();
 
   constructor(connectors: ConnectorService, store: FolderStore) {
     this.connectors = connectors;
@@ -97,15 +102,24 @@ export class DataService {
     }
   }
 
-  private accumulate(key: string, dataset: Dataset, table: DataTable, fetchedAt: number): DataTable {
-    const buffer = this.buffers.get(key) ?? { rows: [], lastFetchedAt: 0 };
+  private accumulate(dashboardId: string, dataset: Dataset, table: DataTable, fetchedAt: number): DataTable {
+    const key = `${dashboardId}:${dataset.id}`;
+    const source = JSON.stringify(dataset.source);
+    let buffer = this.buffers.get(key);
+    // Changing the source starts a fresh history instead of mixing two series.
+    if (!buffer || buffer.source !== source) buffer = { rows: [], lastFetchedAt: 0, source };
+    // Re-insert to keep the Map in least-recently-used order.
+    this.buffers.delete(key);
+    this.buffers.set(key, buffer);
+    if (this.buffers.size > MAX_BUFFERS) this.buffers.delete(this.buffers.keys().next().value!);
     // Only append when the upstream actually produced a new reading.
     if (fetchedAt !== buffer.lastFetchedAt) {
-      buffer.rows.push(...table.rows.map((r) => ({ ...r, fetched_at: fetchedAt })));
+      buffer.rows.push(
+        ...table.rows.slice(0, dataset.accumulate).map((r) => ({ ...r, fetched_at: fetchedAt })),
+      );
       buffer.lastFetchedAt = fetchedAt;
       if (buffer.rows.length > dataset.accumulate)
         buffer.rows.splice(0, buffer.rows.length - dataset.accumulate);
-      this.buffers.set(key, buffer);
     }
     const columns = table.columns.some((c) => c.name === 'fetched_at')
       ? table.columns
@@ -123,13 +137,7 @@ export class DataService {
       const loaded = await this.loadSource(dashboardId, dataset.source);
       const input =
         dataset.accumulate > 0
-          ? this.accumulate(
-              // Changing the source starts a fresh history instead of mixing two series.
-              `${dashboardId}:${dataset.id}:${JSON.stringify(dataset.source)}`,
-              dataset,
-              loaded.table,
-              loaded.fetchedAt,
-            )
+          ? this.accumulate(dashboardId, dataset, loaded.table, loaded.fetchedAt)
           : loaded.table;
       const { table, trace } = runPipeline(input, dataset.transforms);
       const max = options.maxRows ?? MAX_ROWS_OUT;

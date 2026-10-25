@@ -9,7 +9,7 @@ import { badRequest, HttpError } from '../util/errors.ts';
 
 /** Only same-site relative paths, so `returnTo` cannot become an open redirect. */
 export function safeReturnTo(raw: string | undefined | null): string {
-  if (!raw || !raw.startsWith('/') || raw.startsWith('//') || raw.includes('\\')) return '/me';
+  if (!raw?.startsWith('/') || raw.startsWith('//') || raw.includes('\\')) return '/me';
   return raw.slice(0, 500);
 }
 

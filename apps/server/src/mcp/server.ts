@@ -299,8 +299,13 @@ export function createMcp(deps: Deps) {
             source: args.source,
             transforms: args.transforms,
           });
-          if (dataset.source.kind === 'upload' && !args.dashboardId)
-            return fail('Uploaded files need dashboardId');
+          if (dataset.source.kind === 'upload') {
+            if (!args.dashboardId) return fail('Uploaded files need dashboardId');
+            // Raw uploads are readable by editors only (same rule as the REST preview).
+            const { meta } = await dashboards.loadViewable(args.dashboardId, p);
+            if (!dashboards.canEdit(meta, p))
+              return fail('Only editors of this dashboard can preview its uploaded files');
+          }
           if (dataset.source.kind === 'connector')
             connectors.validateParams(dataset.source.connector, dataset.source.params);
           const result = await data.resolve(args.dashboardId ?? 'preview00', dataset, { maxRows: 5000 });
