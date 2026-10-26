@@ -2,7 +2,7 @@
 
 |                    |                                                                                                                                                                                                           |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Status             | **Accepted, not implemented.** The owner decided to offer credentials on HTTP sources, behind an instance switch and with a prominent warning. This document specifies how; see "Decisions" at the end.   |
+| Status             | **Accepted; server side implemented**, web UI and user docs pending. The owner decided to offer credentials on HTTP sources, behind an instance switch and with a prominent warning. See "Decisions" and "Implementation notes" at the end. |
 | Area               | `packages/core` (schema, binding matcher), `apps/server` (storage, encryption, `DashboardService`, `DataService`, `safe-fetch`, `LiveHub`, REST, MCP), `apps/web` (Settings, dataset editor, share panel) |
 | Effort             | About five days including tests and docs                                                                                                                                                                  |
 | New infrastructure | None. One SQLite table, one environment key.                                                                                                                                                              |
@@ -89,10 +89,10 @@ will stop loading.
 
 | Field        | Notes                                                                                                                                                                                                        |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Name         | 1–80 characters, unique per user                                                                                                                                                                             |
+| Name         | 1–80 characters, unique per user (ignoring case)                                                                                                                                                             |
 | Only send to | A URL prefix, e.g. `https://api.example.com/v1/`. Parsed and shown back as origin + path prefix. HTTPS only, no user name or password, no query or fragment                                                  |
 | Send it as   | _Bearer token_ (default) · _Custom header_ (name) · _Query parameter_ (name). The query option carries the hint "Prefer a header if the API supports one: query parameters end up in the API's access logs." |
-| Value        | Password input with a show toggle, `autocomplete="off"`, `spellCheck={false}`. Trimmed. 8–4096 characters, no control characters. A pasted `Bearer …` prefix is refused with "Paste only the token."         |
+| Value        | Password input with a show toggle, `autocomplete="off"`, `spellCheck={false}`. Trimmed. 8–4096 characters, no control characters, printable ASCII when sent in a header. A pasted `Bearer …` prefix is refused with "Paste only the token." |
 | Warning      | The text below, with a required checkbox. Save stays disabled until it is ticked                                                                                                                             |
 
 The dialog never receives a value from the server, so "Replace value" opens the same modal with an empty value field,
@@ -228,8 +228,8 @@ A new pure module `packages/core/src/secrets.ts` holds what both the editor and 
 - `parseBinding(input: string): { origin, pathPrefix }` for the "Only send to" field;
 - `bindingMatches(binding, url): { ok: true } | { ok: false; reason: 'origin' | 'path' | 'encoding' }`;
 - `secretRefChanges(prev: DashboardDoc, next: DashboardDoc): string[]`, the ids of datasets that **introduce or
-  retarget** a secret reference: new datasets with `secrets`, or datasets whose `secrets` or `url` changed while they
-  have `secrets`;
+  retarget** a secret reference: new datasets with `secrets`, datasets that gained a secret id, or datasets with
+  `secrets` whose `url` changed. Removing an id or reordering them is not a change (nothing new is sent anywhere);
 - `credentialLikeParams(url): string[]` for the editor warning.
 
 The editor's preview keys and the query cache key (`JSON.stringify(dataset)` in `state/sync.ts`) need no change: the
@@ -244,12 +244,16 @@ request carries the secret only if, for that exact request URL:
    trailing-dot host (`api.example.com.`) is a different string and therefore a mismatch, which fails safe. The SSRF
    rules currently allow only port 443, so in practice this is scheme + host, but the comparison stays correct if that
    ever changes.
-2. `pathname.startsWith(pathPrefix)`. The stored prefix always ends with `/`, so `/v1/` does not match `/v10/`.
-   `URL` already resolves `.`, `..` and their percent-encoded forms. Because servers may decode `%2F` and `%5C` into
-   separators after we compared, a secret with a non-root prefix refuses URLs whose path contains either (reason
-   `encoding`).
-3. For query placement, the URL must not already contain a parameter with the secret's name, so a document cannot
-   shadow or duplicate it.
+2. `pathname.startsWith(pathPrefix)`. The stored prefix always ends with `/`, so `/v1/` does not match `/v10/`. The
+   exact path the prefix was made from (`/v1/orders` for `/v1/orders/`) also matches: it is the address the user
+   typed. `URL` already resolves `.`, `..` and their percent-encoded forms. Because servers may decode `%2F` and `%5C`
+   into separators after we compared (and `%25` when they decode twice), and many Java servers treat `..;` as `..`, a
+   secret with a non-root prefix refuses URLs whose path contains any of these (reason `encoding`).
+3. For query placement, the URL must not already contain a parameter with the secret's name, compared without case
+   because servers differ, so a document cannot shadow or duplicate it (reason `param`).
+
+`parseBinding` applies the same rules to the "Only send to" field and also refuses a non-default port, since data
+sources may only use port 443.
 
 The binding is **immutable**. Changing where a value may be sent is the one operation that could leak it, so it is
 not an operation: the user creates a new secret. Rename and replace-value keep the binding.
@@ -363,9 +367,11 @@ SECRETS_KEY_PREVIOUS=            (optional, for rotation)
   instance does so at their own risk, and the warning and the self-hosting recommendation exist for exactly that.
 - `SECRETS` other than `off` without a valid `SECRETS_KEY` **refuses to start**: the operator clearly meant to enable
   it, and a half-working feature is worse than a clear error. With `off`, the key is not needed.
+- A `SECRETS_KEY` that is set but malformed refuses to start even with `off`, and so does `SECRETS_KEY_PREVIOUS`
+  without a current key. Keys are accepted in standard or URL-safe base64. Error messages never repeat the key.
 - Switching back to `off` (or an owner losing admin rights in `admins` mode) keeps the rows. Listing and **deleting
-  stay allowed**, so users can always clean up; creating, replacing and using are refused. The check happens at use
-  time, so it applies immediately.
+  stay allowed**, so users can always clean up; creating, replacing, renaming and using are refused. The check
+  happens at use time, so it applies immediately.
 - `GET /api/me` gains `secrets: 'off' | 'admins' | 'users'` and `canUseSecrets: boolean`, so the web app shows or hides
   the UI.
 
@@ -407,6 +413,11 @@ about to write, using `secretRefChanges(current, next)`:
   retargets: "This dashboard is public. Agents cannot point secrets at new URLs on a public dashboard. Make it private
   first, or do it in the web editor." This closes the path where an injected agent re-points a secret at a revealing
   endpoint on the same host of an already public dashboard.
+- If the principal is a **session** and the dashboard is **public**, the confirmation is enforced by the server, not
+  only by the dialog: without `confirmPublicSecrets: true` in the request the answer is `428` with
+  `{ error, code: "confirm_public_secrets", secrets: [{ id, name }] }`, which the web app turns into the dialog and
+  then repeats the request with the flag. Tokens are refused whether or not they send the flag. Dry runs answer like
+  the save would.
 - Datasets whose references did not change are not re-checked, so deleting a secret never blocks unrelated edits or
   autosave.
 
@@ -420,8 +431,8 @@ authenticated the request and in the MCP `principal()` factory.
 | Duplicate by the owner                   | References kept; the copy has the same owner. The copy is private (the existing default for signed-in users)                                                                                                                                                                                                                                                                  |
 | Duplicate by anyone else                 | `secrets` removed from every copied dataset, with a change-log entry "Removed secret references (secrets belong to their owner)". Anonymous copies would be rejected otherwise; signed-in copies would hold dead references. The copy then fetches without credentials and typically shows the upstream's 401, which the editor turns into "This API probably needs a secret" |
 | Claim                                    | Nothing to do (invariant above)                                                                                                                                                                                                                                                                                                                                               |
-| Restore a version                        | Same owner, so resolution is unchanged. Restore skips the existence and binding checks (a restored reference to a deleted secret shows "not available" at use time instead of blocking the restore), but applies the anonymous invariant and the token-on-public rule                                                                                                         |
-| Visibility → public                      | Through the web UI: allowed after the confirmation above. Via a token (`set_visibility`, `PATCH /settings` with a PAT) on a dashboard with secret-backed datasets: rejected, "Make it public in the web app; it would show data fetched with your secrets to anyone."                                                                                                         |
+| Restore a version                        | Same owner, so resolution is unchanged. Restore skips the existence and binding checks (a restored reference to a deleted secret shows "not available" at use time instead of blocking the restore), but applies the anonymous invariant, the token-on-public rule and the session confirmation                                                                              |
+| Visibility → public                      | Through the web UI: allowed with `confirmPublicSecrets: true` after the `428` described above. Via a token (`set_visibility`, `PATCH /settings` with a PAT) on a dashboard with secret-backed datasets: rejected, "Make it public in the web app; it would show data fetched with your secrets to anyone."                                                                   |
 | Visibility → private                     | As today: `LiveHub.revalidate` disconnects viewers who lost access                                                                                                                                                                                                                                                                                                            |
 | Edit keys                                | Only anonymous dashboards have edit keys, and they cannot hold references                                                                                                                                                                                                                                                                                                     |
 | Admins                                   | Can view and delete every dashboard, as today, and therefore see the data of secret-backed datasets in private dashboards. They cannot edit, so they cannot retarget anything. This is consistent with the warning: the operator can access secrets anyway                                                                                                                    |
@@ -449,11 +460,13 @@ paramName, value }`.
 - **Errors** carry the document's URL and the status code, never the request URL with a query secret, never upstream
   headers or bodies. Every message from a credentialed fetch goes through `redact(message, values)` as a last guard,
   and errors are created as `HttpError` without a `cause`, so the 500 logger in `app.ts` never prints an undici error
-  object that might hold request options.
+  object that might hold request options. Client failures of a credentialed request say only "Request failed" or
+  "Request timed out" (the undici message is dropped).
 - **Echo redaction.** Some APIs echo the credential (`/whoami`, error payloads, debug fields). After `JSON.parse`, the
-  parsed value is walked and every string (keys included) containing a secret value has it replaced by `[redacted]`.
-  Matching on parsed strings, not raw text, handles JSON escaping (`\/`). The minimum length of 8 keeps this from
-  mangling ordinary data.
+  parsed value is walked and every string (keys included) containing a secret value has it replaced by `[redacted]`,
+  as does a number whose digits contain it. The value is matched as is and percent-encoded (as in an echoed request
+  URL). Matching on parsed strings, not raw text, handles JSON escaping (`\/`). The minimum length of 8 keeps this
+  from mangling ordinary data.
 
 ### Caching and live updates (`apps/server/src/services/data.ts`, `apps/server/src/live/hub.ts`)
 
@@ -498,22 +511,37 @@ tools, and the hub, whose `loadDoc` becomes `loadDashboard(id) → { doc, ownerI
 
 ### REST API (`apps/server/src/routes/api.ts`)
 
-| Route                        | Who                                                            | Notes                                                                                                                                        |
-| ---------------------------- | -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/secrets`           | Signed-in user, session or token                               | Metadata plus "used by" (scans the user's own dashboards via `index.listByOwner` and `store.readDoc`; a handful of reads per Settings visit) |
-| `POST /api/secrets`          | Session only, `sameOrigin` CSRF check as for all cookie writes | `{ name, sendTo, placement, paramName?, value }` → `SecretInfo`                                                                              |
-| `PUT /api/secrets/:id/value` | Session only                                                   | `{ value }` → `SecretInfo` with new `updatedAt`                                                                                              |
-| `PATCH /api/secrets/:id`     | Session only                                                   | `{ name }`                                                                                                                                   |
-| `DELETE /api/secrets/:id`    | Session only, allowed even when the switch is `off`            |                                                                                                                                              |
+| Route                        | Who                                                            | Notes                                                                                                                                                                                                       |
+| ---------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/secrets`           | Signed-in user, session or token                               | `{ mode, canUseSecrets, secrets: (SecretInfo & { sentAs, usedBy: [{ dashboardId, dashboardTitle, datasetId, datasetName }] })[] }`. "Used by" scans the user's own dashboards (`index.listByOwner` + `store.readDoc`) |
+| `POST /api/secrets`          | Session only, `sameOrigin` CSRF check as for all cookie writes | Strict body `{ name, sendTo, placement, paramName?, value }` → `201 SecretInfo`                                                                                                                             |
+| `PUT /api/secrets/:id/value` | Session only                                                   | `{ value }` → `SecretInfo` with new `updatedAt`; the binding and placement stay                                                                                                                             |
+| `PATCH /api/secrets/:id`     | Session only                                                   | `{ name }` → `SecretInfo`. There is no field for the binding                                                                                                                                                |
+| `DELETE /api/secrets/:id`    | Session only, allowed even when the switch is `off`            | `{ ok: true }`                                                                                                                                                                                              |
+| `GET /api/admin/secrets`     | Admins (session)                                               | `{ mode, users: [{ userId, email, secrets }] }`: counts only, for "whom to tell" after a key and database leak                                                                                               |
 
 Every handler is one call into `DashboardService` (`listSecrets`, `createSecret`, `replaceSecretValue`,
 `renameSecret`, `deleteSecret`), which checks the principal, the switch and `viaToken`, then delegates to `Secrets`.
-Writes go through the existing `writes` rate limiter. Request bodies are already capped at 1 MB.
+Writes go through the existing `writes` rate limiter. Request bodies are already capped at 1 MB. Bodies of these
+routes are parsed without ever letting a JSON syntax error (whose message quotes the input) reach the response or the
+error logger.
+
+Errors: `400` for validation (messages never repeat the value), `401` signed out, `403` for tokens ("Secrets can only
+be added or changed in the web app, never with a token."), for cross-site requests and when the switch refuses the
+user ("Secrets are turned off on this server." / "This instance only lets administrators store and use secrets."),
+`404` for another user's or a missing id.
+
+The dashboard routes that can create the "public + secrets" combination accept `confirmPublicSecrets: true` in their
+body: `PUT /api/dashboards/:id`, `POST /api/dashboards/:id/ops`, `PATCH /api/dashboards/:id/settings` and
+`POST /api/dashboards/:id/versions/:v/restore`. Without it a session gets the `428` described under "Who can use which
+secret"; `GET /api/me` adds `secrets` (the mode) and `canUseSecrets`.
 
 ### MCP (`apps/server/src/mcp/server.ts`)
 
 One read tool, `list_secrets` (scope `dashboards:read`), calling `dashboards.listSecrets(p)`. It takes no arguments,
-so it adds little to the size of the tool list. Existing tools change only in what they pass to
+so it adds little to the size of the tool list (32.8 KB in total after this change, within the existing 33 KB
+budget). It returns `{ secrets: [{ id, name, origin, pathPrefix, sentAs, updatedAt, lastUsedAt }], note }`, where the
+note is the "never readable" line, or says that secrets are off or for administrators only. Existing tools change only in what they pass to
 `DataService.resolve`; the save-time rules surface as ordinary tool errors from `DashboardService`.
 `apply_operations` adds a `warnings` array to its result when a touched URL has credential-like query parameters.
 
@@ -560,9 +588,10 @@ variables in the configuration table), `.env.example`, `docs/deployment.md` (key
   fails (AAD); wrong key; rotation re-seals and the old key is no longer needed; unknown key rows are counted, not
   destroyed.
 - Config: `SECRETS=users` without a key refuses to start; a key that is not 32 bytes refuses; `off` needs no key.
-- Fetching, with undici's `MockAgent` injected through a test-only dispatcher option of `safeFetchJson`: headers and
-  query placement arrive; a same-origin redirect re-attaches; a cross-origin redirect stops and the second host
-  receives nothing (assert on the mock); an upstream echo is redacted; 401 bodies do not appear in errors.
+- Fetching, against a local HTTP server that a test-only dispatcher (passed to `createDeps`, never read from the
+  environment) routes every request to, so the URL-level SSRF checks still run: headers and query placement arrive; a
+  same-origin redirect re-attaches; a cross-origin redirect stops and the second host receives nothing (assert on the
+  server's request log); an upstream echo is redacted; 401 bodies do not appear in errors.
 - Resolution: owner's secret works; another user's id is "not available"; anonymous save with `secrets` is rejected;
   claim of a dashboard prepared with a victim's id is impossible; duplicate by a stranger strips references; duplicate
   by the owner keeps them; token on a public dashboard cannot add or retarget; token cannot make a secret-backed
@@ -638,3 +667,43 @@ Decided by the owner on 2026-10-26:
    store secrets at their own risk, which is what the warning and the self-hosting recommendation are for.
 3. **No `secrets:write` scope.** Values are set and replaced only through the web UI. A scope for scripted rotation can
    be added later if there is a concrete need.
+
+## Implementation notes
+
+The server side (core, storage, encryption, `DashboardService`, fetching, caches, REST, MCP) is implemented. The web
+UI (Settings section, credentials picker, confirmations, OAuth consent line) and the user-facing docs (`README.md`,
+`docs/deployment.md`, `docs/mcp.md`, `docs/architecture.md`) are the next phase.
+
+Where the implementation differs from the text above, it chose the safer option; the sections above were updated:
+
+- **Server-enforced confirmation.** The public-dashboard confirmation is not only a dialog: sessions get `428
+  confirm_public_secrets` (with the secret ids and names for the dialog) until they repeat the request with
+  `confirmPublicSecrets: true`. This also covers restoring a version that brings references back onto a public
+  dashboard, and dry runs answer like saves.
+- **Binding.** Also refuses `%25` and `..;` segments under a non-root prefix, compares the query parameter name
+  without case, and `parseBinding` refuses non-default ports. The exact path a prefix was made from matches too.
+- **`secretRefChanges`** treats only new ids and URL changes as changes; removing or reordering ids is not.
+- **Switch off** also refuses renaming; a malformed key refuses to start even with `off`.
+- **Values** sent in a header must be printable ASCII; redaction also covers percent-encoded forms and JSON numbers;
+  failed credentialed requests never carry the HTTP client's message.
+- **Use time** also refuses two secrets writing the same header or parameter ("Credentials for this source conflict
+  with each other."), and `claim` refuses a document with references (impossible unless edited by hand).
+- **Admin counts** are served by `GET /api/admin/secrets`; the admin page shows them in the web phase.
+- **Tests** use a local HTTP server and a dispatcher seam on `createDeps` instead of undici's `MockAgent`.
+
+Residual risks worth knowing: a numeric secret longer than 15 digits echoed as a JSON number loses precision on parse
+and is then not recognised by the redaction (the echo is a near-copy of the value); a heap dump of the process can
+contain values (operator-level access, as stated in the warning).
+
+### For the web phase
+
+- `GET /api/me` → `{ user, secrets: 'off' | 'admins' | 'users', canUseSecrets }`.
+- Settings uses the REST table above; send the value once with `api()` and reset the mutation (see "Settings →
+  Secrets"). Validation helpers for the form live in core: `parseBinding`, `secretParamIssue`, `secretValueIssue`,
+  `describePlacement`, `MAX_SECRETS_PER_USER`.
+- Dataset editor: `bindingMatches` + `bindingMismatchMessage`, `placementConflict` and `credentialLikeParams` (core)
+  explain problems while typing; `sourceSecretIds` reads references. Widget errors are the strings in
+  `CREDENTIAL_ERRORS` (`apps/server/src/services/dashboards.ts`).
+- Saves: handle `428` with `code: "confirm_public_secrets"` on autosave (`PUT`), op batches, visibility changes and
+  restores: show the dialog with `secrets[].name` and repeat with `confirmPublicSecrets: true`. The editor's 409
+  conflict handling is unaffected.
