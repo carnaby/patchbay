@@ -27,6 +27,11 @@ export const IdSchema = z
     'Ids are 1-40 chars of a-z, 0-9, "_" or "-", starting with a letter or digit',
   );
 
+/** Ids of saved secrets. Not secret themselves: they appear in public documents and grant nothing. */
+export const SecretIdSchema = z
+  .string()
+  .regex(/^sec_[A-Za-z0-9]{16}$/, 'Secret ids look like "sec_…"; see list_secrets');
+
 const scalar = z.union([z.number(), z.string(), z.boolean(), z.null()]);
 const field = z.string().min(1).max(200);
 
@@ -56,8 +61,17 @@ export const SourceSchema = z.discriminatedUnion('kind', [
         .max(200)
         .optional()
         .describe('Dot path to the array inside the JSON response, e.g. "data.items"'),
+      secrets: z
+        .array(SecretIdSchema)
+        .min(1)
+        .max(3)
+        .refine((ids) => new Set(ids).size === ids.length, 'Each secret once')
+        .optional()
+        .describe('Saved secret ids (list_secrets), sent only to the address each is bound to'),
     })
-    .describe('Any public HTTPS JSON endpoint (no credentials, private networks are blocked)'),
+    .describe(
+      'An HTTPS JSON endpoint. Private networks are blocked. Credentials only via "secrets", never in the URL',
+    ),
 ]);
 export type Source = z.infer<typeof SourceSchema>;
 
