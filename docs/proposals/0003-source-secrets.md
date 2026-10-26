@@ -472,10 +472,15 @@ paramName, value }`.
   object that might hold request options. Client failures of a credentialed request say only "Request failed" or
   "Request timed out" (the undici message is dropped).
 - **Echo redaction.** Some APIs echo the credential (`/whoami`, error payloads, debug fields). After `JSON.parse`, the
-  parsed value is walked and every string (keys included) containing a secret value has it replaced by `[redacted]`,
-  as does a number whose digits contain it. The value is matched as is and percent-encoded (as in an echoed request
-  URL). Matching on parsed strings, not raw text, handles JSON escaping (`\/`). The minimum length of 8 keeps this
-  from mangling ordinary data.
+  parsed value is walked and every string (keys included) is checked after normalisation: as is, with JSON escapes
+  (`\/`, `\uXXXX`) undone, and percent-decoded repeatedly (double encoding, any hex case, Python-style raw `/`) with
+  and without `+` as a space, all compared without case. Besides the value itself it looks for base64 and base64url
+  of the value at each byte alignment (so `Basic base64(user:value)` is caught) and, for digits-only values, the
+  digits without leading zeros. The plain spellings are replaced in place (`Bearer [redacted]`); if any other
+  spelling remains, the whole string becomes `[redacted]`. A number that contains the value becomes `[redacted]`. The
+  minimum length of 8 keeps this from mangling ordinary data. **Not caught:** partial echoes (the last four
+  characters), other transformations (hashing, hex, reversing, splitting a value across fields), and encodings beyond
+  the ones listed. The data still only reaches viewers of a dashboard the owner chose to show it on.
 
 ### Caching and live updates (`apps/server/src/services/data.ts`, `apps/server/src/live/hub.ts`)
 
@@ -702,16 +707,18 @@ Where the implementation differs from the text above, it chose the safer option;
   without case, and `parseBinding` refuses non-default ports. The exact path a prefix was made from matches too.
 - **`secretRefChanges`** treats only new ids and URL changes as changes; removing or reordering ids is not.
 - **Switch off** also refuses renaming; a malformed key refuses to start even with `off`.
-- **Values** sent in a header must be printable ASCII; redaction also covers percent-encoded forms and JSON numbers;
-  failed credentialed requests never carry the HTTP client's message.
+- **Values** sent in a header must be printable ASCII; redaction normalises strings (URL decoding, JSON escapes,
+  case) and also looks for base64 forms and JSON numbers (hardened after the security review); failed credentialed
+  requests never carry the HTTP client's message.
 - **Use time** also refuses two secrets writing the same header or parameter ("Credentials for this source conflict
   with each other."), and `claim` refuses a document with references (impossible unless edited by hand).
 - **Admin counts** are served by `GET /api/admin/secrets`; the admin page shows them in the web phase.
 - **Tests** use a local HTTP server and a dispatcher seam on `createDeps` instead of undici's `MockAgent`.
 
 Residual risks worth knowing: a numeric secret longer than 15 digits echoed as a JSON number loses precision on parse
-and is then not recognised by the redaction (the echo is a near-copy of the value); a heap dump of the process can
-contain values (operator-level access, as stated in the warning).
+and is then not recognised by the redaction (the echo is a near-copy of the value); partial or transformed echoes are
+not recognised either (see "Echo redaction"); a heap dump of the process can contain values (operator-level access, as
+stated in the warning).
 
 ### For the web phase
 
