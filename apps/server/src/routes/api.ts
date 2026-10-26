@@ -16,6 +16,9 @@ import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
 import { listTemplates } from '../services/templates.ts';
 import { forbidden, HttpError, notFound } from '../util/errors.ts';
 
+/** Live stream heartbeat while nothing else is sent. */
+const HEARTBEAT_MS = 25_000;
+
 const CreateBody = z.object({
   title: z.string().min(1).max(120).optional(),
   template: z.string().max(40).optional(),
@@ -217,7 +220,7 @@ export function apiRoutes(deps: Deps) {
     const ip = clientIp(c, config.trustProxy);
     if ((openStreams.get(ip) ?? 0) >= 30) throw new HttpError(429, 'Too many open live connections');
     openStreams.set(ip, (openStreams.get(ip) ?? 0) + 1);
-    return streamSSE(c, async (stream) => {
+    const res = streamSSE(c, async (stream) => {
       const queue: LiveEvent[] = [];
       let wake: (() => void) | null = null;
       let closed = false;
@@ -248,7 +251,8 @@ export function apiRoutes(deps: Deps) {
               new Promise<void>((resolve) => {
                 wake = resolve;
               }),
-              stream.sleep(25_000),
+              // Well below the ~100 s after which proxies such as Cloudflare drop an idle connection.
+              stream.sleep(HEARTBEAT_MS),
             ]);
             wake = null;
             if (closed) break;
@@ -268,6 +272,11 @@ export function apiRoutes(deps: Deps) {
         else openStreams.delete(ip);
       }
     });
+    // no-transform keeps proxies and CDNs (Cloudflare included) from compressing, and thereby buffering,
+    // the stream; X-Accel-Buffering does the same for nginx.
+    res.headers.set('Cache-Control', 'no-cache, no-transform');
+    res.headers.set('X-Accel-Buffering', 'no');
+    return res;
   });
 
   /** PNG snapshot of a whole dashboard or one widget; also used for social previews. */
