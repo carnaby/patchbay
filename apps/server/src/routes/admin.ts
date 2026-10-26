@@ -28,6 +28,12 @@ export function adminRoutes(deps: Deps) {
     });
   });
 
+  /**
+   * How many secrets each user stored: never values or names. If the key and a copy of the database leak together,
+   * rotation cannot help and the operator has to know whom to tell to revoke their credentials.
+   */
+  app.get('/secrets', (c) => c.json({ mode: deps.config.secrets.mode, users: deps.secrets.countsByUser() }));
+
   app.delete('/dashboards/:id', async (c) => {
     await deps.dashboards.delete(c.req.param('id'), c.get('principal'));
     return c.json({ ok: true });

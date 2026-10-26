@@ -6,6 +6,7 @@ import {
   GRID_COLUMNS,
   KPI_AGGS,
   LIMITS,
+  MAX_SECRETS_PER_SOURCE,
   SOUND_IDS,
   TIME_UNITS,
   WINDOW_OPS,
@@ -22,9 +23,10 @@ Workflow that works well:
 
 Rules: every write creates a new version the user can roll back (list_versions / restore_version), and the user
 sees your changes live in the browser. Prefer few, meaningful widgets over many. Never put two measures of
-different scale on one chart; make two charts instead. Read get_reference for the full schema.`;
+different scale on one chart; make two charts instead. Read get_reference for the full schema. Private APIs: see
+list_secrets.`;
 
-export function referenceText(): string {
+export function referenceText(publicUrl = '<PUBLIC_URL>'): string {
   const fns = Object.entries(FUNCTIONS)
     .map(([name, f]) => `- ${name}(${f.args}): ${f.doc}`)
     .join('\n');
@@ -40,10 +42,22 @@ ${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows.
 - source.kind "connector": { connector: "<id from list_connectors>", params: {...} }
 - source.kind "upload": { fileId } (from upload_data)
 - source.kind "inline": { rows: [{...}, ...] } (small data you create yourself)
-- source.kind "http": { url: "https://...", path?: "data.items" } (public JSON APIs only)
+- source.kind "http": { url: "https://...", path?: "data.items", secrets?: ["sec_..."] } (JSON APIs; see Secrets)
 - refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers.
 - accumulate N keeps a rolling history of the last N rows across refreshes and adds a "fetched_at" time column.
   Use it to chart sources that only return the current value (weather.current, crypto.price, iss.position).
+
+## Secrets (http sources)
+Some APIs need a key. The user saves keys under Settings → Secrets; you can list them (list_secrets) but never read,
+create or change them.
+- Add secrets: ["<id>"] to an http source. The URL must start with the secret's origin and pathPrefix, or the save
+  fails. At most ${MAX_SECRETS_PER_SOURCE} per source. The secret decides how it is sent (header or query parameter).
+- Never put keys or tokens into a URL, a dataset name or a text widget. If an API needs a key the user has not saved,
+  ask them to add it at ${publicUrl}/settings#secrets, then continue.
+- On a public dashboard you cannot add secrets or change the URL of a secret-backed dataset, and you cannot make a
+  dashboard with secrets public. Ask the user to do it in the web app.
+- Data fetched with a secret is shown to everyone who can view the dashboard. Keep such dashboards private unless the
+  user says otherwise.
 
 ## Transforms (run in order, on the server)
 Every step has a stable id ("s1", "s2", … assigned automatically, or your own). Address steps by id with the step
