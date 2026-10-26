@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { type Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { createMiddleware } from 'hono/factory';
 import { secureHeaders } from 'hono/secure-headers';
 import { SCOPES, Tokens } from './auth/tokens.ts';
 import { Users } from './auth/users.ts';
@@ -85,6 +86,13 @@ export function createApp(deps: Deps) {
     }),
   );
 
+  // Every response without its own policy is dynamic. Saying so explicitly matters behind a CDN:
+  // Cloudflare caches by file extension (e.g. /api/dashboards/:id/snapshot.png) unless told otherwise.
+  app.use('*', async (c, next) => {
+    await next();
+    if (!c.res.headers.has('Cache-Control')) c.header('Cache-Control', 'no-store');
+  });
+
   app.onError((err, c) => {
     const httpErr = toHttpError(err);
     if (httpErr.status === 500) console.error(err);
@@ -158,29 +166,20 @@ export function createApp(deps: Deps) {
       if (mtime !== cached.mtime) cached = { mtime, html: readFileSync(join(dist, 'index.html'), 'utf8') };
       return cached.html;
     };
-    app.use(
-      '/assets/*',
-      serveStatic({
-        root: dist,
-        onFound: (_p, c) => c.header('Cache-Control', 'public, max-age=31536000, immutable'),
-      }),
-    );
+    // serveStatic calls onFound after it has built the response, so a header set there never arrives.
+    // Setting it once the response exists is the reliable way.
+    const cacheControl = (value: string) =>
+      createMiddleware(async (c, next) => {
+        await next();
+        if (c.res.ok) c.header('Cache-Control', value);
+      });
+    app.use('/assets/*', cacheControl('public, max-age=31536000, immutable'), serveStatic({ root: dist }));
     // A missing hashed asset is a 404, never the SPA shell (avoids MIME-type confusion).
     app.get('/assets/*', (c) => c.text('Not found', 404));
-    app.use(
-      '*',
-      serveStatic({
-        root: dist,
-        // The service worker and manifest must be revalidated, or browsers keep an old app version alive.
-        onFound: (path, c) => {
-          if (/(sw\.js|\.webmanifest|offline\.(html|js))$/.test(path)) c.header('Cache-Control', 'no-cache');
-        },
-      }),
-    );
-    app.get('*', (c) => {
-      c.header('Cache-Control', 'no-cache');
-      return c.html(indexHtml());
-    });
+    // Unhashed files keep their name across deploys, so they must be revalidated: a stale sw.js or
+    // manifest keeps an old app version alive, and a CDN would otherwise cache .js/.png by extension.
+    app.use('*', cacheControl('no-cache'), serveStatic({ root: dist }));
+    app.get('*', (c) => c.html(indexHtml()));
   } else {
     app.get('/', (c) =>
       c.text('Patchbay API is running. Build the web app with `pnpm build`, or run `pnpm dev`.'),

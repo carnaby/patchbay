@@ -263,7 +263,7 @@ after every step.
 | `DEV_LOGIN`                                | off                     | Passwordless login for development. Refused in production.            |
 | `OFFLINE`                                  | off                     | Serve synthetic connector data.                                       |
 | `PRUNE_ANONYMOUS_AFTER_DAYS`               | `0`                     | Auto-delete anonymous dashboards nobody opened for N days.            |
-| `TRUST_PROXY`                              | off                     | Use `X-Forwarded-For` for rate limiting behind a reverse proxy.       |
+| `TRUST_PROXY`                              | off                     | `1`: IP from `X-Forwarded-For`; `cloudflare`: from `CF-Connecting-IP` |
 | `PIPELINE_WORKERS`                         | CPUs − 1, max 4         | Worker threads for data processing; `0` processes on the main thread. |
 | `PIPELINE_TIMEOUT_MS`                      | `10000`                 | Hard time limit for one pipeline run in a worker.                     |
 
@@ -276,7 +276,8 @@ cp .env.example .env   # set GOOGLE_*, ADMIN_EMAILS, DEV_LOGIN=0
 PATCHBAY_DOMAIN=dash.example.com docker compose up -d
 ```
 
-Options and recommendations (VPS, Fly.io, Railway…) are in [docs/deployment.md](docs/deployment.md).
+Options and recommendations (VPS, a home server or NAS behind a Cloudflare Tunnel, Fly.io, Railway…) are in
+[docs/deployment.md](docs/deployment.md).
 
 ## Project layout
 
