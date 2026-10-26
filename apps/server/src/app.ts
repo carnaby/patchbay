@@ -5,6 +5,7 @@ import { type Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { createMiddleware } from 'hono/factory';
 import { secureHeaders } from 'hono/secure-headers';
+import { Secrets } from './auth/secrets.ts';
 import { SCOPES, Tokens } from './auth/tokens.ts';
 import { Users } from './auth/users.ts';
 import type { Config } from './config.ts';
@@ -24,8 +25,15 @@ import { DashboardIndex } from './store/dashboard-index.ts';
 import { FolderStore } from './store/folder-store.ts';
 import { HttpError, toHttpError } from './util/errors.ts';
 import { RateLimiter } from './util/rate-limit.ts';
+import type { UpstreamTestSeam } from './util/safe-fetch.ts';
 
-export async function createDeps(config: Config): Promise<Deps> {
+/** Test seams that cannot be set from the environment. */
+export interface DepsOverrides {
+  /** Routes HTTP data sources to a local test server; see `UpstreamTestSeam`. */
+  upstreamTest?: UpstreamTestSeam;
+}
+
+export async function createDeps(config: Config, overrides: DepsOverrides = {}): Promise<Deps> {
   const db = openDatabase(config.dataDir === ':memory:' ? ':memory:' : join(config.dataDir, 'patchbay.db'));
   const store = new FolderStore(config.dataDir === ':memory:' ? '/tmp/patchbay-memory' : config.dataDir);
   await store.init();
@@ -38,14 +46,36 @@ export async function createDeps(config: Config): Promise<Deps> {
           size: config.pipelineWorkers ?? defaultPoolSize(),
           timeoutMs: config.pipelineTimeoutMs,
         });
-  const data = new DataService(connectors, store, pipeline);
-  const hub = new LiveHub(data, (id) => store.readDoc(id));
-  const dashboards = new DashboardService(store, index, hub, connectors);
+  const users = new Users(db, config.adminEmails);
+  const secrets = new Secrets(db, config.secrets.keyring);
+  const rotated = secrets.rotate();
+  if (rotated.resealed)
+    console.log(`[patchbay] re-encrypted ${rotated.resealed} secrets with the current SECRETS_KEY`);
+  if (rotated.undecryptable) {
+    console.warn(`[patchbay] ${rotated.undecryptable} secrets cannot be decrypted with the configured keys`);
+  }
+  // DataService is built before DashboardService, which decides about credentials, so the resolver is bound late.
+  let dashboards: DashboardService | undefined;
+  const data = new DataService(connectors, store, pipeline, {
+    credentials: (target, dataset) => dashboards!.credentialsFor(target, dataset),
+    ...(overrides.upstreamTest ? { upstreamTest: overrides.upstreamTest } : {}),
+  });
+  const hub = new LiveHub(data, async (id) => {
+    const meta = await store.readMeta(id);
+    const doc = meta ? await store.readDoc(id) : null;
+    return meta && doc ? { doc, ownerId: meta.ownerId } : null;
+  });
+  dashboards = new DashboardService(store, index, hub, connectors, {
+    store: secrets,
+    mode: config.secrets.mode,
+    users,
+  });
   return {
     config,
     db,
-    users: new Users(db, config.adminEmails),
+    users,
     tokens: new Tokens(db),
+    secrets,
     store,
     index,
     connectors,

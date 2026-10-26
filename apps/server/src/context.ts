@@ -2,6 +2,7 @@ import { isIP } from 'node:net';
 import type { Context } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
+import type { Secrets } from './auth/secrets.ts';
 import { SCOPES, type Tokens, type VerifiedToken } from './auth/tokens.ts';
 import { SESSION_COOKIE, type UserRow, type Users } from './auth/users.ts';
 import type { Config, TrustProxy } from './config.ts';
@@ -21,6 +22,7 @@ export interface Deps {
   db: DB;
   users: Users;
   tokens: Tokens;
+  secrets: Secrets;
   store: FolderStore;
   index: DashboardIndex;
   connectors: ConnectorService;
@@ -72,6 +74,8 @@ export function identify(deps: Deps) {
       user,
       // Admin powers are for interactive sessions only, never for tokens.
       isAdmin: token ? false : deps.users.isAdmin(user),
+      viaToken: token !== null,
+      readOnly: token !== null && !token.scopes.includes(SCOPES.write),
       editKey: c.req.header('x-edit-key') || undefined,
     });
     await next();

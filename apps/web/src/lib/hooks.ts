@@ -1,13 +1,41 @@
-import type { ConnectorInfo, PublicUser, ThemeMode } from '@patchbay/core';
+import type { ConnectorInfo, PublicUser, SecretMode, ThemeMode } from '@patchbay/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useSyncExternalStore } from 'react';
 import { api } from './api.ts';
+import type { SecretsList } from './secrets.ts';
+
+interface MeResponse {
+  user: PublicUser | null;
+  /** The instance switch for secrets, and whether this user may store and use them. */
+  secrets: SecretMode;
+  canUseSecrets: boolean;
+}
+
+const meQuery = {
+  queryKey: ['me'],
+  queryFn: () => api<MeResponse>('/api/me'),
+  staleTime: 60_000,
+};
 
 export function useMe() {
+  return useQuery({ ...meQuery, select: (r: MeResponse) => r.user });
+}
+
+/** Whether this instance offers secrets, and to this user. */
+export function useSecretsStatus() {
   return useQuery({
-    queryKey: ['me'],
-    queryFn: () => api<{ user: PublicUser | null }>('/api/me').then((r) => r.user),
-    staleTime: 60_000,
+    ...meQuery,
+    select: (r: MeResponse) => ({ mode: r.secrets ?? 'off', canUseSecrets: Boolean(r.canUseSecrets) }),
+  });
+}
+
+/** The signed-in user's secrets (metadata only; values never leave the server). */
+export function useSecrets(enabled = true) {
+  return useQuery({
+    queryKey: ['secrets'],
+    queryFn: () => api<SecretsList>('/api/secrets'),
+    enabled,
+    staleTime: 30_000,
   });
 }
 

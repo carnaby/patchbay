@@ -118,6 +118,27 @@ const MIGRATIONS: string[] = [
   `,
   // 2: remember which grant a code produced, so replaying the code can revoke it (RFC 6749 §4.1.2).
   `ALTER TABLE oauth_codes ADD COLUMN grant_id TEXT;`,
+  // 3: credentials for HTTP sources (proposal 0003). Per user like tokens, never in dashboard folders, which are
+  // copied, inspected and deleted by hand. Only ciphertext is stored; see auth/secrets.ts.
+  `
+  CREATE TABLE secrets (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT NOT NULL COLLATE NOCASE,
+    origin       TEXT NOT NULL,
+    path_prefix  TEXT NOT NULL DEFAULT '/',
+    placement    TEXT NOT NULL CHECK (placement IN ('bearer', 'header', 'query')),
+    param_name   TEXT,
+    key_id       TEXT NOT NULL,
+    sealed       BLOB NOT NULL,
+    revision     INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    last_used_at TEXT,
+    UNIQUE (user_id, name)
+  );
+  CREATE INDEX secrets_user ON secrets(user_id);
+  `,
 ];
 
 export function openDatabase(file: string): DB {

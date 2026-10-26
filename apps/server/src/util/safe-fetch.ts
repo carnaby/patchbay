@@ -7,7 +7,8 @@
  */
 import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
 import { BlockList, isIP } from 'node:net';
-import { Agent, fetch as undiciFetch } from 'undici';
+import { bindingLabel, bindingMatches, type SecretPlacement } from '@patchbay/core';
+import { Agent, type Dispatcher, fetch as undiciFetch } from 'undici';
 import { HttpError } from './errors.ts';
 
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -139,26 +140,256 @@ export async function fetchJson<T = unknown>(url: string, options: FetchJsonOpti
   }
 }
 
-/** Fetches JSON from an untrusted, user-supplied URL with SSRF protection. */
-export async function safeFetchJson(raw: string, redirects = 3): Promise<unknown> {
+/** A decrypted secret for one request. Never stored, logged, cached or passed to pipeline workers. */
+export interface Credential {
+  id: string;
+  revision: number;
+  origin: string;
+  pathPrefix: string;
+  placement: SecretPlacement;
+  paramName: string | null;
+  value: string;
+}
+
+export interface SafeFetchOptions {
+  /** Sent only on hops whose URL matches every credential's binding. */
+  credentials?: Credential[];
+  redirects?: number;
+  /** Test seams, see `UpstreamTestSeam`. */
+  test?: UpstreamTestSeam;
+}
+
+/**
+ * Tests only, never read from the environment: `dispatcher` routes requests to a local server (production always
+ * uses `guardedAgent`, so its DNS-level address check always applies; the URL-level checks run either way), and
+ * `timeoutMs` shortens the request timeout.
+ */
+export interface UpstreamTestSeam {
+  dispatcher?: Dispatcher;
+  timeoutMs?: number;
+}
+
+const REDACTED = '[redacted]';
+
+/** Significant digits shorter than this are too common to treat a number as an echo of a digits-only value. */
+const MIN_NEEDLE = 8;
+
+/**
+ * Base64 and base64url of a value as it appears inside a longer encoded string, for each of the three byte
+ * alignments: only the characters that depend on the value's bytes alone. This also finds `user:value` in a Basic
+ * authorization header an API echoes.
+ */
+function base64Cores(value: string): string[] {
+  const bytes = Buffer.from(value, 'utf8');
+  return [0, 1, 2].flatMap((pad) => {
+    const encoded = Buffer.concat([Buffer.alloc(pad), bytes]).toString('base64');
+    const core = encoded.slice(Math.ceil((8 * pad) / 6), Math.floor((8 * (pad + bytes.length)) / 6));
+    return [core, core.replace(/\+/g, '-').replace(/\//g, '_')];
+  });
+}
+
+interface Matcher {
+  /** Lowercased strings whose presence in a normalised candidate means an echo. */
+  needles: string[];
+  /** The value as is and in the two common URL encodings, matched without case, for a readable partial redaction. */
+  spans: RegExp;
+}
+
+function matcher(values: string[]): Matcher {
+  const needles = values.flatMap((v) => {
+    const significant = /^\d+$/.test(v) ? v.replace(/^0+/, '') : '';
+    return [v, ...base64Cores(v), ...(significant.length >= MIN_NEEDLE ? [significant] : [])];
+  });
+  const spans = values
+    .flatMap((v) => [v, encodeURIComponent(v), new URLSearchParams({ v }).toString().slice(2)])
+    // Longest first, so a shorter form never splits a longer one.
+    .sort((a, b) => b.length - a.length)
+    .map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return {
+    needles: [...new Set(needles.map((n) => n.toLowerCase()))].filter((n) => n.length > 0),
+    spans: new RegExp(spans.join('|'), 'gi'),
+  };
+}
+
+/** Decodes every run of %XX, leaving malformed escapes as they are; invalid UTF-8 becomes U+FFFD. */
+function percentDecode(s: string): string {
+  return s.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) =>
+    Buffer.from(run.match(/%[0-9a-fA-F]{2}/g)!.map((h) => Number.parseInt(h.slice(1), 16))).toString('utf8'),
+  );
+}
+
+/**
+ * The spellings a string may hide a value in, lowercased: as is, with JSON escapes undone, and percent-decoded
+ * repeatedly (double encoding) with and without "+" as a space.
+ */
+function candidates(s: string): string[] {
+  if (!/[%\\+]/.test(s)) return [s.toLowerCase()];
+  const out = new Set([s]);
+  const unescaped = s
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replace(/\\\//g, '/');
+  out.add(unescaped);
+  for (const start of [unescaped, unescaped.replace(/\+/g, ' ')]) {
+    let current = start;
+    out.add(current);
+    for (let i = 0; i < 4; i++) {
+      const next = percentDecode(current);
+      if (next === current) break;
+      out.add(next);
+      current = next;
+    }
+  }
+  return [...out].map((c) => c.toLowerCase());
+}
+
+function contains(m: Matcher, s: string): boolean {
+  return candidates(s).some((c) => m.needles.some((n) => c.includes(n)));
+}
+
+/**
+ * Removes a value from a string: the plain spellings are replaced in place so the rest stays readable; if any other
+ * spelling is still found (another encoding, base64, escapes), the whole string is replaced.
+ */
+function scrub(m: Matcher, s: string): string {
+  if (!contains(m, s)) return s;
+  const partial = s.replace(m.spans, REDACTED);
+  return contains(m, partial) ? REDACTED : partial;
+}
+
+/** Last guard for messages from a credentialed request: no known spelling of a value survives. */
+export function redact(text: string, values: string[]): string {
+  return scrub(matcher(values), text);
+}
+
+/**
+ * Replaces echoed secrets in parsed JSON (some APIs reflect credentials in /whoami answers, error payloads or
+ * request dumps). Parsed strings are matched after undoing JSON escapes and URL encodings, without case, and
+ * against base64 of the value. What is not caught: a partial echo (the last four characters, say) and any other
+ * transformation (hashing, hex, splitting across fields).
+ */
+export function redactJson(value: unknown, values: string[]): unknown {
+  const m = matcher(values);
+  const walk = (v: unknown): unknown => {
+    if (typeof v === 'string') return scrub(m, v);
+    if (typeof v === 'number' || typeof v === 'bigint') return contains(m, String(v)) ? REDACTED : v;
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') {
+      return Object.fromEntries(Object.entries(v).map(([k, x]) => [scrub(m, k), walk(x)]));
+    }
+    return v;
+  };
+  return walk(value);
+}
+
+/** The request for one hop: a copy of the URL (plus a query secret) and the headers. The document URL is untouched. */
+function attach(url: URL, credentials: Credential[]) {
+  const headers: Record<string, string> = { accept: 'application/json', 'user-agent': USER_AGENT };
+  let search = url.search;
+  for (const c of credentials) {
+    if (c.placement === 'bearer') headers.authorization = `Bearer ${c.value}`;
+    else if (c.placement === 'header') headers[c.paramName!.toLowerCase()] = c.value;
+    else {
+      // Appended as text, so the document's own query string keeps its exact encoding.
+      const pair = `${encodeURIComponent(c.paramName!)}=${encodeURIComponent(c.value)}`;
+      search = search ? `${search}&${pair}` : `?${pair}`;
+    }
+  }
+  const target = new URL(url.href);
+  target.search = search;
+  return { target, headers };
+}
+
+/**
+ * A redirect that keeps the query string (an added trailing slash, say) brings back the query secret we sent. That
+ * parameter is removed so the secret can be attached again; only when its value is exactly the secret's, so a
+ * redirect that sets the parameter to anything else still fails the binding check. Other parameters keep their
+ * exact encoding.
+ */
+function withoutOwnQuerySecrets(url: URL, credentials: Credential[]): URL {
+  const own = credentials.filter((c) => c.placement === 'query' && c.paramName);
+  if (own.length === 0 || !url.search) return url;
+  const decode = (s: string) => {
+    try {
+      return decodeURIComponent(s.replace(/\+/g, ' '));
+    } catch {
+      return s;
+    }
+  };
+  const pairs = url.search.slice(1).split('&');
+  const kept = pairs.filter((pair) => {
+    const eq = pair.indexOf('=');
+    const name = decode(eq < 0 ? pair : pair.slice(0, eq)).toLowerCase();
+    const value = eq < 0 ? '' : decode(pair.slice(eq + 1));
+    return !own.some((c) => c.paramName!.toLowerCase() === name && c.value === value);
+  });
+  if (kept.length === pairs.length) return url;
+  const next = new URL(url.href);
+  next.search = kept.length ? `?${kept.join('&')}` : '';
+  return next;
+}
+
+/** Fetches JSON from an untrusted, user-supplied URL with SSRF protection, optionally with credentials. */
+export async function safeFetchJson(raw: string, options: SafeFetchOptions = {}): Promise<unknown> {
+  const credentials = options.credentials ?? [];
+  if (credentials.length === 0) return fetchHops(raw, [], options);
+  const values = credentials.map((c) => c.value);
+  try {
+    return redactJson(await fetchHops(raw, credentials, options), values);
+  } catch (e) {
+    // New errors without a cause: nothing that might hold request options reaches a logger.
+    const err = e instanceof HttpError ? e : new HttpError(502, 'Request failed');
+    throw new HttpError(err.status, redact(err.message, values));
+  }
+}
+
+async function fetchHops(
+  raw: string,
+  credentials: Credential[],
+  options: SafeFetchOptions,
+): Promise<unknown> {
+  const redirects = options.redirects ?? 3;
   let url = await assertPublicUrl(raw);
   for (let hop = 0; hop <= redirects; hop++) {
-    const res = await undiciFetch(url, {
+    for (const c of credentials) {
+      if (bindingMatches(c, url.href).ok) continue;
+      // Not retried without credentials either: an anonymous request to wherever the API pointed is not what the
+      // user configured.
+      if (hop === 0) throw new HttpError(400, 'Credentials for this source are bound to another address.');
+      throw new HttpError(
+        502,
+        `The API redirected to another address. Credentials are only sent to ${bindingLabel(c)}, so the request was stopped.`,
+      );
+    }
+    const { target, headers } = attach(url, credentials);
+    const res = await undiciFetch(target, {
       redirect: 'manual',
-      dispatcher: guardedAgent,
-      headers: { accept: 'application/json', 'user-agent': USER_AGENT },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      dispatcher: options.test?.dispatcher ?? guardedAgent,
+      headers,
+      signal: AbortSignal.timeout(options.test?.timeoutMs ?? TIMEOUT_MS),
     }).catch((e: unknown) => {
       const cause = (e as { cause?: { code?: string } }).cause;
       if (cause?.code === 'EBLOCKED')
         throw new HttpError(400, 'URLs pointing to private or local networks are not allowed');
+      // Client errors can describe the request; with credentials, say only what kind of failure it was.
+      if (credentials.length) {
+        throw new HttpError(
+          502,
+          (e as Error)?.name === 'TimeoutError' ? 'Request timed out' : 'Request failed',
+        );
+      }
       throw new HttpError(502, `Request failed: ${e instanceof Error ? e.message : String(e)}`);
     });
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
+      await res.body?.cancel().catch(() => {});
+      // Resolved against the document's URL, never against the request URL that carried a query secret.
       url = await assertPublicUrl(new URL(res.headers.get('location')!, url).toString());
+      url = withoutOwnQuerySecrets(url, credentials);
       continue;
     }
-    if (!res.ok) throw new HttpError(502, `Upstream responded ${res.status}`);
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      throw new HttpError(502, `Upstream responded ${res.status}`);
+    }
     const text = await readCapped(res as unknown as Response, MAX_BYTES);
     try {
       return JSON.parse(text);

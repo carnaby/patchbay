@@ -6,18 +6,37 @@
 import {
   type Actor,
   applyOps,
+  BindingError,
+  bindingMatches,
+  bindingMismatchMessage,
+  CONFIRM_PUBLIC_SECRETS,
+  CREDENTIAL_ERRORS,
   type DashboardDoc,
   type DashboardEnvelope,
   type DashboardMeta,
+  type Dataset,
+  describePlacement,
+  docSecretIds,
   inferTable,
+  MAX_SECRETS_PER_USER,
   OpError,
+  parseBinding,
   parseDashboard,
+  placementConflict,
+  type SecretInfo,
+  type SecretMode,
+  type SecretPlacement,
+  secretParamIssue,
+  secretRefChanges,
+  secretValueIssue,
+  sourceSecretIds,
   type UploadedFile,
   type VersionInfo,
   type Visibility,
 } from '@patchbay/core';
 import Papa from 'papaparse';
-import type { UserRow } from '../auth/users.ts';
+import type { Secrets } from '../auth/secrets.ts';
+import type { UserRow, Users } from '../auth/users.ts';
 import { unknownConnectorMessage } from '../connectors/registry.ts';
 import { now } from '../db.ts';
 import type { LiveHub } from '../live/hub.ts';
@@ -25,16 +44,51 @@ import type { DashboardIndex } from '../store/dashboard-index.ts';
 import type { FolderStore, StoredMeta } from '../store/folder-store.ts';
 import { newDashboardId, newId, randomToken, safeEqual, sha256 } from '../util/crypto.ts';
 import { badRequest, forbidden, HttpError, notFound, unauthorized } from '../util/errors.ts';
+import type { Credential } from '../util/safe-fetch.ts';
+import type { DashboardTarget } from './data.ts';
 import { buildTemplate } from './templates.ts';
 
 export interface Principal {
   user: UserRow | null;
   isAdmin: boolean;
+  /**
+   * A bearer token (OAuth access token or PAT) authenticated the request, i.e. an agent or a script rather than a
+   * person in the web app. Tokens can use secrets but never manage them or publish data fetched with them.
+   */
+  viaToken: boolean;
+  /** The token lacks the dashboards:write scope. */
+  readOnly?: boolean | undefined;
   /** Edit key presented for an anonymous dashboard (header X-Edit-Key). */
   editKey?: string | undefined;
   /** Set when the request comes through MCP, e.g. "Claude". */
   mcpClient?: string | undefined;
 }
+
+/** What the web app sends after the user confirmed publishing data fetched with secrets; tokens cannot. */
+export interface PublicSecretsConfirmation {
+  confirmPublicSecrets?: boolean | undefined;
+}
+
+export interface SecretsStatus {
+  mode: SecretMode;
+  /** Whether this user may store and use secrets right now. */
+  canUseSecrets: boolean;
+}
+
+export interface SecretListItem extends SecretInfo {
+  /** "Authorization: Bearer", "Header X-API-Key", "Query parameter api_key". */
+  sentAs: string;
+  usedBy?: { dashboardId: string; dashboardTitle: string; datasetId: string; datasetName: string }[];
+}
+
+// The 428 code and the generic credential errors live in core, because the web app matches on exactly these strings.
+export { CONFIRM_PUBLIC_SECRETS, CREDENTIAL_ERRORS } from '@patchbay/core';
+
+const CLAIM_FIRST = 'Sign in and claim this dashboard to use secrets.';
+const TOKEN_PUBLISH =
+  'Make it public in the web app; it would show data fetched with your secrets to anyone. Tokens cannot do this.';
+const TOKEN_PUBLIC_EDIT =
+  'This dashboard is public and shows data fetched with secrets, so agents and tokens cannot change it: a person has to make this change in the Patchbay web app. Ask the user to do it there, or to make the dashboard private first.';
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_FILES = 20;
@@ -49,6 +103,26 @@ export class ConflictError extends HttpError {
   }
 }
 
+interface SecretWriteOptions extends PublicSecretsConfirmation {
+  /** Restores skip the existence and binding checks; use time reports dead references instead. */
+  restore?: boolean;
+}
+
+function withoutSecrets(d: Dataset): Dataset {
+  if (d.source.kind !== 'http' || !d.source.secrets) return d;
+  const { secrets: _removed, ...source } = d.source;
+  return { ...d, source };
+}
+
+function secretName(raw: string): string {
+  const name = raw.trim();
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what is refused
+  if (name.length < 1 || name.length > 80 || /[\u0000-\u001f\u007f]/.test(name)) {
+    throw badRequest('Names are 1-80 characters without line breaks');
+  }
+  return name;
+}
+
 export function actorOf(p: Principal): Actor {
   if (p.mcpClient)
     return { kind: 'mcp', ...(p.user ? { userId: p.user.id } : {}), label: `${p.mcpClient} (MCP)` };
@@ -61,17 +135,26 @@ export class DashboardService {
   private readonly index: DashboardIndex;
   private readonly hub: LiveHub;
   private readonly connectors: { has(id: string): boolean };
+  private readonly secrets: Secrets;
+  private readonly secretMode: SecretMode;
+  private readonly users: Users;
+  /** Secret ids whose decryption failure was already logged; once per secret per process is enough. */
+  private readonly undecryptableLogged = new Set<string>();
 
   constructor(
     store: FolderStore,
     index: DashboardIndex,
     hub: LiveHub,
     connectors: { has(id: string): boolean },
+    secrets: { store: Secrets; mode: SecretMode; users: Users },
   ) {
     this.store = store;
     this.index = index;
     this.hub = hub;
     this.connectors = connectors;
+    this.secrets = secrets.store;
+    this.secretMode = secrets.mode;
+    this.users = secrets.users;
   }
 
   /**
@@ -188,11 +271,18 @@ export class DashboardService {
       template?: string | undefined;
       doc?: DashboardDoc;
       visibility?: Visibility | undefined;
-    },
+      changes?: string[];
+    } & PublicSecretsConfirmation,
   ): Promise<{ envelope: DashboardEnvelope; editKey?: string }> {
     const doc = input.doc ? parseDashboard(input.doc) : buildTemplate(input.template ?? 'blank', input.title);
     if (input.visibility === 'private' && !p.user)
       throw badRequest('Anonymous dashboards are always public. Sign in to create private ones.');
+    const secretIds = docSecretIds(doc);
+    if (secretIds.length) {
+      if (!p.user) throw badRequest(CLAIM_FIRST);
+      if (input.visibility === 'public')
+        this.assertMayShowSecrets(p, p.user.id, secretIds, input, TOKEN_PUBLISH);
+    }
     const id = newDashboardId();
     const at = now();
     const editKey = p.user ? undefined : randomToken('pbk_', 24);
@@ -208,9 +298,12 @@ export class DashboardService {
       lastViewedAt: at,
       lastActor: actorOf(p),
     };
-    await this.store.create(meta, doc, actorOf(p), [
-      input.template ? `Created from template "${input.template}"` : 'Created',
-    ]);
+    await this.store.create(
+      meta,
+      doc,
+      actorOf(p),
+      input.changes ?? [input.template ? `Created from template "${input.template}"` : 'Created'],
+    );
     this.index.upsert(meta, { title: doc.title, widgets: doc.widgets.length });
     const principal = editKey ? { ...p, editKey } : p;
     return { envelope: this.envelope(meta, doc, principal), ...(editKey ? { editKey } : {}) };
@@ -221,11 +314,13 @@ export class DashboardService {
     id: string,
     p: Principal,
     mutate: (doc: DashboardDoc, meta: StoredMeta) => { doc: DashboardDoc; changes: string[] },
+    secretOptions: SecretWriteOptions = {},
   ): Promise<{ envelope: DashboardEnvelope; changes: string[] }> {
     const result = await this.store.withLock(id, async () => {
       const { meta, doc } = await this.load(id);
       if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
       const next = mutate(doc, meta);
+      this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
       const actor = actorOf(p);
       const updated: StoredMeta = {
         ...meta,
@@ -254,16 +349,22 @@ export class DashboardService {
     rawDoc: unknown,
     baseVersion: number,
     changes: string[] = ['Edited in the editor'],
+    options: PublicSecretsConfirmation = {},
   ) {
     const doc = parseDashboard(rawDoc);
-    return this.commit(id, p, (current, meta) => {
-      if (meta.version !== baseVersion) {
-        throw new ConflictError(this.envelope(meta, current, p));
-      }
-      const [bad] = this.unknownConnectors(current, doc);
-      if (bad) throw badRequest(`Dataset "${bad.datasetId}": ${unknownConnectorMessage(bad.connector)}`);
-      return { doc, changes };
-    });
+    return this.commit(
+      id,
+      p,
+      (current, meta) => {
+        if (meta.version !== baseVersion) {
+          throw new ConflictError(this.envelope(meta, current, p));
+        }
+        const [bad] = this.unknownConnectors(current, doc);
+        if (bad) throw badRequest(`Dataset "${bad.datasetId}": ${unknownConnectorMessage(bad.connector)}`);
+        return { doc, changes };
+      },
+      options,
+    );
   }
 
   /** Semantic ops (agents, or editor batches). Ops address ids, so they apply to the latest version. */
@@ -271,7 +372,7 @@ export class DashboardService {
     id: string,
     p: Principal,
     ops: unknown[],
-    options: { dryRun?: boolean; baseVersion?: number } = {},
+    options: { dryRun?: boolean; baseVersion?: number } & PublicSecretsConfirmation = {},
   ) {
     if (!Array.isArray(ops) || ops.length === 0) throw badRequest('Provide at least one operation');
     if (ops.length > 100) throw badRequest('At most 100 operations per batch');
@@ -280,22 +381,38 @@ export class DashboardService {
       if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
       const result = applyOps(doc, ops);
       this.checkOpsConnectors(doc, result.doc, ops);
+      // A dry run answers exactly like the save would, so agents learn about secret rules before saving.
+      this.checkSecretRefs(meta, doc, result.doc, p, options);
       return { envelope: this.envelope(meta, result.doc, p), changes: result.changes, dryRun: true };
     }
-    return this.commit(id, p, (doc, meta) => {
-      if (options.baseVersion !== undefined && options.baseVersion !== meta.version) {
-        throw new ConflictError(this.envelope(meta, doc, p));
-      }
-      const result = applyOps(doc, ops);
-      this.checkOpsConnectors(doc, result.doc, ops);
-      return result;
-    });
+    return this.commit(
+      id,
+      p,
+      (doc, meta) => {
+        if (options.baseVersion !== undefined && options.baseVersion !== meta.version) {
+          throw new ConflictError(this.envelope(meta, doc, p));
+        }
+        const result = applyOps(doc, ops);
+        this.checkOpsConnectors(doc, result.doc, ops);
+        return result;
+      },
+      options,
+    );
   }
 
-  async setVisibility(id: string, p: Principal, visibility: Visibility) {
+  async setVisibility(
+    id: string,
+    p: Principal,
+    visibility: Visibility,
+    options: PublicSecretsConfirmation = {},
+  ) {
     const result = await this.store.withLock(id, async () => {
       const { meta, doc } = await this.load(id);
       if (!p.user || meta.ownerId !== p.user.id) throw forbidden('Only the owner can change visibility');
+      const secretIds = docSecretIds(doc);
+      if (visibility === 'public' && meta.visibility !== 'public' && secretIds.length) {
+        this.assertMayShowSecrets(p, meta.ownerId, secretIds, options, TOKEN_PUBLISH);
+      }
       const updated = { ...meta, visibility, updatedAt: now() };
       await this.store.writeMeta(updated);
       this.index.upsert(updated, { title: doc.title, widgets: doc.widgets.length });
@@ -319,6 +436,10 @@ export class DashboardService {
         throw forbidden('This dashboard already has an owner');
       }
       if (!this.canEdit(meta, p)) throw forbidden('A valid edit key is required to claim this dashboard');
+      // Anonymous documents never hold secret references (every write checks it), so this cannot happen. If a
+      // folder was edited by hand, refuse: claiming would let the claimant's secrets resolve in a prepared document.
+      if (docSecretIds(doc).length)
+        throw forbidden('This dashboard references secrets and cannot be claimed');
       const updated: StoredMeta = {
         ...meta,
         ownerId: p.user!.id,
@@ -333,8 +454,15 @@ export class DashboardService {
   }
 
   async duplicate(id: string, p: Principal) {
-    const { doc } = await this.loadViewable(id, p);
-    const created = await this.create(p, { doc: { ...doc, title: `${doc.title} (copy)` } });
+    const { meta, doc } = await this.loadViewable(id, p);
+    // Secrets belong to the dashboard's owner. Anyone else's copy would hold dead references (or be rejected, when
+    // anonymous), so they are removed and the copy loads its URLs without credentials.
+    const strip = !(p.user && meta.ownerId === p.user.id) && docSecretIds(doc).length > 0;
+    const datasets = strip ? doc.datasets.map(withoutSecrets) : doc.datasets;
+    const created = await this.create(p, {
+      doc: { ...doc, datasets, title: `${doc.title} (copy)` },
+      ...(strip ? { changes: ['Created', 'Removed secret references (secrets belong to their owner)'] } : {}),
+    });
     // Copy only files the copied datasets actually use: unreferenced uploads stay private to editors.
     const used = new Set(doc.datasets.flatMap((d) => (d.source.kind === 'upload' ? [d.source.fileId] : [])));
     for (const file of (await this.store.listFiles(id)).filter((f) => used.has(f.id))) {
@@ -359,13 +487,20 @@ export class DashboardService {
     return this.store.listVersions(id);
   }
 
-  async restore(id: string, p: Principal, version: number) {
+  async restore(id: string, p: Principal, version: number, options: PublicSecretsConfirmation = {}) {
     const stored = await this.store.readVersion(id, version);
     if (!stored) throw notFound(`Version ${version} not found`);
-    return this.commit(id, p, () => ({
-      doc: parseDashboard(stored.doc),
-      changes: [`Restored version ${version}`],
-    }));
+    // A restored reference to a deleted or rebound secret shows "not available" at use time instead of blocking the
+    // restore; the anonymous invariant and the public-dashboard rules still apply.
+    return this.commit(
+      id,
+      p,
+      () => ({
+        doc: parseDashboard(stored.doc),
+        changes: [`Restored version ${version}`],
+      }),
+      { ...options, restore: true },
+    );
   }
 
   listMine(p: Principal): DashboardMeta[] {
@@ -436,6 +571,293 @@ export class DashboardService {
     const users = doc.datasets.filter((d) => d.source.kind === 'upload' && d.source.fileId === fileId);
     if (users.length) throw badRequest(`File is used by dataset(s): ${users.map((d) => d.name).join(', ')}`);
     await this.store.deleteFile(id, fileId);
+  }
+
+  /** The dashboard a stored dataset of `id` resolves against, after checking the caller may view it. */
+  async target(id: string, p: Principal): Promise<DashboardTarget> {
+    const { meta } = await this.loadViewable(id, p);
+    return { id, ownerId: meta.ownerId };
+  }
+
+  /**
+   * Where an unsaved dataset definition may be previewed. Raw uploads and secrets are for editors only: a preview
+   * resolves secrets against the dashboard's owner, so it must be the owner (or their agent) asking. Without a
+   * dashboard, only the caller's own secrets can be used.
+   */
+  async previewTarget(
+    p: Principal,
+    dashboardId: string | undefined,
+    dataset: Dataset,
+    options: { requireEdit?: boolean } = {},
+  ): Promise<DashboardTarget> {
+    const upload = dataset.source.kind === 'upload';
+    // A preview sends the credentials to a URL of the caller's choosing (within the binding) without saving
+    // anything, so it is a use of the secret, not a read: read-only tokens may not do it.
+    if (p.readOnly && sourceSecretIds(dataset.source).length > 0) {
+      throw forbidden(
+        'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.',
+      );
+    }
+    if (!dashboardId) {
+      if (upload) throw badRequest('Uploaded files need dashboardId');
+      if (!p.user) throw unauthorized();
+      return { id: 'preview00', ownerId: p.user.id };
+    }
+    const { meta } = await this.loadViewable(dashboardId, p);
+    const needsEdit = options.requireEdit || upload || sourceSecretIds(dataset.source).length > 0;
+    if (needsEdit && !this.canEdit(meta, p)) {
+      if (options.requireEdit) throw forbidden('You cannot edit this dashboard');
+      throw forbidden(
+        upload
+          ? 'Only editors of this dashboard can preview its uploaded files'
+          : 'Only editors of this dashboard can preview sources that use secrets',
+      );
+    }
+    return { id: dashboardId, ownerId: meta.ownerId };
+  }
+
+  // Secrets ------------------------------------------------------------------------------------------------------
+
+  /** The instance switch, applied at use time so turning it off (or losing admin rights) takes effect at once. */
+  private mayUseSecrets(userId: string | null): boolean {
+    if (!userId || this.secretMode === 'off') return false;
+    return this.secretMode === 'users' || this.users.isAdmin(this.users.byId(userId));
+  }
+
+  private secretsRefusal(): string {
+    return this.secretMode === 'admins'
+      ? 'This instance only lets administrators store and use secrets.'
+      : 'Secrets are turned off on this server.';
+  }
+
+  secretsStatus(user: UserRow | null): SecretsStatus {
+    return { mode: this.secretMode, canUseSecrets: this.mayUseSecrets(user?.id ?? null) };
+  }
+
+  /** Values are set only in the web app: never through a model, its provider's logs or a chat transcript. */
+  private secretsSession(p: Principal): UserRow {
+    if (!p.user) throw unauthorized();
+    if (p.viaToken)
+      throw forbidden('Secrets can only be added or changed in the web app, never with a token.');
+    return p.user;
+  }
+
+  private secretsWriter(p: Principal): UserRow {
+    const user = this.secretsSession(p);
+    if (!this.mayUseSecrets(user.id)) throw forbidden(this.secretsRefusal());
+    return user;
+  }
+
+  /**
+   * The caller's secrets: metadata only, never a value or anything derived from it. Allowed whatever the switch
+   * says, so users can always see and clean up what they stored.
+   */
+  async listSecrets(
+    p: Principal,
+    options: { usedBy?: boolean } = {},
+  ): Promise<SecretsStatus & { secrets: SecretListItem[] }> {
+    if (!p.user) throw unauthorized();
+    const infos = this.secrets.list(p.user.id);
+    const usedBy = new Map<string, NonNullable<SecretListItem['usedBy']>>();
+    if (options.usedBy && infos.length) {
+      for (const d of this.index.listByOwner(p.user.id)) {
+        const doc = await this.store.readDoc(d.id).catch(() => null);
+        for (const ds of doc?.datasets ?? []) {
+          for (const secretId of sourceSecretIds(ds.source)) {
+            const list = usedBy.get(secretId) ?? [];
+            list.push({
+              dashboardId: d.id,
+              dashboardTitle: doc!.title,
+              datasetId: ds.id,
+              datasetName: ds.name,
+            });
+            usedBy.set(secretId, list);
+          }
+        }
+      }
+    }
+    return {
+      ...this.secretsStatus(p.user),
+      secrets: infos.map((info) => ({
+        ...info,
+        sentAs: describePlacement(info),
+        ...(options.usedBy ? { usedBy: usedBy.get(info.id) ?? [] } : {}),
+      })),
+    };
+  }
+
+  createSecret(
+    p: Principal,
+    input: {
+      name: string;
+      sendTo: string;
+      placement: SecretPlacement;
+      paramName?: string | null;
+      value: string;
+    },
+  ): SecretInfo {
+    const user = this.secretsWriter(p);
+    const name = secretName(input.name);
+    let binding: { origin: string; pathPrefix: string };
+    try {
+      binding = parseBinding(input.sendTo);
+    } catch (e) {
+      if (e instanceof BindingError) throw badRequest(e.message);
+      throw e;
+    }
+    const paramName = input.paramName?.trim() || null;
+    const paramIssue = secretParamIssue(input.placement, paramName);
+    if (paramIssue) throw badRequest(paramIssue);
+    const value = input.value.trim();
+    const valueIssue = secretValueIssue(value, input.placement);
+    if (valueIssue) throw badRequest(valueIssue);
+    if (this.secrets.count(user.id) >= MAX_SECRETS_PER_USER) {
+      throw badRequest(
+        `You can store up to ${MAX_SECRETS_PER_USER} secrets. Delete one you no longer use first.`,
+      );
+    }
+    return this.secrets.create(user.id, { name, ...binding, placement: input.placement, paramName }, value);
+  }
+
+  /** The binding and placement stay: changing where a value may be sent is not an operation. */
+  replaceSecretValue(p: Principal, id: string, rawValue: string): SecretInfo {
+    const user = this.secretsWriter(p);
+    const info = this.secrets.info(user.id, id);
+    if (!info) throw notFound('Secret not found');
+    const value = rawValue.trim();
+    const issue = secretValueIssue(value, info.placement);
+    if (issue) throw badRequest(issue);
+    return this.secrets.replaceValue(user.id, id, value)!;
+  }
+
+  renameSecret(p: Principal, id: string, rawName: string): SecretInfo {
+    const user = this.secretsWriter(p);
+    const info = this.secrets.rename(user.id, id, secretName(rawName));
+    if (!info) throw notFound('Secret not found');
+    return info;
+  }
+
+  /** Allowed even when secrets are turned off, so users can always clean up. */
+  deleteSecret(p: Principal, id: string) {
+    const user = this.secretsSession(p);
+    if (!this.secrets.remove(user.id, id)) throw notFound('Secret not found');
+  }
+
+  /**
+   * The decrypted credentials of a dataset, resolved against the dashboard's owner: never against the viewer, the
+   * editor or the agent asking. Throws an HttpError with a generic message, and a dataset whose secrets cannot all
+   * be resolved is never fetched without them.
+   */
+  async credentialsFor(target: DashboardTarget, dataset: Dataset): Promise<Credential[]> {
+    const ids = sourceSecretIds(dataset.source);
+    if (ids.length === 0 || dataset.source.kind !== 'http') return [];
+    const ownerId = target.ownerId;
+    if (ownerId === null) throw new HttpError(403, CREDENTIAL_ERRORS.unavailable);
+    if (!this.mayUseSecrets(ownerId)) throw new HttpError(403, CREDENTIAL_ERRORS.off);
+    const unsealed = ids.map((id) => this.secrets.unseal(ownerId, id));
+    const found = unsealed.filter((u) => u !== null);
+    if (found.length !== ids.length) throw new HttpError(403, CREDENTIAL_ERRORS.unavailable);
+    const url = dataset.source.url;
+    if (found.some((u) => !bindingMatches(u.info, url).ok)) throw new HttpError(403, CREDENTIAL_ERRORS.bound);
+    for (const u of found) {
+      if (u.value !== null) continue;
+      if (!this.undecryptableLogged.has(u.info.id)) {
+        this.undecryptableLogged.add(u.info.id);
+        console.warn(`[patchbay] secret ${u.info.id} cannot be decrypted with the configured SECRETS_KEY`);
+      }
+      throw new HttpError(403, CREDENTIAL_ERRORS.undecryptable);
+    }
+    if (placementConflict(found.map((u) => u.info))) throw new HttpError(403, CREDENTIAL_ERRORS.conflict);
+    for (const u of found) this.secrets.markUsed(u.info);
+    return found.map((u) => ({
+      id: u.info.id,
+      revision: u.revision,
+      origin: u.info.origin,
+      pathPrefix: u.info.pathPrefix,
+      placement: u.info.placement,
+      paramName: u.info.paramName,
+      value: u.value!,
+    }));
+  }
+
+  /**
+   * Save-time rules for secret references, for clear early errors to editors and agents (use time stays
+   * authoritative). Only datasets that introduce or retarget a reference are checked, so a deleted secret never
+   * blocks unrelated edits or autosave.
+   */
+  private checkSecretRefs(
+    meta: StoredMeta,
+    before: DashboardDoc,
+    after: DashboardDoc,
+    p: Principal,
+    options: SecretWriteOptions,
+  ) {
+    // Any edit can change what a public secret-backed dashboard shows (a pipeline step, the JSON path, a new widget,
+    // an older version), not only edits to references. Such dashboards are therefore read-only for tokens: an agent
+    // steered by a prompt injection must not be able to widen what the public sees.
+    if (
+      p.viaToken &&
+      meta.visibility === 'public' &&
+      (docSecretIds(before).length > 0 || docSecretIds(after).length > 0)
+    ) {
+      throw forbidden(TOKEN_PUBLIC_EDIT);
+    }
+    if (docSecretIds(after).length === 0) return;
+    // Anonymous documents, and therefore all their versions, never hold references. That is what makes claiming
+    // safe: a prepared document cannot wait for a victim to claim it and resolve their secrets.
+    if (meta.ownerId === null) throw badRequest(CLAIM_FIRST);
+    const ownerId = meta.ownerId;
+    const changed = secretRefChanges(before, after);
+    if (changed.length === 0) return;
+    const datasets = after.datasets.filter((d) => changed.includes(d.id));
+    if (!options.restore) {
+      if (!this.mayUseSecrets(ownerId)) throw badRequest(this.secretsRefusal());
+      for (const d of datasets) {
+        if (d.source.kind !== 'http') continue;
+        const infos = sourceSecretIds(d.source).map((secretId) => {
+          const info = this.secrets.info(ownerId, secretId);
+          if (!info) {
+            throw badRequest(
+              `Dataset "${d.id}": there is no secret "${secretId}" among the owner's secrets. Use list_secrets.`,
+            );
+          }
+          return info;
+        });
+        for (const info of infos) {
+          const match = bindingMatches(info, d.source.url);
+          if (!match.ok) throw badRequest(`Dataset "${d.id}": ${bindingMismatchMessage(info, match.reason)}`);
+        }
+        const conflict = placementConflict(infos);
+        if (conflict) throw badRequest(`Dataset "${d.id}": ${conflict}`);
+      }
+    }
+    if (meta.visibility === 'public') {
+      const ids = [...new Set(datasets.flatMap((d) => sourceSecretIds(d.source)))];
+      this.assertMayShowSecrets(p, ownerId, ids, options, TOKEN_PUBLIC_EDIT);
+    }
+  }
+
+  /**
+   * Publishing data fetched with secrets, by making a dashboard public or by adding or re-pointing a secret on a
+   * public one, is for a person in the web app after a confirmation. Tokens never can: an agent steered by a prompt
+   * injection could otherwise publish whatever the secret unlocks on its host.
+   */
+  private assertMayShowSecrets(
+    p: Principal,
+    ownerId: string,
+    secretIds: string[],
+    options: PublicSecretsConfirmation,
+    tokenMessage: string,
+  ) {
+    if (p.viaToken) throw forbidden(tokenMessage);
+    if (options.confirmPublicSecrets) return;
+    const secrets = secretIds.map((id) => ({ id, name: this.secrets.info(ownerId, id)?.name ?? null }));
+    const names = secrets.map((s) => (s.name ? `"${s.name}"` : s.id)).join(', ');
+    throw new HttpError(
+      428,
+      `Anyone who can view this dashboard will see the data fetched with ${names} (never the secrets themselves). Confirm to continue.`,
+      { code: CONFIRM_PUBLIC_SECRETS, secrets },
+    );
   }
 
   async prune(options: { olderThanDays: number; onlyAnonymous: boolean }): Promise<string[]> {
