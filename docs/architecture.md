@@ -175,8 +175,8 @@ Design rules for the tools:
   The instance switch `SECRETS` (`off`, `admins`, `users`) is checked at use time. Values are written only through the
   web app's session (every bearer token is refused) and never read back by anyone. The same `DashboardService` rules
   hold at save time: anonymous dashboards never hold references (which is what makes claiming safe), new or re-pointed
-  references must match their binding, tokens cannot add or re-point them on a public dashboard or make a dashboard
-  with them public, and a session must confirm (`428 confirm_public_secrets`, repeated with
+  references must match their binding, tokens cannot change a public dashboard that holds references at all (nor make
+  a dashboard with them public, nor preview them without the write scope), and a session must confirm (`428 confirm_public_secrets`, repeated with
   `confirmPublicSecrets: true`). The web app turns the 428 into a dialog; autosave holds the refused document until the
   user answers instead of retrying it. Viewers only ever see generic credential errors; the owner's editor explains
   them with the shared binding matcher from core.

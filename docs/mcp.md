@@ -100,8 +100,14 @@ Some APIs need a key. When the operator turned the feature on (`SECRETS=admins` 
   refuse every bearer token, OAuth and personal access tokens alike: a value would otherwise pass through the model,
   its provider's logs and the chat transcript. If an API needs a key the user has not saved, ask them to add it.
 - **cannot** publish data fetched with secrets: `set_visibility` refuses to make a dashboard with secret-backed
-  datasets public, and on a public dashboard an agent cannot add a secret or change the URL of a secret-backed
-  dataset. Only the user can, in the web app, after a confirmation.
+  datasets public, and a public dashboard that holds any secret reference is read-only for agents (operations, dry
+  runs and restores are all refused). Only the user can change it, in the web app, after a confirmation. An agent
+  may still make such a dashboard private, which only narrows access.
+- **need write access to preview with secrets:** `preview_data` on a source that references secrets requires the
+  `dashboards:write` scope, because it sends the credentials to a URL the agent chooses.
+
+These rules restrict references and public dashboards. They cannot stop an agent from copying data it has read (for
+example from `get_data`) into an inline dataset elsewhere; agents are told not to.
 
 `apply_operations` answers with a `warnings` array when a touched dataset's URL has a query parameter that looks like
 a credential (`key`, `api_key`, `token`, `access_token`, `secret`, `password`, `auth`, `signature`, …). Keys never
