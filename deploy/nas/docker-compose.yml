@@ -1,0 +1,52 @@
+# Patchbay on a home server or NAS, published through a Cloudflare Tunnel.
+# No port is opened on the host: cloudflared dials out to Cloudflare, which terminates TLS and forwards
+# requests to http://patchbay:8787 on this project's private network. See docs/deployment.md.
+#
+#   cp .env.example .env                    # PUID/PGID, PATCHBAY_DOMAIN, TUNNEL_TOKEN
+#   cp patchbay.env.example patchbay.env    # Google OAuth, ADMIN_EMAILS, ...
+#   mkdir data                              # owned by PUID:PGID
+#   docker compose up -d
+services:
+  patchbay:
+    image: ghcr.io/carnaby/patchbay:${PATCHBAY_TAG:-latest}
+    restart: unless-stopped
+    # Matches the owner of ./data, so the bind mount is writable without chown or root.
+    user: "${PUID:?set PUID in .env}:${PGID:?set PGID in .env}"
+    env_file: patchbay.env
+    environment:
+      PUBLIC_URL: https://${PATCHBAY_DOMAIN:?set PATCHBAY_DOMAIN in .env}
+      # Every request arrives through Cloudflare (no published port), so CF-Connecting-IP can be trusted.
+      TRUST_PROXY: cloudflare
+      # One worker keeps large inputs off the main thread on a 2-core CPU without doubling memory.
+      PIPELINE_WORKERS: "1"
+    volumes:
+      - ./data:/data
+    # Measured: ~120 MiB idle, ~250 MiB peak with a 5 MB upload in the worker. The limit leaves headroom.
+    mem_limit: 384m
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  cloudflared:
+    # Pinned on purpose: bump it by hand after reading the release notes.
+    image: cloudflare/cloudflared:2026.10.3
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # Read from the environment rather than a flag, so the token does not show up in `ps`.
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+    depends_on:
+      - patchbay
+    mem_limit: 128m
+    security_opt:
+      - no-new-privileges:true
+    logging: *logging

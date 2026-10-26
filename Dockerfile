@@ -20,6 +20,10 @@ RUN rm -rf node_modules apps/*/node_modules packages/*/node_modules \
   && pnpm install --frozen-lockfile --prod --filter "@patchbay/server..."
 
 FROM base AS runtime
+# The source label links a GHCR package to this repository, so it shows the README and repo access applies.
+LABEL org.opencontainers.image.source="https://github.com/carnaby/patchbay" \
+      org.opencontainers.image.description="Live dashboards your AI can build." \
+      org.opencontainers.image.licenses="MIT"
 # Fonts for the server-side PNG renderer; tini for clean signal handling.
 RUN apt-get update && apt-get install -y --no-install-recommends fonts-inter fonts-dejavu-core tini \
   && rm -rf /var/lib/apt/lists/*
