@@ -9,6 +9,8 @@ import {
   BindingError,
   bindingMatches,
   bindingMismatchMessage,
+  CONFIRM_PUBLIC_SECRETS,
+  CREDENTIAL_ERRORS,
   type DashboardDoc,
   type DashboardEnvelope,
   type DashboardMeta,
@@ -77,20 +79,8 @@ export interface SecretListItem extends SecretInfo {
   usedBy?: { dashboardId: string; dashboardTitle: string; datasetId: string; datasetName: string }[];
 }
 
-/** Error code of the 428 answer that asks the web app to confirm, then repeat with `confirmPublicSecrets: true`. */
-export const CONFIRM_PUBLIC_SECRETS = 'confirm_public_secrets';
-
-/**
- * Messages for datasets whose credentials cannot be used. They reach every viewer of a dashboard, so they stay
- * generic; the dataset editor adds detail from the owner's own secret list.
- */
-export const CREDENTIAL_ERRORS = {
-  unavailable: 'Credentials for this source are not available.',
-  bound: 'Credentials for this source are bound to another address.',
-  off: 'Credentials are turned off on this server.',
-  undecryptable: 'Credentials could not be decrypted on this server.',
-  conflict: 'Credentials for this source conflict with each other.',
-} as const;
+// The 428 code and the generic credential errors live in core, because the web app matches on exactly these strings.
+export { CONFIRM_PUBLIC_SECRETS, CREDENTIAL_ERRORS } from '@patchbay/core';
 
 const CLAIM_FIRST = 'Sign in and claim this dashboard to use secrets.';
 const TOKEN_PUBLISH =
