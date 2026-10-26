@@ -5,6 +5,21 @@ const bool = z
   .optional()
   .transform((v) => v === '1' || v === 'true' || v === 'yes');
 
+/**
+ * Which header, if any, carries the real client IP for rate limiting.
+ * `cloudflare` is separate from the generic setting because CF-Connecting-IP is only trustworthy when
+ * every request reaches the origin through Cloudflare; anywhere else a client could simply send it.
+ */
+const trustProxy = z
+  .enum(['1', '0', 'true', 'false', 'yes', 'no', 'cloudflare', ''])
+  .optional()
+  .transform((v): TrustProxy => {
+    if (v === 'cloudflare') return 'cloudflare';
+    return v === '1' || v === 'true' || v === 'yes' ? 'forwarded' : 'off';
+  });
+
+export type TrustProxy = 'off' | 'forwarded' | 'cloudflare';
+
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   HOST: z.string().default('0.0.0.0'),
@@ -22,7 +37,7 @@ const EnvSchema = z.object({
   /** Automatically delete anonymous dashboards not viewed for this many days (0 = never). */
   PRUNE_ANONYMOUS_AFTER_DAYS: z.coerce.number().int().min(0).default(0),
   WEB_DIST: z.string().optional(),
-  TRUST_PROXY: bool,
+  TRUST_PROXY: trustProxy,
   /** Worker threads for data processing; 0 runs pipelines on the main thread. Default: CPUs - 1, max 4. */
   PIPELINE_WORKERS: z.coerce.number().int().min(0).max(32).optional(),
   /** Hard time limit per pipeline run in a worker. */

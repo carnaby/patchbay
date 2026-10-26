@@ -1,9 +1,10 @@
+import { isIP } from 'node:net';
 import type { Context } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { createMiddleware } from 'hono/factory';
 import { SCOPES, type Tokens, type VerifiedToken } from './auth/tokens.ts';
 import { SESSION_COOKIE, type UserRow, type Users } from './auth/users.ts';
-import type { Config } from './config.ts';
+import type { Config, TrustProxy } from './config.ts';
 import type { ConnectorService } from './connectors/registry.ts';
 import type { DB } from './db.ts';
 import type { LiveHub } from './live/hub.ts';
@@ -103,8 +104,13 @@ export function requireUser(c: Ctx): UserRow {
   return user;
 }
 
-export function clientIp(c: Ctx, trustProxy: boolean): string {
-  if (trustProxy) {
+export function clientIp(c: Ctx, trustProxy: TrustProxy): string {
+  if (trustProxy === 'cloudflare') {
+    // Cloudflare overwrites this header on every request it proxies. Without it the request did not come
+    // through Cloudflare (e.g. a health check from inside the host), so the socket address is the truth.
+    const connecting = c.req.header('cf-connecting-ip')?.trim();
+    if (connecting && isIP(connecting)) return connecting;
+  } else if (trustProxy === 'forwarded') {
     // The right-most entry is the one added by our own proxy; left entries are client-controlled.
     const forwarded = c.req.header('x-forwarded-for')?.split(',').at(-1)?.trim();
     if (forwarded) return forwarded;
