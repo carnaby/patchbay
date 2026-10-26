@@ -54,6 +54,8 @@ export interface Principal {
    * person in the web app. Tokens can use secrets but never manage them or publish data fetched with them.
    */
   viaToken: boolean;
+  /** The token lacks the dashboards:write scope. */
+  readOnly?: boolean | undefined;
   /** Edit key presented for an anonymous dashboard (header X-Edit-Key). */
   editKey?: string | undefined;
   /** Set when the request comes through MCP, e.g. "Claude". */
@@ -599,6 +601,13 @@ export class DashboardService {
     options: { requireEdit?: boolean } = {},
   ): Promise<DashboardTarget> {
     const upload = dataset.source.kind === 'upload';
+    // A preview sends the credentials to a URL of the caller's choosing (within the binding) without saving
+    // anything, so it is a use of the secret, not a read: read-only tokens may not do it.
+    if (p.readOnly && sourceSecretIds(dataset.source).length > 0) {
+      throw forbidden(
+        'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.',
+      );
+    }
     if (!dashboardId) {
       if (upload) throw badRequest('Uploaded files need dashboardId');
       if (!p.user) throw unauthorized();

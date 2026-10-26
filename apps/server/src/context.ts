@@ -75,6 +75,7 @@ export function identify(deps: Deps) {
       // Admin powers are for interactive sessions only, never for tokens.
       isAdmin: token ? false : deps.users.isAdmin(user),
       viaToken: token !== null,
+      readOnly: token !== null && !token.scopes.includes(SCOPES.write),
       editKey: c.req.header('x-edit-key') || undefined,
     });
     await next();

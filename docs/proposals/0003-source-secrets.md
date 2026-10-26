@@ -447,7 +447,7 @@ authenticated the request and in the MCP `principal()` factory.
 | Admins                                   | Can view and delete every dashboard, as today, and therefore see the data of secret-backed datasets in private dashboards. They cannot edit, so they cannot retarget anything. This is consistent with the warning: the operator can access secrets anyway                                                                                                                    |
 | PNG snapshots                            | `snapshot.png` and `render_snapshot` resolve with the dashboard's owner like every other path, so they show what viewers see: data, never secrets                                                                                                                                                                                                                             |
 | Preview (`POST /dashboards/:id/preview`) | Requires `canEdit`, so for an owned dashboard the caller is the owner; resolves with that dashboard as target                                                                                                                                                                                                                                                                 |
-| `preview_data` (MCP)                     | With `dashboardId`: requires `canEdit` when the source has `secrets` (like uploads today) and resolves with that dashboard's owner. Without: resolves against the calling user's own secrets                                                                                                                                                                                  |
+| `preview_data` (MCP)                     | A source with `secrets` needs the `dashboards:write` scope: a preview sends the credentials to a URL the agent chooses, so it is a use, not a read. With `dashboardId`: also requires `canEdit` (like uploads today) and resolves with that dashboard's owner. Without: resolves against the calling user's own secrets                                                       |
 | `/api/showcase`                          | Fixed definitions, no secrets                                                                                                                                                                                                                                                                                                                                                 |
 
 ### Fetching (`apps/server/src/util/safe-fetch.ts`)
@@ -696,6 +696,8 @@ Where the implementation differs from the text above, it chose the safer option;
 - **Public secret-backed dashboards are read-only for tokens** (security review): every token write is refused, not
   only new or re-pointed references, because pipeline, path, widget and restore changes can widen what the public
   sees. Tokens may still make such a dashboard private.
+- **Previews with secrets need the write scope** (security review), checked in `DashboardService.previewTarget` from
+  `Principal.readOnly`. The REST preview already needed it (it is a `POST`).
 - **Binding.** Also refuses `%25` and `..;` segments under a non-root prefix, compares the query parameter name
   without case, and `parseBinding` refuses non-default ports. The exact path a prefix was made from matches too.
 - **`secretRefChanges`** treats only new ids and URL changes as changes; removing or reordering ids is not.
