@@ -30,6 +30,10 @@ export const CONNECTORS: Connector[] = [
 const byId = new Map(CONNECTORS.map((c) => [c.info.id, c]));
 const schemas = new Map(CONNECTORS.map((c) => [c.info.id, paramsSchema(c.info.params)]));
 
+/** Shared by previews and saves, so both tell agents the same thing. */
+export const unknownConnectorMessage = (id: string) =>
+  `Unknown connector "${id}". Use list_connectors to see what is available.`;
+
 interface CacheEntry {
   table: DataTable;
   fetchedAt: number;
@@ -65,10 +69,13 @@ export class ConnectorService {
     return byId.get(id);
   }
 
+  has(id: string): boolean {
+    return byId.has(id);
+  }
+
   validateParams(id: string, raw: Record<string, unknown>): Params {
     const schema = schemas.get(id);
-    if (!schema)
-      throw new HttpError(400, `Unknown connector "${id}". Use list_connectors to see what is available.`);
+    if (!schema) throw new HttpError(400, unknownConnectorMessage(id));
     const parsed = schema.safeParse(raw);
     if (!parsed.success) {
       throw new HttpError(

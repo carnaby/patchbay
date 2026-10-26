@@ -3,11 +3,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { fromJsonSchema, type JsonSchemaType } from '@modelcontextprotocol/server';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
 import { isAcceptableRedirect, redirectMatches } from './routes/oauth.ts';
+import { buildTemplate, listTemplates } from './services/templates.ts';
 import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
 
 const BASE = 'http://localhost:8787';
@@ -83,6 +85,95 @@ describe('dashboards over REST', () => {
     expect(ok.status).toBe(200);
     expect(ok.json.envelope.meta.version).toBe(2);
     expect((await call(`/api/dashboards/${id}`)).json.doc.title).toBe('Mine');
+  });
+
+  it('rejects unknown connectors on save, but keeps documents that name a removed one', async () => {
+    const cookie = await login('dora@example.com');
+    const { envelope } = (await call('/api/dashboards', { body: {}, cookie })).json;
+    const id = envelope.meta.id;
+    const dataset = (connector: string) => ({
+      id: 'feed',
+      name: 'Feed',
+      source: { kind: 'connector', connector, params: {} },
+    });
+
+    const bad = await call(`/api/dashboards/${id}/ops`, {
+      body: {
+        ops: [
+          { op: 'setMeta', title: 'x' },
+          { op: 'addDataset', dataset: dataset('no.such') },
+        ],
+      },
+      cookie,
+    });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error).toContain('Operation 2: Unknown connector "no.such"');
+    const dry = await call(`/api/dashboards/${id}/ops`, {
+      body: { ops: [{ op: 'addDataset', dataset: dataset('no.such') }], dryRun: true },
+      cookie,
+    });
+    expect(dry.status).toBe(400);
+    const put = await call(`/api/dashboards/${id}`, {
+      method: 'PUT',
+      body: { doc: { ...envelope.doc, datasets: [dataset('no.such')] }, baseVersion: 1 },
+      cookie,
+    });
+    expect(put.status).toBe(400);
+    expect(put.json.error).toContain('Unknown connector "no.such"');
+    // All or nothing: the setMeta before the bad op was not saved either.
+    expect((await call(`/api/dashboards/${id}`, { cookie })).json.meta.version).toBe(1);
+
+    // A document stored while "retired.feed" still existed.
+    const meta = (await deps.store.readMeta(id))!;
+    await deps.store.writeDoc(
+      { ...meta, version: 2 },
+      { ...envelope.doc, datasets: [dataset('retired.feed')] },
+      { kind: 'user', label: 'test' },
+      ['Saved before the connector was removed'],
+    );
+    const legacy = await call(`/api/dashboards/${id}`, { cookie });
+    expect(legacy.status).toBe(200);
+    expect(legacy.json.doc.datasets[0].source.connector).toBe('retired.feed');
+    const unrelated = await call(`/api/dashboards/${id}/ops`, {
+      body: {
+        ops: [
+          { op: 'updateDataset', id: 'feed', set: { refreshSec: 60 } },
+          { op: 'addWidget', widget: { id: 'note', type: 'text', config: { markdown: 'Hi' } } },
+        ],
+      },
+      cookie,
+    });
+    expect(unrelated.status).toBe(200);
+    const editorSave = await call(`/api/dashboards/${id}`, {
+      method: 'PUT',
+      body: { doc: { ...unrelated.json.envelope.doc, title: 'Renamed' }, baseVersion: 3 },
+      cookie,
+    });
+    expect(editorSave.status).toBe(200);
+    const repoint = await call(`/api/dashboards/${id}/ops`, {
+      body: {
+        ops: [
+          {
+            op: 'updateDataset',
+            id: 'feed',
+            set: { source: { kind: 'connector', connector: 'also.gone', params: {} } },
+          },
+        ],
+      },
+      cookie,
+    });
+    expect(repoint.status).toBe(400);
+    expect(repoint.json.error).toContain('Operation 1: Unknown connector "also.gone"');
+  });
+
+  it('rejects unknown templates', async () => {
+    const res = await call('/api/dashboards', { body: { template: 'no-such-template' } });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toContain('Unknown template "no-such-template"');
+    expect(res.json.error).toContain('blank');
+    // What the template picker offers (GET /api/templates) is exactly what create accepts.
+    for (const t of listTemplates()) expect(buildTemplate(t.id).title).toBeTruthy();
+    expect((await call('/api/dashboards', { body: { template: 'weather' } })).status).toBe(201);
   });
 
   it('rejects cross-site writes', async () => {
@@ -392,6 +483,167 @@ describe('MCP tools', () => {
     expect(text(ref)).toContain('timeBucket');
     expect(text(ref)).toContain('Sound cues');
     expect(text(ref)).toContain('sparingly');
+  });
+
+  it('keeps tools/list compact', async () => {
+    const list = await client.listTools();
+    // Every client pays for this on every connection. It was 55.7 KB before shared subschemas were emitted once;
+    // raise the budget only for a deliberate addition.
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(33_000);
+
+    const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
+    expect(Object.keys(ops.$defs)).toEqual(expect.arrayContaining(['Widget', 'Transform', 'Source']));
+    const json = JSON.stringify(ops);
+    // The widget union (one branch per widget type) must appear once, not once per op that takes a widget.
+    expect(json.split('"const":"gauge"').length - 1).toBe(1);
+    // References carry a type, for clients that read `type` and never resolve `$ref`.
+    expect(json).toContain('{"$ref":"#/$defs/Widget","type":"object"}');
+    expect(JSON.stringify(ops.$defs.Source)).toContain('"enum":["weather.forecast"');
+
+    const create = list.tools.find((t) => t.name === 'create_dashboard')!.inputSchema as any;
+    expect(create.properties.template.enum).toEqual(expect.arrayContaining(['blank', 'weather']));
+  });
+
+  it('validates a realistic batch through the compact schema, as strictly as before', async () => {
+    const id = JSON.parse(
+      text(await client.callTool({ name: 'create_dashboard', arguments: { title: 'Schema check' } })),
+    ).dashboardId;
+    const operations = [
+      { op: 'setMeta', description: 'Quakes this week' },
+      {
+        op: 'addDataset',
+        dataset: {
+          id: 'daily',
+          name: 'Daily quakes',
+          source: { kind: 'connector', connector: 'earthquakes', params: { period: 'week' } },
+          transforms: [
+            { type: 'filter', expr: 'magnitude >= 2' },
+            { type: 'derive', as: 'strong', expr: 'magnitude >= 4' },
+            { type: 'timeBucket', field: 'time', unit: 'day', as: 'day' },
+            {
+              type: 'aggregate',
+              groupBy: ['day', 'region'],
+              metrics: [
+                { op: 'count', as: 'quakes' },
+                { op: 'max', field: 'magnitude', as: 'max_mag' },
+              ],
+            },
+            { type: 'sort', by: [{ field: 'day', dir: 'asc' }] },
+          ],
+          refreshSec: 300,
+        },
+      },
+      {
+        op: 'addWidget',
+        widget: {
+          id: 'per-day',
+          type: 'chart',
+          title: 'Quakes per day',
+          datasetId: 'daily',
+          config: { kind: 'line', x: 'day', y: ['quakes'], series: 'region', format: { style: 'compact' } },
+        },
+        position: { w: 8, h: 4 },
+      },
+      {
+        op: 'addWidget',
+        widget: {
+          id: 'strongest',
+          type: 'kpi',
+          datasetId: 'daily',
+          config: { field: 'max_mag', agg: 'max', format: { decimals: 1 } },
+          sound: { trigger: { kind: 'condition', expr: 'max_mag >= 6' }, sound: 'alert' },
+        },
+      },
+      { op: 'addStep', datasetId: 'daily', step: { type: 'limit', n: 500, from: 'end' } },
+      {
+        op: 'replaceWidget',
+        widget: { id: 'strongest', type: 'gauge', datasetId: 'daily', config: { field: 'max_mag', max: 10 } },
+      },
+      { op: 'moveWidget', id: 'per-day', x: 0, y: 0 },
+    ];
+
+    // The advertised schema is self-contained and accepts what the server accepts.
+    const { tools } = await client.listTools();
+    const advertised = fromJsonSchema(
+      tools.find((t) => t.name === 'apply_operations')!.inputSchema as JsonSchemaType,
+    );
+    const ok = await advertised['~standard'].validate({ dashboardId: id, operations });
+    expect(ok.issues).toBeUndefined();
+
+    const applied = await client.callTool({
+      name: 'apply_operations',
+      arguments: { dashboardId: id, operations },
+    });
+    expect(applied.isError).toBeFalsy();
+    const result = JSON.parse(text(applied));
+    expect(result.changes).toHaveLength(operations.length);
+    expect(result.dataChecks[0]).toMatchObject({ datasetId: 'daily' });
+    expect(result.dataChecks[0].error).toBeUndefined();
+    expect(result.dataChecks[0].rows).toBeGreaterThan(0);
+
+    // Strict objects still reject unknown keys, on the server and in the advertised schema.
+    const typo = [
+      {
+        op: 'addWidget',
+        widget: {
+          id: 'typo',
+          type: 'chart',
+          datasetId: 'daily',
+          config: { kind: 'bar', x: 'day', y: ['quakes'], colour: 'red' },
+        },
+      },
+    ];
+    const rejected = await client.callTool({
+      name: 'apply_operations',
+      arguments: { dashboardId: id, operations: typo },
+    });
+    expect(rejected.isError).toBe(true);
+    expect(text(rejected)).toContain('colour');
+    expect(
+      (await advertised['~standard'].validate({ dashboardId: id, operations: typo })).issues,
+    ).toBeDefined();
+    const doc = JSON.parse(
+      text(await client.callTool({ name: 'get_dashboard', arguments: { dashboardId: id } })),
+    );
+    expect(doc.doc.widgets.map((w: { id: string }) => w.id)).not.toContain('typo');
+  });
+
+  it('rejects datasets from unknown connectors', async () => {
+    const id = JSON.parse(
+      text(await client.callTool({ name: 'create_dashboard', arguments: { title: 'Connectors' } })),
+    ).dashboardId;
+    const dataset = {
+      id: 'feed',
+      name: 'Feed',
+      source: { kind: 'connector', connector: 'no.such', params: {} },
+    };
+    for (const dryRun of [true, false]) {
+      const res = await client.callTool({
+        name: 'apply_operations',
+        arguments: { dashboardId: id, dryRun, operations: [{ op: 'addDataset', dataset }] },
+      });
+      expect(res.isError).toBe(true);
+      expect(text(res)).toContain('Operation 1: Unknown connector "no.such"');
+    }
+    const doc = JSON.parse(
+      text(await client.callTool({ name: 'get_dashboard', arguments: { dashboardId: id } })),
+    );
+    expect(doc.doc.datasets).toEqual([]);
+  });
+
+  it('accepts only real template ids', async () => {
+    const bad = await client.callTool({
+      name: 'create_dashboard',
+      arguments: { title: 'Nope', template: 'no-such-template' },
+    });
+    expect(bad.isError).toBe(true);
+    expect(text(bad)).toContain('template');
+    const good = JSON.parse(
+      text(
+        await client.callTool({ name: 'create_dashboard', arguments: { title: 'Wx', template: 'weather' } }),
+      ),
+    );
+    expect(good.doc.datasets.length).toBeGreaterThan(0);
   });
 
   it('builds a dashboard end to end and renders it', async () => {

@@ -10,6 +10,7 @@ import {
   type DashboardEnvelope,
   type DashboardMeta,
   inferTable,
+  OpError,
   parseDashboard,
   type UploadedFile,
   type VersionInfo,
@@ -17,6 +18,7 @@ import {
 } from '@patchbay/core';
 import Papa from 'papaparse';
 import type { UserRow } from '../auth/users.ts';
+import { unknownConnectorMessage } from '../connectors/registry.ts';
 import { now } from '../db.ts';
 import type { LiveHub } from '../live/hub.ts';
 import type { DashboardIndex } from '../store/dashboard-index.ts';
@@ -58,11 +60,51 @@ export class DashboardService {
   private readonly store: FolderStore;
   private readonly index: DashboardIndex;
   private readonly hub: LiveHub;
+  private readonly connectors: { has(id: string): boolean };
 
-  constructor(store: FolderStore, index: DashboardIndex, hub: LiveHub) {
+  constructor(
+    store: FolderStore,
+    index: DashboardIndex,
+    hub: LiveHub,
+    connectors: { has(id: string): boolean },
+  ) {
     this.store = store;
     this.index = index;
     this.hub = hub;
+    this.connectors = connectors;
+  }
+
+  /**
+   * Datasets whose source a change points at a connector that does not exist. Only new or changed sources count:
+   * documents saved before a connector was removed must keep loading and accept unrelated edits.
+   */
+  private unknownConnectors(before: DashboardDoc, after: DashboardDoc) {
+    const previous = new Map(before.datasets.map((d) => [d.id, d.source]));
+    return after.datasets.flatMap((d) => {
+      if (d.source.kind !== 'connector' || this.connectors.has(d.source.connector)) return [];
+      const old = previous.get(d.id);
+      if (old?.kind === 'connector' && old.connector === d.source.connector) return [];
+      return [{ datasetId: d.id, connector: d.source.connector }];
+    });
+  }
+
+  /** Rejects a batch that introduces an unknown connector, naming the operation that did it. */
+  private checkOpsConnectors(before: DashboardDoc, after: DashboardDoc, ops: unknown[]) {
+    const [bad] = this.unknownConnectors(before, after);
+    if (!bad) return;
+    const raw = ops as {
+      op?: unknown;
+      id?: unknown;
+      dataset?: { id?: unknown };
+      set?: { source?: unknown };
+    }[];
+    const index = raw.findLastIndex(
+      (o) =>
+        (o?.op === 'addDataset' && o.dataset?.id === bad.datasetId) ||
+        (o?.op === 'updateDataset' && o.id === bad.datasetId && o.set?.source !== undefined),
+    );
+    const message = `Dataset "${bad.datasetId}": ${unknownConnectorMessage(bad.connector)}`;
+    throw index >= 0 ? new OpError(unknownConnectorMessage(bad.connector), index) : badRequest(message);
   }
 
   private publicMeta(m: StoredMeta, title: string): DashboardMeta {
@@ -214,10 +256,12 @@ export class DashboardService {
     changes: string[] = ['Edited in the editor'],
   ) {
     const doc = parseDashboard(rawDoc);
-    return this.commit(id, p, (_current, meta) => {
+    return this.commit(id, p, (current, meta) => {
       if (meta.version !== baseVersion) {
-        throw new ConflictError(this.envelope(meta, _current, p));
+        throw new ConflictError(this.envelope(meta, current, p));
       }
+      const [bad] = this.unknownConnectors(current, doc);
+      if (bad) throw badRequest(`Dataset "${bad.datasetId}": ${unknownConnectorMessage(bad.connector)}`);
       return { doc, changes };
     });
   }
@@ -235,13 +279,16 @@ export class DashboardService {
       const { meta, doc } = await this.load(id);
       if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
       const result = applyOps(doc, ops);
+      this.checkOpsConnectors(doc, result.doc, ops);
       return { envelope: this.envelope(meta, result.doc, p), changes: result.changes, dryRun: true };
     }
     return this.commit(id, p, (doc, meta) => {
       if (options.baseVersion !== undefined && options.baseVersion !== meta.version) {
         throw new ConflictError(this.envelope(meta, doc, p));
       }
-      return applyOps(doc, ops);
+      const result = applyOps(doc, ops);
+      this.checkOpsConnectors(doc, result.doc, ops);
+      return result;
     });
   }
 
