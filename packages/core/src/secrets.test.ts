@@ -148,6 +148,44 @@ describe('bindingMatches', () => {
     expect(reason(root, 'https://api.example.com/a%2fb')).toBe('ok');
   });
 
+  it('refuses non-standard encodings and look-alike separators under a prefix', () => {
+    for (const url of [
+      'https://api.example.com/v1/%u002e%u002e/admin',
+      'https://api.example.com/v1/100%',
+      'https://api.example.com/v1/%zz',
+      'https://api.example.com/v1/%c0%ae%c0%ae/admin',
+      'https://api.example.com/v1/%c0%af..%c0%afadmin',
+      'https://api.example.com/v1/%e0%80%ae%e0%80%ae/admin',
+      'https://api.example.com/v1/%f0%80%80%ae',
+      'https://api.example.com/v1/%ed%a0%80',
+      'https://api.example.com/v1/%ff',
+      'https://api.example.com/v1/..%3b/admin',
+      'https://api.example.com/v1/..%3B/admin',
+      'https://api.example.com/v1/%EF%BC%8E%EF%BC%8E/admin',
+      'https://api.example.com/v1/．．/admin',
+      'https://api.example.com/v1/..／admin',
+      'https://api.example.com/v1/..＼admin',
+      'https://api.example.com/v1/｡｡/admin',
+      'https://api.example.com/v1/..∕admin',
+      'https://api.example.com/v1/%00/admin',
+    ]) {
+      expect(reason(v1, url), url).toBe('encoding');
+      expect(() => parseBinding(url.replace(/\/admin$/, '/')), url).toThrow(BindingError);
+    }
+    // Ordinary UTF-8 and escapes keep working.
+    for (const url of [
+      'https://api.example.com/v1/mestá/Žilina/ľščťžýáíé',
+      'https://api.example.com/v1/caf%C3%A9/a%20b',
+      'https://api.example.com/v1/emoji/%F0%9F%98%80',
+      'https://api.example.com/v1/a.b/c..d/.well',
+    ]) {
+      expect(reason(v1, url), url).toBe('ok');
+    }
+    expect(parseBinding('https://api.example.com/v1/mestá/').pathPrefix).toBe('/v1/mest%C3%A1/');
+    // The whole origin allowed: nothing to escape from.
+    expect(reason(root, 'https://api.example.com/%c0%ae')).toBe('ok');
+  });
+
   it('ignores query and fragment', () => {
     expect(reason(v1, 'https://api.example.com/v1/x?next=https://evil.example/#frag')).toBe('ok');
   });

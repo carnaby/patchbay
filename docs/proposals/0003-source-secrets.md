@@ -253,7 +253,11 @@ request carries the secret only if, for that exact request URL:
    exact path the prefix was made from (`/v1/orders` for `/v1/orders/`) also matches: it is the address the user
    typed. `URL` already resolves `.`, `..` and their percent-encoded forms. Because servers may decode `%2F` and `%5C`
    into separators after we compared (and `%25` when they decode twice), and many Java servers treat `..;` as `..`, a
-   secret with a non-root prefix refuses URLs whose path contains any of these (reason `encoding`).
+   secret with a non-root prefix refuses URLs whose path contains any of these (reason `encoding`). The path is read
+   strictly: every `%` must start a two-digit escape (`%u002e` is refused), `%3B` is refused (`..%3b`), the decoded
+   bytes must be shortest-form UTF-8 (overlong `%C0%AE`, `%E0%80%AE` and surrogates are refused), and control
+   characters and look-alike dots and slashes (fullwidth `．` `／` `＼`, halfwidth `｡`, `∕`, `⁄`, small and ideographic
+   full stops), encoded or raw, are refused. Ordinary escaped UTF-8 (`/mestá/Žilina`) passes.
 3. For query placement, the URL must not already contain a parameter with the secret's name, compared without case
    because servers differ, so a document cannot shadow or duplicate it (reason `param`).
 
@@ -703,7 +707,9 @@ Where the implementation differs from the text above, it chose the safer option;
   sees. Tokens may still make such a dashboard private.
 - **Previews with secrets need the write scope** (security review), checked in `DashboardService.previewTarget` from
   `Principal.readOnly`. The REST preview already needed it (it is a `POST`).
-- **Binding.** Also refuses `%25` and `..;` segments under a non-root prefix, compares the query parameter name
+- **Binding.** Also refuses `%25` and `..;` segments under a non-root prefix, and (security review) reads the path
+  strictly: malformed escapes, `%3B`, invalid or overlong UTF-8, control characters and look-alike dots and slashes
+  are refused. It compares the query parameter name
   without case, and `parseBinding` refuses non-default ports. The exact path a prefix was made from matches too.
 - **`secretRefChanges`** treats only new ids and URL changes as changes; removing or reordering ids is not.
 - **Switch off** also refuses renaming; a malformed key refuses to start even with `off`.
