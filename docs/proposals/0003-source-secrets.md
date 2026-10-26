@@ -1,11 +1,11 @@
 # Proposal 0003: secrets for HTTP data sources
 
-|                    |                                                                                                                                                                                                                                             |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Status             | **Accepted; server side implemented**, web UI and user docs pending. The owner decided to offer credentials on HTTP sources, behind an instance switch and with a prominent warning. See "Decisions" and "Implementation notes" at the end. |
-| Area               | `packages/core` (schema, binding matcher), `apps/server` (storage, encryption, `DashboardService`, `DataService`, `safe-fetch`, `LiveHub`, REST, MCP), `apps/web` (Settings, dataset editor, share panel)                                   |
-| Effort             | About five days including tests and docs                                                                                                                                                                                                    |
-| New infrastructure | None. One SQLite table, one environment key.                                                                                                                                                                                                |
+|                    |                                                                                                                                                                                                                        |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Status             | **Implemented** (server, web UI and user docs). The owner decided to offer credentials on HTTP sources, behind an instance switch and with a prominent warning. See "Decisions" and "Implementation notes" at the end. |
+| Area               | `packages/core` (schema, binding matcher), `apps/server` (storage, encryption, `DashboardService`, `DataService`, `safe-fetch`, `LiveHub`, REST, MCP), `apps/web` (Settings, dataset editor, share panel)              |
+| Effort             | About five days including tests and docs                                                                                                                                                                               |
+| New infrastructure | None. One SQLite table, one environment key.                                                                                                                                                                           |
 
 ## Problem
 
@@ -670,9 +670,10 @@ Decided by the owner on 2026-10-26:
 
 ## Implementation notes
 
-The server side (core, storage, encryption, `DashboardService`, fetching, caches, REST, MCP) is implemented. The web
-UI (Settings section, credentials picker, confirmations, OAuth consent line) and the user-facing docs (`README.md`,
-`docs/deployment.md`, `docs/mcp.md`, `docs/architecture.md`) are the next phase.
+Everything is implemented: the server side (core, storage, encryption, `DashboardService`, fetching, caches, REST,
+MCP), the web UI (Settings → Secrets with the warning, the credentials picker, the public confirmations, owner hints,
+the OAuth consent line, admin counts) and the user-facing docs (`README.md`, `docs/deployment.md`, `docs/mcp.md`,
+`docs/architecture.md`).
 
 Where the implementation differs from the text above, it chose the safer option; the sections above were updated:
 
@@ -695,7 +696,31 @@ Residual risks worth knowing: a numeric secret longer than 15 digits echoed as a
 and is then not recognised by the redaction (the echo is a near-copy of the value); a heap dump of the process can
 contain values (operator-level access, as stated in the warning).
 
-### For the web phase
+### Web phase
+
+Built as described above, with these choices:
+
+- **Shared strings.** `CREDENTIAL_ERRORS` and `CONFIRM_PUBLIC_SECRETS` moved from `services/dashboards.ts` to
+  `packages/core/src/secrets.ts` (the service re-exports them), so the web app matches on exactly the server's strings.
+- **Confirmations.** Saving a dataset edit that adds or re-points a secret on a public dashboard asks before the change
+  is applied. Everything else (undo/redo, rebases, "keep mine") relies on the server's `428`: autosave keeps the
+  refused document in the editor store and does not resend it until the user confirms, edits further or discards the
+  unsaved changes; after "Not now" a banner stays instead of the dialog popping up on every edit. A confirmation covers
+  exactly the references the user saw (dataset id, URL and secret ids), so the flag is never sent for something the
+  user was not shown. Visibility changes and version restores go through the same dialog.
+- **`{instance}`** in the warning is the browser's host, which equals the host of `PUBLIC_URL` in production.
+- **Settings** shows the section to clean up (list and delete) when the switch is `off` and the user still has
+  secrets, explains `admins` mode to everyone else, and hides it only when `off` with nothing stored.
+  `/settings#secrets` scrolls to it.
+- **Owner hints.** Widgets keep the generic credential errors for viewers; the owner also sees what to do, from the
+  same function the dataset editor uses (`credentialErrorHint` in `apps/web/src/lib/secrets.ts`).
+- **The OAuth consent line** appears only when the user may use secrets on the instance.
+- **Tests.** The web app gained a vitest project for its pure logic and the editor store (the 428 flow, the
+  fingerprints, the explanations). The Playwright run in "Testing" was done by hand in a browser against a local
+  instance with `SECRETS=users`, `admins` and `off`, a real upstream (`httpbin.org/bearer`, whose echo is redacted) and a
+  canary value that was absent from the DOM, `localStorage` and every API response afterwards.
+
+### For the web phase (as handed over by the server phase)
 
 - `GET /api/me` → `{ user, secrets: 'off' | 'admins' | 'users', canUseSecrets }`.
 - Settings uses the REST table above; send the value once with `api()` and reset the mutation (see "Settings →

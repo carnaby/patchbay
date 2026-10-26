@@ -22,26 +22,28 @@ Access tokens live 1 hour, refresh tokens 30 days. Users can see and revoke conn
 Scopes:
 
 - `dashboards:read`: list and read your dashboards and their data, preview sources, render snapshots.
-- `dashboards:write`: create and change dashboards and upload data. Every change is versioned.
+- `dashboards:write`: create and change dashboards and upload data. Every change is versioned. Includes using the
+  user's saved secrets in their own dashboards (never reading them); the consent screen says so.
 
 ## Tools
 
-| Tool               | Scope | What it does                                                                                                                                                        |
-| ------------------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get_reference`    | read  | The full authoring guide: document schema, transforms, expression functions, widget configs, design rules.                                                          |
-| `list_connectors`  | read  | Built-in public data sources and their parameters.                                                                                                                  |
-| `list_dashboards`  | read  | The user's dashboards with URLs.                                                                                                                                    |
-| `get_dashboard`    | read  | One dashboard's document and metadata.                                                                                                                              |
-| `preview_data`     | read  | Run a source + transforms **without saving**: columns, sample rows, row count per step, column profile, suggested widgets as operations.                            |
-| `get_data`         | read  | The processed rows of a saved dataset, with a profile.                                                                                                              |
-| `suggest_widgets`  | read  | Rules-based visualisation suggestions for a saved dataset, as ready-to-apply operations with rationales.                                                            |
-| `render_snapshot`  | read  | PNG of the dashboard or a single widget (light or dark), plus any data errors.                                                                                      |
-| `list_versions`    | read  | Version history with actor and change log.                                                                                                                          |
-| `create_dashboard` | write | New dashboard (private by default), optionally from a template.                                                                                                     |
-| `apply_operations` | write | Atomic batch of operations; `dryRun` to validate only; `baseVersion` for optimistic concurrency. Returns the change log and a data check for every touched dataset. |
-| `upload_data`      | write | Store CSV/JSON (≤ 5 MB) in a dashboard; returns the file id, profile, a ready `addDataset` op and suggestions.                                                      |
-| `restore_version`  | write | Restore an earlier version (as a new version).                                                                                                                      |
-| `set_visibility`   | write | Public or private.                                                                                                                                                  |
+| Tool               | Scope | What it does                                                                                                                                                                                                           |
+| ------------------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_reference`    | read  | The full authoring guide: document schema, transforms, expression functions, widget configs, design rules.                                                                                                             |
+| `list_connectors`  | read  | Built-in public data sources and their parameters.                                                                                                                                                                     |
+| `list_dashboards`  | read  | The user's dashboards with URLs.                                                                                                                                                                                       |
+| `get_dashboard`    | read  | One dashboard's document and metadata.                                                                                                                                                                                 |
+| `preview_data`     | read  | Run a source + transforms **without saving**: columns, sample rows, row count per step, column profile, suggested widgets as operations.                                                                               |
+| `get_data`         | read  | The processed rows of a saved dataset, with a profile.                                                                                                                                                                 |
+| `suggest_widgets`  | read  | Rules-based visualisation suggestions for a saved dataset, as ready-to-apply operations with rationales.                                                                                                               |
+| `render_snapshot`  | read  | PNG of the dashboard or a single widget (light or dark), plus any data errors.                                                                                                                                         |
+| `list_versions`    | read  | Version history with actor and change log.                                                                                                                                                                             |
+| `list_secrets`     | read  | The user's saved secrets for HTTP sources: id, name, origin, path prefix, how each is sent, timestamps. Never values. See "Secrets" below.                                                                             |
+| `create_dashboard` | write | New dashboard (private by default), optionally from a template.                                                                                                                                                        |
+| `apply_operations` | write | Atomic batch of operations; `dryRun` to validate only; `baseVersion` for optimistic concurrency. Returns the change log, a data check for every touched dataset and, when a URL looks like it holds a key, `warnings`. |
+| `upload_data`      | write | Store CSV/JSON (≤ 5 MB) in a dashboard; returns the file id, profile, a ready `addDataset` op and suggestions.                                                                                                         |
+| `restore_version`  | write | Restore an earlier version (as a new version).                                                                                                                                                                         |
+| `set_visibility`   | write | Public or private.                                                                                                                                                                                                     |
 
 There is intentionally no delete tool.
 
@@ -78,6 +80,38 @@ Prompts: `build_dashboard { topic }`, `analyze_my_data { dashboardId? }`. Resour
 your own); prefer the step operations over replacing `transforms` wholesale, so concurrent edits by the user survive. Positions are optional everywhere; omitted ones are
 auto-placed.
 
+## Secrets
+
+Some APIs need a key. When the operator turned the feature on (`SECRETS=admins` or `users`, see
+[deployment](deployment.md#secrets-for-http-sources)), the user saves keys in the web app under
+`PUBLIC_URL/settings#secrets`, each bound to an origin and path prefix. Agents:
+
+- **can** list them with `list_secrets` (names, ids, where each may be sent, how it is sent) and reference them by id
+  in the user's own dashboards:
+
+  ```jsonc
+  { "op": "updateDataset", "id": "orders", "set": { "source": { "kind": "http", "url": "https://shop.example.com/api/orders", "secrets": ["sec_…"] } } }
+  ```
+
+  The URL must start with the secret's origin and path prefix, or the batch fails; at most 3 per source. The data a
+  secret unlocks comes back from `preview_data`, `get_data` and `render_snapshot` like any other data, with echoed
+  values redacted.
+- **cannot** read, create, replace or delete a value. There is no write tool, and the REST endpoints for secret values
+  refuse every bearer token, OAuth and personal access tokens alike: a value would otherwise pass through the model,
+  its provider's logs and the chat transcript. If an API needs a key the user has not saved, ask them to add it.
+- **cannot** publish data fetched with secrets: `set_visibility` refuses to make a dashboard with secret-backed
+  datasets public, and on a public dashboard an agent cannot add a secret or change the URL of a secret-backed
+  dataset. Only the user can, in the web app, after a confirmation.
+
+`apply_operations` answers with a `warnings` array when a touched dataset's URL has a query parameter that looks like
+a credential (`key`, `api_key`, `token`, `access_token`, `secret`, `password`, `auth`, `signature`, …). Keys never
+belong in a URL, a dataset name or a text widget: everything in the document is visible to every editor, agent and,
+on public dashboards, viewer.
+
+The residual risk: an agent, perhaps steered by a prompt injection in data it read, can still use a secret against
+other paths of its bound address and show the result in the user's private dashboards. Least-privilege keys and a
+narrow path prefix limit this.
+
 ## Example: calling the server from a script
 
 ```ts
@@ -108,3 +142,4 @@ const { content } = await client.callTool({
   dashboards.
 - Requests are rate limited per user; write tools cost more than read tools.
 - Every change is a version with the agent's name on it, visible and restorable in the UI.
+- Secret values are never readable through MCP, and agents cannot store, change or publish them (see "Secrets").

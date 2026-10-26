@@ -51,7 +51,7 @@ function the editor uses, so a widget lands in the same spot no matter who added
 
 ```
 data/
-  patchbay.db                  SQLite: users, sessions, tokens, OAuth clients/codes, dashboard index
+  patchbay.db                  SQLite: users, sessions, tokens, secrets (encrypted), OAuth clients/codes, dashboard index
   dashboards/<id>/
     meta.json                  owner, visibility, edit-key hash, version, timestamps
     dashboard.json             the document
@@ -98,6 +98,15 @@ instances.
 - **Accumulate** turns "current value" sources (current weather, a spot price, the ISS position) into rolling time
   series by appending each new reading with a `fetched_at` column. The buffer is in memory by design; it is a live view,
   not a database.
+- **Secrets for HTTP sources** ([proposal 0003](proposals/0003-source-secrets.md)). A dataset holds only secret ids;
+  `DataService` asks `DashboardService.credentialsFor` for the values, resolved against the **dashboard owner's**
+  secrets (never the viewer's, the editor's or the agent's), and gets an `HttpError` with a generic message when they
+  cannot be used. A dataset whose secrets cannot all be resolved is never fetched without them. `safeFetchJson` keeps
+  every SSRF rule, checks each secret's origin and path-prefix binding on every hop (a redirect elsewhere stops the
+  request), adds the header or query parameter to that hop only, and redacts echoed values from the parsed JSON.
+  Errors quote the document's URL, never the request. The HTTP cache key includes the owner, secret id and revision,
+  so a public dataset never gets a secret-backed response, two users never share one, and replacing a value
+  invalidates at once. Values are decrypted per request and never reach pipeline workers, which only see rows.
 
 **Live updates.** `LiveHub` keeps a "room" per dashboard while at least one browser is subscribed over SSE. Each live
 dataset gets its own interval; results are hashed and pushed only when the hash changed. N viewers share one refresh
@@ -118,6 +127,11 @@ often an agent), the server answers `409` with the current version. The editor t
 newer document**. Ops address things by id, so "I moved widget A" and "the agent added widget B" merge cleanly. Only if
 replay fails, or the local delta is not replayable (after an undo), does the user get an explicit choice: keep mine or
 use theirs. Nothing is silently discarded, and the other side's version stays in history either way.
+
+A save can also come back `428`: it would show data fetched with secrets on a public dashboard (§7). The refused
+document then waits in `secretsPrompt` and is not resent until the user confirms, edits further, or discards the
+unsaved changes (an undoable step). A confirmation covers exactly the references the user saw, fingerprinted by
+dataset, URL and secret ids, so pointing the same secret at another URL later asks again.
 
 The same holds for processing rules. Every pipeline step has a stable id (assigned automatically, `s1`, `s2`, …, which
 also migrated older documents on read), and the editor saves a dataset edit as step operations computed by `diffSteps`
@@ -156,6 +170,16 @@ Design rules for the tools:
 - Permission rules live in one place (`DashboardService.canView/canEdit`): owners edit their dashboards, public
   dashboards are readable by anyone, private ones look like 404 to everyone else (no existence leak), anonymous
   dashboards are editable with an edit key, and admins can view and delete everything but not edit.
+- **Secrets** are per user, in SQLite (`auth/secrets.ts`), sealed with AES-256-GCM under `SECRETS_KEY`; the
+  associated data binds each ciphertext to its row, owner and binding, so a value copied elsewhere does not decrypt.
+  The instance switch `SECRETS` (`off`, `admins`, `users`) is checked at use time. Values are written only through the
+  web app's session (every bearer token is refused) and never read back by anyone. The same `DashboardService` rules
+  hold at save time: anonymous dashboards never hold references (which is what makes claiming safe), new or re-pointed
+  references must match their binding, tokens cannot add or re-point them on a public dashboard or make a dashboard
+  with them public, and a session must confirm (`428 confirm_public_secrets`, repeated with
+  `confirmPublicSecrets: true`). The web app turns the 428 into a dialog; autosave holds the refused document until the
+  user answers instead of retrying it. Viewers only ever see generic credential errors; the owner's editor explains
+  them with the shared binding matcher from core.
 
 ## 8. Rendering
 
