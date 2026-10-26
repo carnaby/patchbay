@@ -52,19 +52,24 @@ data belongs on a self-hosted instance. The operator decides whether the instanc
 
 Who can do what once this ships:
 
-| Actor                                                     | Can                                                                                                                                       | Cannot                                                                                                                           |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| The user who saved the secret                             | Use it in their own dashboards for its bound address; rename, replace the value, delete                                                   | Read the value back, change the bound address (create a new secret instead)                                                      |
-| A viewer of a public dashboard backed by a secret         | See the data it returns, the dataset URL and the secret's id                                                                              | Learn the value, use the secret anywhere else                                                                                    |
-| Another user of the instance                              | Nothing with it                                                                                                                           | List, use, reference or read it (resolution is per owner, see "Who can use which secret")                                        |
-| An agent connected with the user's token (MCP or PAT)     | List names and bound addresses; reference the user's secrets in the user's dashboards, on the bound address only; read the resulting data | Read, create, replace or delete values; make a secret-backed dashboard public; point a secret at a new URL on a public dashboard |
-| Someone holding a copy of the data directory or a backup  | Ciphertext                                                                                                                                | Decrypt it without `SECRETS_KEY`                                                                                                 |
-| The operator, or anyone with the key **and** the database | Decrypt everything                                                                                                                        | (by design; this is what the warning is about)                                                                                   |
-| The API at the bound address                              | Receive the secret (it issued it)                                                                                                         | Have it reflected back to viewers: echoed values are redacted from responses                                                     |
+| Actor                                                     | Can                                                                                                                                       | Cannot                                                                                                                            |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| The user who saved the secret                             | Use it in their own dashboards for its bound address; rename, replace the value, delete                                                   | Read the value back, change the bound address (create a new secret instead)                                                       |
+| A viewer of a public dashboard backed by a secret         | See the data it returns, the dataset URL and the secret's id                                                                              | Learn the value, use the secret anywhere else                                                                                     |
+| Another user of the instance                              | Nothing with it                                                                                                                           | List, use, reference or read it (resolution is per owner, see "Who can use which secret")                                         |
+| An agent connected with the user's token (MCP or PAT)     | List names and bound addresses; reference the user's secrets in the user's dashboards, on the bound address only; read the resulting data | Read, create, replace or delete values; make a secret-backed dashboard public; change a public secret-backed dashboard in any way |
+| Someone holding a copy of the data directory or a backup  | Ciphertext                                                                                                                                | Decrypt it without `SECRETS_KEY`                                                                                                  |
+| The operator, or anyone with the key **and** the database | Decrypt everything                                                                                                                        | (by design; this is what the warning is about)                                                                                    |
+| The API at the bound address                              | Receive the secret (it issued it)                                                                                                         | Have it reflected back to viewers: echoed values are redacted from responses                                                      |
 
 The residual risk worth naming: an agent, possibly steered by a prompt injection in some data it read, can use a
 secret against **other paths on the same address** and show the result in the user's private dashboards (and send it
 to its model provider). Least-privilege keys and the optional path prefix limit this; the UI recommends both.
+
+The token rules restrict **references and public secret-backed dashboards**, not where data an agent has read can be
+copied. An agent that read rows with `get_data` or `preview_data` can write them into another dashboard as an inline
+dataset, a text widget or its own answer, and nothing on the server can tell those rows apart from any other data.
+The reference text tells agents not to, which is all the server can do.
 
 ## User experience
 
@@ -248,7 +253,11 @@ request carries the secret only if, for that exact request URL:
    exact path the prefix was made from (`/v1/orders` for `/v1/orders/`) also matches: it is the address the user
    typed. `URL` already resolves `.`, `..` and their percent-encoded forms. Because servers may decode `%2F` and `%5C`
    into separators after we compared (and `%25` when they decode twice), and many Java servers treat `..;` as `..`, a
-   secret with a non-root prefix refuses URLs whose path contains any of these (reason `encoding`).
+   secret with a non-root prefix refuses URLs whose path contains any of these (reason `encoding`). The path is read
+   strictly: every `%` must start a two-digit escape (`%u002e` is refused), `%3B` is refused (`..%3b`), the decoded
+   bytes must be shortest-form UTF-8 (overlong `%C0%AE`, `%E0%80%AE` and surrogates are refused), and control
+   characters and look-alike dots and slashes (fullwidth `．` `／` `＼`, halfwidth `｡`, `∕`, `⁄`, small and ideographic
+   full stops), encoded or raw, are refused. Ordinary escaped UTF-8 (`/mestá/Žilina`) passes.
 3. For query placement, the URL must not already contain a parameter with the secret's name, compared without case
    because servers differ, so a document cannot shadow or duplicate it (reason `param`).
 
@@ -409,10 +418,14 @@ about to write, using `secretRefChanges(current, next)`:
 - For every dataset that introduces or retargets a reference: the secret exists for the owner, the owner may use
   secrets, the binding matches, no placement collides. Otherwise reject with a message that may name the secret's
   address (only the owner and their tokens can edit an owned dashboard).
-- If the principal arrived **via a token** (MCP or PAT) and the dashboard is **public** → reject introductions and
-  retargets: "This dashboard is public. Agents cannot point secrets at new URLs on a public dashboard. Make it private
-  first, or do it in the web editor." This closes the path where an injected agent re-points a secret at a revealing
-  endpoint on the same host of an already public dashboard.
+- If the principal arrived **via a token** (MCP or PAT) and the dashboard is **public** and has any secret reference
+  (before or after the change) → reject **every** write: ops (dry runs included), full saves and restores. "This
+  dashboard is public and shows data fetched with secrets, so agents and tokens cannot change it: a person has to make
+  this change in the Patchbay web app. Ask the user to do it there, or to make the dashboard private first." Refusing
+  only new or re-pointed references was not enough: removing a pipeline step, changing the JSON path or `accumulate`,
+  adding a widget or restoring an older version can each widen what the public sees, so an injected agent could
+  publish full upstream rows without touching a reference. A token may still make such a dashboard **private**, which
+  only narrows access; after that it can edit again. Public dashboards without secrets stay editable by tokens.
 - If the principal is a **session** and the dashboard is **public**, the confirmation is enforced by the server, not
   only by the dialog: without `confirmPublicSecrets: true` in the request the answer is `428` with
   `{ error, code: "confirm_public_secrets", secrets: [{ id, name }] }`, which the web app turns into the dialog and
@@ -431,14 +444,14 @@ authenticated the request and in the MCP `principal()` factory.
 | Duplicate by the owner                   | References kept; the copy has the same owner. The copy is private (the existing default for signed-in users)                                                                                                                                                                                                                                                                  |
 | Duplicate by anyone else                 | `secrets` removed from every copied dataset, with a change-log entry "Removed secret references (secrets belong to their owner)". Anonymous copies would be rejected otherwise; signed-in copies would hold dead references. The copy then fetches without credentials and typically shows the upstream's 401, which the editor turns into "This API probably needs a secret" |
 | Claim                                    | Nothing to do (invariant above)                                                                                                                                                                                                                                                                                                                                               |
-| Restore a version                        | Same owner, so resolution is unchanged. Restore skips the existence and binding checks (a restored reference to a deleted secret shows "not available" at use time instead of blocking the restore), but applies the anonymous invariant, the token-on-public rule and the session confirmation                                                                               |
+| Restore a version                        | Same owner, so resolution is unchanged. Restore skips the existence and binding checks (a restored reference to a deleted secret shows "not available" at use time instead of blocking the restore), but applies the anonymous invariant, the token rule for public dashboards and the session confirmation                                                                   |
 | Visibility → public                      | Through the web UI: allowed with `confirmPublicSecrets: true` after the `428` described above. Via a token (`set_visibility`, `PATCH /settings` with a PAT) on a dashboard with secret-backed datasets: rejected, "Make it public in the web app; it would show data fetched with your secrets to anyone."                                                                    |
 | Visibility → private                     | As today: `LiveHub.revalidate` disconnects viewers who lost access                                                                                                                                                                                                                                                                                                            |
 | Edit keys                                | Only anonymous dashboards have edit keys, and they cannot hold references                                                                                                                                                                                                                                                                                                     |
 | Admins                                   | Can view and delete every dashboard, as today, and therefore see the data of secret-backed datasets in private dashboards. They cannot edit, so they cannot retarget anything. This is consistent with the warning: the operator can access secrets anyway                                                                                                                    |
 | PNG snapshots                            | `snapshot.png` and `render_snapshot` resolve with the dashboard's owner like every other path, so they show what viewers see: data, never secrets                                                                                                                                                                                                                             |
 | Preview (`POST /dashboards/:id/preview`) | Requires `canEdit`, so for an owned dashboard the caller is the owner; resolves with that dashboard as target                                                                                                                                                                                                                                                                 |
-| `preview_data` (MCP)                     | With `dashboardId`: requires `canEdit` when the source has `secrets` (like uploads today) and resolves with that dashboard's owner. Without: resolves against the calling user's own secrets                                                                                                                                                                                  |
+| `preview_data` (MCP)                     | A source with `secrets` needs the `dashboards:write` scope: a preview sends the credentials to a URL the agent chooses, so it is a use, not a read. With `dashboardId`: also requires `canEdit` (like uploads today) and resolves with that dashboard's owner. Without: resolves against the calling user's own secrets                                                       |
 | `/api/showcase`                          | Fixed definitions, no secrets                                                                                                                                                                                                                                                                                                                                                 |
 
 ### Fetching (`apps/server/src/util/safe-fetch.ts`)
@@ -456,17 +469,25 @@ paramName, value }`.
   is followed only if the target still matches every binding; the secrets are re-attached for that hop. Any other
   redirect stops the request: "The API redirected to another address. Credentials are only sent to
   https://api.example.com/v1/, so the request was stopped." It is not retried without credentials either; a silent
-  anonymous request to wherever the API pointed is not what the user configured.
+  anonymous request to wherever the API pointed is not what the user configured. A redirect that keeps the query
+  string (Django's `APPEND_SLASH`, nginx adding a trailing slash) brings back the query secret we sent: that
+  parameter is removed from the target before the binding check and attached again, but only when its value is
+  exactly the secret's. Any other value for that name still fails the check.
 - **Errors** carry the document's URL and the status code, never the request URL with a query secret, never upstream
   headers or bodies. Every message from a credentialed fetch goes through `redact(message, values)` as a last guard,
   and errors are created as `HttpError` without a `cause`, so the 500 logger in `app.ts` never prints an undici error
   object that might hold request options. Client failures of a credentialed request say only "Request failed" or
   "Request timed out" (the undici message is dropped).
 - **Echo redaction.** Some APIs echo the credential (`/whoami`, error payloads, debug fields). After `JSON.parse`, the
-  parsed value is walked and every string (keys included) containing a secret value has it replaced by `[redacted]`,
-  as does a number whose digits contain it. The value is matched as is and percent-encoded (as in an echoed request
-  URL). Matching on parsed strings, not raw text, handles JSON escaping (`\/`). The minimum length of 8 keeps this
-  from mangling ordinary data.
+  parsed value is walked and every string (keys included) is checked after normalisation: as is, with JSON escapes
+  (`\/`, `\uXXXX`) undone, and percent-decoded repeatedly (double encoding, any hex case, Python-style raw `/`) with
+  and without `+` as a space, all compared without case. Besides the value itself it looks for base64 and base64url
+  of the value at each byte alignment (so `Basic base64(user:value)` is caught) and, for digits-only values, the
+  digits without leading zeros. The plain spellings are replaced in place (`Bearer [redacted]`); if any other
+  spelling remains, the whole string becomes `[redacted]`. A number that contains the value becomes `[redacted]`. The
+  minimum length of 8 keeps this from mangling ordinary data. **Not caught:** partial echoes (the last four
+  characters), other transformations (hashing, hex, reversing, splitting a value across fields), and encodings beyond
+  the ones listed. The data still only reaches viewers of a dashboard the owner chose to show it on.
 
 ### Caching and live updates (`apps/server/src/services/data.ts`, `apps/server/src/live/hub.ts`)
 
@@ -541,7 +562,7 @@ secret"; `GET /api/me` adds `secrets` (the mode) and `canUseSecrets`.
 One read tool, `list_secrets` (scope `dashboards:read`), calling `dashboards.listSecrets(p)`. It takes no arguments,
 so it adds little to the size of the tool list (32.8 KB in total after this change, within the existing 33 KB
 budget). It returns `{ secrets: [{ id, name, origin, pathPrefix, sentAs, updatedAt, lastUsedAt }], note }`, where the
-note is the "never readable" line, or says that secrets are off or for administrators only. Existing tools change only in what they pass to
+note is the "never readable" line, or says that secrets are off or for administrators only. Existing tools change in what they pass to
 `DataService.resolve`; the save-time rules surface as ordinary tool errors from `DashboardService`.
 `apply_operations` adds a `warnings` array to its result when a touched URL has credential-like query parameters.
 
@@ -557,8 +578,11 @@ create or change them.
   fails. At most 3 per source.
 - Never put keys or tokens into a URL, a dataset name or a text widget. If an API needs a key the user has not saved,
   ask them to add it at <PUBLIC_URL>/settings#secrets, then continue.
-- On a public dashboard you cannot add secrets or change the URL of a secret-backed dataset, and you cannot make a
+- A public dashboard that uses secrets is read-only for you: every change to it (datasets, steps, widgets, restoring
+  a version) must be made by the user in the web app, or after they make it private. You also cannot make a
   dashboard with secrets public. Ask the user to do it in the web app.
+- These rules limit where secrets are used, not where data you have read can go. Never copy data fetched with a
+  secret anywhere else (another dashboard, inline rows, a text widget, your answer) unless the user asked for it.
 - Data fetched with a secret is shown to everyone who can view the dashboard. Keep such dashboards private unless the
   user says otherwise.
 ```
@@ -661,7 +685,8 @@ Decided by the owner on 2026-10-26:
 
 1. **Agents and public dashboards.** Tokens (MCP and PATs) may not make a secret-backed dashboard public, and may not
    add or re-point secrets on a public dashboard. Only a person in the web UI can, after the confirmation described in
-   "Public dashboards". Agents can still do everything on private dashboards.
+   "Public dashboards". Agents can still do everything on private dashboards. Extended after the security review:
+   a public dashboard with any secret reference is read-only for tokens altogether (see "Who can use which secret").
 2. **Public instances.** The repository default stays `SECRETS=off`. A public instance whose operator accepts the
    responsibility runs `SECRETS=users`, and the owner's own public instance will: users of someone else's instance
    store secrets at their own risk, which is what the warning and the self-hosting recommendation are for.
@@ -681,20 +706,29 @@ Where the implementation differs from the text above, it chose the safer option;
   confirm_public_secrets` (with the secret ids and names for the dialog) until they repeat the request with
   `confirmPublicSecrets: true`. This also covers restoring a version that brings references back onto a public
   dashboard, and dry runs answer like saves.
-- **Binding.** Also refuses `%25` and `..;` segments under a non-root prefix, compares the query parameter name
+- **Public secret-backed dashboards are read-only for tokens** (security review): every token write is refused, not
+  only new or re-pointed references, because pipeline, path, widget and restore changes can widen what the public
+  sees. Tokens may still make such a dashboard private.
+- **Previews with secrets need the write scope** (security review), checked in `DashboardService.previewTarget` from
+  `Principal.readOnly`. The REST preview already needed it (it is a `POST`).
+- **Binding.** Also refuses `%25` and `..;` segments under a non-root prefix, and (security review) reads the path
+  strictly: malformed escapes, `%3B`, invalid or overlong UTF-8, control characters and look-alike dots and slashes
+  are refused. It compares the query parameter name
   without case, and `parseBinding` refuses non-default ports. The exact path a prefix was made from matches too.
 - **`secretRefChanges`** treats only new ids and URL changes as changes; removing or reordering ids is not.
 - **Switch off** also refuses renaming; a malformed key refuses to start even with `off`.
-- **Values** sent in a header must be printable ASCII; redaction also covers percent-encoded forms and JSON numbers;
-  failed credentialed requests never carry the HTTP client's message.
+- **Values** sent in a header must be printable ASCII; redaction normalises strings (URL decoding, JSON escapes,
+  case) and also looks for base64 forms and JSON numbers (hardened after the security review); failed credentialed
+  requests never carry the HTTP client's message.
 - **Use time** also refuses two secrets writing the same header or parameter ("Credentials for this source conflict
   with each other."), and `claim` refuses a document with references (impossible unless edited by hand).
 - **Admin counts** are served by `GET /api/admin/secrets`; the admin page shows them in the web phase.
 - **Tests** use a local HTTP server and a dispatcher seam on `createDeps` instead of undici's `MockAgent`.
 
 Residual risks worth knowing: a numeric secret longer than 15 digits echoed as a JSON number loses precision on parse
-and is then not recognised by the redaction (the echo is a near-copy of the value); a heap dump of the process can
-contain values (operator-level access, as stated in the warning).
+and is then not recognised by the redaction (the echo is a near-copy of the value); partial or transformed echoes are
+not recognised either (see "Echo redaction"); a heap dump of the process can contain values (operator-level access, as
+stated in the warning).
 
 ### Web phase
 

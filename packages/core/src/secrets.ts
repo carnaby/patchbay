@@ -82,8 +82,10 @@ export function parseBinding(input: string): SecretBinding {
     throw new BindingError('The address must not have a query or fragment');
   // Data sources may only use the default port (see safe-fetch), so a binding with another port could never be used.
   if (url.port) throw new BindingError('Only the default HTTPS port is supported');
-  if (hasEncodedSeparator(url.pathname) || hasDotSegmentWithParams(url.pathname)) {
-    throw new BindingError('The path must not contain encoded slashes, backslashes or percent signs');
+  if (unsafePath(url.pathname)) {
+    throw new BindingError(
+      'The path must not contain encoded slashes, backslashes, percent signs or semicolons, invalid escapes or look-alike dots and slashes',
+    );
   }
   const pathPrefix = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
   if (pathPrefix.length > 200) throw new BindingError('The path is too long');
@@ -95,16 +97,61 @@ export function bindingLabel(binding: SecretBinding): string {
   return `${binding.origin}${binding.pathPrefix}`;
 }
 
-// Servers may decode %2F, %5C (and, decoding twice, %25) into separators after our comparison.
-function hasEncodedSeparator(path: string): boolean {
-  return /%2f|%5c|%25/i.test(path);
+/** Dots and slashes that some servers fold into "." and "/" (fullwidth, halfwidth, small, division slash, …). */
+const LOOK_ALIKES = /[․⁄∕⧸。﹒﹨．／＼｡]/;
+
+/**
+ * Decodes a URL path (as `URL.pathname` serialises it: ASCII with %XX escapes) as strict UTF-8. Returns null for
+ * anything a lenient server might decode differently: overlong forms such as %C0%AE (a dot), surrogates, code
+ * points above U+10FFFF, stray continuation bytes and raw non-ASCII.
+ */
+function decodePathStrict(path: string): string | null {
+  const bytes: number[] = [];
+  for (let i = 0; i < path.length; i++) {
+    const c = path.charCodeAt(i);
+    if (c > 0x7f) return null;
+    if (path[i] === '%') {
+      bytes.push(Number.parseInt(path.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else bytes.push(c);
+  }
+  let out = '';
+  for (let i = 0; i < bytes.length; ) {
+    const b = bytes[i]!;
+    let need: number;
+    let min: number;
+    let cp: number;
+    if (b < 0x80) [need, min, cp] = [0, 0, b];
+    else if (b >= 0xc2 && b <= 0xdf) [need, min, cp] = [1, 0x80, b & 0x1f];
+    else if (b >= 0xe0 && b <= 0xef) [need, min, cp] = [2, 0x800, b & 0x0f];
+    else if (b >= 0xf0 && b <= 0xf4) [need, min, cp] = [3, 0x10000, b & 0x07];
+    else return null;
+    for (let k = 1; k <= need; k++) {
+      const next = bytes[i + k];
+      if (next === undefined || (next & 0xc0) !== 0x80) return null;
+      cp = (cp << 6) | (next & 0x3f);
+    }
+    if (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+    out += String.fromCodePoint(cp);
+    i += need + 1;
+  }
+  return out;
 }
 
-// `..;/` is a dot segment to many Java servers but not to the URL parser.
-function hasDotSegmentWithParams(path: string): boolean {
-  return path.split('/').some((segment) => {
-    if (!segment.includes(';')) return false;
-    const head = segment.split(';')[0]!.replace(/%2e/gi, '.');
+/**
+ * Whether a path could mean something else to the server than to us, which matters only under a path prefix. A strict
+ * reading: every "%" starts a two-digit escape ("%u002e" is decoded by some servers); no encoded "/", "\", "%"
+ * (decoded twice) or ";" ("..%3b"); `..;` segments (a dot segment to many Java servers); valid, shortest-form UTF-8
+ * only; no control characters and no look-alike dots or slashes. Ordinary escaped UTF-8 (e.g. "ľ") passes.
+ */
+function unsafePath(path: string): boolean {
+  if (/%(?![0-9a-fA-F]{2})/.test(path) || /%(2f|5c|25|3b)/i.test(path)) return true;
+  const decoded = decodePathStrict(path);
+  if (decoded === null) return true;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what is refused
+  if (/[\u0000-\u001f\u007f]/.test(decoded) || LOOK_ALIKES.test(decoded)) return true;
+  return decoded.split('/').some((segment) => {
+    const head = segment.split(';')[0]!;
     return head === '.' || head === '..';
   });
 }
@@ -128,7 +175,7 @@ export function bindingMatches(
   // Comparing parsed origins normalises case and IDN; a trailing-dot host differs and therefore fails safe.
   if (u.origin !== binding.origin || u.username || u.password) return { ok: false, reason: 'origin' };
   const path = u.pathname;
-  if (binding.pathPrefix !== '/' && (hasEncodedSeparator(path) || hasDotSegmentWithParams(path))) {
+  if (binding.pathPrefix !== '/' && unsafePath(path)) {
     return { ok: false, reason: 'encoding' };
   }
   // The exact path the prefix was made from ("/v1/orders" for "/v1/orders/") is the address the user typed.
@@ -155,7 +202,7 @@ export function bindingMismatchMessage(
     case 'path':
       return `Secret "${secret.name}" is only sent to ${where}. Use a URL under that address or pick another secret.`;
     case 'encoding':
-      return `Secret "${secret.name}" is only sent to ${where}; URLs with encoded slashes, backslashes, percent signs or ";" dot segments are refused.`;
+      return `Secret "${secret.name}" is only sent to ${where}; paths with encoded slashes, backslashes, percent signs or semicolons, invalid escapes, ";" dot segments or look-alike dots and slashes are refused.`;
     case 'param':
       return `The URL already has a "${secret.paramName}" query parameter, which secret "${secret.name}" adds itself. Remove it from the URL.`;
   }
