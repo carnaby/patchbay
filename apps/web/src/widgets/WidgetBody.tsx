@@ -21,10 +21,13 @@ export function WidgetBody({
   widget,
   result,
   loading,
+  errorHint,
 }: {
   widget: Widget;
   result: DatasetResult | undefined;
   loading?: boolean;
+  /** What to do about the error; only passed for the dashboard's owner, viewers see the generic message alone. */
+  errorHint?: string | null;
 }) {
   if (widget.type === 'text') return <TextBody markdown={widget.config.markdown} />;
   if (!result) {
@@ -39,6 +42,7 @@ export function WidgetBody({
       <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-sm text-bad">
         <AlertTriangle className="size-5" />
         <span className="line-clamp-3">{result.error}</span>
+        {errorHint ? <span className="line-clamp-3 text-xs text-ink-2">{errorHint}</span> : null}
       </div>
     );
   }
