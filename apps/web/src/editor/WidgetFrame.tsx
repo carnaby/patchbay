@@ -1,4 +1,4 @@
-import { type SoundRule, soundRuleMissingColumns, type Widget } from '@patchbay/core';
+import { type SoundRule, soundRuleMissingColumns, sourceSecretIds, type Widget } from '@patchbay/core';
 import {
   Copy,
   GripVertical,
@@ -12,7 +12,8 @@ import {
 } from 'lucide-react';
 import { memo, useEffect, useState } from 'react';
 import { cx, IconButton, toast } from '../components/ui.tsx';
-import { relativeTime } from '../lib/hooks.ts';
+import { relativeTime, useSecretsStatus } from '../lib/hooks.ts';
+import { credentialErrorHint } from '../lib/secrets.ts';
 import { SOUND_LABELS, useSoundSettings } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
 import { useDatasetResult } from '../state/sync.ts';
@@ -47,6 +48,8 @@ export const WidgetFrame = memo(function WidgetFrame({
     'datasetId' in widget ? s.doc?.datasets.find((d) => d.id === widget.datasetId) : undefined,
   );
   const flashAt = useEditor((s) => s.flash[widget.id]);
+  const isOwner = useEditor((s) => Boolean(s.access?.isOwner));
+  const { data: secretsStatus } = useSecretsStatus();
   const apply = useEditor((s) => s.apply);
   const query = useDatasetResult(dashboardId, dataset, live);
   const [flashing, setFlashing] = useState(false);
@@ -176,7 +179,19 @@ export const WidgetFrame = memo(function WidgetFrame({
         )}
       </header>
       <div className="pb-no-drag min-h-0 flex-1 px-3 pb-3">
-        <WidgetBody widget={widget} result={result} loading={query.isFetching || !query.isFetched} />
+        <WidgetBody
+          widget={widget}
+          result={result}
+          loading={query.isFetching || !query.isFetched}
+          errorHint={
+            isOwner && result?.error && dataset
+              ? credentialErrorHint(result.error, {
+                  hasSecrets: sourceSecretIds(dataset.source).length > 0,
+                  canAddSecrets: Boolean(secretsStatus?.canUseSecrets) && dataset.source.kind === 'http',
+                })
+              : null
+          }
+        />
       </div>
     </section>
   );
