@@ -85,6 +85,15 @@ class Upstream {
               },
             ],
           });
+        case '/v1/slash':
+          // Like Django's APPEND_SLASH or nginx: the same query string, a trailing slash added.
+          res.writeHead(301, { location: `/v1/slash/${url.search}` });
+          return res.end();
+        case '/v1/slash/':
+          return json(200, { items: [{ id: 1, account }] });
+        case '/v1/redirect-other-key':
+          res.writeHead(302, { location: '/v1/orders?api_key=chosen-by-the-api' });
+          return res.end();
         case '/v1/redirect-same':
           res.writeHead(302, { location: '/v1/orders' });
           return res.end();
@@ -571,6 +580,28 @@ describe('fetching with secrets', () => {
       expect(upstream.since(mark).map((x) => x.host)).toEqual(['api.example.com']);
       expect(JSON.stringify(r)).not.toContain(v);
     }
+  });
+
+  it('follows a same-origin redirect that keeps the query string with a query secret', async () => {
+    const cookie = await env.login('slash@example.com');
+    const v = value('q');
+    const q = await env.secret(cookie, { placement: 'query', paramName: 'api_key', value: v });
+    const dash = await env.dashboard(cookie);
+    await env.ops(dash, cookie, [
+      addDataset(http('slash', '/v1/slash?city=Oslo', [q.id])),
+      addDataset(http('other-key', '/v1/redirect-other-key', [q.id])),
+    ]);
+    const mark = upstream.received.length;
+    const result = await env.data(dash, 'slash', cookie);
+    expect(result.error).toBeUndefined();
+    expect(result.table.rows).toHaveLength(1);
+    expect(upstream.since(mark).map((r) => r.url)).toEqual([
+      `/v1/slash?city=Oslo&api_key=${v}`,
+      `/v1/slash/?city=Oslo&api_key=${v}`,
+    ]);
+    // A redirect that sets the parameter to another value is still refused.
+    const other = await env.data(dash, 'other-key', cookie);
+    expect(other.error).toMatch(/The API redirected to another address/);
   });
 
   it('keeps upstream bodies out of errors and resolves nothing it should not', async () => {
