@@ -19,6 +19,24 @@ export const MAX_SECRETS_PER_USER = 20;
 export const SECRET_VALUE_MIN = 8;
 export const SECRET_VALUE_MAX = 4096;
 
+/**
+ * Error code of the server's 428 answer: the save would show data fetched with secrets on a public dashboard. The
+ * web app asks the user, then repeats the request with `confirmPublicSecrets: true`. Tokens are never asked.
+ */
+export const CONFIRM_PUBLIC_SECRETS = 'confirm_public_secrets';
+
+/**
+ * Messages for datasets whose credentials cannot be used. They reach every viewer of a dashboard, so they stay
+ * generic; the owner's editor adds detail from the owner's own secret list.
+ */
+export const CREDENTIAL_ERRORS = {
+  unavailable: 'Credentials for this source are not available.',
+  bound: 'Credentials for this source are bound to another address.',
+  off: 'Credentials are turned off on this server.',
+  undecryptable: 'Credentials could not be decrypted on this server.',
+  conflict: 'Credentials for this source conflict with each other.',
+} as const;
+
 /** Where a secret may be sent: `URL.origin` plus a path prefix that always ends with "/". */
 export interface SecretBinding {
   origin: string;
