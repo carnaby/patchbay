@@ -54,8 +54,11 @@ create or change them.
   fails. At most ${MAX_SECRETS_PER_SOURCE} per source. The secret decides how it is sent (header or query parameter).
 - Never put keys or tokens into a URL, a dataset name or a text widget. If an API needs a key the user has not saved,
   ask them to add it at ${publicUrl}/settings#secrets, then continue.
-- On a public dashboard you cannot add secrets or change the URL of a secret-backed dataset, and you cannot make a
+- A public dashboard that uses secrets is read-only for you: every change to it (datasets, steps, widgets, restoring
+  a version) must be made by the user in the web app, or after they make it private. You also cannot make a
   dashboard with secrets public. Ask the user to do it in the web app.
+- These rules limit where secrets are used, not where data you have read can go. Never copy data fetched with a
+  secret anywhere else (another dashboard, inline rows, a text widget, your answer) unless the user asked for it.
 - Data fetched with a secret is shown to everyone who can view the dashboard. Keep such dashboards private unless the
   user says otherwise.
 
