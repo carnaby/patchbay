@@ -89,8 +89,8 @@ export function advertise<T extends z.ZodType>(
   const cache = new Map<string, Json>();
   const libraryOptions = {
     ...(options.shareDefs ? { metadata: namingRegistry } : {}),
-    // The connector set lives in the server, so the shared core schema keeps a plain string (stored documents that
-    // name a since-removed connector must still load); only what agents are shown is narrowed.
+    // The connector set lives in the server, so the shared core schema keeps a plain string: stored documents that
+    // name a since-removed connector must still load. DashboardService rejects unknown ids in new or changed sources.
     override: ({ zodSchema, jsonSchema }: { zodSchema: unknown; jsonSchema: Json }) => {
       if (zodSchema !== connectorIdSchema) return;
       delete jsonSchema.minLength;

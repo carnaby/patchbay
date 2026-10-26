@@ -40,7 +40,7 @@ export async function createDeps(config: Config): Promise<Deps> {
         });
   const data = new DataService(connectors, store, pipeline);
   const hub = new LiveHub(data, (id) => store.readDoc(id));
-  const dashboards = new DashboardService(store, index, hub);
+  const dashboards = new DashboardService(store, index, hub, connectors);
   return {
     config,
     db,
