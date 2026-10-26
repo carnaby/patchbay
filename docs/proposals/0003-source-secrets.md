@@ -469,7 +469,10 @@ paramName, value }`.
   is followed only if the target still matches every binding; the secrets are re-attached for that hop. Any other
   redirect stops the request: "The API redirected to another address. Credentials are only sent to
   https://api.example.com/v1/, so the request was stopped." It is not retried without credentials either; a silent
-  anonymous request to wherever the API pointed is not what the user configured.
+  anonymous request to wherever the API pointed is not what the user configured. A redirect that keeps the query
+  string (Django's `APPEND_SLASH`, nginx adding a trailing slash) brings back the query secret we sent: that
+  parameter is removed from the target before the binding check and attached again, but only when its value is
+  exactly the secret's. Any other value for that name still fails the check.
 - **Errors** carry the document's URL and the status code, never the request URL with a query secret, never upstream
   headers or bodies. Every message from a credentialed fetch goes through `redact(message, values)` as a last guard,
   and errors are created as `HttpError` without a `cause`, so the 500 logger in `app.ts` never prints an undici error

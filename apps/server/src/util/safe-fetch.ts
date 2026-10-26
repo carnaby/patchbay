@@ -299,6 +299,35 @@ function attach(url: URL, credentials: Credential[]) {
   return { target, headers };
 }
 
+/**
+ * A redirect that keeps the query string (an added trailing slash, say) brings back the query secret we sent. That
+ * parameter is removed so the secret can be attached again; only when its value is exactly the secret's, so a
+ * redirect that sets the parameter to anything else still fails the binding check. Other parameters keep their
+ * exact encoding.
+ */
+function withoutOwnQuerySecrets(url: URL, credentials: Credential[]): URL {
+  const own = credentials.filter((c) => c.placement === 'query' && c.paramName);
+  if (own.length === 0 || !url.search) return url;
+  const decode = (s: string) => {
+    try {
+      return decodeURIComponent(s.replace(/\+/g, ' '));
+    } catch {
+      return s;
+    }
+  };
+  const pairs = url.search.slice(1).split('&');
+  const kept = pairs.filter((pair) => {
+    const eq = pair.indexOf('=');
+    const name = decode(eq < 0 ? pair : pair.slice(0, eq)).toLowerCase();
+    const value = eq < 0 ? '' : decode(pair.slice(eq + 1));
+    return !own.some((c) => c.paramName!.toLowerCase() === name && c.value === value);
+  });
+  if (kept.length === pairs.length) return url;
+  const next = new URL(url.href);
+  next.search = kept.length ? `?${kept.join('&')}` : '';
+  return next;
+}
+
 /** Fetches JSON from an untrusted, user-supplied URL with SSRF protection, optionally with credentials. */
 export async function safeFetchJson(raw: string, options: SafeFetchOptions = {}): Promise<unknown> {
   const credentials = options.credentials ?? [];
@@ -354,6 +383,7 @@ async function fetchHops(
       await res.body?.cancel().catch(() => {});
       // Resolved against the document's URL, never against the request URL that carried a query secret.
       url = await assertPublicUrl(new URL(res.headers.get('location')!, url).toString());
+      url = withoutOwnQuerySecrets(url, credentials);
       continue;
     }
     if (!res.ok) {
