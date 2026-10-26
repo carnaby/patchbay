@@ -26,6 +26,7 @@ import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
 import type { Principal } from '../services/dashboards.ts';
 import { listTemplates } from '../services/templates.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
+import { advertise } from './input-schema.ts';
 import { referenceText, SERVER_INSTRUCTIONS } from './reference.ts';
 
 type ToolResult = {
@@ -78,6 +79,37 @@ export function createMcp(deps: Deps) {
   const { dashboards, data, connectors, config, users } = deps;
   const urlOf = (id: string) => `${config.publicUrl}/d/${id}`;
 
+  // Built once: the factory below runs per request, and the advertised JSON Schemas are cached on these objects.
+  const connectorIds = connectors.list().map((c) => c.id);
+  const dashboardId = z.string().describe('Dashboard id (the last part of its URL)');
+  const createDashboardInput = z.object({
+    title: z.string().min(1).max(120),
+    description: z.string().max(1000).optional(),
+    visibility: z.enum(['private', 'public']).default('private'),
+    template: z
+      .enum(listTemplates().map((t) => t.id))
+      .optional()
+      .describe('Start from this template instead of a blank dashboard'),
+  });
+  const applyOperationsInput = advertise(
+    z.object({
+      dashboardId,
+      operations: z.array(OpSchema).min(1).max(100),
+      dryRun: z.boolean().default(false),
+      baseVersion: z.number().int().optional().describe('Fail if the dashboard changed since this version'),
+    }),
+    { connectorIds, shareDefs: true },
+  );
+  const previewDataInput = advertise(
+    z.object({
+      source: SourceSchema,
+      transforms: z.array(TransformSchema).default([]),
+      dashboardId: dashboardId.optional(),
+      sampleRows: z.number().int().min(1).max(100).default(15),
+    }),
+    { connectorIds },
+  );
+
   const factory = ({ authInfo }: { authInfo?: AuthInfo }) => {
     const server = new McpServer(
       { name: 'patchbay', version: '0.1.0' },
@@ -118,7 +150,6 @@ export function createMcp(deps: Deps) {
       idempotentHint: false,
       openWorldHint: false,
     } as const;
-    const dashboardId = z.string().describe('Dashboard id (the last part of its URL)');
 
     server.registerTool(
       'get_reference',
@@ -175,15 +206,8 @@ export function createMcp(deps: Deps) {
       'create_dashboard',
       {
         title: 'Create a dashboard',
-        description: `Creates a dashboard owned by the user. Optionally start from a template: ${listTemplates()
-          .map((t) => t.id)
-          .join(', ')}.`,
-        inputSchema: z.object({
-          title: z.string().min(1).max(120),
-          description: z.string().max(1000).optional(),
-          visibility: z.enum(['private', 'public']).default('private'),
-          template: z.string().optional(),
-        }),
+        description: 'Creates a dashboard owned by the user, blank or from a template.',
+        inputSchema: createDashboardInput,
         annotations: write,
       },
       tool(
@@ -218,16 +242,7 @@ export function createMcp(deps: Deps) {
         title: 'Edit a dashboard',
         description:
           'Applies a batch of operations atomically (all or nothing) and saves a new version. The user sees the change live. Use dryRun to validate without saving. Ops address datasets/widgets by id.',
-        inputSchema: z.object({
-          dashboardId,
-          operations: z.array(OpSchema).min(1).max(100),
-          dryRun: z.boolean().default(false),
-          baseVersion: z
-            .number()
-            .int()
-            .optional()
-            .describe('Fail if the dashboard changed since this version'),
-        }),
+        inputSchema: applyOperationsInput,
         annotations: write,
       },
       tool(
@@ -278,12 +293,7 @@ export function createMcp(deps: Deps) {
         title: 'Preview a data source',
         description:
           'Loads a source and runs transforms WITHOUT saving: returns columns, sample rows, a column profile and widget suggestions. Pass dashboardId when the source is an uploaded file.',
-        inputSchema: z.object({
-          source: SourceSchema,
-          transforms: z.array(TransformSchema).default([]),
-          dashboardId: dashboardId.optional(),
-          sampleRows: z.number().int().min(1).max(100).default(15),
-        }),
+        inputSchema: previewDataInput,
         annotations: { ...read, openWorldHint: true },
       },
       tool(
