@@ -171,40 +171,110 @@ export interface UpstreamTestSeam {
 
 const REDACTED = '[redacted]';
 
-/** Every form a value can take in text we produce or receive: as is, and percent-encoded as in a query string. */
-function redactionForms(values: string[]): string[] {
-  const forms = values.flatMap((v) => [
-    v,
-    encodeURIComponent(v),
-    new URLSearchParams({ v }).toString().slice(2),
-  ]);
-  // Longest first, so a shorter form never splits a longer one.
-  return [...new Set(forms)].filter((f) => f.length > 0).sort((a, b) => b.length - a.length);
+/** Significant digits shorter than this are too common to treat a number as an echo of a digits-only value. */
+const MIN_NEEDLE = 8;
+
+/**
+ * Base64 and base64url of a value as it appears inside a longer encoded string, for each of the three byte
+ * alignments: only the characters that depend on the value's bytes alone. This also finds `user:value` in a Basic
+ * authorization header an API echoes.
+ */
+function base64Cores(value: string): string[] {
+  const bytes = Buffer.from(value, 'utf8');
+  return [0, 1, 2].flatMap((pad) => {
+    const encoded = Buffer.concat([Buffer.alloc(pad), bytes]).toString('base64');
+    const core = encoded.slice(Math.ceil((8 * pad) / 6), Math.floor((8 * (pad + bytes.length)) / 6));
+    return [core, core.replace(/\+/g, '-').replace(/\//g, '_')];
+  });
 }
 
-/** Last guard for messages from a credentialed request: no form of a value survives. */
-export function redact(text: string, values: string[]): string {
-  let out = text;
-  for (const form of redactionForms(values)) out = out.split(form).join(REDACTED);
-  return out;
+interface Matcher {
+  /** Lowercased strings whose presence in a normalised candidate means an echo. */
+  needles: string[];
+  /** The value as is and in the two common URL encodings, matched without case, for a readable partial redaction. */
+  spans: RegExp;
+}
+
+function matcher(values: string[]): Matcher {
+  const needles = values.flatMap((v) => {
+    const significant = /^\d+$/.test(v) ? v.replace(/^0+/, '') : '';
+    return [v, ...base64Cores(v), ...(significant.length >= MIN_NEEDLE ? [significant] : [])];
+  });
+  const spans = values
+    .flatMap((v) => [v, encodeURIComponent(v), new URLSearchParams({ v }).toString().slice(2)])
+    // Longest first, so a shorter form never splits a longer one.
+    .sort((a, b) => b.length - a.length)
+    .map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return {
+    needles: [...new Set(needles.map((n) => n.toLowerCase()))].filter((n) => n.length > 0),
+    spans: new RegExp(spans.join('|'), 'gi'),
+  };
+}
+
+/** Decodes every run of %XX, leaving malformed escapes as they are; invalid UTF-8 becomes U+FFFD. */
+function percentDecode(s: string): string {
+  return s.replace(/(?:%[0-9a-fA-F]{2})+/g, (run) =>
+    Buffer.from(run.match(/%[0-9a-fA-F]{2}/g)!.map((h) => Number.parseInt(h.slice(1), 16))).toString('utf8'),
+  );
 }
 
 /**
- * Replaces echoed secrets in parsed JSON (some APIs reflect credentials in /whoami answers or error payloads).
- * Matching parsed strings instead of raw text handles JSON escaping such as "\/".
+ * The spellings a string may hide a value in, lowercased: as is, with JSON escapes undone, and percent-decoded
+ * repeatedly (double encoding) with and without "+" as a space.
+ */
+function candidates(s: string): string[] {
+  if (!/[%\\+]/.test(s)) return [s.toLowerCase()];
+  const out = new Set([s]);
+  const unescaped = s
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replace(/\\\//g, '/');
+  out.add(unescaped);
+  for (const start of [unescaped, unescaped.replace(/\+/g, ' ')]) {
+    let current = start;
+    out.add(current);
+    for (let i = 0; i < 4; i++) {
+      const next = percentDecode(current);
+      if (next === current) break;
+      out.add(next);
+      current = next;
+    }
+  }
+  return [...out].map((c) => c.toLowerCase());
+}
+
+function contains(m: Matcher, s: string): boolean {
+  return candidates(s).some((c) => m.needles.some((n) => c.includes(n)));
+}
+
+/**
+ * Removes a value from a string: the plain spellings are replaced in place so the rest stays readable; if any other
+ * spelling is still found (another encoding, base64, escapes), the whole string is replaced.
+ */
+function scrub(m: Matcher, s: string): string {
+  if (!contains(m, s)) return s;
+  const partial = s.replace(m.spans, REDACTED);
+  return contains(m, partial) ? REDACTED : partial;
+}
+
+/** Last guard for messages from a credentialed request: no known spelling of a value survives. */
+export function redact(text: string, values: string[]): string {
+  return scrub(matcher(values), text);
+}
+
+/**
+ * Replaces echoed secrets in parsed JSON (some APIs reflect credentials in /whoami answers, error payloads or
+ * request dumps). Parsed strings are matched after undoing JSON escapes and URL encodings, without case, and
+ * against base64 of the value. What is not caught: a partial echo (the last four characters, say) and any other
+ * transformation (hashing, hex, splitting across fields).
  */
 export function redactJson(value: unknown, values: string[]): unknown {
-  const forms = redactionForms(values);
-  const scrub = (s: string) => (forms.some((f) => s.includes(f)) ? redact(s, values) : s);
+  const m = matcher(values);
   const walk = (v: unknown): unknown => {
-    if (typeof v === 'string') return scrub(v);
-    if (typeof v === 'number' || typeof v === 'bigint') {
-      const s = String(v);
-      return forms.some((f) => s.includes(f)) ? REDACTED : v;
-    }
+    if (typeof v === 'string') return scrub(m, v);
+    if (typeof v === 'number' || typeof v === 'bigint') return contains(m, String(v)) ? REDACTED : v;
     if (Array.isArray(v)) return v.map(walk);
     if (v && typeof v === 'object') {
-      return Object.fromEntries(Object.entries(v).map(([k, x]) => [scrub(k), walk(x)]));
+      return Object.fromEntries(Object.entries(v).map(([k, x]) => [scrub(m, k), walk(x)]));
     }
     return v;
   };
