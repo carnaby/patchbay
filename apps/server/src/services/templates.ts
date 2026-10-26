@@ -3,6 +3,7 @@
  * so every template is guaranteed to be a valid document.
  */
 import { applyOps, type DashboardDoc, emptyDashboard, type OpInput } from '@patchbay/core';
+import { badRequest } from '../util/errors.ts';
 
 export interface TemplateInfo {
   id: string;
@@ -660,7 +661,10 @@ export function listTemplates(): TemplateInfo[] {
 }
 
 export function buildTemplate(id: string, title?: string): DashboardDoc {
-  const template = TEMPLATES.find((t) => t.id === id) ?? TEMPLATES[0]!;
+  const template = TEMPLATES.find((t) => t.id === id);
+  // Falling back to blank would hide a typo: the caller asked for something else.
+  if (!template)
+    throw badRequest(`Unknown template "${id}". Available: ${TEMPLATES.map((t) => t.id).join(', ')}`);
   let doc = applyOps(
     emptyDashboard(template.id === 'blank' ? 'Untitled dashboard' : template.name),
     template.ops,
