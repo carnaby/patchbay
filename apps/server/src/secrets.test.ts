@@ -1115,6 +1115,40 @@ describe('caches never cross credentials', () => {
 });
 
 describe('secrets over MCP', () => {
+  it('needs the write scope to preview a source that uses secrets', async () => {
+    const cookie = await env.login('mcp-readonly@example.com');
+    const s = await env.secret(cookie);
+    const dash = await env.dashboard(cookie);
+    const readOnly = await env.mcp(await env.pat(cookie, ['dashboards:read']));
+    const mark = upstream.received.length;
+    for (const dashboardId of [undefined, dash]) {
+      const res = await readOnly.callTool({
+        name: 'preview_data',
+        arguments: {
+          ...(dashboardId ? { dashboardId } : {}),
+          source: { kind: 'http', url: `${API}/v1/anything/the/agent/chooses`, secrets: [s.id] },
+        },
+      });
+      expect(res.isError).toBe(true);
+      expect(text(res)).toMatch(/dashboards:write/);
+    }
+    // Nothing was sent with the credential.
+    expect(upstream.since(mark)).toEqual([]);
+    // Sources without secrets preview as before.
+    const plain = await readOnly.callTool({
+      name: 'preview_data',
+      arguments: { source: { kind: 'http', url: `${API}/v1/orders` } },
+    });
+    expect(plain.isError).toBeFalsy();
+    // With the write scope it works.
+    const writer = await env.mcp(await env.pat(cookie));
+    const ok = await writer.callTool({
+      name: 'preview_data',
+      arguments: { source: { kind: 'http', url: `${API}/v1/orders`, secrets: [s.id] } },
+    });
+    expect(ok.isError).toBeFalsy();
+  });
+
   it('lists secrets, uses them on private dashboards and warns about keys in URLs', async () => {
     const cookie = await env.login('mcp-secrets@example.com');
     const s = await env.secret(cookie, { name: 'Shop', placement: 'query', paramName: 'api_key' });
