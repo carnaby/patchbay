@@ -56,6 +56,8 @@ export interface Principal {
    * person in the web app. Tokens can use secrets but never manage them or publish data fetched with them.
    */
   viaToken: boolean;
+  /** The token lacks the dashboards:write scope. */
+  readOnly?: boolean | undefined;
   /** Edit key presented for an anonymous dashboard (header X-Edit-Key). */
   editKey?: string | undefined;
   /** Set when the request comes through MCP, e.g. "Claude". */
@@ -85,8 +87,8 @@ export { CONFIRM_PUBLIC_SECRETS, CREDENTIAL_ERRORS } from '@patchbay/core';
 const CLAIM_FIRST = 'Sign in and claim this dashboard to use secrets.';
 const TOKEN_PUBLISH =
   'Make it public in the web app; it would show data fetched with your secrets to anyone. Tokens cannot do this.';
-const TOKEN_PUBLIC_CHANGE =
-  'This dashboard is public. Agents cannot point secrets at new URLs on a public dashboard. Make it private first, or do it in the web editor.';
+const TOKEN_PUBLIC_EDIT =
+  'This dashboard is public and shows data fetched with secrets, so agents and tokens cannot change it: a person has to make this change in the Patchbay web app. Ask the user to do it there, or to make the dashboard private first.';
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_FILES = 20;
@@ -589,6 +591,13 @@ export class DashboardService {
     options: { requireEdit?: boolean } = {},
   ): Promise<DashboardTarget> {
     const upload = dataset.source.kind === 'upload';
+    // A preview sends the credentials to a URL of the caller's choosing (within the binding) without saving
+    // anything, so it is a use of the secret, not a read: read-only tokens may not do it.
+    if (p.readOnly && sourceSecretIds(dataset.source).length > 0) {
+      throw forbidden(
+        'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.',
+      );
+    }
     if (!dashboardId) {
       if (upload) throw badRequest('Uploaded files need dashboardId');
       if (!p.user) throw unauthorized();
@@ -783,6 +792,16 @@ export class DashboardService {
     p: Principal,
     options: SecretWriteOptions,
   ) {
+    // Any edit can change what a public secret-backed dashboard shows (a pipeline step, the JSON path, a new widget,
+    // an older version), not only edits to references. Such dashboards are therefore read-only for tokens: an agent
+    // steered by a prompt injection must not be able to widen what the public sees.
+    if (
+      p.viaToken &&
+      meta.visibility === 'public' &&
+      (docSecretIds(before).length > 0 || docSecretIds(after).length > 0)
+    ) {
+      throw forbidden(TOKEN_PUBLIC_EDIT);
+    }
     if (docSecretIds(after).length === 0) return;
     // Anonymous documents, and therefore all their versions, never hold references. That is what makes claiming
     // safe: a prepared document cannot wait for a victim to claim it and resolve their secrets.
@@ -814,7 +833,7 @@ export class DashboardService {
     }
     if (meta.visibility === 'public') {
       const ids = [...new Set(datasets.flatMap((d) => sourceSecretIds(d.source)))];
-      this.assertMayShowSecrets(p, ownerId, ids, options, TOKEN_PUBLIC_CHANGE);
+      this.assertMayShowSecrets(p, ownerId, ids, options, TOKEN_PUBLIC_EDIT);
     }
   }
 

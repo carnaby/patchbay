@@ -85,6 +85,15 @@ class Upstream {
               },
             ],
           });
+        case '/v1/slash':
+          // Like Django's APPEND_SLASH or nginx: the same query string, a trailing slash added.
+          res.writeHead(301, { location: `/v1/slash/${url.search}` });
+          return res.end();
+        case '/v1/slash/':
+          return json(200, { items: [{ id: 1, account }] });
+        case '/v1/redirect-other-key':
+          res.writeHead(302, { location: '/v1/orders?api_key=chosen-by-the-api' });
+          return res.end();
         case '/v1/redirect-same':
           res.writeHead(302, { location: '/v1/orders' });
           return res.end();
@@ -573,6 +582,28 @@ describe('fetching with secrets', () => {
     }
   });
 
+  it('follows a same-origin redirect that keeps the query string with a query secret', async () => {
+    const cookie = await env.login('slash@example.com');
+    const v = value('q');
+    const q = await env.secret(cookie, { placement: 'query', paramName: 'api_key', value: v });
+    const dash = await env.dashboard(cookie);
+    await env.ops(dash, cookie, [
+      addDataset(http('slash', '/v1/slash?city=Oslo', [q.id])),
+      addDataset(http('other-key', '/v1/redirect-other-key', [q.id])),
+    ]);
+    const mark = upstream.received.length;
+    const result = await env.data(dash, 'slash', cookie);
+    expect(result.error).toBeUndefined();
+    expect(result.table.rows).toHaveLength(1);
+    expect(upstream.since(mark).map((r) => r.url)).toEqual([
+      `/v1/slash?city=Oslo&api_key=${v}`,
+      `/v1/slash/?city=Oslo&api_key=${v}`,
+    ]);
+    // A redirect that sets the parameter to another value is still refused.
+    const other = await env.data(dash, 'other-key', cookie);
+    expect(other.error).toMatch(/The API redirected to another address/);
+  });
+
   it('keeps upstream bodies out of errors and resolves nothing it should not', async () => {
     const cookie = await env.login('errors@example.com');
     const v = value();
@@ -780,7 +811,7 @@ describe('who can use which secret', () => {
     });
     expect(published.json.meta.visibility).toBe('public');
 
-    // Public: tokens cannot add or re-point secrets...
+    // Public: tokens cannot add or re-point secrets, nor change anything else (see the next test).
     const viaToken = (ops: unknown[]) =>
       env.call(`/api/dashboards/${dash}/ops`, { body: { ops, confirmPublicSecrets: true }, headers: auth });
     for (const ops of [
@@ -799,24 +830,12 @@ describe('who can use which secret', () => {
           set: { source: { kind: 'http', url: `${API}/v1/orders`, secrets: [s.id, s2.id] } },
         },
       ],
+      [{ op: 'updateDataset', id: 'orders', set: { source: { kind: 'http', url: `${API}/v1/orders` } } }],
     ]) {
       const res = await viaToken(ops);
       expect(res.status).toBe(403);
-      expect(res.json.error).toMatch(/Agents cannot point secrets at new URLs on a public dashboard/);
+      expect(res.json.error).toMatch(/a person has to make this change in the Patchbay web app/);
     }
-    // ...but other edits, a new JSON path and removing a secret are fine.
-    expect((await viaToken([{ op: 'setMeta', title: 'Renamed by agent' }])).status).toBe(200);
-    expect(
-      (
-        await viaToken([
-          {
-            op: 'updateDataset',
-            id: 'orders',
-            set: { source: { kind: 'http', url: `${API}/v1/orders`, path: 'items', secrets: [s.id] } },
-          },
-        ])
-      ).status,
-    ).toBe(200);
     // The web app is asked to confirm, then may.
     const change = [addDataset(http('more', '/v1/orders', [s2.id]))];
     const confirm = await env.ops(dash, cookie, change);
@@ -825,13 +844,6 @@ describe('who can use which secret', () => {
     expect((await env.ops(dash, cookie, change, { confirmPublicSecrets: true })).status).toBe(200);
     // Unchanged references never ask again (autosave of unrelated edits).
     expect((await env.ops(dash, cookie, [{ op: 'setMeta', title: 'Again' }])).status).toBe(200);
-    expect(
-      (
-        await viaToken([
-          { op: 'updateDataset', id: 'more', set: { source: { kind: 'http', url: `${API}/v1/orders` } } },
-        ])
-      ).status,
-    ).toBe(200);
 
     // Private again: tokens may add secrets.
     await env.call(`/api/dashboards/${dash}/settings`, {
@@ -840,6 +852,104 @@ describe('who can use which secret', () => {
       headers: auth,
     });
     expect((await viaToken([addDataset(http('third', '/v1/orders', [s2.id]))])).status).toBe(200);
+  });
+
+  it('refuses every token write to a public dashboard that uses secrets', async () => {
+    const cookie = await env.login('widen@example.com');
+    const pat = await env.pat(cookie);
+    const auth = { authorization: `Bearer ${pat}` };
+    const s = await env.secret(cookie);
+    const dash = await env.dashboard(cookie);
+    // The owner publishes a narrow view: one column of the upstream rows.
+    await env.ops(dash, cookie, [
+      addDataset(
+        http('orders', '/v1/orders', [s.id], { transforms: [{ type: 'select', fields: ['total'] }] }),
+      ),
+    ]);
+    await env.call(`/api/dashboards/${dash}/settings`, {
+      method: 'PATCH',
+      body: { visibility: 'public', confirmPublicSecrets: true },
+      cookie,
+    });
+    expect(Object.keys((await env.data(dash, 'orders')).table.rows[0])).toEqual(['total']);
+    const current = (await env.call(`/api/dashboards/${dash}`, { cookie })).json;
+    const stepId = current.doc.datasets[0].transforms[0].id;
+
+    // A prompt-injected agent tries to widen what the public sees, by every write path.
+    const opsAttempts = [
+      [{ op: 'updateDataset', id: 'orders', set: { transforms: [] } }],
+      [{ op: 'removeStep', datasetId: 'orders', stepId }],
+      [{ op: 'updateDataset', id: 'orders', set: { accumulate: 50 } }],
+      [
+        {
+          op: 'updateDataset',
+          id: 'orders',
+          set: { source: { ...current.doc.datasets[0].source, path: 'items' } },
+        },
+      ],
+      [{ op: 'addWidget', widget: { id: 'all', type: 'table', datasetId: 'orders', config: {} } }],
+      [{ op: 'setMeta', title: 'Harmless?' }],
+    ];
+    for (const ops of opsAttempts) {
+      for (const dryRun of [false, true]) {
+        const res = await env.call(`/api/dashboards/${dash}/ops`, {
+          body: { ops, dryRun, confirmPublicSecrets: true },
+          headers: auth,
+        });
+        expect(res.status, JSON.stringify(ops)).toBe(403);
+        expect(res.json.error).toMatch(/a person has to make this change in the Patchbay web app/);
+      }
+    }
+    const put = await env.call(`/api/dashboards/${dash}`, {
+      method: 'PUT',
+      headers: auth,
+      body: {
+        doc: { ...current.doc, datasets: [{ ...current.doc.datasets[0], transforms: [] }] },
+        baseVersion: current.meta.version,
+        confirmPublicSecrets: true,
+      },
+    });
+    expect(put.status).toBe(403);
+    expect(
+      (await env.call(`/api/dashboards/${dash}/versions/1/restore`, { body: {}, headers: auth })).status,
+    ).toBe(403);
+    // The same over MCP.
+    const client = await env.mcp(pat);
+    const viaMcp = await client.callTool({
+      name: 'apply_operations',
+      arguments: { dashboardId: dash, operations: opsAttempts[0] },
+    });
+    expect(viaMcp.isError).toBe(true);
+    expect(text(viaMcp)).toMatch(/web app/);
+    const restore = await client.callTool({
+      name: 'restore_version',
+      arguments: { dashboardId: dash, version: 1 },
+    });
+    expect(restore.isError).toBe(true);
+    // Nothing changed for the public.
+    expect(Object.keys((await env.data(dash, 'orders')).table.rows[0])).toEqual(['total']);
+    expect((await env.call(`/api/dashboards/${dash}`, { cookie })).json.meta.version).toBe(
+      current.meta.version,
+    );
+
+    // The owner can, in the web app; and an agent can make it private, after which it may edit again.
+    expect((await env.ops(dash, cookie, [{ op: 'setMeta', title: 'By the owner' }])).status).toBe(200);
+    const priv = await env.call(`/api/dashboards/${dash}/settings`, {
+      method: 'PATCH',
+      body: { visibility: 'private' },
+      headers: auth,
+    });
+    expect(priv.status).toBe(200);
+    expect(
+      (await env.call(`/api/dashboards/${dash}/ops`, { body: { ops: opsAttempts[0] }, headers: auth }))
+        .status,
+    ).toBe(200);
+    // A public dashboard without secrets stays fully editable by tokens.
+    const plain = await env.dashboard(cookie, 'public');
+    expect(
+      (await env.call(`/api/dashboards/${plain}/ops`, { body: { ops: opsAttempts[5] }, headers: auth }))
+        .status,
+    ).toBe(200);
   });
 
   it('restores versions with deleted secrets, but not past the public rules', async () => {
@@ -1036,6 +1146,40 @@ describe('caches never cross credentials', () => {
 });
 
 describe('secrets over MCP', () => {
+  it('needs the write scope to preview a source that uses secrets', async () => {
+    const cookie = await env.login('mcp-readonly@example.com');
+    const s = await env.secret(cookie);
+    const dash = await env.dashboard(cookie);
+    const readOnly = await env.mcp(await env.pat(cookie, ['dashboards:read']));
+    const mark = upstream.received.length;
+    for (const dashboardId of [undefined, dash]) {
+      const res = await readOnly.callTool({
+        name: 'preview_data',
+        arguments: {
+          ...(dashboardId ? { dashboardId } : {}),
+          source: { kind: 'http', url: `${API}/v1/anything/the/agent/chooses`, secrets: [s.id] },
+        },
+      });
+      expect(res.isError).toBe(true);
+      expect(text(res)).toMatch(/dashboards:write/);
+    }
+    // Nothing was sent with the credential.
+    expect(upstream.since(mark)).toEqual([]);
+    // Sources without secrets preview as before.
+    const plain = await readOnly.callTool({
+      name: 'preview_data',
+      arguments: { source: { kind: 'http', url: `${API}/v1/orders` } },
+    });
+    expect(plain.isError).toBeFalsy();
+    // With the write scope it works.
+    const writer = await env.mcp(await env.pat(cookie));
+    const ok = await writer.callTool({
+      name: 'preview_data',
+      arguments: { source: { kind: 'http', url: `${API}/v1/orders`, secrets: [s.id] } },
+    });
+    expect(ok.isError).toBeFalsy();
+  });
+
   it('lists secrets, uses them on private dashboards and warns about keys in URLs', async () => {
     const cookie = await env.login('mcp-secrets@example.com');
     const s = await env.secret(cookie, { name: 'Shop', placement: 'query', paramName: 'api_key' });

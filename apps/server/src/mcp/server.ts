@@ -123,7 +123,13 @@ export function createMcp(deps: Deps) {
     const principal = (): Principal => {
       const user = userId ? users.byId(userId) : null;
       if (!user) throw new HttpError(401, 'Not authenticated');
-      return { user, isAdmin: false, viaToken: true, mcpClient: clientName };
+      return {
+        user,
+        isAdmin: false,
+        viaToken: true,
+        readOnly: !scopes.has(SCOPES.write),
+        mcpClient: clientName,
+      };
     };
 
     /** Wraps a handler with scope checks, rate limiting and uniform error reporting. */
