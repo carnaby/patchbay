@@ -1,10 +1,10 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, BadgeCheck, Bot, Eye, PencilLine } from 'lucide-react';
+import { AlertTriangle, BadgeCheck, Bot, Eye, KeyRound, PencilLine } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { Navigate, useLocation, useSearchParams } from 'react-router';
 import { Button, Card, EmptyState, Spinner } from '../components/ui.tsx';
 import { api, errorMessage } from '../lib/api.ts';
-import { useDocumentTitle, useMe } from '../lib/hooks.ts';
+import { useDocumentTitle, useMe, useSecretsStatus } from '../lib/hooks.ts';
 
 interface ConsentRequest {
   id: string;
@@ -34,6 +34,7 @@ export default function OAuthConsent() {
   const location = useLocation();
   const requestId = params.get('request') ?? '';
   const { data: user, isLoading: userLoading } = useMe();
+  const { data: secrets } = useSecretsStatus();
   const request = useQuery({
     queryKey: ['oauth-request', requestId],
     queryFn: () => api<ConsentRequest>(`/api/oauth/requests/${encodeURIComponent(requestId)}`),
@@ -114,6 +115,12 @@ export default function OAuthConsent() {
                     <div>
                       <div className="text-sm font-medium">{info?.title ?? s}</div>
                       {info ? <div className="text-xs text-ink-2">{info.body}</div> : null}
+                      {s === 'dashboards:write' && secrets?.canUseSecrets ? (
+                        <div className="mt-1 flex items-center gap-1 text-xs text-ink-2">
+                          <KeyRound className="size-3 shrink-0" aria-hidden="true" />
+                          Use secrets you saved in your own dashboards (never read them).
+                        </div>
+                      ) : null}
                     </div>
                   </li>
                 );

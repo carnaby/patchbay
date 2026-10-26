@@ -10,6 +10,9 @@ import type { DashboardDoc, LiveEvent } from '@patchbay/core';
 import type { Principal } from '../services/dashboards.ts';
 import type { DataService } from '../services/data.ts';
 
+/** A dashboard as the hub needs it: the document, and the owner its secrets are resolved against. */
+export type LoadDashboard = (id: string) => Promise<{ doc: DashboardDoc; ownerId: string | null } | null>;
+
 export interface Subscriber {
   send: (event: LiveEvent) => void;
   /** Who is watching; re-checked when access rules change (e.g. made private). */
@@ -31,11 +34,11 @@ const MIN_INTERVAL_SEC = 1;
 export class LiveHub {
   private readonly rooms = new Map<string, Room>();
   private readonly data: DataService;
-  private readonly loadDoc: (id: string) => Promise<DashboardDoc | null>;
+  private readonly loadDashboard: LoadDashboard;
 
-  constructor(data: DataService, loadDoc: (id: string) => Promise<DashboardDoc | null>) {
+  constructor(data: DataService, loadDashboard: LoadDashboard) {
     this.data = data;
-    this.loadDoc = loadDoc;
+    this.loadDashboard = loadDashboard;
   }
 
   subscribe(dashboardId: string, subscriber: Subscriber): () => void {
@@ -117,10 +120,13 @@ export class LiveHub {
     const generation = ++room.generation;
     for (const t of room.timers) clearInterval(t);
     room.timers = [];
-    const doc = await this.loadDoc(dashboardId).catch(() => null);
+    const loaded = await this.loadDashboard(dashboardId).catch(() => null);
     // While we awaited, the room may have closed, been replaced, or been rescheduled.
-    if (!doc || this.rooms.get(dashboardId) !== room || room.generation !== generation) return;
-    for (const dataset of doc.datasets) {
+    if (!loaded || this.rooms.get(dashboardId) !== room || room.generation !== generation) return;
+    // Results never leave this room: any future sharing of refreshes across dashboards (by URL, say) would have to
+    // include the credentials in its key, as DataService's caches do.
+    const target = { id: dashboardId, ownerId: loaded.ownerId };
+    for (const dataset of loaded.doc.datasets) {
       if (dataset.refreshSec <= 0) continue;
       const interval = Math.max(dataset.refreshSec, MIN_INTERVAL_SEC) * 1000;
       let running = false;
@@ -128,7 +134,7 @@ export class LiveHub {
         if (running) return; // never overlap slow upstream calls
         running = true;
         try {
-          const result = await this.data.resolve(dashboardId, dataset);
+          const result = await this.data.resolve(target, dataset);
           if (room.generation !== generation) return;
           if (room.lastHash.get(dataset.id) !== result.hash) {
             room.lastHash.set(dataset.id, result.hash);

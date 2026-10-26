@@ -4,6 +4,7 @@ import {
   DatasetSchema,
   type LiveEvent,
   profileTable,
+  SECRET_PLACEMENTS,
   suggestWidgets,
   type ThemeMode,
 } from '@patchbay/core';
@@ -11,10 +12,10 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import { ALL_SCOPES } from '../auth/tokens.ts';
-import { clientIp, type Deps, type Env, requireUser } from '../context.ts';
+import { type Ctx, clientIp, type Deps, type Env, requireUser } from '../context.ts';
 import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
 import { listTemplates } from '../services/templates.ts';
-import { forbidden, HttpError, notFound } from '../util/errors.ts';
+import { badRequest, forbidden, HttpError, notFound } from '../util/errors.ts';
 
 /** Live stream heartbeat while nothing else is sent. */
 const HEARTBEAT_MS = 25_000;
@@ -24,6 +25,42 @@ const CreateBody = z.object({
   template: z.string().max(40).optional(),
   visibility: z.enum(['public', 'private']).optional(),
 });
+
+/** Sent by the web app after the user confirmed showing data fetched with secrets publicly (answer 428). */
+const confirmPublicSecrets = z.boolean().optional();
+
+const CreateSecretBody = z.strictObject({
+  name: z.string().max(200),
+  sendTo: z.string().max(2000),
+  placement: z.enum(SECRET_PLACEMENTS),
+  paramName: z.string().max(200).nullable().optional(),
+  value: z.string().max(16_384),
+});
+const SecretValueBody = z.strictObject({ value: z.string().max(16_384) });
+const SecretNameBody = z.strictObject({ name: z.string().max(200) });
+
+/**
+ * Parses a body that may carry a secret value. JSON syntax errors quote the input, so they must never reach the
+ * response or the error logger (which prints unexpected errors); validation messages never include values.
+ */
+async function secretBody<T>(c: Ctx, schema: z.ZodType<T>): Promise<T> {
+  let raw: unknown;
+  try {
+    raw = await c.req.json();
+  } catch {
+    throw badRequest('The request body is not valid JSON');
+  }
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw badRequest(
+      parsed.error.issues
+        .slice(0, 5)
+        .map((i) => `${i.path.join('.') || 'body'}: ${i.message}`)
+        .join('; '),
+    );
+  }
+  return parsed.data;
+}
 
 export function apiRoutes(deps: Deps) {
   const app = new Hono<Env>();
@@ -40,7 +77,8 @@ export function apiRoutes(deps: Deps) {
 
   app.get('/me', (c) => {
     const user = c.get('user');
-    return c.json({ user: user ? deps.users.toPublic(user) : null });
+    const { mode, canUseSecrets } = dashboards.secretsStatus(user);
+    return c.json({ user: user ? deps.users.toPublic(user) : null, secrets: mode, canUseSecrets });
   });
 
   app.get('/connectors', (c) => c.json(connectors.list()));
@@ -86,7 +124,8 @@ export function apiRoutes(deps: Deps) {
     }),
   ];
   app.get('/showcase', async (c) => {
-    const results = await Promise.all(showcase.map((d) => data.resolve('showcase00', d)));
+    const target = { id: 'showcase00', ownerId: null };
+    const results = await Promise.all(showcase.map((d) => data.resolve(target, d)));
     return c.json(Object.fromEntries(results.map((r) => [r.datasetId, r])));
   });
 
@@ -111,6 +150,7 @@ export function apiRoutes(deps: Deps) {
         doc: z.unknown(),
         baseVersion: z.number().int(),
         changes: z.array(z.string().max(200)).max(20).optional(),
+        confirmPublicSecrets,
       })
       .parse(await c.req.json());
     const result = await dashboards.save(
@@ -119,6 +159,7 @@ export function apiRoutes(deps: Deps) {
       body.doc,
       body.baseVersion,
       body.changes,
+      { confirmPublicSecrets: body.confirmPublicSecrets },
     );
     return c.json(result);
   });
@@ -129,17 +170,25 @@ export function apiRoutes(deps: Deps) {
         ops: z.array(z.unknown()),
         baseVersion: z.number().int().optional(),
         dryRun: z.boolean().optional(),
+        confirmPublicSecrets,
       })
       .parse(await c.req.json());
-    const options: { dryRun?: boolean; baseVersion?: number } = {};
+    const options: { dryRun?: boolean; baseVersion?: number; confirmPublicSecrets?: boolean } = {};
     if (body.dryRun !== undefined) options.dryRun = body.dryRun;
     if (body.baseVersion !== undefined) options.baseVersion = body.baseVersion;
+    if (body.confirmPublicSecrets !== undefined) options.confirmPublicSecrets = body.confirmPublicSecrets;
     return c.json(await dashboards.applyOps(c.req.param('id'), c.get('principal'), body.ops, options));
   });
 
   app.patch('/dashboards/:id/settings', async (c) => {
-    const body = z.object({ visibility: z.enum(['public', 'private']) }).parse(await c.req.json());
-    return c.json(await dashboards.setVisibility(c.req.param('id'), c.get('principal'), body.visibility));
+    const body = z
+      .object({ visibility: z.enum(['public', 'private']), confirmPublicSecrets })
+      .parse(await c.req.json());
+    return c.json(
+      await dashboards.setVisibility(c.req.param('id'), c.get('principal'), body.visibility, {
+        confirmPublicSecrets: body.confirmPublicSecrets,
+      }),
+    );
   });
 
   app.post('/dashboards/:id/claim', async (c) =>
@@ -159,36 +208,45 @@ export function apiRoutes(deps: Deps) {
   app.get('/dashboards/:id/versions', async (c) =>
     c.json(await dashboards.versions(c.req.param('id'), c.get('principal'))),
   );
-  app.post('/dashboards/:id/versions/:version/restore', async (c) =>
-    c.json(await dashboards.restore(c.req.param('id'), c.get('principal'), Number(c.req.param('version')))),
-  );
+  app.post('/dashboards/:id/versions/:version/restore', async (c) => {
+    const body = z.object({ confirmPublicSecrets }).parse(await c.req.json().catch(() => ({})));
+    return c.json(
+      await dashboards.restore(c.req.param('id'), c.get('principal'), Number(c.req.param('version')), {
+        confirmPublicSecrets: body.confirmPublicSecrets,
+      }),
+    );
+  });
 
   app.get('/dashboards/:id/data/:datasetId', async (c) => {
-    const { doc } = await dashboards.loadViewable(c.req.param('id'), c.get('principal'));
+    const id = c.req.param('id');
+    const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
     const dataset = doc.datasets.find((d) => d.id === c.req.param('datasetId'));
     if (!dataset) throw notFound('Dataset not found');
-    return c.json(await data.resolve(c.req.param('id'), dataset));
+    return c.json(await data.resolve({ id, ownerId: meta.ownerId }, dataset));
   });
 
   /** Runs an unsaved dataset definition and returns rows, a profile and widget suggestions. */
   app.post('/dashboards/:id/preview', async (c) => {
     const id = c.req.param('id');
-    const { meta } = await dashboards.loadViewable(id, c.get('principal'));
-    if (!dashboards.canEdit(meta, c.get('principal'))) throw forbidden('You cannot edit this dashboard');
+    const principal = c.get('principal');
+    const { meta } = await dashboards.loadViewable(id, principal);
+    if (!dashboards.canEdit(meta, principal)) throw forbidden('You cannot edit this dashboard');
     const body = z.object({ dataset: z.unknown() }).parse(await c.req.json());
     const dataset = DatasetSchema.parse({ id: 'preview', name: 'Preview', ...(body.dataset as object) });
     if (dataset.source.kind === 'connector')
       connectors.validateParams(dataset.source.connector, dataset.source.params);
-    const result = await data.resolve(id, { ...dataset, accumulate: 0 }, { maxRows: 500 });
+    const target = await dashboards.previewTarget(principal, id, dataset, { requireEdit: true });
+    const result = await data.resolve(target, { ...dataset, accumulate: 0 }, { maxRows: 500 });
     const profile = profileTable(result.table);
     return c.json({ result, profile, suggestions: suggestWidgets(profile) });
   });
 
   app.get('/dashboards/:id/suggest/:datasetId', async (c) => {
-    const { doc } = await dashboards.loadViewable(c.req.param('id'), c.get('principal'));
+    const id = c.req.param('id');
+    const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
     const dataset = doc.datasets.find((d) => d.id === c.req.param('datasetId'));
     if (!dataset) throw notFound('Dataset not found');
-    const result = await data.resolve(c.req.param('id'), dataset);
+    const result = await data.resolve({ id, ownerId: meta.ownerId }, dataset);
     const profile = profileTable(result.table);
     return c.json({ profile, suggestions: suggestWidgets(profile) });
   });
@@ -282,12 +340,13 @@ export function apiRoutes(deps: Deps) {
   /** PNG snapshot of a whole dashboard or one widget; also used for social previews. */
   app.get('/dashboards/:id/snapshot.png', async (c) => {
     const id = c.req.param('id');
-    const { doc } = await dashboards.loadViewable(id, c.get('principal'));
+    const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
+    const target = { id, ownerId: meta.ownerId };
     const theme: ThemeMode = c.req.query('theme') === 'dark' ? 'dark' : 'light';
     const widgetId = c.req.query('widget');
     const resolveAll = async (datasets: Dataset[]) => {
       const map = new Map<string, DatasetResult>();
-      await Promise.all(datasets.map(async (d) => map.set(d.id, await data.resolve(id, d))));
+      await Promise.all(datasets.map(async (d) => map.set(d.id, await data.resolve(target, d))));
       return map;
     };
     let png: Buffer;
@@ -295,7 +354,7 @@ export function apiRoutes(deps: Deps) {
       const widget = doc.widgets.find((w) => w.id === widgetId);
       if (!widget) throw notFound('Widget not found');
       const dataset = 'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
-      png = renderWidgetPng(widget, dataset ? await data.resolve(id, dataset) : undefined, { theme });
+      png = renderWidgetPng(widget, dataset ? await data.resolve(target, dataset) : undefined, { theme });
     } else {
       png = renderDashboardPng(doc, await resolveAll(doc.datasets), { theme });
     }
@@ -327,6 +386,28 @@ export function apiRoutes(deps: Deps) {
   });
   app.delete('/grants/:id', (c) => {
     if (!tokens.revokeGrant(requireUser(c).id, c.req.param('id'))) throw notFound('Connection not found');
+    return c.json({ ok: true });
+  });
+
+  // Credentials for HTTP sources. A value goes in once and never comes back out; DashboardService refuses every
+  // token for writes, and cookie writes pass the same-origin check like all others.
+  app.get('/secrets', async (c) =>
+    c.json(await dashboards.listSecrets(c.get('principal'), { usedBy: true })),
+  );
+  app.post('/secrets', async (c) => {
+    const body = await secretBody(c, CreateSecretBody);
+    return c.json(dashboards.createSecret(c.get('principal'), body), 201);
+  });
+  app.put('/secrets/:id/value', async (c) => {
+    const body = await secretBody(c, SecretValueBody);
+    return c.json(dashboards.replaceSecretValue(c.get('principal'), c.req.param('id'), body.value));
+  });
+  app.patch('/secrets/:id', async (c) => {
+    const body = await secretBody(c, SecretNameBody);
+    return c.json(dashboards.renameSecret(c.get('principal'), c.req.param('id'), body.name));
+  });
+  app.delete('/secrets/:id', (c) => {
+    dashboards.deleteSecret(c.get('principal'), c.req.param('id'));
     return c.json({ ok: true });
   });
 

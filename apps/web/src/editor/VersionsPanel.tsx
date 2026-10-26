@@ -2,9 +2,10 @@ import type { DashboardEnvelope, VersionInfo } from '@patchbay/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Bot, RotateCcw, User } from 'lucide-react';
 import { Button, Drawer, Spinner, toast } from '../components/ui.tsx';
-import { api } from '../lib/api.ts';
+import { api, errorMessage } from '../lib/api.ts';
 import { relativeTime } from '../lib/hooks.ts';
 import { useEditor } from '../state/editor.ts';
+import { withPublicSecretsConfirmation } from './public-secrets.tsx';
 
 export function VersionsPanel({
   open,
@@ -24,11 +25,15 @@ export function VersionsPanel({
   });
   const restore = useMutation({
     mutationFn: (v: number) =>
-      api<{ envelope: DashboardEnvelope }>(`/api/dashboards/${dashboardId}/versions/${v}/restore`, {
-        body: {},
-        dashboardId,
-      }),
+      withPublicSecretsConfirmation('restore', (confirm) =>
+        api<{ envelope: DashboardEnvelope }>(`/api/dashboards/${dashboardId}/versions/${v}/restore`, {
+          body: confirm ? { confirmPublicSecrets: true } : {},
+          dashboardId,
+        }),
+      ),
+    onError: (e) => toast(`Could not restore: ${errorMessage(e)}`, 'bad'),
     onSuccess: (res, v) => {
+      if (!res) return;
       const s = useEditor.getState();
       s.acceptRemote(res.envelope, {
         actor: { kind: 'user', label: 'You' },

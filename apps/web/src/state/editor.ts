@@ -21,6 +21,7 @@ import {
   type OpInput,
 } from '@patchbay/core';
 import { create } from 'zustand';
+import { confirmedForSave, introducedSecretRefs, type PublicSecretRef } from '../lib/secrets.ts';
 
 const HISTORY_LIMIT = 100;
 const COALESCE_MS = 1200;
@@ -28,6 +29,15 @@ const COALESCE_MS = 1200;
 interface Entry {
   doc: DashboardDoc;
   label: string;
+}
+
+/** A save the server refused with 428 until the user confirms showing data fetched with secrets publicly. */
+export interface SecretsPrompt {
+  /** The document that was refused; autosave does not retry it until the user answers or edits further. */
+  doc: DashboardDoc;
+  secrets: PublicSecretRef[];
+  /** False once the user chose "Not now": a banner stays instead of the dialog. */
+  open: boolean;
 }
 
 export interface RemoteChange {
@@ -59,6 +69,9 @@ interface EditorState {
   /** widget id -> timestamp, for the "changed elsewhere" and "this widget rang" highlight */
   flash: Record<string, number>;
   lastRemote: RemoteChange | null;
+  /** Secret references (see `introducedSecretRefs`) the user agreed to show on this public dashboard. */
+  confirmedSecretRefs: string[];
+  secretsPrompt: SecretsPrompt | null;
 
   load(envelope: DashboardEnvelope): void;
   setEditing(editing: boolean): void;
@@ -68,9 +81,20 @@ interface EditorState {
   apply(ops: OpInput[], label: string, options?: { coalesce?: string }): string | null;
   undo(): void;
   redo(): void;
-  beginSave(): { doc: DashboardDoc; baseVersion: number; labels: string[] } | null;
+  beginSave(): {
+    doc: DashboardDoc;
+    baseVersion: number;
+    labels: string[];
+    confirmPublicSecrets: boolean;
+  } | null;
   saveSucceeded(sent: DashboardDoc, envelope: DashboardEnvelope): void;
   saveFailed(error: string): void;
+  /** The server answered 428: hold this document until the user decides. */
+  saveNeedsConfirmation(sent: DashboardDoc, secrets: PublicSecretRef[]): void;
+  /** Records that the user agreed to show these references publicly; the next save carries the flag. */
+  confirmSecretRefs(refs: string[]): void;
+  answerSecretsPrompt(choice: 'confirm' | 'later' | 'discard'): void;
+  reopenSecretsPrompt(): void;
   /** The server has a newer version than ours: rebase local work or flag a conflict. */
   rebaseOnto(current: DashboardEnvelope): 'rebased' | 'conflict' | 'clean';
   acceptRemote(envelope: DashboardEnvelope, change: RemoteChange): void;
@@ -116,6 +140,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   conflict: null,
   flash: {},
   lastRemote: null,
+  confirmedSecretRefs: [],
+  secretsPrompt: null,
 
   load(envelope) {
     set({
@@ -135,6 +161,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       conflict: null,
       flash: {},
       lastRemote: null,
+      confirmedSecretRefs: [],
+      secretsPrompt: null,
       editing: get().id === envelope.meta.id ? get().editing : false,
     });
   },
@@ -204,14 +232,56 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   beginSave() {
-    const { doc, saved, saving, conflict, version, pendingLabels } = get();
+    const { doc, saved, saving, conflict, version, pendingLabels, secretsPrompt, confirmedSecretRefs } =
+      get();
     if (!doc || doc === saved || saving || conflict) return null;
+    // The refused document waits for the user's answer; any further edit makes a new document and tries again.
+    if (secretsPrompt?.doc === doc) return null;
     set({ saving: true });
     return {
       doc,
       baseVersion: version,
       labels: pendingLabels.length ? pendingLabels.slice(-10) : ['Edited'],
+      confirmPublicSecrets: saved ? confirmedForSave(saved, doc, confirmedSecretRefs) : false,
     };
+  },
+
+  saveNeedsConfirmation(sent, secrets) {
+    const previous = get().secretsPrompt;
+    // After "Not now" the banner stays; further edits must not pop the dialog up again and again.
+    set({ saving: false, secretsPrompt: { doc: sent, secrets, open: previous ? previous.open : true } });
+  },
+
+  confirmSecretRefs(refs) {
+    const confirmed = get().confirmedSecretRefs;
+    set({ confirmedSecretRefs: [...confirmed, ...refs.filter((r) => !confirmed.includes(r))] });
+  },
+
+  answerSecretsPrompt(choice) {
+    const { secretsPrompt, saved, doc, past } = get();
+    if (!secretsPrompt) return;
+    if (choice === 'later') {
+      set({ secretsPrompt: { ...secretsPrompt, open: false } });
+    } else if (choice === 'confirm') {
+      // Only what the user saw is confirmed; edits made since then are checked again by the server.
+      if (saved) get().confirmSecretRefs(introducedSecretRefs(saved, secretsPrompt.doc));
+      set({ secretsPrompt: null });
+    } else if (saved && doc) {
+      set({
+        doc: saved,
+        past: [...past, { doc, label: 'Discarded unsaved changes' }].slice(-HISTORY_LIMIT),
+        future: [],
+        pendingOps: [],
+        pendingLabels: [],
+        lastCoalesce: null,
+        secretsPrompt: null,
+      });
+    }
+  },
+
+  reopenSecretsPrompt() {
+    const { secretsPrompt } = get();
+    if (secretsPrompt) set({ secretsPrompt: { ...secretsPrompt, open: true } });
   },
 
   saveSucceeded(sent, envelope) {
@@ -220,6 +290,8 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({
       saving: false,
       saveError: null,
+      // A refused document is never the one saved here (beginSave skips it), so a newer one replaced it.
+      secretsPrompt: null,
       saved: sent,
       version: envelope.meta.version,
       meta: envelope.meta,

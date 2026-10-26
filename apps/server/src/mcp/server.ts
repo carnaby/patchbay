@@ -8,6 +8,7 @@
 
 import { type AuthInfo, createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import {
+  credentialLikeParams,
   type Dataset,
   type DatasetResult,
   DatasetSchema,
@@ -122,7 +123,13 @@ export function createMcp(deps: Deps) {
     const principal = (): Principal => {
       const user = userId ? users.byId(userId) : null;
       if (!user) throw new HttpError(401, 'Not authenticated');
-      return { user, isAdmin: false, mcpClient: clientName };
+      return {
+        user,
+        isAdmin: false,
+        viaToken: true,
+        readOnly: !scopes.has(SCOPES.write),
+        mcpClient: clientName,
+      };
     };
 
     /** Wraps a handler with scope checks, rate limiting and uniform error reporting. */
@@ -159,7 +166,7 @@ export function createMcp(deps: Deps) {
           'Full schema of datasets, transforms, expressions, widgets and operations, plus design guidance. Read this once before building.',
         annotations: read,
       },
-      tool(SCOPES.read, async () => ({ content: [{ type: 'text', text: referenceText() }] })),
+      tool(SCOPES.read, async () => ({ content: [{ type: 'text', text: referenceText(config.publicUrl) }] })),
     );
 
     server.registerTool(
@@ -170,6 +177,35 @@ export function createMcp(deps: Deps) {
         annotations: read,
       },
       tool(SCOPES.read, async () => json(connectors.list())),
+    );
+
+    server.registerTool(
+      'list_secrets',
+      {
+        title: 'List my secrets',
+        description:
+          'Credentials the user saved for HTTP sources: names, ids and where each may be sent. Never values.',
+        annotations: read,
+      },
+      tool(SCOPES.read, async (_args, p) => {
+        const { mode, canUseSecrets, secrets } = await dashboards.listSecrets(p);
+        return json({
+          secrets: secrets.map((s) => ({
+            id: s.id,
+            name: s.name,
+            origin: s.origin,
+            pathPrefix: s.pathPrefix,
+            sentAs: s.sentAs,
+            updatedAt: s.updatedAt,
+            lastUsedAt: s.lastUsedAt,
+          })),
+          note: canUseSecrets
+            ? `Values are never readable. To add one, ask the user to open ${config.publicUrl}/settings#secrets.`
+            : mode === 'off'
+              ? 'Secrets are turned off on this server.'
+              : 'On this server only administrators can use secrets.',
+        });
+      }),
     );
 
     server.registerTool(
@@ -254,30 +290,40 @@ export function createMcp(deps: Deps) {
           const options: { dryRun: boolean; baseVersion?: number } = { dryRun: args.dryRun };
           if (args.baseVersion !== undefined) options.baseVersion = args.baseVersion;
           const result = await dashboards.applyOps(args.dashboardId, p, args.operations, options);
+          const target = { id: args.dashboardId, ownerId: result.envelope.meta.ownerId };
           // Check every dataset the batch touched, so broken sources surface immediately.
           const touched = new Set(
             (args.operations as { op: string; dataset?: { id: string }; id?: string }[])
               .filter((o) => o.op === 'addDataset' || o.op === 'updateDataset')
               .map((o) => o.dataset?.id ?? o.id!),
           );
+          const touchedDatasets = result.envelope.doc.datasets.filter((d) => touched.has(d.id));
+          // Keys pasted into URLs end up in every version and every get_dashboard answer: point to secrets instead.
+          const warnings = touchedDatasets.flatMap((d) => {
+            const params = d.source.kind === 'http' ? credentialLikeParams(d.source.url) : [];
+            return params.length
+              ? [
+                  `Dataset "${d.id}": the URL has ${params.map((n) => `"${n}"`).join(', ')}, which looks like a credential. Credentials belong in secrets (list_secrets), never in a URL.`,
+                ]
+              : [];
+          });
           const dataChecks = await Promise.all(
-            result.envelope.doc.datasets
-              .filter((d) => touched.has(d.id))
-              .map(async (d) => {
-                const r = await data.resolve(args.dashboardId, d, { maxRows: 5 });
-                return {
-                  datasetId: d.id,
-                  rows: r.table.rows.length,
-                  columns: r.table.columns.map((c) => `${c.name}:${c.type}`),
-                  error: r.error,
-                };
-              }),
+            touchedDatasets.map(async (d) => {
+              const r = await data.resolve(target, d, { maxRows: 5 });
+              return {
+                datasetId: d.id,
+                rows: r.table.rows.length,
+                columns: r.table.columns.map((c) => `${c.name}:${c.type}`),
+                error: r.error,
+              };
+            }),
           );
           return json({
             dryRun: args.dryRun,
             version: result.envelope.meta.version,
             changes: result.changes,
             dataChecks,
+            ...(warnings.length ? { warnings } : {}),
             url: urlOf(args.dashboardId),
             hint: args.dryRun
               ? 'Valid. Call again with dryRun: false to save.'
@@ -302,23 +348,17 @@ export function createMcp(deps: Deps) {
           args: { source: unknown; transforms: unknown[]; dashboardId?: string; sampleRows: number },
           p,
         ) => {
-          if (args.dashboardId) await dashboards.loadViewable(args.dashboardId, p);
           const dataset = DatasetSchema.parse({
             id: 'preview',
             name: 'Preview',
             source: args.source,
             transforms: args.transforms,
           });
-          if (dataset.source.kind === 'upload') {
-            if (!args.dashboardId) return fail('Uploaded files need dashboardId');
-            // Raw uploads are readable by editors only (same rule as the REST preview).
-            const { meta } = await dashboards.loadViewable(args.dashboardId, p);
-            if (!dashboards.canEdit(meta, p))
-              return fail('Only editors of this dashboard can preview its uploaded files');
-          }
+          // Raw uploads and secrets are for editors only; without a dashboard only the user's own secrets apply.
+          const target = await dashboards.previewTarget(p, args.dashboardId, dataset);
           if (dataset.source.kind === 'connector')
             connectors.validateParams(dataset.source.connector, dataset.source.params);
-          const result = await data.resolve(args.dashboardId ?? 'preview00', dataset, { maxRows: 5000 });
+          const result = await data.resolve(target, dataset, { maxRows: 5000 });
           if (result.error && result.table.rows.length === 0) return fail(result.error);
           const profile = profileTable(result.table);
           return json({
@@ -344,13 +384,13 @@ export function createMcp(deps: Deps) {
         annotations: read,
       },
       tool(SCOPES.read, async (args: { dashboardId: string; datasetId: string; limit: number }, p) => {
-        const { doc } = await dashboards.loadViewable(args.dashboardId, p);
+        const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
         const dataset = doc.datasets.find((d) => d.id === args.datasetId);
         if (!dataset)
           return fail(
             `No dataset "${args.datasetId}". Datasets: ${doc.datasets.map((d) => d.id).join(', ') || 'none'}`,
           );
-        const result = await data.resolve(args.dashboardId, dataset);
+        const result = await data.resolve({ id: args.dashboardId, ownerId: meta.ownerId }, dataset);
         const profile = profileTable(result.table);
         return json({
           ...sampleTable(result.table, args.limit),
@@ -371,10 +411,10 @@ export function createMcp(deps: Deps) {
         annotations: read,
       },
       tool(SCOPES.read, async (args: { dashboardId: string; datasetId: string }, p) => {
-        const { doc } = await dashboards.loadViewable(args.dashboardId, p);
+        const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
         const dataset = doc.datasets.find((d) => d.id === args.datasetId);
         if (!dataset) return fail(`No dataset "${args.datasetId}"`);
-        const result = await data.resolve(args.dashboardId, dataset);
+        const result = await data.resolve({ id: args.dashboardId, ownerId: meta.ownerId }, dataset);
         const profile = profileTable(result.table);
         return json({
           rows: profile.rows,
@@ -408,7 +448,7 @@ export function createMcp(deps: Deps) {
             name: args.name,
             source: { kind: 'upload', fileId: file.id },
           });
-          const result = await data.resolve(args.dashboardId, dataset);
+          const result = await data.resolve(await dashboards.target(args.dashboardId, p), dataset);
           const profile = profileTable(result.table);
           return json({
             file,
@@ -438,7 +478,8 @@ export function createMcp(deps: Deps) {
       tool(
         SCOPES.read,
         async (args: { dashboardId: string; widgetId?: string; theme: 'light' | 'dark' }, p) => {
-          const { doc } = await dashboards.loadViewable(args.dashboardId, p);
+          const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
+          const target = { id: args.dashboardId, ownerId: meta.ownerId };
           const results = new Map<string, DatasetResult>();
           const needed = args.widgetId ? doc.widgets.filter((w) => w.id === args.widgetId) : doc.widgets;
           if (args.widgetId && needed.length === 0) return fail(`No widget "${args.widgetId}"`);
@@ -446,7 +487,7 @@ export function createMcp(deps: Deps) {
           await Promise.all(
             doc.datasets
               .filter((d) => ids.has(d.id))
-              .map(async (d) => results.set(d.id, await data.resolve(args.dashboardId, d))),
+              .map(async (d) => results.set(d.id, await data.resolve(target, d))),
           );
           const widget = needed[0];
           const png =
@@ -523,7 +564,7 @@ export function createMcp(deps: Deps) {
         mimeType: 'text/markdown',
       },
       async (uri: URL) => ({
-        contents: [{ uri: uri.href, mimeType: 'text/markdown', text: referenceText() }],
+        contents: [{ uri: uri.href, mimeType: 'text/markdown', text: referenceText(config.publicUrl) }],
       }),
     );
 

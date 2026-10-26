@@ -826,7 +826,11 @@ describe('hardening (security review regressions)', () => {
 
   it('does not leak refresh loops when viewers come and go quickly', async () => {
     const id = (await call('/api/dashboards', { body: { template: 'live-signal' } })).json.envelope.meta.id;
-    const sub = () => ({ send: () => {}, close: () => {}, principal: { user: null, isAdmin: false } });
+    const sub = () => ({
+      send: () => {},
+      close: () => {},
+      principal: { user: null, isAdmin: false, viaToken: false },
+    });
     for (let i = 0; i < 20; i++) deps.hub.subscribe(id, sub())();
     await new Promise((r) => setTimeout(r, 50));
     expect(deps.hub.watchers(id)).toBe(0);

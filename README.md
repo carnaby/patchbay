@@ -32,7 +32,7 @@ It is free, needs no API keys, and runs as a single process you can host anywher
 
 ## Highlights
 
-- 🤖 **MCP-native.** 14 tools, 2 prompts and a reference resource. OAuth 2.1 (PKCE, dynamic registration, Client ID
+- 🤖 **MCP-native.** 15 tools, 2 prompts and a reference resource. OAuth 2.1 (PKCE, dynamic registration, Client ID
   Metadata Documents) for real clients, personal access tokens for scripts and development.
 - 👀 **Agents can see.** `render_snapshot` returns a PNG of the dashboard, rendered server-side with the same chart
   code the browser uses, so the agent can check its own work.
@@ -56,6 +56,9 @@ It is free, needs no API keys, and runs as a single process you can host anywher
   build assets and shows a friendly offline page.
 - 🔐 **Yours.** Sign in with Google; dashboards are private or public. Anyone can build a public dashboard without an
   account and claim it later.
+- 🔑 **Private APIs, when the operator allows it.** Save an API key once under Settings → Secrets and let a JSON URL
+  dataset use it. Encrypted at rest, only ever sent to the address it was saved for, never readable again, not even by
+  agents. Off by default (`SECRETS`); self-host for sensitive data, because the operator can technically read it.
 - 🗂️ **Boring storage.** One folder per dashboard. Delete the folder and the dashboard is gone. SQLite only indexes.
 - 🌗 **Accessible charts.** Colour-blind-validated palette, light and dark themes, no dual axes, tables as an
   alternative view, keyboard shortcuts.
@@ -201,8 +204,10 @@ interval shown, so many viewers cost one upstream request.
 | `npm.downloads`                                              | Daily npm downloads                                                                        | 6 h        |
 | `demo.signal`, `demo.sales`                                  | Synthetic live signal and sales data (always offline)                                      | 1 s        |
 
-Plus your own data: **CSV/JSON uploads** (stored in the dashboard's folder), **inline rows**, and **any public HTTPS
-JSON endpoint** (behind an SSRF guard). Adding a connector is one file: parameters, a `fetch`, and a `sample` for
+Plus your own data: **CSV/JSON uploads** (stored in the dashboard's folder), **inline rows**, and **any HTTPS JSON
+endpoint** (behind an SSRF guard). Endpoints that need a key use a **secret** saved under Settings → Secrets, sent as a
+bearer token, a header or a query parameter, and only to the origin and path prefix it is bound to; the instance
+switch `SECRETS` decides who may store them. Adding a connector is one file: parameters, a `fetch`, and a `sample` for
 offline mode. See `apps/server/src/connectors/`.
 
 ## Processing rules
@@ -236,7 +241,10 @@ after every step.
   with an edit key that never leaves the creator's browser except as a header.
 - OAuth 2.1 with mandatory PKCE, exact redirect matching (loopback ports per RFC 8252), tokens bound to the MCP
   resource (RFC 8707), rotating refresh tokens with reuse detection, consent screen, revocable connections.
-  All secrets are stored as SHA-256 hashes.
+  Tokens are stored as SHA-256 hashes; data source secrets are encrypted with AES-256-GCM and never readable.
+- Secrets for HTTP sources are bound to an origin and path prefix (checked on every request hop, redirects included),
+  resolved only against the dashboard owner's secrets, never accepted on anonymous dashboards, and echoed values are
+  redacted from data. Agents can use but never read, create or change them, and cannot publish data fetched with them.
 - Cookie writes require a same-origin `Origin`; strict CSP; rate limits per IP and per user; `DEV_LOGIN` refuses to
   start unless `PUBLIC_URL` is localhost.
 - User-supplied URLs: HTTPS only, private/reserved ranges blocked including IPv6 forms that embed IPv4 (mapped, NAT64,
@@ -266,6 +274,9 @@ after every step.
 | `TRUST_PROXY`                              | off                     | `1`: IP from `X-Forwarded-For`; `cloudflare`: from `CF-Connecting-IP` |
 | `PIPELINE_WORKERS`                         | CPUs − 1, max 4         | Worker threads for data processing; `0` processes on the main thread. |
 | `PIPELINE_TIMEOUT_MS`                      | `10000`                 | Hard time limit for one pipeline run in a worker.                     |
+| `SECRETS`                                  | `off`                   | Who may store credentials for HTTP sources: `off`, `admins`, `users`. |
+| `SECRETS_KEY`                              | –                       | 32 random bytes, base64. Required unless `SECRETS=off`.               |
+| `SECRETS_KEY_PREVIOUS`                     | –                       | Old key(s) during rotation, comma-separated.                          |
 
 ## Deployment
 
@@ -292,7 +303,7 @@ docs/             Architecture notes, MCP reference, deployment guide.
 ## Development
 
 ```bash
-pnpm test        # Vitest: core unit tests + server integration tests (OAuth flow, MCP tools via the official client)
+pnpm test        # Vitest: core and web unit tests + server integration tests (OAuth flow, MCP tools via the official client)
 pnpm typecheck   # TypeScript, strict, in every package
 pnpm lint        # Biome
 pnpm build       # production build of the web app

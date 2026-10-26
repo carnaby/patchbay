@@ -1,12 +1,16 @@
 import {
+  applyOps,
   type ConnectorInfo,
+  type DashboardDoc,
   type Dataset,
   type DatasetResult,
   diffSteps,
   formatValue,
+  type OpInput,
   type ParamSpec,
   type Source,
   type Suggestion,
+  sourceSecretIds,
   type TableProfile,
   type TransformInput,
   type UploadedFile,
@@ -19,6 +23,7 @@ import {
   Database,
   FileUp,
   Globe,
+  KeyRound,
   Plug,
   Plus,
   Radio,
@@ -44,7 +49,17 @@ import {
 } from '../components/ui.tsx';
 import { api, errorMessage } from '../lib/api.ts';
 import { useConnectors } from '../lib/hooks.ts';
+import { credentialErrorHint, introducedSecretIds, introducedSecretRefs } from '../lib/secrets.ts';
 import { useEditor } from '../state/editor.ts';
+import {
+  type CredentialContext,
+  CredentialsField,
+  issuesFor,
+  UrlKeyWarning,
+  urlHint,
+  useCredentialContext,
+} from './CredentialsField.tsx';
+import { askPublicSecrets } from './public-secrets.tsx';
 import { TransformEditor } from './TransformEditor.tsx';
 
 const REFRESH_OPTIONS = [
@@ -160,7 +175,10 @@ export function DatasetsPanel({
                 <Database className="size-4 shrink-0 text-muted" />
                 <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setEditing(d.id)}>
                   <div className="truncate text-sm font-medium">{d.name}</div>
-                  <div className="truncate text-xs text-muted">
+                  <div className="flex items-center gap-1 truncate text-xs text-muted">
+                    {sourceSecretIds(d.source).length ? (
+                      <KeyRound className="size-3 shrink-0" aria-label="Uses secrets" />
+                    ) : null}
                     {sourceSummary(d.source, connectors)} · {d.transforms.length} step
                     {d.transforms.length === 1 ? '' : 's'} · {users} widget{users === 1 ? '' : 's'}
                   </div>
@@ -259,10 +277,12 @@ function ParamInput({
 function SourceEditor({
   dashboardId,
   source,
+  credentials,
   onChange,
 }: {
   dashboardId: string;
   source: Source;
+  credentials: CredentialContext;
   onChange: (s: Source) => void;
 }) {
   const { data: connectors } = useConnectors();
@@ -488,19 +508,19 @@ function SourceEditor({
 
       {source.kind === 'http' ? (
         <div className="grid gap-3">
-          <Field
-            label="HTTPS URL"
-            hint="A public JSON endpoint without credentials. Private network addresses are blocked."
-          >
+          <Field label="HTTPS URL" hint={urlHint(credentials)}>
             {(fid) => (
               <Input
                 id={fid}
                 value={source.url}
+                spellCheck={false}
                 onChange={(e) => onChange({ ...source, url: e.target.value })}
                 placeholder="https://api.example.com/data.json"
               />
             )}
           </Field>
+          <UrlKeyWarning source={source} context={credentials} onChange={onChange} />
+          <CredentialsField source={source} context={credentials} onChange={onChange} />
           <Field
             label="Path to the list (optional)"
             hint='Dot path inside the response, e.g. "data.items". Leave empty to auto-detect.'
@@ -594,6 +614,22 @@ function DatasetEditor({
     if (c && c.name !== draft.name) setDraft((d) => ({ ...d, name: c.name }));
   }, [draft.source, connectors, nameTouched, draft.name]);
 
+  const credentials = useCredentialContext();
+  // Credential problems are explained while typing; a request that the server would refuse is not sent at all.
+  const previewBlocked = issuesFor(debounced.source, credentials).length > 0;
+  const issues = issuesFor(draft.source, credentials);
+  const draftIds = sourceSecretIds(draft.source);
+  const initialIds = initial ? sourceSecretIds(initial.source) : [];
+  // Only new or re-pointed references are checked on save (as on the server), so a deleted secret never blocks
+  // renaming the dataset or editing its pipeline.
+  const refsChanged =
+    draftIds.length > 0 &&
+    (initial?.source.kind !== 'http' ||
+      draft.source.kind !== 'http' ||
+      initial.source.url !== draft.source.url ||
+      draftIds.some((id) => !initialIds.includes(id)));
+  const blockedByCredentials = refsChanged && issues.length > 0;
+
   const previewBody = { source: debounced.source, transforms: debounced.transforms };
   const preview = useQuery({
     queryKey: ['preview', dashboardId, JSON.stringify(previewBody)],
@@ -603,7 +639,7 @@ function DatasetEditor({
         dashboardId,
       }),
     retry: false,
-    enabled: previewable(debounced.source),
+    enabled: previewable(debounced.source) && !previewBlocked,
   });
   const raw = useQuery({
     queryKey: ['preview', dashboardId, JSON.stringify({ source: debounced.source, transforms: [] })],
@@ -613,11 +649,11 @@ function DatasetEditor({
         dashboardId,
       }),
     retry: false,
-    enabled: previewable(debounced.source),
+    enabled: previewable(debounced.source) && !previewBlocked,
   });
   const baseColumns = raw.data?.result.table.columns.map((c) => c.name) ?? [];
 
-  const save = (extraWidgets: { widget: WidgetInput; transforms: TransformInput[] }[] = []) => {
+  const save = async (extraWidgets: { widget: WidgetInput; transforms: TransformInput[] }[] = []) => {
     const doc = useEditor.getState().doc!;
     const datasetIds = new Set(doc.datasets.map((d) => d.id));
     const id = initial?.id ?? slug(draft.name, datasetIds);
@@ -661,6 +697,7 @@ function DatasetEditor({
       widgetIds.add(wid);
       ops.push({ op: 'addWidget', widget: { ...widget, id: wid, datasetId: target } as WidgetInput });
     }
+    if (!(await confirmPublicSecrets(ops, credentials))) return;
     const err = apply(ops, initial ? `Edited dataset "${draft.name}"` : `Added dataset "${draft.name}"`);
     if (err) {
       toast(err, 'bad');
@@ -679,6 +716,7 @@ function DatasetEditor({
       <SourceEditor
         dashboardId={dashboardId}
         source={draft.source}
+        credentials={credentials}
         onChange={(source) => setDraft((d) => ({ ...d, source }))}
       />
 
@@ -758,14 +796,16 @@ function DatasetEditor({
             </span>
           ) : null}
         </div>
-        {preview.error ? (
-          <div className="flex items-start gap-2 rounded-lg bg-bad/10 p-3 text-sm text-bad">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {errorMessage(preview.error)}
-          </div>
-        ) : result?.error ? (
-          <div className="flex items-start gap-2 rounded-lg bg-bad/10 p-3 text-sm text-bad">
-            <AlertTriangle className="mt-0.5 size-4 shrink-0" /> {result.error}
-          </div>
+        {previewBlocked ? (
+          <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">
+            Fix the credentials above to load a preview.
+          </p>
+        ) : preview.error || result?.error ? (
+          <PreviewError
+            message={preview.error ? errorMessage(preview.error) : (result?.error ?? '')}
+            hasSecrets={sourceSecretIds(debounced.source).length > 0}
+            canAddSecrets={credentials.canUseSecrets && debounced.source.kind === 'http'}
+          />
         ) : result ? (
           <>
             <PreviewTable result={result} />
@@ -828,9 +868,10 @@ function DatasetEditor({
         </Button>
         <Button
           variant="primary"
-          disabled={!draft.name.trim() || Boolean(preview.error)}
+          disabled={!draft.name.trim() || Boolean(preview.error) || blockedByCredentials}
+          title={blockedByCredentials ? 'Fix the credentials first' : undefined}
           onClick={() =>
-            save(
+            void save(
               suggestions
                 .filter((s) => picked.has(s.title))
                 .map((s) => ({
@@ -849,4 +890,50 @@ function DatasetEditor({
       </div>
     </div>
   );
+}
+
+function PreviewError({
+  message,
+  hasSecrets,
+  canAddSecrets,
+}: {
+  message: string;
+  hasSecrets: boolean;
+  canAddSecrets: boolean;
+}) {
+  // Only the dashboard's editors open this panel, so it may say more than the generic widget error.
+  const hint = credentialErrorHint(message, { hasSecrets, canAddSecrets });
+  return (
+    <div className="flex items-start gap-2 rounded-lg bg-bad/10 p-3 text-sm text-bad">
+      <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+      <span>
+        {message}
+        {hint ? <span className="mt-1 block text-ink-2">{hint}</span> : null}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * Asks before a dataset edit makes a public dashboard show data fetched with secrets, so the dialog appears at the
+ * moment of the change. The confirmation is recorded for exactly these references and sent with the next save.
+ */
+async function confirmPublicSecrets(ops: OpInput[], credentials: CredentialContext) {
+  const state = useEditor.getState();
+  if (state.meta?.visibility !== 'public' || !state.doc) return true;
+  let next: DashboardDoc;
+  try {
+    next = applyOps(state.doc, ops).doc;
+  } catch {
+    return true; // apply() reports the error itself
+  }
+  const base = state.saved ?? state.doc;
+  const refs = introducedSecretRefs(base, next);
+  if (refs.length === 0 || refs.every((r) => state.confirmedSecretRefs.includes(r))) return true;
+  const names = introducedSecretIds(base, next).map(
+    (id) => credentials.secrets?.find((s) => s.id === id)?.name ?? id,
+  );
+  if (!(await askPublicSecrets('change', names))) return false;
+  useEditor.getState().confirmSecretRefs(refs);
+  return true;
 }

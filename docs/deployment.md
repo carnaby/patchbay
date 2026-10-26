@@ -17,6 +17,7 @@ cp .env.example .env
 #   ADMIN_EMAILS=you@example.com
 #   DEV_LOGIN=0
 #   PRUNE_ANONYMOUS_AFTER_DAYS=60   (optional)
+#   SECRETS=off                     (default; see "Secrets for HTTP sources" before changing it)
 PATCHBAY_DOMAIN=dash.example.com docker compose up -d
 ```
 
@@ -70,7 +71,7 @@ Copy the three files from `deploy/nas/` into a directory on the machine, then:
 
 ```bash
 cp .env.example .env                  # PUID, PGID, PATCHBAY_DOMAIN, TUNNEL_TOKEN
-cp patchbay.env.example patchbay.env  # GOOGLE_CLIENT_ID/SECRET, ADMIN_EMAILS, DEV_LOGIN=0
+cp patchbay.env.example patchbay.env  # GOOGLE_CLIENT_ID/SECRET, ADMIN_EMAILS, DEV_LOGIN=0, SECRETS(_KEY)
 mkdir data                            # must be owned by PUID:PGID
 docker compose up -d
 ```
@@ -85,6 +86,9 @@ docker compose up -d
 - `TRUST_PROXY=cloudflare` makes rate limits use `CF-Connecting-IP` instead of the address of the cloudflared
   container. Use it only when the app is reachable exclusively through Cloudflare (the compose file publishes no
   port); anywhere else the header can be forged.
+- `SECRETS` and `SECRETS_KEY` (in `patchbay.env`) decide whether users may store credentials for HTTP sources; leave
+  `SECRETS=off` unless you mean it, and read "Secrets for HTTP sources" below first. If you set a key, keep
+  `patchbay.env` out of the backup of `data/` (see Backups).
 - `PIPELINE_WORKERS=1` and a 384 MB memory limit suit a 2-core machine. Measured: about 100–120 MB idle, about
   250 MB peak while a 5 MB upload is processed.
 - The tunnel token goes only to `cloudflared` (it is in `.env`, which the app container does not receive).
@@ -117,7 +121,49 @@ Back up the `data/` directory: dashboard folders and `patchbay.db`. The index in
 folders, but users, sessions and access tokens exist only in `patchbay.db`. A filesystem snapshot (e.g. Btrfs
 snapshots on a NAS) is safe because SQLite in WAL mode recovers from a point-in-time copy; for a plain file copy,
 stop the `patchbay` container for the duration, since a copy of a database being written can be torn. Keep `.env`
-and `patchbay.env` somewhere safe as well; they hold the tunnel token and the OAuth secret.
+and `patchbay.env` somewhere safe as well; they hold the tunnel token and the OAuth secret. If `patchbay.env` holds a
+`SECRETS_KEY`, **never back it up together with `data/`**: a backup that holds both can decrypt every stored secret.
+Keep it in a password manager or a separate secret store instead.
+
+## Secrets for HTTP sources
+
+Users can save API keys and tokens under Settings → Secrets and let a JSON URL dataset send them, encrypted at rest
+with AES-256-GCM and only ever sent to the origin and path prefix they were saved for. Nobody can read a value back
+through Patchbay, but **whoever runs the server can**: it has to decrypt values to use them. The UI tells every user
+so before they save one. Only turn this on if you accept that responsibility; for sensitive data, people should run
+their own instance.
+
+| `SECRETS`       | Who may store and use secrets                                                    |
+| --------------- | -------------------------------------------------------------------------------- |
+| `off` (default) | Nobody. Existing secrets are kept, can be listed and deleted, but are never sent |
+| `admins`        | Only the users in `ADMIN_EMAILS`: a personal instance others can also sign in to |
+| `users`         | Every signed-in user: a team instance, or a public one whose operator accepts it |
+
+Any value other than `off` needs a key, and the server refuses to start without a valid one:
+
+```bash
+openssl rand -base64 32
+# Windows, without OpenSSL:
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Set the result as `SECRETS_KEY`. The startup log says `SECRETS=users: credentials for HTTP sources can be stored`
+when the feature is on.
+
+**Keep the key out of the data backup.** `DATA_DIR` only ever holds ciphertext; the key turns it back into readable
+credentials. Store `SECRETS_KEY` in a password manager or secret store, not in the same backup set as `data/` (on the
+NAS setup: do not back up `patchbay.env` together with `data/`). **Losing the key** makes every stored value
+unrecoverable, by design: users enter their secrets again, nothing else breaks.
+
+**Rotation.** Put the new key in `SECRETS_KEY` and the old one in `SECRETS_KEY_PREVIOUS` (comma-separated if
+several), restart once, and check the log for `re-encrypted N secrets with the current SECRETS_KEY`. Then remove
+`SECRETS_KEY_PREVIOUS` and restart again. Rows that no configured key can open are left alone and counted in the log
+(`N secrets cannot be decrypted with the configured keys`); their owners see "could not be decrypted" and can replace
+the value.
+
+**If the key and a copy of the database leak together**, rotation does not help: the old copy and the old key still
+decrypt. The credentials have to be revoked where they were issued. The admin page lists how many secrets each user
+stored (never names or values), so you know whom to tell.
 
 ## Operations checklist
 
@@ -125,7 +171,8 @@ and `patchbay.env` somewhere safe as well; they hold the tunnel token and the OA
   are derived from it; a mismatch breaks MCP sign-in.
 - Behind a reverse proxy, set `TRUST_PROXY=1` so rate limits see client IPs (`TRUST_PROXY=cloudflare` behind a
   Cloudflare Tunnel, see below).
-- Back up `DATA_DIR`. The SQLite index can be rebuilt from the folders, but users and tokens live only in SQLite.
+- Back up `DATA_DIR`. The SQLite index can be rebuilt from the folders, but users, tokens and secrets live only in
+  SQLite. Back up `SECRETS_KEY` separately, never in the same place.
 - `GET /healthz` is a liveness probe; the image defines a Docker `HEALTHCHECK`.
 - Logs go to stdout. The process handles `SIGTERM` gracefully.
 - Limits worth knowing: uploads ≤ 5 MB, ≤ 10,000 rows sent to the browser per dataset, ≤ 60 widgets and 30 datasets per

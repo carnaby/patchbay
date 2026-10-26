@@ -1,0 +1,336 @@
+/**
+ * Secrets for HTTP sources: the rules the editor and the server must agree on.
+ *
+ * A secret is bound to an origin and a path prefix and decides itself how it is sent. The server enforces every
+ * rule here at save time and again on every request hop; the editor uses the same functions to explain problems
+ * before anything is saved. Nothing in this module ever sees a secret's value except `secretValueIssue`, which
+ * validates a value the user is typing and never repeats it in its messages.
+ */
+import type { DashboardDoc, Source } from './schema.ts';
+
+export const SECRET_PLACEMENTS = ['bearer', 'header', 'query'] as const;
+export type SecretPlacement = (typeof SECRET_PLACEMENTS)[number];
+
+/** The instance switch (`SECRETS`): who may store and use secrets. */
+export type SecretMode = 'off' | 'admins' | 'users';
+
+export const MAX_SECRETS_PER_SOURCE = 3;
+export const MAX_SECRETS_PER_USER = 20;
+export const SECRET_VALUE_MIN = 8;
+export const SECRET_VALUE_MAX = 4096;
+
+/**
+ * Error code of the server's 428 answer: the save would show data fetched with secrets on a public dashboard. The
+ * web app asks the user, then repeats the request with `confirmPublicSecrets: true`. Tokens are never asked.
+ */
+export const CONFIRM_PUBLIC_SECRETS = 'confirm_public_secrets';
+
+/**
+ * Messages for datasets whose credentials cannot be used. They reach every viewer of a dashboard, so they stay
+ * generic; the owner's editor adds detail from the owner's own secret list.
+ */
+export const CREDENTIAL_ERRORS = {
+  unavailable: 'Credentials for this source are not available.',
+  bound: 'Credentials for this source are bound to another address.',
+  off: 'Credentials are turned off on this server.',
+  undecryptable: 'Credentials could not be decrypted on this server.',
+  conflict: 'Credentials for this source conflict with each other.',
+} as const;
+
+/** Where a secret may be sent: `URL.origin` plus a path prefix that always ends with "/". */
+export interface SecretBinding {
+  origin: string;
+  pathPrefix: string;
+}
+
+/** Public metadata of a saved secret. Never contains the value or anything derived from it. */
+export interface SecretInfo extends SecretBinding {
+  id: string;
+  name: string;
+  placement: SecretPlacement;
+  /** Header or query parameter name; null for bearer. */
+  paramName: string | null;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+}
+
+export class BindingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BindingError';
+  }
+}
+
+/**
+ * Parses the "Only send to" field. The result is what the secret is bound to forever: changing where a value may be
+ * sent is the one change that could leak it, so it is not an operation (create a new secret instead).
+ */
+export function parseBinding(input: string): SecretBinding {
+  const raw = input.trim();
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new BindingError('Enter a full address, e.g. https://api.example.com/v1/');
+  }
+  if (url.protocol !== 'https:') throw new BindingError('Secrets are only sent to https:// addresses');
+  if (url.username || url.password)
+    throw new BindingError('The address must not contain a user name or password');
+  // An empty "?" or "#" leaves search/hash empty, so look at the input as well.
+  if (url.search || url.hash || /[?#]/.test(raw))
+    throw new BindingError('The address must not have a query or fragment');
+  // Data sources may only use the default port (see safe-fetch), so a binding with another port could never be used.
+  if (url.port) throw new BindingError('Only the default HTTPS port is supported');
+  if (unsafePath(url.pathname)) {
+    throw new BindingError(
+      'The path must not contain encoded slashes, backslashes, percent signs or semicolons, invalid escapes or look-alike dots and slashes',
+    );
+  }
+  const pathPrefix = url.pathname.endsWith('/') ? url.pathname : `${url.pathname}/`;
+  if (pathPrefix.length > 200) throw new BindingError('The path is too long');
+  return { origin: url.origin, pathPrefix };
+}
+
+/** The binding as one string, for messages: "https://api.example.com/v1/". */
+export function bindingLabel(binding: SecretBinding): string {
+  return `${binding.origin}${binding.pathPrefix}`;
+}
+
+/** Dots and slashes that some servers fold into "." and "/" (fullwidth, halfwidth, small, division slash, …). */
+const LOOK_ALIKES = /[․⁄∕⧸。﹒﹨．／＼｡]/;
+
+/**
+ * Decodes a URL path (as `URL.pathname` serialises it: ASCII with %XX escapes) as strict UTF-8. Returns null for
+ * anything a lenient server might decode differently: overlong forms such as %C0%AE (a dot), surrogates, code
+ * points above U+10FFFF, stray continuation bytes and raw non-ASCII.
+ */
+function decodePathStrict(path: string): string | null {
+  const bytes: number[] = [];
+  for (let i = 0; i < path.length; i++) {
+    const c = path.charCodeAt(i);
+    if (c > 0x7f) return null;
+    if (path[i] === '%') {
+      bytes.push(Number.parseInt(path.slice(i + 1, i + 3), 16));
+      i += 2;
+    } else bytes.push(c);
+  }
+  let out = '';
+  for (let i = 0; i < bytes.length; ) {
+    const b = bytes[i]!;
+    let need: number;
+    let min: number;
+    let cp: number;
+    if (b < 0x80) [need, min, cp] = [0, 0, b];
+    else if (b >= 0xc2 && b <= 0xdf) [need, min, cp] = [1, 0x80, b & 0x1f];
+    else if (b >= 0xe0 && b <= 0xef) [need, min, cp] = [2, 0x800, b & 0x0f];
+    else if (b >= 0xf0 && b <= 0xf4) [need, min, cp] = [3, 0x10000, b & 0x07];
+    else return null;
+    for (let k = 1; k <= need; k++) {
+      const next = bytes[i + k];
+      if (next === undefined || (next & 0xc0) !== 0x80) return null;
+      cp = (cp << 6) | (next & 0x3f);
+    }
+    if (cp < min || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+    out += String.fromCodePoint(cp);
+    i += need + 1;
+  }
+  return out;
+}
+
+/**
+ * Whether a path could mean something else to the server than to us, which matters only under a path prefix. A strict
+ * reading: every "%" starts a two-digit escape ("%u002e" is decoded by some servers); no encoded "/", "\", "%"
+ * (decoded twice) or ";" ("..%3b"); `..;` segments (a dot segment to many Java servers); valid, shortest-form UTF-8
+ * only; no control characters and no look-alike dots or slashes. Ordinary escaped UTF-8 (e.g. "ľ") passes.
+ */
+function unsafePath(path: string): boolean {
+  if (/%(?![0-9a-fA-F]{2})/.test(path) || /%(2f|5c|25|3b)/i.test(path)) return true;
+  const decoded = decodePathStrict(path);
+  if (decoded === null) return true;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what is refused
+  if (/[\u0000-\u001f\u007f]/.test(decoded) || LOOK_ALIKES.test(decoded)) return true;
+  return decoded.split('/').some((segment) => {
+    const head = segment.split(';')[0]!;
+    return head === '.' || head === '..';
+  });
+}
+
+export type BindingMismatch = 'origin' | 'path' | 'encoding' | 'param';
+
+/**
+ * Whether a request to `url` may carry a secret with this binding. Checked for every request hop, so a redirect
+ * cannot take a secret anywhere the user did not allow.
+ */
+export function bindingMatches(
+  binding: SecretBinding & { placement?: SecretPlacement; paramName?: string | null },
+  url: string,
+): { ok: true } | { ok: false; reason: BindingMismatch } {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return { ok: false, reason: 'origin' };
+  }
+  // Comparing parsed origins normalises case and IDN; a trailing-dot host differs and therefore fails safe.
+  if (u.origin !== binding.origin || u.username || u.password) return { ok: false, reason: 'origin' };
+  const path = u.pathname;
+  if (binding.pathPrefix !== '/' && unsafePath(path)) {
+    return { ok: false, reason: 'encoding' };
+  }
+  // The exact path the prefix was made from ("/v1/orders" for "/v1/orders/") is the address the user typed.
+  if (!path.startsWith(binding.pathPrefix) && `${path}/` !== binding.pathPrefix) {
+    return { ok: false, reason: 'path' };
+  }
+  if (binding.placement === 'query' && binding.paramName) {
+    // A document must not shadow or duplicate the secret's parameter. Servers differ on case, so ignore it.
+    const name = binding.paramName.toLowerCase();
+    for (const key of u.searchParams.keys())
+      if (key.toLowerCase() === name) return { ok: false, reason: 'param' };
+  }
+  return { ok: true };
+}
+
+/** A sentence for a mismatch, naming the secret's address (shown to the owner and their agents only). */
+export function bindingMismatchMessage(
+  secret: SecretBinding & { name: string; paramName?: string | null },
+  reason: BindingMismatch,
+): string {
+  const where = bindingLabel(secret);
+  switch (reason) {
+    case 'origin':
+    case 'path':
+      return `Secret "${secret.name}" is only sent to ${where}. Use a URL under that address or pick another secret.`;
+    case 'encoding':
+      return `Secret "${secret.name}" is only sent to ${where}; paths with encoded slashes, backslashes, percent signs or semicolons, invalid escapes, ";" dot segments or look-alike dots and slashes are refused.`;
+    case 'param':
+      return `The URL already has a "${secret.paramName}" query parameter, which secret "${secret.name}" adds itself. Remove it from the URL.`;
+  }
+}
+
+const HEADER_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$/;
+const QUERY_NAME = /^[A-Za-z0-9_.~-]{1,64}$/;
+const RESERVED_HEADERS = new Set([
+  'host',
+  'connection',
+  'content-length',
+  'content-type',
+  'transfer-encoding',
+  'te',
+  'trailer',
+  'upgrade',
+  'keep-alive',
+  'accept',
+  'user-agent',
+]);
+
+/** Checks the header or query parameter name for a placement; returns a message, or null when valid. */
+export function secretParamIssue(
+  placement: SecretPlacement,
+  paramName: string | null | undefined,
+): string | null {
+  if (placement === 'bearer') return paramName ? 'A bearer token has no parameter name' : null;
+  if (!paramName) return placement === 'header' ? 'Enter the header name' : 'Enter the query parameter name';
+  if (placement === 'header') {
+    if (!HEADER_TOKEN.test(paramName))
+      return "Header names are 1-64 characters of letters, digits and !#$%&'*+.^_`|~-";
+    const lower = paramName.toLowerCase();
+    if (RESERVED_HEADERS.has(lower) || lower.startsWith('proxy-'))
+      return `The header "${paramName}" cannot carry a secret`;
+    return null;
+  }
+  return QUERY_NAME.test(paramName)
+    ? null
+    : 'Query parameter names are 1-64 characters of A-Z, a-z, 0-9 and _.~-';
+}
+
+/**
+ * Validates a secret value (already trimmed). Messages never repeat the value. Values sent in a header must be
+ * printable ASCII: anything else would either be rejected by the HTTP client or mangled on the way.
+ */
+export function secretValueIssue(value: string, placement: SecretPlacement): string | null {
+  if (value.length < SECRET_VALUE_MIN) return `The value must be at least ${SECRET_VALUE_MIN} characters`;
+  if (value.length > SECRET_VALUE_MAX) return `The value must be at most ${SECRET_VALUE_MAX} characters`;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are exactly what is refused
+  if (/[\u0000-\u001f\u007f]/.test(value))
+    return 'The value must not contain control characters or line breaks';
+  if (placement === 'bearer' && /^bearer\s/i.test(value)) return 'Paste only the token, without "Bearer"';
+  if (placement !== 'query' && !/^[\x20-\x7e]+$/.test(value)) {
+    return 'Values sent in a header must be plain ASCII characters';
+  }
+  return null;
+}
+
+/** How a secret is sent, for lists: "Authorization: Bearer", "Header X-API-Key", "Query parameter api_key". */
+export function describePlacement(secret: { placement: SecretPlacement; paramName: string | null }): string {
+  if (secret.placement === 'bearer') return 'Authorization: Bearer';
+  if (secret.placement === 'header') return `Header ${secret.paramName}`;
+  return `Query parameter ${secret.paramName}`;
+}
+
+/** Two secrets on one source must not write the same header or query parameter. Returns a message or null. */
+export function placementConflict(
+  secrets: { name: string; placement: SecretPlacement; paramName: string | null }[],
+): string | null {
+  const seen = new Map<string, string>();
+  for (const s of secrets) {
+    const slot =
+      s.placement === 'query'
+        ? `query:${s.paramName?.toLowerCase()}`
+        : `header:${s.placement === 'bearer' ? 'authorization' : s.paramName?.toLowerCase()}`;
+    const other = seen.get(slot);
+    if (other) return `Secrets "${other}" and "${s.name}" would both set ${describePlacement(s)}`;
+    seen.set(slot, s.name);
+  }
+  return null;
+}
+
+/** Secret ids a source references (only HTTP sources can). */
+export function sourceSecretIds(source: Source): string[] {
+  return source.kind === 'http' ? (source.secrets ?? []) : [];
+}
+
+/** Every secret id a document references, once. */
+export function docSecretIds(doc: DashboardDoc): string[] {
+  return [...new Set(doc.datasets.flatMap((d) => sourceSecretIds(d.source)))];
+}
+
+/**
+ * Ids of datasets in `next` that introduce or retarget a secret reference: new datasets with secrets, datasets that
+ * gained a secret, and datasets with secrets whose URL changed. Removing a secret, or leaving references alone, is
+ * not a change: those are never re-checked, so deleting a secret never blocks unrelated edits.
+ */
+export function secretRefChanges(prev: DashboardDoc, next: DashboardDoc): string[] {
+  const before = new Map(prev.datasets.map((d) => [d.id, d.source]));
+  return next.datasets.flatMap((d) => {
+    const ids = sourceSecretIds(d.source);
+    if (ids.length === 0) return [];
+    const old = before.get(d.id);
+    if (old?.kind !== 'http' || d.source.kind !== 'http' || old.url !== d.source.url) return [d.id];
+    const had = new Set(sourceSecretIds(old));
+    return ids.some((id) => !had.has(id)) ? [d.id] : [];
+  });
+}
+
+const CREDENTIAL_PARAMS = new Set([
+  'key',
+  'apikey',
+  'token',
+  'accesstoken',
+  'secret',
+  'password',
+  'auth',
+  'signature',
+]);
+
+/** Query parameters of `url` that look like credentials ("api_key", "access-token", …), for a warning. */
+export function credentialLikeParams(url: string): string[] {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return [];
+  }
+  const names = [...new Set(u.searchParams.keys())];
+  return names.filter((n) => CREDENTIAL_PARAMS.has(n.toLowerCase().replace(/[-_]/g, '')));
+}
