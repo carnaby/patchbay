@@ -281,12 +281,14 @@ export function Modal({
   onClose,
   children,
   footer,
+  size = 'md',
 }: {
   open: boolean;
   title: ReactNode;
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  size?: 'md' | 'lg';
 }) {
   useEffect(() => {
     if (!open) return;
@@ -306,12 +308,17 @@ export function Modal({
       <div
         role="dialog"
         aria-modal="true"
-        className="relative w-full max-w-md rounded-2xl border border-line bg-page shadow-2xl"
+        className={clsx(
+          'relative flex max-h-[calc(100dvh-2rem)] w-full flex-col rounded-2xl border border-line bg-page shadow-2xl',
+          size === 'lg' ? 'max-w-xl' : 'max-w-md',
+        )}
       >
-        <div className="px-6 pt-5 pb-2 text-base font-semibold">{title}</div>
-        <div className="px-6 pb-5 text-sm text-ink-2">{children}</div>
+        <div className="shrink-0 px-6 pt-5 pb-2 text-base font-semibold">{title}</div>
+        <div className="min-h-0 overflow-y-auto px-6 pb-5 text-sm text-ink-2">{children}</div>
         {footer ? (
-          <div className="flex justify-end gap-2 border-t border-line px-6 py-3">{footer}</div>
+          <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-line px-6 py-3">
+            {footer}
+          </div>
         ) : null}
       </div>
     </div>

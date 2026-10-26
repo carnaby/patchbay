@@ -27,6 +27,7 @@ import { ConnectAiPanel } from './ConnectAiPanel.tsx';
 import { DatasetsPanel } from './DatasetsPanel.tsx';
 import { Grid } from './Grid.tsx';
 import { PresentationControls, TvInfo, useIdle, usePresentation } from './presentation.tsx';
+import { PublicSecretsDialogs, SecretsSaveBanner } from './public-secrets.tsx';
 import { SharePanel } from './SharePanel.tsx';
 import { MuteButton } from './sound-controls.tsx';
 import { VersionsPanel } from './VersionsPanel.tsx';
@@ -295,6 +296,7 @@ function Editor({ id }: { id: string }) {
       </header>
 
       {conflict && !presenting ? <ConflictBanner /> : null}
+      {presenting ? null : <SecretsSaveBanner />}
 
       <main className={cx('px-3 sm:px-4', presenting ? 'py-3' : 'py-4')}>
         {doc.description && !editing && !presenting ? (
@@ -352,6 +354,7 @@ function Editor({ id }: { id: string }) {
       <SharePanel open={panel === 'share'} onClose={() => setPanel(null)} dashboardId={id} />
       <ConnectAiPanel open={panel === 'ai'} onClose={() => setPanel(null)} dashboardId={id} />
       <ExpandedWidget dashboardId={id} live={live} />
+      <PublicSecretsDialogs />
       <WidgetEditor
         widgetId={widgetId}
         onClose={() => setWidgetId(null)}
