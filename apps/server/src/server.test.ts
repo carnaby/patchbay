@@ -9,6 +9,7 @@ import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
 import { isAcceptableRedirect, redirectMatches } from './routes/oauth.ts';
+import { buildTemplate, listTemplates } from './services/templates.ts';
 import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
 
 const BASE = 'http://localhost:8787';
@@ -163,6 +164,16 @@ describe('dashboards over REST', () => {
     });
     expect(repoint.status).toBe(400);
     expect(repoint.json.error).toContain('Operation 1: Unknown connector "also.gone"');
+  });
+
+  it('rejects unknown templates', async () => {
+    const res = await call('/api/dashboards', { body: { template: 'no-such-template' } });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toContain('Unknown template "no-such-template"');
+    expect(res.json.error).toContain('blank');
+    // What the template picker offers (GET /api/templates) is exactly what create accepts.
+    for (const t of listTemplates()) expect(buildTemplate(t.id).title).toBeTruthy();
+    expect((await call('/api/dashboards', { body: { template: 'weather' } })).status).toBe(201);
   });
 
   it('rejects cross-site writes', async () => {
