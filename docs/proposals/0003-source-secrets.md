@@ -2,7 +2,7 @@
 
 |                    |                                                                                                                                                                                                           |
 | ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Status             | **Proposed, not implemented.** The owner decided to offer credentials on HTTP sources, behind an instance switch and with a prominent warning. This document specifies how.                               |
+| Status             | **Accepted, not implemented.** The owner decided to offer credentials on HTTP sources, behind an instance switch and with a prominent warning. This document specifies how; see "Decisions" at the end.   |
 | Area               | `packages/core` (schema, binding matcher), `apps/server` (storage, encryption, `DashboardService`, `DataService`, `safe-fetch`, `LiveHub`, REST, MCP), `apps/web` (Settings, dataset editor, share panel) |
 | Effort             | About five days including tests and docs                                                                                                                                                                  |
 | New infrastructure | None. One SQLite table, one environment key.                                                                                                                                                              |
@@ -359,7 +359,8 @@ SECRETS_KEY_PREVIOUS=            (optional, for rotation)
 - **`admins`**: only users in `ADMIN_EMAILS` can store and use secrets. The right setting for a personal instance that
   others can also sign in to, which is the owner's case for his own data.
 - **`users`**: every signed-in user. For a team instance, or a public instance whose operator accepts the
-  responsibility (the warning then does its job).
+  responsibility. This is the intended setting for such public instances: whoever stores a secret on someone else's
+  instance does so at their own risk, and the warning and the self-hosting recommendation exist for exactly that.
 - `SECRETS` other than `off` without a valid `SECRETS_KEY` **refuses to start**: the operator clearly meant to enable
   it, and a half-working feature is worse than a clear error. With `off`, the key is not needed.
 - Switching back to `off` (or an owner losing admin rights in `admins` mode) keeps the rows. Listing and **deleting
@@ -625,17 +626,15 @@ About five days:
 - **Let agents create secrets.** Values would pass through the model and its logs. Rejected (see "Agents").
 - **Default `SECRETS=users`.** Would make every existing public instance a credential store on upgrade. Rejected.
 
-## Open questions for the owner
+## Decisions
 
-These need a decision rather than a default:
+Decided by the owner on 2026-10-26:
 
-1. **Agents and public dashboards.** This proposal stops tokens (MCP and PATs) from making a secret-backed dashboard
-   public and from adding or re-pointing secrets on a public dashboard. Agents can still do everything on private
-   dashboards.
-   Is that the right line, or should agents be trusted with public ones too (simpler, but an injected agent could then
-   publish data from any path of a bound host)?
-2. **The public instance.** `users` or `admins` there? With `users`, the public instance becomes a place where
-   strangers store credentials, with the warning as the only safeguard on their side and the operator's obligations
-   on the other (security, breach notification, possibly GDPR obligations for EU users).
-3. **Automation.** Should a dedicated scope (e.g. `secrets:write`) let a PAT replace a value, so a script can rotate a
-   short-lived token? This proposal says no: values only through the web UI.
+1. **Agents and public dashboards.** Tokens (MCP and PATs) may not make a secret-backed dashboard public, and may not
+   add or re-point secrets on a public dashboard. Only a person in the web UI can, after the confirmation described in
+   "Public dashboards". Agents can still do everything on private dashboards.
+2. **Public instances.** The repository default stays `SECRETS=off`. A public instance whose operator accepts the
+   responsibility runs `SECRETS=users`, and the owner's own public instance will: users of someone else's instance
+   store secrets at their own risk, which is what the warning and the self-hosting recommendation are for.
+3. **No `secrets:write` scope.** Values are set and replaced only through the web UI. A scope for scripted rotation can
+   be added later if there is a concrete need.
