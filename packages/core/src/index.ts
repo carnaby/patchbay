@@ -5,6 +5,7 @@ export * from './layout.ts';
 export * from './ops.ts';
 export * from './profile.ts';
 export * from './schema.ts';
+export * from './secrets.ts';
 export * from './sound.ts';
 export * from './stats.ts';
 export * from './suggest.ts';
