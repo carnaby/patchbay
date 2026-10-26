@@ -1,6 +1,6 @@
 import type { AdminDashboardRow } from '@patchbay/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Search, ShieldAlert, Trash2 } from 'lucide-react';
+import { KeyRound, Search, ShieldAlert, Trash2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
 import { PageContainer } from '../components/AppShell.tsx';
@@ -105,6 +105,64 @@ function PruneCard() {
           ? `${preview.length} ${onlyAnonymous ? 'anonymous ' : ''}dashboard(s) were not viewed in the last ${body.olderThanDays} days. Their folders, versions and files will be removed.`
           : 'No dashboards match these conditions.'}
       </Modal>
+    </Card>
+  );
+}
+
+interface SecretCounts {
+  mode: 'off' | 'admins' | 'users';
+  users: { userId: string; email: string; secrets: number }[];
+}
+
+const MODE_LABEL: Record<SecretCounts['mode'], string> = {
+  off: 'off (nobody can store secrets)',
+  admins: 'admins only',
+  users: 'every signed-in user',
+};
+
+/**
+ * Counts only, never names or values. If the encryption key and a copy of the database leak together, rotation
+ * cannot help: the operator has to know whom to tell to revoke their credentials.
+ */
+function SecretCountsCard() {
+  const query = useQuery({
+    queryKey: ['admin', 'secrets'],
+    queryFn: () => api<SecretCounts>('/api/admin/secrets'),
+  });
+  if (!query.data) return null;
+  const { mode, users } = query.data;
+  if (mode === 'off' && users.length === 0) return null;
+  const total = users.reduce((sum, u) => sum + u.secrets, 0);
+  return (
+    <Card className="mb-10 p-5">
+      <h2 className="flex items-center gap-2 font-semibold">
+        <KeyRound className="size-4 text-muted" aria-hidden="true" />
+        Stored secrets
+      </h2>
+      <p className="mt-1 text-sm text-ink-2">
+        Secrets: {MODE_LABEL[mode]}. {total} secret{total === 1 ? '' : 's'} stored by {users.length} user
+        {users.length === 1 ? '' : 's'}. If <code className="font-mono">SECRETS_KEY</code> and a copy of the
+        data directory ever leak together, these are the people who must revoke their credentials at the
+        source.
+      </p>
+      {users.length ? (
+        <table className="mt-4 w-full max-w-md text-left text-sm">
+          <thead className="text-xs text-muted">
+            <tr className="border-b border-line">
+              <th className="py-2 font-medium">User</th>
+              <th className="py-2 text-right font-medium">Secrets</th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.userId} className="border-b border-line/60 last:border-0">
+                <td className="max-w-64 truncate py-2 text-ink-2">{u.email}</td>
+                <td className="tabular py-2 text-right">{u.secrets}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : null}
     </Card>
   );
 }
@@ -226,6 +284,8 @@ export default function Admin() {
           </tbody>
         </table>
       </Card>
+
+      <SecretCountsCard />
 
       <PruneCard />
 
