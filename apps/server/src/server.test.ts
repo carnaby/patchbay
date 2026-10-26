@@ -86,6 +86,85 @@ describe('dashboards over REST', () => {
     expect((await call(`/api/dashboards/${id}`)).json.doc.title).toBe('Mine');
   });
 
+  it('rejects unknown connectors on save, but keeps documents that name a removed one', async () => {
+    const cookie = await login('dora@example.com');
+    const { envelope } = (await call('/api/dashboards', { body: {}, cookie })).json;
+    const id = envelope.meta.id;
+    const dataset = (connector: string) => ({
+      id: 'feed',
+      name: 'Feed',
+      source: { kind: 'connector', connector, params: {} },
+    });
+
+    const bad = await call(`/api/dashboards/${id}/ops`, {
+      body: {
+        ops: [
+          { op: 'setMeta', title: 'x' },
+          { op: 'addDataset', dataset: dataset('no.such') },
+        ],
+      },
+      cookie,
+    });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error).toContain('Operation 2: Unknown connector "no.such"');
+    const dry = await call(`/api/dashboards/${id}/ops`, {
+      body: { ops: [{ op: 'addDataset', dataset: dataset('no.such') }], dryRun: true },
+      cookie,
+    });
+    expect(dry.status).toBe(400);
+    const put = await call(`/api/dashboards/${id}`, {
+      method: 'PUT',
+      body: { doc: { ...envelope.doc, datasets: [dataset('no.such')] }, baseVersion: 1 },
+      cookie,
+    });
+    expect(put.status).toBe(400);
+    expect(put.json.error).toContain('Unknown connector "no.such"');
+    // All or nothing: the setMeta before the bad op was not saved either.
+    expect((await call(`/api/dashboards/${id}`, { cookie })).json.meta.version).toBe(1);
+
+    // A document stored while "retired.feed" still existed.
+    const meta = (await deps.store.readMeta(id))!;
+    await deps.store.writeDoc(
+      { ...meta, version: 2 },
+      { ...envelope.doc, datasets: [dataset('retired.feed')] },
+      { kind: 'user', label: 'test' },
+      ['Saved before the connector was removed'],
+    );
+    const legacy = await call(`/api/dashboards/${id}`, { cookie });
+    expect(legacy.status).toBe(200);
+    expect(legacy.json.doc.datasets[0].source.connector).toBe('retired.feed');
+    const unrelated = await call(`/api/dashboards/${id}/ops`, {
+      body: {
+        ops: [
+          { op: 'updateDataset', id: 'feed', set: { refreshSec: 60 } },
+          { op: 'addWidget', widget: { id: 'note', type: 'text', config: { markdown: 'Hi' } } },
+        ],
+      },
+      cookie,
+    });
+    expect(unrelated.status).toBe(200);
+    const editorSave = await call(`/api/dashboards/${id}`, {
+      method: 'PUT',
+      body: { doc: { ...unrelated.json.envelope.doc, title: 'Renamed' }, baseVersion: 3 },
+      cookie,
+    });
+    expect(editorSave.status).toBe(200);
+    const repoint = await call(`/api/dashboards/${id}/ops`, {
+      body: {
+        ops: [
+          {
+            op: 'updateDataset',
+            id: 'feed',
+            set: { source: { kind: 'connector', connector: 'also.gone', params: {} } },
+          },
+        ],
+      },
+      cookie,
+    });
+    expect(repoint.status).toBe(400);
+    expect(repoint.json.error).toContain('Operation 1: Unknown connector "also.gone"');
+  });
+
   it('rejects cross-site writes', async () => {
     const res = await call('/api/dashboards', { body: {}, headers: { origin: 'https://evil.example' } });
     expect(res.status).toBe(403);
@@ -516,6 +595,29 @@ describe('MCP tools', () => {
       text(await client.callTool({ name: 'get_dashboard', arguments: { dashboardId: id } })),
     );
     expect(doc.doc.widgets.map((w: { id: string }) => w.id)).not.toContain('typo');
+  });
+
+  it('rejects datasets from unknown connectors', async () => {
+    const id = JSON.parse(
+      text(await client.callTool({ name: 'create_dashboard', arguments: { title: 'Connectors' } })),
+    ).dashboardId;
+    const dataset = {
+      id: 'feed',
+      name: 'Feed',
+      source: { kind: 'connector', connector: 'no.such', params: {} },
+    };
+    for (const dryRun of [true, false]) {
+      const res = await client.callTool({
+        name: 'apply_operations',
+        arguments: { dashboardId: id, dryRun, operations: [{ op: 'addDataset', dataset }] },
+      });
+      expect(res.isError).toBe(true);
+      expect(text(res)).toContain('Operation 1: Unknown connector "no.such"');
+    }
+    const doc = JSON.parse(
+      text(await client.callTool({ name: 'get_dashboard', arguments: { dashboardId: id } })),
+    );
+    expect(doc.doc.datasets).toEqual([]);
   });
 
   it('accepts only real template ids', async () => {

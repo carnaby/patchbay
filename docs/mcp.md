@@ -45,9 +45,10 @@ Scopes:
 
 There is intentionally no delete tool.
 
-Input schemas are JSON Schema 2020-12. Closed sets are enums: `create_dashboard.template` (unknown ids are rejected)
-and the connector id in a source (the server keeps accepting any string there, so dashboards that name a removed
-connector still load). To keep `tools/list` small, `apply_operations` defines its large shared parts once under
+Input schemas are JSON Schema 2020-12. Closed sets are enums: `create_dashboard.template` and the connector id in a
+source. Unknown ids are rejected (an operation that adds or re-points a dataset to an unknown connector fails the whole
+batch), but dashboards saved with a since-removed connector still load and accept edits that leave that source alone.
+To keep `tools/list` small, `apply_operations` defines its large shared parts once under
 `$defs` (`Source`, `Transform`, `Widget`, `SoundRule`, `Format`) and points to them with local `$ref`s, each carrying
 `"type": "object"` for clients that do not resolve references. The server validates every call with the full strict
 schema either way.
