@@ -1,13 +1,14 @@
-import type { DashboardEnvelope } from '@patchbay/core';
+import { type DashboardEnvelope, docSecretIds } from '@patchbay/core';
 import { useMutation } from '@tanstack/react-query';
-import { Copy, Download, Globe, Lock, Trash2, UserCheck } from 'lucide-react';
+import { Copy, Download, Globe, KeyRound, Lock, Trash2, UserCheck } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { Button, Card, cx, Drawer, Modal, toast } from '../components/ui.tsx';
-import { api } from '../lib/api.ts';
+import { api, errorMessage } from '../lib/api.ts';
 import { forgetEditKey, saveEditKey } from '../lib/edit-keys.ts';
 import { useMe } from '../lib/hooks.ts';
 import { useEditor } from '../state/editor.ts';
+import { withPublicSecretsConfirmation } from './public-secrets.tsx';
 
 export function SharePanel({
   open,
@@ -26,14 +27,20 @@ export function SharePanel({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const url = `${window.location.origin}/d/${dashboardId}`;
 
+  const secretCount = useEditor((s) => (s.saved ? docSecretIds(s.saved).length : 0));
   const visibility = useMutation({
     mutationFn: (v: 'public' | 'private') =>
-      api<DashboardEnvelope>(`/api/dashboards/${dashboardId}/settings`, {
-        method: 'PATCH',
-        body: { visibility: v },
-        dashboardId,
-      }),
-    onSuccess: (env) => useEditor.getState().setMeta(env.meta, env.access),
+      withPublicSecretsConfirmation('publish', (confirm) =>
+        api<DashboardEnvelope>(`/api/dashboards/${dashboardId}/settings`, {
+          method: 'PATCH',
+          body: confirm ? { visibility: v, confirmPublicSecrets: true } : { visibility: v },
+          dashboardId,
+        }),
+      ),
+    onSuccess: (env) => {
+      if (env) useEditor.getState().setMeta(env.meta, env.access);
+    },
+    onError: (e) => toast(errorMessage(e), 'bad'),
   });
   const claim = useMutation({
     mutationFn: () =>
@@ -93,6 +100,12 @@ export function SharePanel({
               ? 'Anyone with the link can view. Only editors can change it.'
               : 'Only you can open it, after signing in.'}
           </p>
+          {meta.visibility === 'public' && secretCount > 0 ? (
+            <p className="flex items-center gap-1.5 rounded-lg border border-warn/50 bg-warn/10 px-2.5 py-1.5 text-xs text-ink">
+              <KeyRound className="size-3.5 shrink-0 text-warn" aria-hidden="true" />
+              Public · shows data fetched with {secretCount} secret{secretCount === 1 ? '' : 's'}
+            </p>
+          ) : null}
         </Card>
 
         {access.isOwner ? (
