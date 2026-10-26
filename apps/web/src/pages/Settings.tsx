@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot, KeyRound, Plug, Terminal, Trash2 } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
-import { Navigate } from 'react-router';
+import { Bot, KeyRound, LockKeyhole, Plug, Terminal, Trash2 } from 'lucide-react';
+import { type ReactNode, useEffect, useState } from 'react';
+import { Navigate, useLocation } from 'react-router';
 import { PageContainer } from '../components/AppShell.tsx';
 import {
   Badge,
@@ -20,8 +20,10 @@ import {
   toast,
 } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
-import { relativeTime, useDocumentTitle, useMe } from '../lib/hooks.ts';
+import { relativeTime, useDocumentTitle, useMe, useSecrets } from '../lib/hooks.ts';
+import { secretsSectionMode } from '../lib/secrets.ts';
 import { CopyField, PageHeader } from './_shared.tsx';
+import { SecretsManager } from './SettingsSecrets.tsx';
 
 interface PatInfo {
   id: string;
@@ -42,18 +44,20 @@ interface GrantInfo {
 }
 
 function Section({
+  id,
   icon,
   title,
   subtitle,
   children,
 }: {
+  id?: string;
   icon: ReactNode;
   title: string;
   subtitle?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <section className="mb-12">
+    <section id={id} className="mb-12 scroll-mt-20">
       <h2 className="flex items-center gap-2 text-lg font-semibold">
         <span className="text-muted">{icon}</span>
         {title}
@@ -325,6 +329,13 @@ export default function Settings() {
     queryFn: () => api<{ tokens: PatInfo[]; grants: GrantInfo[] }>('/api/tokens'),
     enabled: Boolean(user),
   });
+  const secrets = useSecrets(Boolean(user));
+  const location = useLocation();
+  // Agents send users to /settings#secrets; the section only exists once the list has loaded.
+  useEffect(() => {
+    if (location.hash === '#secrets' && secrets.data)
+      document.getElementById('secrets')?.scrollIntoView({ block: 'start' });
+  }, [location.hash, secrets.data]);
   if (isLoading) {
     return (
       <div className="flex justify-center py-24">
@@ -332,12 +343,14 @@ export default function Settings() {
       </div>
     );
   }
-  if (!user) return <Navigate to="/login?returnTo=/settings" replace />;
+  if (!user)
+    return <Navigate to={`/login?returnTo=${encodeURIComponent(`/settings${location.hash}`)}`} replace />;
+  const secretsMode = secrets.data ? secretsSectionMode(secrets.data) : 'hidden';
   return (
     <PageContainer className="max-w-3xl">
       <PageHeader
         title="AI connections & tokens"
-        subtitle="Let an AI agent build and edit your dashboards through the Model Context Protocol."
+        subtitle="Let an AI agent build and edit your dashboards through the Model Context Protocol, and store the keys your data sources need."
       />
       <Section icon={<Terminal className="size-5" />} title="Connect an MCP client">
         <McpSetup />
@@ -356,6 +369,16 @@ export default function Settings() {
       >
         <TokenSection tokens={data.data?.tokens ?? []} />
       </Section>
+      {secrets.data && secretsMode !== 'hidden' ? (
+        <Section
+          id="secrets"
+          icon={<LockKeyhole className="size-5" />}
+          title="Secrets"
+          subtitle="API keys and tokens for JSON URL data sources. Each one is only sent to the address you allow, only from dashboards you own, and nobody can read it back in Patchbay, AI agents included."
+        >
+          <SecretsManager list={secrets.data} />
+        </Section>
+      ) : null}
     </PageContainer>
   );
 }
