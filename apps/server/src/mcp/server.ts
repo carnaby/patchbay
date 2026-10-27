@@ -365,7 +365,7 @@ export function createMcp(deps: Deps) {
             ...sampleTable(result.table, args.sampleRows),
             trace: result.trace,
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
-            suggestions: suggestionOps(dataset, suggestWidgets(profile)),
+            suggestions: suggestionOps(dataset, suggestWidgets(profile, { transforms: dataset.transforms })),
           });
         },
       ),
@@ -419,7 +419,7 @@ export function createMcp(deps: Deps) {
         return json({
           rows: profile.rows,
           columns: profile.columns.map(({ sample: _s, ...c }) => c),
-          suggestions: suggestionOps(dataset, suggestWidgets(profile)),
+          suggestions: suggestionOps(dataset, suggestWidgets(profile, { transforms: dataset.transforms })),
         });
       }),
     );
@@ -455,7 +455,7 @@ export function createMcp(deps: Deps) {
             addDatasetOp: { op: 'addDataset', dataset },
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
             sample: result.table.rows.slice(0, 5),
-            suggestions: suggestionOps(dataset, suggestWidgets(profile)),
+            suggestions: suggestionOps(dataset, suggestWidgets(profile, { transforms: dataset.transforms })),
             hint: 'Apply addDatasetOp first, then the ops of the suggestions you like (or your own).',
           });
         },
