@@ -721,6 +721,35 @@ describe('MCP tools', () => {
     expect(versions[0].actor).toMatchObject({ kind: 'mcp', label: 'Personal token (MCP)' });
   });
 
+  it('reads the newest rows of a time series with get_data from: "end"', async () => {
+    const id = JSON.parse(
+      text(await client.callTool({ name: 'create_dashboard', arguments: { title: 'Series' } })),
+    ).dashboardId;
+    const rows = Array.from({ length: 10 }, (_, i) => ({ t: Date.UTC(2026, 0, i + 1), v: i }));
+    await client.callTool({
+      name: 'apply_operations',
+      arguments: {
+        dashboardId: id,
+        operations: [{ op: 'addDataset', dataset: { id: 's', name: 'S', source: { kind: 'inline', rows } } }],
+      },
+    });
+    const read = async (extra: Record<string, unknown>) =>
+      JSON.parse(
+        text(
+          await client.callTool({
+            name: 'get_data',
+            arguments: { dashboardId: id, datasetId: 's', limit: 3, ...extra },
+          }),
+        ),
+      );
+    const start = await read({});
+    expect(start.from).toBe('start');
+    expect(start.rows.map((r: { v: number }) => r.v)).toEqual([0, 1, 2]);
+    const end = await read({ from: 'end' });
+    expect(end.rowCount).toBe(10);
+    expect(end.rows.map((r: { v: number }) => r.v)).toEqual([7, 8, 9]);
+  });
+
   it('reports invalid operations without changing anything', async () => {
     const id = JSON.parse(
       text(await client.callTool({ name: 'create_dashboard', arguments: { title: 'Strict' } })),
