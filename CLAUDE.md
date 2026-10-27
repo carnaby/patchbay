@@ -38,3 +38,10 @@ Monorepo (pnpm): `packages/core` (pure domain logic, shared), `apps/server` (Hon
   render or an editor preview. The first result after load, reconnect or a definition change is only a baseline.
 - Presentation mode (apps/web/src/editor/presentation.tsx) must keep working without user input after the first
   click: it is used unattended on wall screens and TVs.
+
+## Memory (Tabula)
+Tabula keeps this project's files that are not in git (handoff state, private specs and plans) and the global rules that apply to every project.
+- This project's Tabula project is `patchbay`; `.tabula.json` says which untracked files are synced.
+- At session start call `recall` for `patchbay` with `include_state: false` and follow the global rules. The project state is on disk (restored by the SessionStart hook).
+- At handoff run `tabula push` after writing the state file.
+- Never write project memories. Add a global rule only when the user explicitly asks.
