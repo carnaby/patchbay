@@ -4,6 +4,8 @@ import {
   type DatasetResult,
   emptyDashboard,
   inferTable,
+  resolveColor,
+  THEMES,
   type WidgetInput,
   WidgetSchema,
 } from '@patchbay/core';
@@ -168,4 +170,85 @@ describe('snapshot text', () => {
     // Dashboard snapshots are not scaled; the title sits at (16, 40) in 22 px bold.
     expect(inkColumns(img, { x: 16, y: 20, w: 200, h: 26 }, 1).length).toBeGreaterThan(80);
   });
+});
+
+/** Pixels within a small distance of a colour, optionally inside an SVG-coordinate box. */
+function pixelsOf(img: Image, hex: string, box?: { x: number; y: number; w: number; h: number }): number {
+  const want = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+  const x0 = box ? Math.round(box.x * SCALE) : 0;
+  const y0 = box ? Math.round(box.y * SCALE) : 0;
+  const x1 = box ? Math.round((box.x + box.w) * SCALE) : img.width;
+  const y1 = box ? Math.round((box.y + box.h) * SCALE) : img.height;
+  let n = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * img.width + x) * 4;
+      if (want.every((v, c) => Math.abs(img.rgba[i + c]! - v) <= 6)) n++;
+    }
+  }
+  return n;
+}
+
+describe('snapshot colours', () => {
+  for (const mode of ['light', 'dark'] as const) {
+    const theme = THEMES[mode];
+    const draw = (input: WidgetInput, entityColors?: Record<string, string>) =>
+      decodePng(renderWidgetPng(widget(input), result, { theme: mode, entityColors }));
+
+    it(`draws mapped series colours and a reference line in ${mode}`, () => {
+      const img = draw({
+        id: 'c',
+        type: 'chart',
+        title: 'Revenue',
+        datasetId: 'sales',
+        config: {
+          kind: 'bar',
+          x: 'month',
+          y: ['revenue'],
+          colors: { revenue: 'accent-3' },
+          referenceLines: [{ value: 2500, label: 'Target', color: 'negative' }],
+        },
+      });
+      expect(pixelsOf(img, theme.categorical[2]!)).toBeGreaterThan(2000);
+      expect(pixelsOf(img, theme.categorical[0]!)).toBe(0);
+      // The dashed line above every bar: the axis was widened to show it.
+      expect(pixelsOf(img, theme.status.critical, { x: 60, y: 36, w: 560, h: 120 })).toBeGreaterThan(100);
+    });
+
+    it(`uses dashboard entity colours in widget snapshots in ${mode}`, () => {
+      const img = draw(
+        { id: 'c', type: 'chart', datasetId: 'sales', config: { kind: 'bar', x: 'month', y: ['units'] } },
+        { units: 'accent-5' },
+      );
+      expect(pixelsOf(img, theme.categorical[4]!)).toBeGreaterThan(2000);
+    });
+
+    it(`colours a KPI value from its bands with contrast in ${mode}`, () => {
+      const img = draw({
+        id: 'k',
+        type: 'kpi',
+        datasetId: 'sales',
+        config: { field: 'revenue', bands: [{ upTo: 2000, color: 'warning' }] },
+      });
+      expect(
+        pixelsOf(img, resolveColor('warning', theme, 'text'), { x: 14, y: 36, w: 300, h: 50 }),
+      ).toBeGreaterThan(100);
+    });
+
+    it(`tints table cells from rules in ${mode}`, () => {
+      const img = draw({
+        id: 't',
+        type: 'table',
+        datasetId: 'sales',
+        config: {
+          columns: [{ field: 'month', label: 'Month' }, 'revenue'],
+          rules: [{ when: 'revenue > 1600', color: 'positive' }],
+        },
+      });
+      // Only the February row (the second) is tinted.
+      const fill = resolveColor('positive', theme, 'fill');
+      expect(pixelsOf(img, fill, { x: 10, y: 78, w: 600, h: 18 })).toBeGreaterThan(3000);
+      expect(pixelsOf(img, fill, { x: 10, y: 58, w: 600, h: 18 })).toBe(0);
+    });
+  }
 });

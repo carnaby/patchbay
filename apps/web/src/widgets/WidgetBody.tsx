@@ -1,12 +1,16 @@
 import {
   buildChartOption,
   buildGaugeOption,
+  type ColorMap,
+  cellStyle,
+  compileTableRules,
   computeGauge,
   computeKpi,
   type DatasetResult,
   formatNumber,
-  formatValue,
+  resolveColor,
   THEMES,
+  tableColumns,
   type Widget,
 } from '@patchbay/core';
 import { AlertTriangle, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Minus } from 'lucide-react';
@@ -22,12 +26,15 @@ export function WidgetBody({
   result,
   loading,
   errorHint,
+  entityColors,
 }: {
   widget: Widget;
   result: DatasetResult | undefined;
   loading?: boolean;
   /** What to do about the error; only passed for the dashboard's owner, viewers see the generic message alone. */
   errorHint?: string | null;
+  /** The dashboard's entity colours (`doc.colors`). */
+  entityColors?: ColorMap | undefined;
 }) {
   if (widget.type === 'text') return <TextBody markdown={widget.config.markdown} />;
   if (!result) {
@@ -48,7 +55,7 @@ export function WidgetBody({
   }
   switch (widget.type) {
     case 'chart':
-      return <ChartBody widget={widget} result={result} />;
+      return <ChartBody widget={widget} result={result} entityColors={entityColors} />;
     case 'kpi':
       return <KpiBody widget={widget} result={result} />;
     case 'gauge':
@@ -61,14 +68,16 @@ export function WidgetBody({
 function ChartBody({
   widget,
   result,
+  entityColors,
 }: {
   widget: Extract<Widget, { type: 'chart' }>;
   result: DatasetResult;
+  entityColors?: ColorMap | undefined;
 }) {
   const mode = useTheme();
   const option = useMemo(
-    () => buildChartOption(widget.config, result.table, THEMES[mode]),
-    [widget.config, result.table, mode],
+    () => buildChartOption(widget.config, result.table, THEMES[mode], { entityColors }),
+    [widget.config, result.table, mode, entityColors],
   );
   return <EChart option={option} label={widget.title ?? 'Chart'} />;
 }
@@ -115,11 +124,15 @@ function Sparkline({ values }: { values: number[] }) {
 }
 
 function KpiBody({ widget, result }: { widget: Extract<Widget, { type: 'kpi' }>; result: DatasetResult }) {
+  const mode = useTheme();
   const kpi = computeKpi(widget.config, result.table);
   const Icon = kpi.delta === null ? null : kpi.delta > 0 ? ArrowUp : kpi.delta < 0 ? ArrowDown : Minus;
   return (
     <div className="flex h-full flex-col">
-      <div className="text-[clamp(1.5rem,3.2vw,2.4rem)] leading-tight font-semibold tracking-tight">
+      <div
+        className="text-[clamp(1.5rem,3.2vw,2.4rem)] leading-tight font-semibold tracking-tight"
+        style={kpi.valueColor ? { color: resolveColor(kpi.valueColor, THEMES[mode], 'text') } : undefined}
+      >
         {formatNumber(kpi.value, widget.config.format)}
       </div>
       {kpi.delta !== null && Icon ? (
@@ -138,7 +151,15 @@ function KpiBody({ widget, result }: { widget: Extract<Widget, { type: 'kpi' }>;
             </span>
           ) : null}
           <span className="sr-only">
-            {kpi.trend === 'good' ? 'improving' : kpi.trend === 'bad' ? 'worsening' : 'unchanged'}
+            {kpi.trend === 'good'
+              ? 'improving'
+              : kpi.trend === 'bad'
+                ? 'worsening'
+                : kpi.trend === 'neutral'
+                  ? kpi.delta > 0
+                    ? 'increased'
+                    : 'decreased'
+                  : 'unchanged'}
           </span>
         </div>
       ) : null}
@@ -162,12 +183,11 @@ function TableBody({
 }) {
   const [page, setPage] = useState(0);
   const [sort, setSort] = useState<{ field: string; dir: 1 | -1 } | null>(null);
+  const mode = useTheme();
   const table = result.table;
-  const columns = widget.config.columns?.length
-    ? widget.config.columns.map(
-        (name) => table.columns.find((c) => c.name === name) ?? { name, type: 'string' as const },
-      )
-    : table.columns;
+  const columns = useMemo(() => tableColumns(widget.config, table), [widget.config, table]);
+  // Compiled once per result and config, not per cell.
+  const rules = useMemo(() => compileTableRules(widget.config), [widget.config]);
   const rows = useMemo(() => {
     if (!sort) return table.rows;
     return [...table.rows].sort((a, b) => {
@@ -192,24 +212,27 @@ function TableBody({
         <table className="w-full text-left text-[13px]">
           <thead className="sticky top-0 bg-surface">
             <tr>
-              {columns.map((c) => (
+              {columns.map((c, ci) => (
                 <th
-                  key={c.name}
+                  // biome-ignore lint/suspicious/noArrayIndexKey: a field may be shown twice, the position is its identity
+                  key={`${ci}:${c.field}`}
                   className="border-b border-line px-2 py-1.5 font-medium whitespace-nowrap text-muted"
                 >
                   <button
                     type="button"
                     className="hover:text-ink"
+                    // The field name stays findable when a label replaces it.
+                    title={c.label !== c.field ? c.field : undefined}
                     onClick={() =>
                       setSort((s) =>
-                        s?.field === c.name
-                          ? { field: c.name, dir: s.dir === 1 ? -1 : 1 }
-                          : { field: c.name, dir: 1 },
+                        s?.field === c.field
+                          ? { field: c.field, dir: s.dir === 1 ? -1 : 1 }
+                          : { field: c.field, dir: 1 },
                       )
                     }
                   >
-                    {c.name}
-                    {sort?.field === c.name ? (sort.dir === 1 ? ' ↑' : ' ↓') : ''}
+                    {c.label}
+                    {sort?.field === c.field ? (sort.dir === 1 ? ' ↑' : ' ↓') : ''}
                   </button>
                 </th>
               ))}
@@ -219,16 +242,24 @@ function TableBody({
             {visible.map((row, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity
               <tr key={i} className="border-b border-line/60 last:border-0 hover:bg-surface-2/60">
-                {columns.map((c) => {
-                  const v = row[c.name] ?? null;
-                  const text = formatValue(v, c.type, widget.config.format);
+                {columns.map((c, ci) => {
+                  const v = row[c.field] ?? null;
+                  const cell = cellStyle(row, c, rules, THEMES[mode]);
+                  const text = cell.text;
                   return (
                     <td
-                      key={c.name}
+                      // biome-ignore lint/suspicious/noArrayIndexKey: a field may be shown twice, the position is its identity
+                      key={`${ci}:${c.field}`}
                       className={cx(
                         'max-w-72 truncate px-2 py-1.5',
                         c.type === 'number' && 'tabular text-right',
                       )}
+                      style={
+                        cell.color || cell.background
+                          ? { color: cell.color, backgroundColor: cell.background }
+                          : undefined
+                      }
+                      title={cell.reason}
                     >
                       {typeof v === 'string' && URL_RE.test(v) ? (
                         <a

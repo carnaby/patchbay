@@ -10,7 +10,8 @@ import { compile, ExprError, isTruthy, parse, referencedFields } from './expr.ts
 import { type ColumnType, type DataTable, type Row, retype, type Scalar } from './table.ts';
 
 const field = z.string().min(1).max(200);
-const expression = z
+/** An expression that parses; shared with table rules so they validate exactly like pipeline steps. */
+export const ExpressionSchema = z
   .string()
   .min(1)
   .max(2000)
@@ -21,6 +22,7 @@ const expression = z
       ctx.addIssue({ code: 'custom', message: e instanceof ExprError ? e.message : 'Invalid expression' });
     }
   });
+const expression = ExpressionSchema;
 
 export const AGGREGATE_OPS = [
   'count',

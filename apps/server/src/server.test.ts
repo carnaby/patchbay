@@ -515,11 +515,15 @@ describe('MCP tools', () => {
     // Every client pays for this on every connection. It was 55.7 KB before shared subschemas were emitted once;
     // raise the budget only for a deliberate addition (33,000 -> 33,500: the reorderWidget op; -> 33,600: get_data
     // `from`, an optional KPI/gauge field and timeBucket `dropPartial`, the last advertised twice with the transforms;
-    // -> 33,800: scatter `xMin`/`xMax` and the demo.sales `live` parameter).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(33_800);
+    // -> 33,800: scatter `xMin`/`xMax` and the demo.sales `live` parameter; -> 35,700: colour and formatting
+    // (proposal 0007): the shared Color and Bands definitions, colour maps, reference lines, KPI bands, table
+    // column objects and rules, setMeta `colors`; their descriptions live in get_reference instead).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(35_700);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
-    expect(Object.keys(ops.$defs)).toEqual(expect.arrayContaining(['Widget', 'Transform', 'Source']));
+    expect(Object.keys(ops.$defs)).toEqual(
+      expect.arrayContaining(['Widget', 'Transform', 'Source', 'Color', 'Bands']),
+    );
     const json = JSON.stringify(ops);
     // The widget union (one branch per widget type) must appear once, not once per op that takes a widget.
     expect(json.split('"const":"gauge"').length - 1).toBe(1);

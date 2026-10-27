@@ -522,6 +522,7 @@ export function createMcp(deps: Deps) {
             args.widgetId && widget
               ? renderWidgetPng(widget, 'datasetId' in widget ? results.get(widget.datasetId) : undefined, {
                   theme: args.theme,
+                  entityColors: doc.colors,
                 })
               : renderDashboardPng(doc, results, { theme: args.theme });
           const problems = [...results.values()]

@@ -358,7 +358,10 @@ export function apiRoutes(deps: Deps) {
       const widget = doc.widgets.find((w) => w.id === widgetId);
       if (!widget) throw notFound('Widget not found');
       const dataset = 'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
-      png = renderWidgetPng(widget, dataset ? await data.resolve(target, dataset) : undefined, { theme });
+      png = renderWidgetPng(widget, dataset ? await data.resolve(target, dataset) : undefined, {
+        theme,
+        entityColors: doc.colors,
+      });
     } else {
       png = renderDashboardPng(doc, await resolveAll(doc.datasets), { theme });
     }
