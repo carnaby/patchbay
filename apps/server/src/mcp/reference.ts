@@ -82,8 +82,9 @@ with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed 
 ${fns}
 
 ## Widgets
-- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels, showLegend?, yMin?, yMax?, logScale, format?, colors? }
+- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors? }
   kinds: ${CHART_KINDS.join(', ')}. "series" splits long-format data (one row per time+category) into lines/bars.
+  xMin/xMax fix the x axis of a scatter with a numeric x (e.g. -180/180 for a longitude map).
   pie/donut: x = label, y[0] = value (aggregate first; at most 6 slices are kept). heatmap: x, series = y-axis category, y[0] = value.
 - kpi { field, agg, compare: none|previous|first, goodWhen: up|down, sparkline, format? }   aggs: ${KPI_AGGS.join(', ')}
 - gauge { field, agg, min, max, bands?: [{ upTo, color }], format? }
