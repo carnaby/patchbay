@@ -9,6 +9,7 @@ import { forgetEditKey, saveEditKey } from '../lib/edit-keys.ts';
 import { useMe } from '../lib/hooks.ts';
 import { useEditor } from '../state/editor.ts';
 import { DetailsCard } from './DetailsFields.tsx';
+import { EntityColorsCard } from './FormattingFields.tsx';
 import { withPublicSecretsConfirmation } from './public-secrets.tsx';
 
 export function SharePanel({
@@ -171,6 +172,8 @@ export function SharePanel({
             </p>
           ) : null}
         </Card>
+
+        <EntityColorsCard />
 
         <Card className="space-y-2 p-4">
           <div className="text-[13px] font-medium text-ink-2">More</div>

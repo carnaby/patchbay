@@ -311,7 +311,8 @@ function referenceMarks(
           formatter: () => text,
           color: resolveColor(color, theme, 'text'),
           fontSize: 11,
-          position: horizontal ? 'end' : 'insideEndTop',
+          // Horizontal bars invert the category axis, so a vertical line starts at the top, clear of the axis labels.
+          position: horizontal ? 'start' : 'insideEndTop',
         },
       },
     ];
