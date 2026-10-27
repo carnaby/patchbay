@@ -513,8 +513,9 @@ describe('MCP tools', () => {
   it('keeps tools/list compact', async () => {
     const list = await client.listTools();
     // Every client pays for this on every connection. It was 55.7 KB before shared subschemas were emitted once;
-    // raise the budget only for a deliberate addition (33,000 -> 33,500: the reorderWidget op).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(33_500);
+    // raise the budget only for a deliberate addition (33,000 -> 33,500: the reorderWidget op; -> 33,600: get_data
+    // `from`, an optional KPI/gauge field and timeBucket `dropPartial`, the last advertised twice with the transforms).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(33_600);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(expect.arrayContaining(['Widget', 'Transform', 'Source']));
@@ -827,6 +828,33 @@ describe('MCP tools', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('drops partial edge buckets of a rolling window on request', async () => {
+    // Hourly readings for 7 days from 14:00: per day that is 8 buckets, the first and last only partly covered.
+    const start = Date.UTC(2026, 0, 1, 14);
+    const rows = Array.from({ length: 7 * 24 }, (_, i) => ({ time: start + i * 3_600_000, v: 1 }));
+    const perDay = async (bucket: Record<string, unknown>) =>
+      JSON.parse(
+        text(
+          await client.callTool({
+            name: 'preview_data',
+            arguments: {
+              source: { kind: 'inline', rows },
+              transforms: [
+                { type: 'timeBucket', field: 'time', unit: 'day', ...bucket },
+                {
+                  type: 'aggregate',
+                  groupBy: ['time'],
+                  metrics: [{ op: 'sum', field: 'v', as: 'readings' }],
+                },
+              ],
+            },
+          }),
+        ),
+      ).rows.map((r: { readings: number }) => r.readings);
+    expect(await perDay({})).toEqual([10, 24, 24, 24, 24, 24, 24, 14]);
+    expect(await perDay({ dropPartial: true })).toEqual([24, 24, 24, 24, 24, 24]);
   });
 
   it('raises refreshSec below the connector minimum and says so', async () => {
