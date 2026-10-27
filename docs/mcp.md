@@ -81,9 +81,16 @@ Prompts: `build_dashboard { topic }`, `analyze_my_data { dashboardId? }`. Resour
 your own); prefer the step operations over replacing `transforms` wholesale, so concurrent edits by the user survive. Positions are optional everywhere; omitted ones are
 auto-placed.
 
-`changes` in the answer has one line per operation. Sound cues are spelled out whenever an operation adds, changes or
-removes one (trigger, sound, volume and cooldown, defaults included), so there is no need to call `get_dashboard` to
-check them:
+The answer of `apply_operations`:
+
+- `changes`: one line per operation (the same text the version history shows).
+- `dataChecks`: one entry per dataset the batch added or changed, loaded right away so a broken source surfaces at
+  once: `rowCount` (rows after the whole pipeline), `columns` (`name:type`), `sampleRows` (the first 3 rows, a sample,
+  not a count) and `error`. `truncated: true` means the result has more rows than the 10,000 that widgets receive.
+- `warnings`, when there is something to fix that did not fail the batch (see "Secrets").
+
+Sound cues are spelled out in `changes` whenever an operation adds, changes or removes one (trigger, sound, volume and
+cooldown, defaults included), so there is no need to call `get_dashboard` to check them:
 
 ```text
 Added kpi widget "Strongest"; sound cue: "alert" when `magnitude >= 6` becomes true on the last row (volume 0.7, cooldown 10 s)

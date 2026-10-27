@@ -582,7 +582,7 @@ describe('MCP tools', () => {
     expect(result.changes[5]).toContain('its sound cue was removed');
     expect(result.dataChecks[0]).toMatchObject({ datasetId: 'daily' });
     expect(result.dataChecks[0].error).toBeUndefined();
-    expect(result.dataChecks[0].rows).toBeGreaterThan(0);
+    expect(result.dataChecks[0].rowCount).toBeGreaterThan(0);
 
     // Strict objects still reject unknown keys, on the server and in the advertised schema.
     const typo = [
@@ -704,7 +704,12 @@ describe('MCP tools', () => {
     });
     const result = JSON.parse(text(applied));
     expect(result.version).toBe(2);
-    expect(result.dataChecks[0].rows).toBeGreaterThan(0);
+    // The total and the sample are separate fields, so neither reads as the other.
+    const check = result.dataChecks[0];
+    expect(check).not.toHaveProperty('rows');
+    expect(check.sampleRows).toHaveLength(3);
+    expect(check.sampleRows[0]).toHaveProperty('magnitude');
+    expect(check.rowCount).toBeGreaterThan(check.sampleRows.length);
 
     const snap = await client.callTool({ name: 'render_snapshot', arguments: { dashboardId: id } });
     const image = (snap.content as { type: string; data?: string }[]).find((c) => c.type === 'image')!;
