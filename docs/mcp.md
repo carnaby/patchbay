@@ -98,6 +98,28 @@ Widget "Orders": sound cue set to "bell" when rows with a new "order_id" appear 
 Widget "Orders": sound cue removed
 ```
 
+## Live data: `refreshSec` and `accumulate`
+
+The refresh loop runs on the server, but only while somebody watches: when the first browser opens a dashboard (its
+live stream), the server starts reloading each dataset with `refreshSec > 0` on that interval and pushes changed
+results to every viewer; when the last one leaves, the loop stops. MCP calls never start it.
+
+`accumulate: N` keeps the last N rows across loads and adds a `fetched_at` column. Precisely:
+
+- The history is kept in server memory, per dashboard and dataset. A restart clears it, and so does changing the
+  dataset's source (or replacing a secret it uses).
+- It gains the current reading each time the dataset is **loaded** and the source has a **new** reading. Loads come
+  from the refresh loop (every `refreshSec` while someone watches), page loads, and the tools that read data:
+  `get_data`, `render_snapshot`, `suggest_widgets` and the data check of `apply_operations`.
+- With nobody watching, the history therefore grows at the rhythm of those requests and has gaps where nothing asked.
+  An agent polling `get_data` every 10 s sees one new row per call, whatever `refreshSec` says.
+- A source never has a new reading more often than it updates: a connector at most every `minRefreshSec` (see
+  `list_connectors`; the cache is shared by all dashboards), an `http` source every 30 s. Inline and upload sources
+  count as new on every load, so do not accumulate them.
+
+For accumulating datasets, `get_data` answers with `watchers` (open browsers right now) and a `note` with the summary
+above; the data checks of `apply_operations` carry the same `note`.
+
 ## Secrets
 
 Some APIs need a key. When the operator turned the feature on (`SECRETS=admins` or `users`, see
