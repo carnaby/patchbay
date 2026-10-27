@@ -74,6 +74,14 @@ const SIZE = set(
 const LEVEL = set(
   'temperature temp celsius fahrenheit kelvin humidity pressure hpa speed velocity kmh mph rate ratio pct percent percentage % share proportion probability score rating stars index aqi avg average mean median density concentration price margin age cover visibility uv ph bpm deg degrees direction bearing heading angle per capita pm10 pm2 pm25 ozone',
 );
+/**
+ * Weather-like readings where a rise is neither good nor bad. Colouring their change green or red would claim a
+ * judgement the data does not make, so their KPIs get `goodWhen: "neutral"`.
+ */
+const NEUTRAL_CHANGE = set(
+  'temperature temp celsius fahrenheit kelvin humidity pressure hpa wind direction bearing heading altitude elevation',
+);
+const neutralChange = (col: ColumnProfile) => words(col.name).some((w) => NEUTRAL_CHANGE.has(w));
 
 /**
  * Decides from the column name whether totals of a measure mean anything. Summing magnitudes,
@@ -206,6 +214,11 @@ function latestKpi(
     reasons.push(
       `Every row of "${time.name}" is in the future (a forecast), so the KPI shows the first upcoming value.`,
     );
+  const neutral = trend && neutralChange(m);
+  if (neutral)
+    reasons.push(
+      `A rise in "${m.name}" is neither good nor bad, so the change is shown in a neutral colour (goodWhen "neutral").`,
+    );
   if (order.kept && order.dir === 'desc')
     reasons.push(
       `The pipeline already sorts "${time.name}" newest first; that order is kept, so the KPI reads the ${agg} row${trend ? '' : ' and has no change indicator or sparkline'}.`,
@@ -216,7 +229,12 @@ function latestKpi(
     widget: {
       type: 'kpi',
       title,
-      config: { field: m.name, agg, ...(trend ? { compare: 'previous' as const, sparkline: true } : {}) },
+      config: {
+        field: m.name,
+        agg,
+        ...(trend ? { compare: 'previous' as const, sparkline: true } : {}),
+        ...(neutral ? { goodWhen: 'neutral' as const } : {}),
+      },
     },
     transforms: steps,
     score: 88,

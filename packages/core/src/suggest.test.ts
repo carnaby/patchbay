@@ -229,6 +229,17 @@ describe('latest value over a forecast', () => {
     expect(kpi.title).toBe('Latest temperature 2m');
     expect(kpi.transforms).toEqual([{ type: 'sort', by: [{ field: 'time', dir: 'asc' }] }]);
   });
+
+  it('shows a temperature change in a neutral colour, a revenue change as good or bad', () => {
+    const past = forecast.map((r) => ({ ...r, time: r.time - 3 * 24 * HOUR }));
+    const temp = kpiOf(suggest(past));
+    expect(temp.widget.config).toMatchObject({ compare: 'previous', goodWhen: 'neutral' });
+    expect(temp.rationale).toMatch(/neither good nor bad/);
+    const revenue = kpiOf(
+      suggest(past.map(({ time, temperature_2m }) => ({ time, revenue: temperature_2m }))),
+    );
+    expect(revenue.widget.config).not.toHaveProperty('goodWhen');
+  });
 });
 
 describe('locations', () => {
