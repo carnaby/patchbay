@@ -16,7 +16,7 @@ and built either by hand or by an AI agent over the [Model Context Protocol](htt
 
 </div>
 
-![A Patchbay dashboard](docs/images/dashboard-light.png)
+![A Patchbay dashboard](.github/assets/dashboard-light.png)
 
 > In a recording studio, a _patchbay_ is the panel where you wire any source into any device with short cables.
 > This is that panel for data: sources on one side, widgets on the other, and processing rules in between.
@@ -65,8 +65,8 @@ It is free, needs no API keys, and runs as a single process you can host anywher
 
 <table>
 <tr>
-<td width="50%"><img src="docs/images/editor.png" alt="Editing a dataset's processing rules" /></td>
-<td width="50%"><img src="docs/images/live.png" alt="A live dashboard in dark mode" /></td>
+<td width="50%"><img src=".github/assets/editor.png" alt="Editing a dataset's processing rules" /></td>
+<td width="50%"><img src=".github/assets/live.png" alt="A live dashboard in dark mode" /></td>
 </tr>
 <tr>
 <td align="center"><sub>Processing rules with row counts per step</sub></td>
@@ -127,9 +127,9 @@ agent  › get_reference · list_connectors
 The browser showing that dashboard updates live while this happens. Each step is a version; the user can undo any of
 them. The snapshot the agent sees looks like this:
 
-<img src="docs/images/agent-snapshot.png" alt="Server-rendered PNG snapshot" width="720" />
+<img src=".github/assets/agent-snapshot.png" alt="Server-rendered PNG snapshot" width="720" />
 
-Full tool reference: [docs/mcp.md](docs/mcp.md).
+Full tool reference: [guide/mcp.md](guide/mcp.md).
 
 ## Architecture
 
@@ -173,7 +173,7 @@ validated by strict Zod schemas plus integrity checks, versioned, and broadcast 
 the same function locally, so it can never produce a document the server would reject, and it can replay unsaved edits
 on top of a newer version when an agent saved in between.
 
-Key decisions and their trade-offs are written up in [docs/architecture.md](docs/architecture.md). The short version:
+Key decisions and their trade-offs are written up in [guide/architecture.md](guide/architecture.md). The short version:
 
 | Decision                                         | Why                                                                                              | Trade-off                                                                                |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- |
@@ -288,7 +288,7 @@ PATCHBAY_DOMAIN=dash.example.com docker compose up -d
 ```
 
 Options and recommendations (VPS, a home server or NAS behind a Cloudflare Tunnel, Fly.io, Railway…) are in
-[docs/deployment.md](docs/deployment.md).
+[guide/deployment.md](guide/deployment.md).
 
 ## Project layout
 
@@ -297,7 +297,7 @@ packages/core     Pure domain logic shared by server and browser: schemas, ops, 
                   language, transform pipeline, profiling, suggestions, chart option builders. Unit-tested.
 apps/server       Hono server: auth, OAuth AS, REST + SSE, MCP, connectors, folder store, PNG renderer.
 apps/web          React 19 + Vite SPA: landing, editor (undo/redo, live sync), settings, admin.
-docs/             Architecture notes, MCP reference, deployment guide.
+guide/            Architecture notes, MCP reference, deployment guide, ideas for contributors.
 ```
 
 ## Development
@@ -315,7 +315,7 @@ The server runs TypeScript directly with Node's type stripping, so there is no b
 ## Roadmap
 
 - Incremental live updates (send appended rows instead of whole tables): specified in
-  [docs/proposals/0001-sse-deltas.md](docs/proposals/0001-sse-deltas.md), not implemented yet.
+  [guide/ideas/0001-sse-deltas.md](guide/ideas/0001-sse-deltas.md), not implemented yet.
 - Dashboard-level filters and variables (date range, city) that agents can bind widgets to.
 - A map widget for coordinate data.
 - Shared editing with named collaborators.

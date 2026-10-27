@@ -26,7 +26,10 @@ Monorepo (pnpm): `packages/core` (pure domain logic, shared), `apps/server` (Hon
 - Pipelines run through `PipelineRunner` (apps/server/src/services/pipeline-pool.ts), never by calling
   `runPipeline` from request code: large inputs must stay off the main thread.
 - Editing a pipeline means step ops (`diffSteps` in core), not replacing `transforms`, so rebases merge per step.
-- Planned but not implemented work is specified in docs/proposals/.
+- Public documentation lives in `guide/` (deployment, MCP reference, architecture) and `guide/ideas/` (specified
+  ideas open to contributors). `docs/` is the maintainer's private, gitignored folder: design proposals, plans,
+  handoffs. Never commit it, never link to it from public files, and keep it out of the Docker build context.
+- README images live in `.github/assets/`.
 - The service worker (apps/web/public/sw.js) must never cache `/api`, `/auth`, `/oauth`, `/mcp` or live streams:
   dashboards show live data and must not go stale. It only caches hashed `/assets/*` and the offline page. Bump
   `VERSION` in sw.js when its caching logic changes. The server serves sw.js and the manifest with `no-cache`.
