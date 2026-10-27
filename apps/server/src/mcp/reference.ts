@@ -103,6 +103,8 @@ An optional \`sound\` field makes browsers showing the dashboard play a short bu
 - Never plays on page load, after a reconnect or after the dataset changed: the first result is the baseline.
   Viewers can mute their own screen; browsers stay silent until the page is clicked once.
 Example: { "op": "updateWidget", "id": "orders", "set": { "sound": { "trigger": { "kind": "newRows", "key": "order_id" }, "sound": "bell" } } }
+To try it without real data, put the widget on a demo.sales dataset with params { "live": true } and refreshSec 5:
+it returns single orders (time, order_id, ...) and a new one arrives every few seconds.
 Remove with set: { sound: null }. Only add a sound when the user asks for it or the dashboard is clearly a wall screen
 for events people must notice. Use sounds sparingly: at most one or two widgets per dashboard, a distinct sound per
 meaning (bell/cash for new orders or sales, alert for a threshold), and a cooldown long enough not to annoy.
