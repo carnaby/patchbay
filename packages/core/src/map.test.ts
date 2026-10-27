@@ -3,11 +3,15 @@ import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  buildChartOption,
+  ChartConfigSchema,
   emptyDashboard,
+  formattingWarnings,
   inferTable,
   type MapConfig,
   MapConfigSchema,
   parseDashboard,
+  resolveColor,
   THEMES,
 } from './index.ts';
 import {
@@ -368,6 +372,64 @@ describe('buildMapOption', () => {
     expect((option.legend as any).data).toEqual(['ak', 'us']);
   });
 
+  it('colours entities exactly like charts: widget map, then dashboard map, then the free palette slots', () => {
+    const rows = ['Bratislava', 'Prague', 'Vienna', 'Zurich'].map((city, i) => ({
+      city,
+      temp: 10 + i,
+      latitude: 45 + i,
+      longitude: 10 + i,
+    }));
+    const table = inferTable(rows);
+    const colors = { Vienna: 'negative' as const };
+    const entityColors = { Prague: 'accent-3' as const, Vienna: 'accent-5' as const };
+    for (const mode of ['light', 'dark'] as const) {
+      const t = THEMES[mode];
+      const map = seriesOf(
+        buildMapOption(config({ series: 'city', colors }), table, t, { entityColors }),
+      ) as unknown as {
+        name: string;
+        itemStyle: { color: string };
+      }[];
+      const chart = buildChartOption(
+        ChartConfigSchema.parse({ kind: 'bar', x: 'city', y: ['temp'], series: 'city', colors }),
+        table,
+        t,
+        { entityColors },
+      ).series as { name: string; itemStyle?: { color?: string }; color?: string }[];
+      const chartColor = (name: string) => {
+        const s = chart.find((c) => c.name === name)!;
+        return s.itemStyle?.color ?? s.color;
+      };
+      for (const s of map) expect(s.itemStyle.color).toBe(chartColor(s.name));
+      // The widget's own map wins over the dashboard's; the dashboard's applies where the widget has none.
+      expect(map.find((s) => s.name === 'Vienna')!.itemStyle.color).toBe(resolveColor('negative', t, 'mark'));
+      expect(map.find((s) => s.name === 'Prague')!.itemStyle.color).toBe(t.categorical[2]);
+      // Unmapped entities take the slots nobody claimed, so accent-3 is not reused.
+      expect(map.find((s) => s.name === 'Bratislava')!.itemStyle.color).toBe(t.categorical[0]);
+      expect(map.find((s) => s.name === 'Zurich')!.itemStyle.color).toBe(t.categorical[1]);
+    }
+  });
+
+  it('keeps entities with a colour of their own out of "Other"', () => {
+    const rows = Array.from({ length: 12 }, (_, i) => ({
+      id: `e${String(i).padStart(2, '0')}`,
+      latitude: i,
+      longitude: i,
+    }));
+    const option = buildMapOption(
+      config({ series: 'id', colors: { e11: 'accent-2' } }),
+      inferTable(rows),
+      theme,
+    );
+    const names = seriesOf(option).map((s) => s.name);
+    expect(names).toContain('e11');
+    expect(names).toContain('Other');
+    const other = seriesOf(option).find((s) => s.name === 'Other') as unknown as {
+      itemStyle: { color: string };
+    };
+    expect(other.itemStyle.color).toBe(theme.muted);
+  });
+
   it('switches to large mode for many plain dots', () => {
     const many = inferTable(
       Array.from({ length: 2500 }, (_, i) => ({ latitude: (i % 160) - 80, longitude: (i % 360) - 180 })),
@@ -466,6 +528,13 @@ describe('map widget schema', () => {
       maxPoints: 5000,
     });
     expect(() => parseDashboard(doc({ colour: 'depth' }))).toThrow();
+  });
+
+  it('accepts a colour map and warns about entities that share a colour, as for charts', () => {
+    const parsed = parseDashboard(doc({ series: 'network', colors: { us: 'accent-1', ak: 'accent-1' } }));
+    const warnings = formattingWarnings(parsed, { widgets: new Set(['quakes']), colors: false });
+    expect(warnings.join(' ')).toContain('"us", "ak" get the same colour');
+    expect(() => parseDashboard(doc({ colors: ['accent-1'] }))).toThrow();
   });
 
   it('rejects series and color together: a map has one colour channel', () => {

@@ -63,6 +63,7 @@ export const WidgetFrame = memo(function WidgetFrame({
     'datasetId' in widget ? s.doc?.datasets.find((d) => d.id === widget.datasetId) : undefined,
   );
   const flashAt = useEditor((s) => s.flash[widget.id]);
+  const entityColors = useEditor((s) => s.doc?.colors);
   const isOwner = useEditor((s) => Boolean(s.access?.isOwner));
   const { data: secretsStatus } = useSecretsStatus();
   const apply = useEditor((s) => s.apply);
@@ -272,6 +273,7 @@ export const WidgetFrame = memo(function WidgetFrame({
         <WidgetBody
           widget={widget}
           result={result}
+          entityColors={entityColors}
           loading={query.isFetching || !query.isFetched}
           asTable={asTable}
           errorHint={

@@ -4,7 +4,7 @@
  * hashed file under /assets/, which the service worker caches, so a wall screen that lost its network still draws
  * the map.
  */
-import { type DatasetResult, THEMES, type Widget } from '@patchbay/core';
+import { type ColorMap, type DatasetResult, THEMES, type Widget } from '@patchbay/core';
 import world from '@patchbay/core/geo/world-110m.json';
 import {
   buildMapOption,
@@ -32,18 +32,21 @@ export default function MapBody({
   widget,
   result,
   asTable,
+  entityColors,
 }: {
   widget: Extract<Widget, { type: 'map' }>;
   result: DatasetResult;
   /** The accessible alternative: the rows the map draws, in the same order, as the regular table body. */
   asTable: boolean;
+  /** The dashboard's entity colours (`doc.colors`), as charts get them. */
+  entityColors?: ColorMap | undefined;
 }) {
   const mode = useTheme();
   const config = widget.config;
   const at = mapTime(result.table, result.fetchedAt);
   const option = useMemo(
-    () => (asTable ? null : buildMapOption(config, result.table, THEMES[mode], { at })),
-    [asTable, config, result.table, mode, at],
+    () => (asTable ? null : buildMapOption(config, result.table, THEMES[mode], { at, entityColors })),
+    [asTable, config, result.table, mode, at, entityColors],
   );
   const description = describeMap(config, result.table, at);
 

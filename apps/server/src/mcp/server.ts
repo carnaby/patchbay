@@ -13,6 +13,7 @@ import {
   type DatasetResult,
   DatasetSchema,
   type DataTable,
+  formattingWarnings,
   OpSchema,
   profileTable,
   SourceSchema,
@@ -318,6 +319,22 @@ export function createMcp(deps: Deps) {
                 ]
               : [];
           });
+          type WidgetOp = { op: string; id?: string; widget?: { id: string }; colors?: unknown };
+          const widgetOps = args.operations as WidgetOp[];
+          warnings.push(
+            ...formattingWarnings(result.envelope.doc, {
+              widgets: new Set(
+                widgetOps.flatMap((o) =>
+                  o.op === 'addWidget' || o.op === 'replaceWidget'
+                    ? [o.widget!.id]
+                    : o.op === 'updateWidget'
+                      ? [o.id!]
+                      : [],
+                ),
+              ),
+              colors: widgetOps.some((o) => o.op === 'setMeta' && o.colors !== undefined),
+            }),
+          );
           // rowCount is the full result and sampleRows a few of its rows, named apart: a bare `rows: 5` read like a
           // row count when it was the sample size.
           const dataChecks = await Promise.all(
@@ -531,6 +548,7 @@ export function createMcp(deps: Deps) {
             args.widgetId && widget
               ? renderWidgetPng(widget, 'datasetId' in widget ? results.get(widget.datasetId) : undefined, {
                   theme: args.theme,
+                  entityColors: doc.colors,
                 })
               : renderDashboardPng(doc, results, { theme: args.theme });
           const problems = [...results.values()]

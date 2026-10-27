@@ -17,6 +17,7 @@ import 'echarts/lib/chart/radar';
 import 'echarts/lib/chart/scatter';
 import 'echarts/lib/component/grid';
 import 'echarts/lib/component/legend';
+import 'echarts/lib/component/markLine';
 import 'echarts/lib/component/radar';
 import 'echarts/lib/component/title';
 import 'echarts/lib/component/tooltip';
@@ -57,9 +58,11 @@ export function EChart({
     if (!instance) return;
     // When the structure changes (other series, other chart kind) replace the
     // option; when only data changes, merge so ECharts animates the update.
-    const series = (option.series as { type?: string; name?: string }[] | undefined) ?? [];
+    const series =
+      (option.series as { type?: string; name?: string; markLine?: unknown }[] | undefined) ?? [];
+    // A merge never drops a markLine, so reference lines coming or going count as a new shape.
     const shape = JSON.stringify([
-      series.map((s) => `${s.type}:${s.name}`),
+      series.map((s) => `${s.type}:${s.name}${s.markLine ? ':ref' : ''}`),
       (option.xAxis as { type?: string } | undefined)?.type,
       Boolean(option.title),
     ]);

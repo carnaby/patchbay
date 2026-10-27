@@ -6,6 +6,7 @@ import {
   type Format,
   KPI_AGGS,
   parse,
+  REFERENCE_LINE_KINDS,
   SOUND_IDS,
   type SoundRule,
   type Suggestion,
@@ -32,7 +33,7 @@ import {
   Table2,
   Type,
 } from 'lucide-react';
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import {
   Button,
   Card,
@@ -51,6 +52,14 @@ import { api } from '../lib/api.ts';
 import { previewSound, SOUND_LABELS } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
 import { useDatasetResult } from '../state/sync.ts';
+import {
+  ChartColorFields,
+  ReferenceLineFields,
+  TableColumnChooser,
+  TableRulesFields,
+  TruncatedBarHint,
+  ValueBandsSection,
+} from './FormattingFields.tsx';
 
 const TYPE_OPTIONS: { value: WidgetType; label: string; icon: ReactNode }[] = [
   { value: 'chart', label: 'Chart', icon: <LineChart className="size-3.5" /> },
@@ -375,6 +384,20 @@ function EditWidget({ widget }: { widget: Widget }) {
         ) : null}
       </Card>
 
+      {widget.type === 'chart' ? (
+        <>
+          <ChartColorFields widget={widget} setConfig={setConfig} />
+          <ReferenceLineFields widget={widget} setConfig={setConfig} />
+        </>
+      ) : null}
+      {widget.type === 'map' ? <ChartColorFields widget={widget} setConfig={setConfig} /> : null}
+      {widget.type === 'kpi' || widget.type === 'gauge' ? (
+        <ValueBandsSection widget={widget} setConfig={setConfig} />
+      ) : null}
+      {widget.type === 'table' ? (
+        <TableRulesFields widget={widget} columns={columns} setConfig={setConfig} />
+      ) : null}
+
       {widget.type !== 'text' ? (
         <FormatFields
           format={'format' in widget.config ? widget.config.format : undefined}
@@ -473,7 +496,18 @@ function ChartFields({
             <button
               key={k}
               type="button"
-              onClick={() => setConfig({ kind: k }, `Changed chart to ${k}`)}
+              onClick={() =>
+                setConfig(
+                  {
+                    kind: k,
+                    // Kinds without a value axis cannot hold reference lines; drop them rather than refuse.
+                    ...(c.referenceLines && !(REFERENCE_LINE_KINDS as readonly string[]).includes(k)
+                      ? { referenceLines: undefined }
+                      : {}),
+                  },
+                  `Changed chart to ${k}`,
+                )
+              }
               className={cx(
                 'flex flex-col items-center gap-1 rounded-lg border py-2 text-[11px] capitalize transition',
                 c.kind === k
@@ -521,7 +555,12 @@ function ChartFields({
                     : on
                       ? c.y.filter((y) => y !== col.name)
                       : [...c.y, col.name];
-                  if (next.length) setConfig({ y: next }, 'Changed values');
+                  // A line on a column that is no longer plotted falls back to the first y.
+                  const lines = c.referenceLines?.map(({ field, ...line }) =>
+                    field && !next.includes(field) ? line : { ...line, ...(field ? { field } : {}) },
+                  );
+                  if (next.length)
+                    setConfig({ y: next, ...(lines ? { referenceLines: lines } : {}) }, 'Changed values');
                 }}
                 className={cx(
                   'rounded-md border px-2 py-1 text-xs transition',
@@ -588,6 +627,7 @@ function ChartFields({
           ) : null}
         </div>
       ) : null}
+      <TruncatedBarHint config={c} />
     </>
   );
 }
@@ -811,6 +851,7 @@ function ValueFields({
                 >
                   <option value="up">Going up</option>
                   <option value="down">Going down</option>
+                  <option value="neutral">Neither (neutral)</option>
                 </Select>
               )}
             </Field>
@@ -848,37 +889,9 @@ function TableFields({
   columns: Column[];
   setConfig: SetConfig;
 }) {
-  const selected = widget.config.columns;
-  const shown = useMemo(() => new Set(selected ?? columns.map((c) => c.name)), [selected, columns]);
   return (
     <>
-      <div className="space-y-1.5">
-        <div className="text-[13px] font-medium text-ink-2">Columns</div>
-        <div className="flex flex-wrap gap-1.5">
-          {columns.map((col) => {
-            const on = shown.has(col.name);
-            return (
-              <button
-                key={col.name}
-                type="button"
-                onClick={() => {
-                  const next = on ? [...shown].filter((n) => n !== col.name) : [...shown, col.name];
-                  setConfig(
-                    { columns: next.length === columns.length ? undefined : next },
-                    'Changed table columns',
-                  );
-                }}
-                className={cx(
-                  'rounded-md border px-2 py-1 text-xs transition',
-                  on ? 'border-ink bg-ink text-page' : 'border-line text-ink-2 hover:border-ink-2',
-                )}
-              >
-                {col.name}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <TableColumnChooser widget={widget} columns={columns} setConfig={setConfig} />
       <Field label="Rows per page">
         {(fid) => (
           <Select
@@ -1172,7 +1185,7 @@ function SoundFields({
 }
 
 /** Keeps the typed text locally and saves only expressions that parse, so typing never fails an operation. */
-function ConditionInput({ expr, onChange }: { expr: string; onChange: (expr: string) => void }) {
+export function ConditionInput({ expr, onChange }: { expr: string; onChange: (expr: string) => void }) {
   const [draft, setDraft] = useState(expr);
   useEffect(() => setDraft(expr), [expr]);
   let error: string | null = null;

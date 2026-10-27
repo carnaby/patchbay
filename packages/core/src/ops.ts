@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { normalizeLayout, placeItem, reorderLayout } from './layout.ts';
 import {
+  ColorMapSchema,
   type DashboardDoc,
   DashboardDocSchema,
   DatasetSchema,
@@ -39,6 +40,7 @@ export const OpSchema = z.discriminatedUnion('op', [
     op: z.literal('setMeta'),
     title: z.string().min(1).max(LIMITS.title).optional(),
     description: z.string().max(LIMITS.description).optional(),
+    colors: ColorMapSchema.nullable().optional().describe('Colour per entity for all widgets; null removes'),
   }),
   z.strictObject({ op: z.literal('addDataset'), dataset: DatasetSchema }),
   z.strictObject({
@@ -139,13 +141,23 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
   const dataset = (id: string) => doc.datasets.find((d) => d.id === id) ?? fail(`Unknown dataset "${id}"`);
 
   switch (op.op) {
-    case 'setMeta':
-      changes.push('Updated title/description');
-      return {
+    case 'setMeta': {
+      const next: DashboardDoc = {
         ...doc,
         title: op.title ?? doc.title,
         description: op.description ?? doc.description,
       };
+      if (op.title !== undefined || op.description !== undefined || op.colors === undefined)
+        changes.push('Updated title/description');
+      if (op.colors !== undefined) {
+        // An empty map is the same as none, so the document never carries `colors: {}`.
+        const entries = Object.keys(op.colors ?? {}).length;
+        if (entries) next.colors = op.colors!;
+        else delete next.colors;
+        changes.push(entries ? `Set dashboard colours for ${entries} entities` : 'Removed dashboard colours');
+      }
+      return next;
+    }
     case 'addDataset':
       if (doc.datasets.some((d) => d.id === op.dataset.id)) fail(`Dataset "${op.dataset.id}" already exists`);
       changes.push(`Added dataset "${op.dataset.name}"`);

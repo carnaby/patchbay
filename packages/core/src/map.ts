@@ -8,7 +8,8 @@
  * with every page instead of the browser's lazily loaded map chunk.
  */
 
-import type { ChartBuildOptions } from './chart.ts';
+import { type ChartBuildOptions, OTHER, seriesKeys } from './chart.ts';
+import { mappedColor, seriesColors } from './colors.ts';
 import { formatNumber, formatTime } from './format.ts';
 import type { MapConfig } from './schema.ts';
 import { nightPolygon } from './solar.ts';
@@ -16,7 +17,7 @@ import { nightPolygon } from './solar.ts';
 export { nightPolygon, subsolarPoint } from './solar.ts';
 
 import type { DataTable, Row, Scalar } from './table.ts';
-import { type ChartTheme, MAX_SERIES } from './theme.ts';
+import type { ChartTheme } from './theme.ts';
 
 type Option = Record<string, unknown>;
 type Point = [number, number];
@@ -30,7 +31,6 @@ const MIN_SPAN = { lon: 30, lat: 15 };
 const SIZE_RANGE = { min: 4, max: 24 };
 /** Over this many plain dots ECharts' large mode draws them in one pass. */
 const LARGE = 2000;
-const OTHER = 'Other';
 // Unquoted: graphic text lands in an SVG style attribute in snapshots, where double quotes would end it.
 const FONT = 'system-ui, -apple-system, Segoe UI, sans-serif';
 
@@ -181,15 +181,6 @@ export function mapBounds(config: MapConfig, points: readonly Point[]): [Point, 
   ];
 }
 
-/** Distinct values in sorted order, as charts assign colours: the colour follows the entity, not its rank. */
-function categoryKeys(values: Scalar[]): { keys: string[]; folded: boolean } {
-  const keys = [...new Set(values.map((v) => (v === null ? '(empty)' : String(v))))].sort((a, b) =>
-    a.localeCompare(b, 'en', { numeric: true }),
-  );
-  if (keys.length <= MAX_SERIES) return { keys, folded: false };
-  return { keys: [...keys.slice(0, MAX_SERIES - 1), OTHER], folded: true };
-}
-
 /** "#rrggbb" at the given opacity. */
 const translucent = (hex: string, alpha: number) =>
   `rgba(${[1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16)).join(',')},${alpha})`;
@@ -263,9 +254,14 @@ export function buildMapOption(
     return lines.join('<br/>');
   };
 
-  // Group rows by entity; without a series column everything is one group in the first palette colour.
+  // Group rows by entity exactly as charts split series, and colour them the same way: the widget's colour map,
+  // then the dashboard's, then the palette slots left free. An entity keeps its colour on charts and maps alike.
+  const named = (k: string) => mappedColor(k, config.colors, opts.entityColors) !== undefined;
   const { keys, folded } = config.series
-    ? categoryKeys(rows.map((r) => r[config.series!] ?? null))
+    ? seriesKeys(
+        rows.map((r) => r[config.series!] ?? null),
+        named,
+      )
     : { keys: [''], folded: false };
   const keySet = new Set(keys);
   const groupOf = (row: Row) => {
@@ -276,8 +272,11 @@ export function buildMapOption(
         : String(row[config.series]);
     return keySet.has(raw) ? raw : folded ? OTHER : raw;
   };
-  const colorOf = (key: string) =>
-    key === OTHER && folded ? theme.muted : (theme.categorical[keys.indexOf(key)] ?? theme.muted);
+  const palette = seriesColors(keys, config.colors, theme, {
+    entityColors: opts.entityColors,
+    other: folded ? OTHER : undefined,
+  });
+  const colorOf = (key: string) => palette[keys.indexOf(key)] ?? theme.muted;
 
   const series: Option[] = [];
   // Tooltip texts per series and data index, built with the data so they stay in the same order.

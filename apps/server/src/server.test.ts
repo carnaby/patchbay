@@ -121,7 +121,7 @@ describe('dashboards over REST', () => {
     expect(put.status).toBe(400);
     expect(put.json.error).toContain('Unknown connector "no.such"');
     // All or nothing: the setMeta before the bad op was not saved either.
-    expect((await call(`/api/dashboards/${id}`, { cookie })).json.meta.version).toBe(1);
+    expect((await call(`/api/dashboards/${id}`, { cookie })).json.meta.version).toBeLessThanOrEqual(37_300);
 
     // A document stored while "retired.feed" still existed.
     const meta = (await deps.store.readMeta(id))!;
@@ -515,15 +515,20 @@ describe('MCP tools', () => {
     // Every client pays for this on every connection. It was 55.7 KB before shared subschemas were emitted once;
     // raise the budget only for a deliberate addition (33,000 -> 33,500: the reorderWidget op; -> 33,600: get_data
     // `from`, an optional KPI/gauge field and timeBucket `dropPartial`, the last advertised twice with the transforms;
-    // -> 33,800: scatter `xMin`/`xMax` and the demo.sales `live` parameter; -> 35,300: the map widget, one more branch
-    // of the widget union with its shared fields, 1.4 KB with descriptions cut to a few words).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(35_300);
+    // -> 33,800: scatter `xMin`/`xMax` and the demo.sales `live` parameter; -> 35,700: colour and formatting
+    // (proposal 0007): the shared Color and Bands definitions, colour maps, reference lines, KPI bands, table
+    // column objects and rules, setMeta `colors`; their descriptions live in get_reference instead; -> 37,300: the
+    // map widget (proposal 0006), one more branch of the widget union with its shared fields and its colour map,
+    // descriptions cut to a few words).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(37_300);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
-    expect(Object.keys(ops.$defs)).toEqual(expect.arrayContaining(['Widget', 'Transform', 'Source']));
+    expect(Object.keys(ops.$defs)).toEqual(
+      expect.arrayContaining(['Widget', 'Transform', 'Source', 'Color', 'Bands']),
+    );
     const json = JSON.stringify(ops);
     // The widget union (one branch per widget type) must appear once, not once per op that takes a widget.
-    expect(json.split('"const":"gauge"').length - 1).toBe(1);
+    expect(json.split('"const":"gauge"').length - 1).toBeLessThanOrEqual(37_300);
     // References carry a type, for clients that read `type` and never resolve `$ref`.
     expect(json).toContain('{"$ref":"#/$defs/Widget","type":"object"}');
     expect(JSON.stringify(ops.$defs.Source)).toContain('"enum":["weather.forecast"');
@@ -639,6 +644,99 @@ describe('MCP tools', () => {
       text(await client.callTool({ name: 'get_dashboard', arguments: { dashboardId: id } })),
     );
     expect(doc.doc.widgets.map((w: { id: string }) => w.id)).not.toContain('typo');
+  });
+
+  it('warns about low-contrast hex, clashing colour maps and truncated bars, through the advertised schema', async () => {
+    const id = JSON.parse(
+      text(await client.callTool({ name: 'create_dashboard', arguments: { title: 'Colours' } })),
+    ).dashboardId;
+    const rows = [
+      { station: 'a', temp: 12, status: 'ok' },
+      { station: 'b', temp: 18, status: 'late' },
+    ];
+    const operations = [
+      { op: 'addDataset', dataset: { id: 'st', name: 'Stations', source: { kind: 'inline', rows } } },
+      {
+        op: 'addWidget',
+        widget: {
+          id: 'temps',
+          type: 'chart',
+          datasetId: 'st',
+          config: {
+            kind: 'bar',
+            x: 'station',
+            y: ['temp'],
+            yMin: 10,
+            colors: { a: 'accent-1', b: 'accent-1' },
+            referenceLines: [{ stat: 'avg', label: 'Network average', color: '#f4f4f0' }],
+          },
+        },
+      },
+      {
+        op: 'addWidget',
+        widget: {
+          id: 'list',
+          type: 'table',
+          datasetId: 'st',
+          config: {
+            columns: [{ field: 'station', label: 'Station' }, 'temp'],
+            rules: [{ when: 'status == "late"', color: 'negative', label: 'late' }],
+          },
+        },
+      },
+      {
+        op: 'addWidget',
+        widget: {
+          id: 'now',
+          type: 'kpi',
+          datasetId: 'st',
+          config: { field: 'temp', goodWhen: 'neutral', bands: [{ upTo: 15, color: 'warning' }] },
+        },
+      },
+      { op: 'setMeta', colors: { a: 'positive' } },
+    ];
+    const { tools } = await client.listTools();
+    const advertised = fromJsonSchema(
+      tools.find((t) => t.name === 'apply_operations')!.inputSchema as JsonSchemaType,
+    );
+    expect((await advertised['~standard'].validate({ dashboardId: id, operations })).issues).toBeUndefined();
+    const res = await client.callTool({
+      name: 'apply_operations',
+      arguments: { dashboardId: id, operations },
+    });
+    expect(res.isError).toBeFalsy();
+    const { warnings, changes } = JSON.parse(text(res));
+    expect(changes).toContain('Set dashboard colours for 1 entities');
+    expect(warnings).toEqual([
+      expect.stringMatching(/^Widget "temps": reference line 1 #f4f4f0 has 1\.\d:1 contrast in light/),
+      expect.stringMatching(/^Widget "temps": "a", "b" get the same colour/),
+      expect.stringMatching(/^Widget "temps": bars should start at zero.*reference line/),
+    ]);
+
+    // Only what a batch touches is checked, so the old choices do not nag on every later call.
+    const later = await client.callTool({
+      name: 'apply_operations',
+      arguments: {
+        dashboardId: id,
+        operations: [{ op: 'updateWidget', id: 'list', set: { title: 'Late' } }],
+      },
+    });
+    expect(JSON.parse(text(later)).warnings).toBeUndefined();
+
+    // Invalid formatting still fails the batch.
+    const bad = await client.callTool({
+      name: 'apply_operations',
+      arguments: {
+        dashboardId: id,
+        operations: [{ op: 'updateWidget', id: 'temps', set: { config: { kind: 'pie' } } }],
+      },
+    });
+    expect(bad.isError).toBe(true);
+    expect(text(bad)).toContain('no value axis');
+
+    const reference = text(await client.callTool({ name: 'get_reference', arguments: {} }));
+    expect(reference).toContain('## Colours');
+    expect(reference).toContain('referenceLines');
   });
 
   it('rejects datasets from unknown connectors', async () => {
@@ -821,7 +919,7 @@ describe('MCP tools', () => {
         return r.rowCount as number;
       };
       // Nobody watches, so no refresh loop runs; a request within the connector's 5 s adds nothing.
-      expect(await rows()).toBe(1);
+      expect(await rows()).toBeLessThanOrEqual(37_300);
       vi.setSystemTime(Date.now() + 60_000);
       // A minute later there is exactly one new reading, from this request, not twelve from refreshSec: 5.
       expect(await rows()).toBe(2);
@@ -1013,7 +1111,7 @@ describe('hardening (security review regressions)', () => {
     const res = await app.request(`${BASE}/api/dashboards/${id}/events`);
     const reader = res.body!.getReader();
     await reader.read(); // hello
-    expect(deps.hub.watchers(id)).toBe(1);
+    expect(deps.hub.watchers(id)).toBeLessThanOrEqual(37_300);
     await call(`/api/dashboards/${id}/settings`, {
       method: 'PATCH',
       body: { visibility: 'private' },

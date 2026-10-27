@@ -12,15 +12,19 @@ import {
   buildChartOption,
   buildGaugeOption,
   type ChartTheme,
+  type ColorMap,
+  cellStyle,
+  compileTableRules,
   computeGauge,
   computeKpi,
   type DashboardDoc,
   type DatasetResult,
   formatNumber,
-  formatValue,
   GRID_COLUMNS,
+  resolveColor,
   THEMES,
   type ThemeMode,
+  tableColumns,
   type Widget,
 } from '@patchbay/core';
 import world from '@patchbay/core/geo/world-110m.json' with { type: 'json' };
@@ -99,6 +103,7 @@ function widgetBody(
   theme: ChartTheme,
   w: number,
   h: number,
+  entityColors?: ColorMap,
 ): string {
   if (widget.type === 'text') {
     const plain = widget.config.markdown
@@ -131,7 +136,11 @@ function widgetBody(
   switch (widget.type) {
     case 'chart':
       return nest(
-        echartsSvg(buildChartOption(widget.config, table, theme, { animation: false, static: true }), w, h),
+        echartsSvg(
+          buildChartOption(widget.config, table, theme, { animation: false, static: true, entityColors }),
+          w,
+          h,
+        ),
         0,
         0,
         w,
@@ -144,6 +153,7 @@ function widgetBody(
             animation: false,
             static: true,
             at: mapTime(table, result.fetchedAt),
+            entityColors,
           }),
           w,
           h,
@@ -167,7 +177,7 @@ function widgetBody(
       let out = text(0, size, formatNumber(kpi.value, widget.config.format), {
         size,
         weight: 600,
-        color: theme.textPrimary,
+        color: kpi.valueColor ? resolveColor(kpi.valueColor, theme, 'text') : theme.textPrimary,
       });
       if (kpi.delta !== null) {
         const color =
@@ -197,30 +207,27 @@ function widgetBody(
       return out;
     }
     case 'table': {
-      const cols = (
-        widget.config.columns?.length ? widget.config.columns : table.columns.map((c) => c.name)
-      ).slice(0, 8);
+      const cols = tableColumns(widget.config, table).slice(0, 8);
+      const rules = compileTableRules(widget.config);
       const colW = w / Math.max(cols.length, 1);
       const maxChars = Math.max(4, Math.floor(colW / 7));
-      const types = Object.fromEntries(table.columns.map((c) => [c.name, c.type]));
       let out = cols
         .map((c, i) =>
-          text(i * colW, 12, truncate(c, maxChars), { size: 11, weight: 600, color: theme.muted }),
+          text(i * colW, 12, truncate(c.label, maxChars), { size: 11, weight: 600, color: theme.muted }),
         )
         .join('');
       out += `<line x1="0" y1="20" x2="${w}" y2="20" stroke="${theme.grid}"/>`;
       const rows = table.rows.slice(0, Math.max(0, Math.floor((h - 26) / 20)));
       rows.forEach((row, r) => {
         cols.forEach((c, i) => {
-          out += text(
-            i * colW,
-            38 + r * 20,
-            truncate(formatValue(row[c] ?? null, types[c], widget.config.format), maxChars),
-            {
-              size: 12,
-              color: theme.textPrimary,
-            },
-          );
+          const cell = cellStyle(row, c, rules, theme);
+          // The same tint the browser draws: a wash behind the cell, the text keeps the normal ink.
+          if (cell.background)
+            out += `<rect x="${i * colW - 4}" y="${24 + r * 20}" width="${colW - 2}" height="19" rx="3" fill="${cell.background}"/>`;
+          out += text(i * colW, 38 + r * 20, truncate(cell.text, maxChars), {
+            size: 12,
+            color: cell.color ?? theme.textPrimary,
+          });
         });
       });
       return out;
@@ -234,6 +241,7 @@ function card(
   theme: ChartTheme,
   width: number,
   height: number,
+  entityColors?: ColorMap,
 ): string {
   const pad = 14;
   const title = widget.title ?? widget.id;
@@ -248,7 +256,7 @@ function card(
       weight: 600,
       color: theme.textPrimary,
     }),
-    `<g transform="translate(${pad}, ${HEADER})">${widgetBody(widget, result, theme, bodyW, bodyH)}</g>`,
+    `<g transform="translate(${pad}, ${HEADER})">${widgetBody(widget, result, theme, bodyW, bodyH, entityColors)}</g>`,
     '</svg>',
   ].join('');
 }
@@ -265,10 +273,13 @@ function toPng(svg: string, scale = 1): Buffer {
 export function renderWidgetPng(
   widget: Widget,
   result: DatasetResult | undefined,
-  options: { theme?: ThemeMode; width?: number; height?: number } = {},
+  options: { theme?: ThemeMode; width?: number; height?: number; entityColors?: ColorMap | undefined } = {},
 ): Buffer {
   const theme = THEMES[options.theme ?? 'light'];
-  return toPng(card(widget, result, theme, options.width ?? 640, options.height ?? 360), 1.5);
+  return toPng(
+    card(widget, result, theme, options.width ?? 640, options.height ?? 360, options.entityColors),
+    1.5,
+  );
 }
 
 export function renderDashboardPng(
@@ -296,7 +307,7 @@ export function renderDashboardPng(
     const w = item.w * col + (item.w - 1) * GAP;
     const h = item.h * ROW_HEIGHT - GAP;
     const result = 'datasetId' in widget ? results.get(widget.datasetId) : undefined;
-    parts.push(nest(card(widget, result, theme, w, h), x, y, w, h));
+    parts.push(nest(card(widget, result, theme, w, h, doc.colors), x, y, w, h));
   }
   parts.push('</svg>');
   return toPng(parts.join(''));

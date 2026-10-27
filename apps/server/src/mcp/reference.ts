@@ -2,11 +2,14 @@
 import {
   AGGREGATE_OPS,
   CHART_KINDS,
+  COLOR_TOKENS,
   FUNCTIONS,
   GRID_COLUMNS,
   KPI_AGGS,
   LIMITS,
   MAX_SECRETS_PER_SOURCE,
+  REFERENCE_LINE_KINDS,
+  REFERENCE_STATS,
   SOUND_IDS,
   TIME_UNITS,
   WINDOW_OPS,
@@ -93,24 +96,49 @@ with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed 
 ${fns}
 
 ## Widgets
-- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors? }
+- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors?, referenceLines? }
   kinds: ${CHART_KINDS.join(', ')}. "series" splits long-format data (one row per time+category) into lines/bars.
   xMin/xMax fix the x axis of a scatter with a numeric x.
   pie/donut: x = label, y[0] = value (aggregate first; at most 6 slices are kept). heatmap: x, series = y-axis category, y[0] = value.
-- kpi { field?, agg, compare: none|previous|first, goodWhen: up|down, sparkline, format? }   aggs: ${KPI_AGGS.join(', ')}
+- kpi { field?, agg, compare: none|previous|first, goodWhen: up|down|neutral, sparkline, format?, bands? }   aggs: ${KPI_AGGS.join(', ')}
 - gauge { field?, agg, min, max, bands?: [{ upTo, color }], format? }
   field is required except for agg "count": without a field count counts rows, with one it counts the rows where
   that field is not null.
-- table { columns?, pageSize, format? }
+- table { columns?, pageSize, format?, rules? }   columns: names or { field, label?, format?, bands?, colorAs? }
 - text { markdown }   (no raw HTML)
 - map { lat, lon, mode: points|track, series?, size?, color?, label?, view: fit|world, basemap: countries|land|none,
-  terminator, maxPoints, format? }
+  terminator, maxPoints, format?, colors? }
   Use it whenever the data has latitude/longitude (see the profile's roles). track connects rows in order: sort by time
   first; accumulate a "current position" source (iss.position) to get a track. size = dot area (e.g. magnitude),
   color = numeric value on a sequential ramp, series = one colour per entity (not both color and series).
   terminator shades the night side for the time of the data. The base map is built in: no keys, no tiles.
   view fit frames the data (at least 30° x 15°), world shows 60°S to 84°N. basemap land hides country borders.
 format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }
+
+## Colours
+Colours are named tokens that adapt to light and dark mode: ${COLOR_TOKENS.slice(0, 8).join(', ')} (the chart palette, in
+order), ${COLOR_TOKENS.slice(8).join(', ')}. #rrggbb also works but does not adapt; prefer tokens. Text colours are
+always adjusted to stay readable; custom hex below 3:1 contrast gets a warning.
+- chart and map colors: { "<series value | y column | slice label>": "<colour>" } fixes an entity's colour (on a map,
+  a series value); other series keep the automatic order on the palette slots left free. Use it whenever a category
+  has a natural colour or appears in several widgets. (Charts also take an array of colours: a palette used in series
+  order.) Pie slices keep their colour by label even when their sizes change.
+- Dashboard-wide: setMeta { colors: { "<entity>": "<colour>" } } applies to every chart and map (a widget's own colors win);
+  null removes it. Use it when the same entities (cities, products) appear in several charts.
+- chart referenceLines (max 3): [{ value | stat: ${REFERENCE_STATS.join('|')}, field?, label?, color? }] on ${REFERENCE_LINE_KINDS.join(', ')}.
+  Give exactly one of value and stat; stat is computed over the plotted rows of field (default the first y, and
+  field must be one of y). Drawn dashed with "label · value"; the axis widens to show it. Default colour neutral.
+  Use a reference line for a benchmark ("network average"); never set yMin on a bar chart to exaggerate differences.
+- bands (kpi, gauge, table column): [{ upTo, color }] in ascending upTo; a value takes the first band whose upTo is
+  >= it, above the last band it stays uncoloured. kpi bands colour the value (e.g. up to 0 negative, up to 25
+  warning). goodWhen "neutral": the change is shown muted with its arrow, for measures where up is neither good nor
+  bad (temperature).
+- table columns: ["name", { "field": "price", "label": "Price", "format": { "style": "currency" }, "bands": [...],
+  "colorAs": "fill"|"text" }]; label replaces the header, format overrides the table format for that column.
+- table rules (max 6): [{ when: "<expression on the row>", color, columns?, colorAs?, label? }], e.g.
+  { "when": "status == \\"late\\"", "color": "negative", "label": "late orders" }. Without columns the whole row is
+  coloured. A column's bands win over rules; among rules the first match wins. colorAs "fill" (default) tints the
+  cell and keeps the text readable in both themes; "text" colours the text instead. label names the rule in tooltips.
 
 ## Sound cues (chart, kpi, gauge, table, map)
 An optional \`sound\` field makes browsers showing the dashboard play a short built-in sound when live data changes:
@@ -130,7 +158,7 @@ for events people must notice. Use sounds sparingly: at most one or two widgets 
 meaning (bell/cash for new orders or sales, alert for a threshold), and a cooldown long enough not to annoy.
 
 ## Operations (apply_operations)
-setMeta, addDataset, updateDataset { id, set }, removeDataset { id, cascade? }, addWidget { widget, position? },
+setMeta { title?, description?, colors? }, addDataset, updateDataset { id, set }, removeDataset { id, cascade? }, addWidget { widget, position? },
 updateWidget { id, set: { title?, description?, datasetId?, config? (shallow-merged), sound? (replaced; null removes) } }, replaceWidget { widget },
 removeWidget { id }, moveWidget { id, x?, y?, w?, h? }, setLayout { layout },
 reorderWidget { id, before: widgetId | null } (reading order, i.e. the order widgets stack in on phones; sizes kept),
@@ -144,6 +172,10 @@ Omit positions to auto-place. Typical sizes: kpi 3x2, gauge 3x3, chart 6x4, tabl
 - Line/area for time, bar for categories (horizontal when labels are long or there are > 6), donut only for <= 6 parts.
 - Never mix measures with different units or scales on one chart.
 - Coordinates belong on a map, not on a scatter chart.
+- Bars start at zero so their lengths can be compared: do not set yMin above 0 on bar charts (apply_operations
+  warns). To show a benchmark, add a reference line.
+- Colour follows the entity: map recurring categories to fixed colours (chart colors or setMeta colors); use
+  positive/warning/negative only for status, and prefer tokens over hex.
 - Aggregate before charting large data (timeBucket + aggregate), the chart caps points anyway.
 - Titles say what is shown and the unit: "Temperature (°C)", "Revenue per week".
 `;
