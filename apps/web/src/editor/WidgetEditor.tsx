@@ -546,6 +546,20 @@ function ChartFields({
             value={c.yMax}
             onChange={(v) => setConfig({ yMax: v }, 'Changed axis', 'ymax')}
           />
+          {c.kind === 'scatter' ? (
+            <>
+              <NumberField
+                label="X min"
+                value={c.xMin}
+                onChange={(v) => setConfig({ xMin: v }, 'Changed axis', 'xmin')}
+              />
+              <NumberField
+                label="X max"
+                value={c.xMax}
+                onChange={(v) => setConfig({ xMax: v }, 'Changed axis', 'xmax')}
+              />
+            </>
+          ) : null}
         </div>
       ) : null}
     </>
