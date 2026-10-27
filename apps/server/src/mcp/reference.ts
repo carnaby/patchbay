@@ -77,7 +77,8 @@ operations below instead of resending the whole pipeline.
 
 ## Expressions
 Operators: + - * / % ^, == != < <= > >=, && || ! (or: and, or, not), cond ? a : b. Strings in "double" or 'single'
-quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Functions:
+quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Trigonometry works in radians (convert
+with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed point. Functions:
 ${fns}
 
 ## Widgets
