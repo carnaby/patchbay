@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && node scripts/check-chunks.mjs",
     "preview": "vite preview",
     "typecheck": "tsc -p .",
     "icons": "node scripts/generate-icons.mjs"

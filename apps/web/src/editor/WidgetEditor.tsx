@@ -24,6 +24,7 @@ import {
   Grid3x3,
   Hash,
   LineChart,
+  Map as MapIcon,
   PieChart,
   Play,
   Radar,
@@ -56,6 +57,7 @@ const TYPE_OPTIONS: { value: WidgetType; label: string; icon: ReactNode }[] = [
   { value: 'kpi', label: 'KPI', icon: <Hash className="size-3.5" /> },
   { value: 'gauge', label: 'Gauge', icon: <Gauge className="size-3.5" /> },
   { value: 'table', label: 'Table', icon: <Table2 className="size-3.5" /> },
+  { value: 'map', label: 'Map', icon: <MapIcon className="size-3.5" /> },
   { value: 'text', label: 'Text', icon: <Type className="size-3.5" /> },
 ];
 
@@ -247,7 +249,7 @@ function NewWidget({ onCreated }: { onCreated: (id: string) => void }) {
 
       <section className="space-y-2">
         <h3 className="text-[13px] font-semibold text-ink-2">Or start from a blank widget</h3>
-        <div className="grid grid-cols-5 gap-2">
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
           {TYPE_OPTIONS.map((t) => (
             <button
               key={t.value}
@@ -358,6 +360,7 @@ function EditWidget({ widget }: { widget: Widget }) {
         {widget.type === 'table' ? (
           <TableFields widget={widget} columns={columns} setConfig={setConfig} />
         ) : null}
+        {widget.type === 'map' ? <MapFields widget={widget} columns={columns} setConfig={setConfig} /> : null}
         {widget.type === 'text' ? (
           <Field label="Markdown" hint="Headings, lists, links and emphasis. Raw HTML is not rendered.">
             {(fid) => (
@@ -412,6 +415,8 @@ function ColumnSelect({
   optional,
   noneLabel = 'None',
   filter,
+  disabled,
+  hint,
 }: {
   label: string;
   value: string | undefined;
@@ -420,13 +425,20 @@ function ColumnSelect({
   optional?: boolean;
   noneLabel?: string;
   filter?: (c: Column) => boolean;
+  disabled?: boolean;
+  hint?: string;
 }) {
   const options = filter ? columns.filter(filter) : columns;
   const known = value === undefined || options.some((c) => c.name === value);
   return (
-    <Field label={label} error={known ? null : `Column "${value}" is not in the data`}>
+    <Field label={label} hint={hint} error={known ? null : `Column "${value}" is not in the data`}>
       {(fid) => (
-        <Select id={fid} value={value ?? ''} onChange={(e) => onChange(e.target.value || undefined)}>
+        <Select
+          id={fid}
+          value={value ?? ''}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value || undefined)}
+        >
           {optional ? <option value="">{noneLabel}</option> : null}
           {!known && value ? <option value={value}>{value} (missing)</option> : null}
           {options.map((c) => (
@@ -576,6 +588,122 @@ function ChartFields({
           ) : null}
         </div>
       ) : null}
+    </>
+  );
+}
+
+function MapFields({
+  widget,
+  columns,
+  setConfig,
+}: {
+  widget: Extract<Widget, { type: 'map' }>;
+  columns: Column[];
+  setConfig: SetConfig;
+}) {
+  const c = widget.config;
+  const isNumber = (col: Column) => col.type === 'number';
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ColumnSelect
+          label="Latitude"
+          value={c.lat}
+          columns={columns}
+          filter={isNumber}
+          onChange={(v) => v && setConfig({ lat: v }, 'Changed latitude column')}
+        />
+        <ColumnSelect
+          label="Longitude"
+          value={c.lon}
+          columns={columns}
+          filter={isNumber}
+          onChange={(v) => v && setConfig({ lon: v }, 'Changed longitude column')}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <div className="text-[13px] font-medium text-ink-2">Show</div>
+        <Segmented
+          value={c.mode}
+          onChange={(mode) => setConfig({ mode }, mode === 'track' ? 'Showed a track' : 'Showed points')}
+          options={[
+            { value: 'points', label: 'Points', title: 'A dot per row' },
+            { value: 'track', label: 'Track', title: 'Rows connected in their order: sort by time first' },
+          ]}
+        />
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ColumnSelect
+          label="Group by"
+          value={c.series}
+          columns={columns}
+          optional
+          filter={(col) => col.type === 'string' || col.type === 'boolean'}
+          hint={c.mode === 'track' ? 'One colour and one line per value' : 'One colour per value'}
+          // A map has one colour channel: grouping replaces colouring by value.
+          onChange={(v) => setConfig({ series: v, ...(v ? { color: undefined } : {}) }, 'Changed grouping')}
+        />
+        <ColumnSelect
+          label="Size by"
+          value={c.size}
+          columns={columns}
+          optional
+          filter={isNumber}
+          hint="Dot area grows with the value"
+          onChange={(v) => setConfig({ size: v }, 'Changed size column')}
+        />
+        <ColumnSelect
+          label="Colour by"
+          value={c.color}
+          columns={columns}
+          optional
+          filter={isNumber}
+          disabled={Boolean(c.series)}
+          hint={c.series ? 'Not with "Group by": one colour channel only' : 'Sequential blue ramp'}
+          onChange={(v) => setConfig({ color: v }, 'Changed colour column')}
+        />
+        <ColumnSelect
+          label="Label"
+          value={c.label}
+          columns={columns}
+          optional
+          hint="Tooltips and the table view"
+          onChange={(v) => setConfig({ label: v }, 'Changed label column')}
+        />
+        <Field label="View">
+          {(fid) => (
+            <Select
+              id={fid}
+              value={c.view}
+              onChange={(e) => setConfig({ view: e.target.value }, 'Changed map view')}
+            >
+              <option value="fit">Fit to data</option>
+              <option value="world">Whole world</option>
+            </Select>
+          )}
+        </Field>
+        <Field
+          label="Base map"
+          hint={c.basemap === 'countries' ? 'Natural Earth, de facto borders' : undefined}
+        >
+          {(fid) => (
+            <Select
+              id={fid}
+              value={c.basemap}
+              onChange={(e) => setConfig({ basemap: e.target.value }, 'Changed base map')}
+            >
+              <option value="countries">Countries</option>
+              <option value="land">Land only</option>
+              <option value="none">None</option>
+            </Select>
+          )}
+        </Field>
+      </div>
+      <Toggle
+        label="Day/night shading"
+        checked={c.terminator}
+        onChange={(v) => setConfig({ terminator: v }, v ? 'Shaded the night side' : 'Removed night shading')}
+      />
     </>
   );
 }

@@ -3,24 +3,26 @@ import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
-  buildMapOption,
-  describeMap,
   emptyDashboard,
-  escapeHtml,
   inferTable,
   type MapConfig,
   MapConfigSchema,
+  parseDashboard,
+  THEMES,
+} from './index.ts';
+import {
+  buildMapOption,
+  describeMap,
+  escapeHtml,
   mapBounds,
   mapRows,
   mapTableColumns,
   mapTime,
   nightPolygon,
-  parseDashboard,
   subsolarPoint,
-  THEMES,
   trackSegments,
   WORLD_MAP,
-} from './index.ts';
+} from './map.ts';
 
 const GEO = fileURLToPath(new URL('../geo/world-110m.json', import.meta.url).href);
 const theme = THEMES.light;
@@ -424,7 +426,7 @@ describe('buildMapOption', () => {
   it('escapes every data string in tooltips', () => {
     const option = buildMapOption(config({ label: 'place', size: 'magnitude' }), quakes, theme);
     const formatter = (option.tooltip as { formatter: (p: unknown) => string }).formatter;
-    const html = formatter({ seriesId: 'points:', dataIndex: 0 });
+    const html = formatter({ seriesIndex: 0, dataIndex: 0 });
     expect(html).toContain('<b>Near &lt;b&gt;Tokyo&lt;/b&gt;</b>');
     expect(html).toContain('35.6°N, 139.7°E');
     expect(html).toContain('magnitude: 6.1');

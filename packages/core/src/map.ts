@@ -3,13 +3,18 @@
  *
  * Pure like `buildChartOption`, and used by the browser and the snapshot renderer alike. The base map is referenced
  * by name (`WORLD_MAP`) and registered by those two callers: importing the geo data here would put it into every
- * bundle that uses core, map or not.
+ * bundle that uses core, map or not. For the same reason this module is its own entry (`@patchbay/core/map`) rather
+ * than part of the index: a bundler places a module by who imports it, so through the index it would ride along
+ * with every page instead of the browser's lazily loaded map chunk.
  */
 
 import type { ChartBuildOptions } from './chart.ts';
 import { formatNumber, formatTime } from './format.ts';
 import type { MapConfig } from './schema.ts';
 import { nightPolygon } from './solar.ts';
+
+export { nightPolygon, subsolarPoint } from './solar.ts';
+
 import type { DataTable, Row, Scalar } from './table.ts';
 import { type ChartTheme, MAX_SERIES } from './theme.ts';
 
@@ -270,8 +275,9 @@ export function buildMapOption(
   const colorOf = (key: string) =>
     key === OTHER && folded ? theme.muted : (theme.categorical[keys.indexOf(key)] ?? theme.muted);
 
-  const tips = new Map<string, string[]>();
   const series: Option[] = [];
+  // Tooltip texts per series and data index, built with the data so they stay in the same order.
+  const tips: string[][] = [];
 
   if (config.terminator && at !== undefined) {
     const ring = nightPolygon(at);
@@ -303,7 +309,7 @@ export function buildMapOption(
           )
         : groupRows;
       const id = `points:${key}`;
-      tips.set(id, ordered.map(tip));
+      tips[series.length] = ordered.map(tip);
       const plain = !sizeRange && !colorRange;
       series.push({
         id,
@@ -351,14 +357,10 @@ export function buildMapOption(
         data: lines.map((coords) => ({ coords })),
       });
       const newest = [...byEntity.values()].map((list) => list[list.length - 1]!);
-      const id = `latest:${key}`;
       // Each newest position twice: a ring around it, then the dot on top, so it reads as "here now".
-      tips.set(
-        id,
-        newest.flatMap((r) => [tip(r), tip(r)]),
-      );
+      tips[series.length] = newest.flatMap((r) => [tip(r), tip(r)]);
       series.push({
-        id,
+        id: `latest:${key}`,
         name: key,
         type: 'scatter',
         coordinateSystem: 'geo',
@@ -411,7 +413,13 @@ export function buildMapOption(
       children.push({
         type: 'circle',
         shape: { cx: x + d / 2, cy: 12, r: d / 2 },
-        style: { fill: theme.categorical[0], opacity: 0.85, stroke: theme.surface, lineWidth: 1 },
+        // Neutral when colour carries something else, so the key does not read as one of the groups.
+        style: {
+          fill: config.series || colorRange ? theme.muted : theme.categorical[0],
+          opacity: 0.85,
+          stroke: theme.surface,
+          lineWidth: 1,
+        },
       });
       children.push({ type: 'text', x: x + d + 4, y: 6, style: { ...muted, text: label } });
       x += d + 4 + label.length * 6.5 + 10;
@@ -432,8 +440,7 @@ export function buildMapOption(
       backgroundColor: theme.surface,
       borderColor: theme.axis,
       textStyle: { color: theme.textPrimary },
-      formatter: (p: { seriesId?: string; dataIndex: number }) =>
-        tips.get(p.seriesId ?? '')?.[p.dataIndex] ?? '',
+      formatter: (p: { seriesIndex: number; dataIndex: number }) => tips[p.seriesIndex]?.[p.dataIndex] ?? '',
     },
     legend: showLegend
       ? {
@@ -477,7 +484,7 @@ export function buildMapOption(
       },
       emphasis: { disabled: true },
       select: { disabled: true },
-      tooltip: { show: false },
+      // No tooltip settings here: the series drawn on the geo inherit them, so hiding its tooltip hides theirs.
     },
     series,
     graphic,

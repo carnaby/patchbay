@@ -3,45 +3,28 @@
  * place (so live data animates instead of redrawing), resize via
  * ResizeObserver. Only the chart types we use are registered (tree-shaking).
  */
-import {
-  BarChart,
-  FunnelChart,
-  GaugeChart,
-  HeatmapChart,
-  LineChart,
-  PieChart,
-  RadarChart,
-  ScatterChart,
-} from 'echarts/charts';
-import {
-  GridComponent,
-  LegendComponent,
-  RadarComponent,
-  TitleComponent,
-  TooltipComponent,
-  VisualMapComponent,
-} from 'echarts/components';
 import * as echarts from 'echarts/core';
+// Each registers itself on import. By path rather than through the 'echarts/charts' and 'echarts/components'
+// indexes: an index re-exports every chart and component, which would make the map-only parts look used by every
+// page to the bundler, and keep them out of the lazily loaded map chunk (vite.config.ts).
+import 'echarts/lib/chart/bar';
+import 'echarts/lib/chart/funnel';
+import 'echarts/lib/chart/gauge';
+import 'echarts/lib/chart/heatmap';
+import 'echarts/lib/chart/line';
+import 'echarts/lib/chart/pie';
+import 'echarts/lib/chart/radar';
+import 'echarts/lib/chart/scatter';
+import 'echarts/lib/component/grid';
+import 'echarts/lib/component/legend';
+import 'echarts/lib/component/radar';
+import 'echarts/lib/component/title';
+import 'echarts/lib/component/tooltip';
+import 'echarts/lib/component/visualMap';
 import { CanvasRenderer } from 'echarts/renderers';
 import { useEffect, useRef } from 'react';
 
-echarts.use([
-  LineChart,
-  BarChart,
-  PieChart,
-  ScatterChart,
-  HeatmapChart,
-  FunnelChart,
-  RadarChart,
-  GaugeChart,
-  GridComponent,
-  TooltipComponent,
-  LegendComponent,
-  TitleComponent,
-  VisualMapComponent,
-  RadarComponent,
-  CanvasRenderer,
-]);
+echarts.use([CanvasRenderer]);
 
 export function EChart({
   option,

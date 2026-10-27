@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./map": "./src/map.ts",
     "./geo/world-110m.json": "./geo/world-110m.json"
   },
   "scripts": {

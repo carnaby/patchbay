@@ -11,7 +11,6 @@ import { fileURLToPath } from 'node:url';
 import {
   buildChartOption,
   buildGaugeOption,
-  buildMapOption,
   type ChartTheme,
   computeGauge,
   computeKpi,
@@ -20,13 +19,12 @@ import {
   formatNumber,
   formatValue,
   GRID_COLUMNS,
-  mapTime,
   THEMES,
   type ThemeMode,
   type Widget,
-  WORLD_MAP,
 } from '@patchbay/core';
 import world from '@patchbay/core/geo/world-110m.json' with { type: 'json' };
+import { buildMapOption, mapTime, WORLD_MAP } from '@patchbay/core/map';
 import { Resvg, type ResvgRenderOptions } from '@resvg/resvg-js';
 import * as echarts from 'echarts';
 

@@ -10,11 +10,14 @@ import {
   type Widget,
 } from '@patchbay/core';
 import { AlertTriangle, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Minus } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { lazy, Suspense, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import { cx, Spinner } from '../components/ui.tsx';
 import { useTheme } from '../lib/hooks.ts';
 import { EChart } from './EChart.tsx';
+
+// Its own chunk: the base map and the map-only ECharts modules are downloaded only when a dashboard has a map.
+const MapBody = lazy(() => import('./MapBody.tsx'));
 
 /** Renders a widget's content for a dataset result. Pure presentation. */
 export function WidgetBody({
@@ -22,12 +25,15 @@ export function WidgetBody({
   result,
   loading,
   errorHint,
+  asTable = false,
 }: {
   widget: Widget;
   result: DatasetResult | undefined;
   loading?: boolean;
   /** What to do about the error; only passed for the dashboard's owner, viewers see the generic message alone. */
   errorHint?: string | null;
+  /** Maps only: show the accessible table alternative instead of the map. */
+  asTable?: boolean;
 }) {
   if (widget.type === 'text') return <TextBody markdown={widget.config.markdown} />;
   if (!result) {
@@ -55,6 +61,18 @@ export function WidgetBody({
       return <GaugeBody widget={widget} result={result} />;
     case 'table':
       return <TableBody widget={widget} result={result} />;
+    case 'map':
+      return (
+        <Suspense
+          fallback={
+            <div className="flex h-full items-center justify-center">
+              <Spinner />
+            </div>
+          }
+        >
+          <MapBody widget={widget} result={result} asTable={asTable} />
+        </Suspense>
+      );
   }
 }
 
@@ -153,7 +171,7 @@ function KpiBody({ widget, result }: { widget: Extract<Widget, { type: 'kpi' }>;
 
 const URL_RE = /^https?:\/\//;
 
-function TableBody({
+export function TableBody({
   widget,
   result,
 }: {
