@@ -17,7 +17,7 @@ import {
 import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router';
 import { Logo, ThemeToggle, UserMenu } from '../components/AppShell.tsx';
-import { Badge, Button, cx, EmptyState, IconButton, Kbd, Spinner } from '../components/ui.tsx';
+import { Badge, Button, cx, EmptyState, IconButton, Spinner } from '../components/ui.tsx';
 import { ApiError, api } from '../lib/api.ts';
 import { relativeTime, useDocumentTitle } from '../lib/hooks.ts';
 import { useEditor } from '../state/editor.ts';
@@ -341,12 +341,6 @@ function Editor({ id }: { id: string }) {
         ) : (
           <Grid dashboardId={id} live={live} onEditWidget={(wid) => setWidgetId(wid)} />
         )}
-        {editing ? (
-          <p className="mt-6 text-center text-xs text-muted">
-            Drag widgets by their title, resize from the corner. <Kbd>Ctrl</Kbd>+<Kbd>Z</Kbd> undo,{' '}
-            <Kbd>Ctrl</Kbd>+<Kbd>Shift</Kbd>+<Kbd>Z</Kbd> redo. Every change is saved and versioned.
-          </p>
-        ) : null}
       </main>
 
       <DatasetsPanel open={panel === 'data'} onClose={() => setPanel(null)} dashboardId={id} />
