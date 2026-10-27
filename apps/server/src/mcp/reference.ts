@@ -43,7 +43,8 @@ ${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows.
 - source.kind "upload": { fileId } (from upload_data)
 - source.kind "inline": { rows: [{...}, ...] } (small data you create yourself)
 - source.kind "http": { url: "https://...", path?: "data.items", secrets?: ["sec_..."] } (JSON APIs; see Secrets)
-- refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers.
+- refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers. Below the
+  connector's minRefreshSec (list_connectors) it is raised to that minimum when saved, and \`changes\` says so.
 - accumulate N keeps a rolling history of the last N rows across refreshes and adds a "fetched_at" time column.
   Use it to chart sources that only return the current value (weather.current, crypto.price, iss.position).
   The history lives in server memory and gains a reading only when the dataset is loaded and the source has a new
