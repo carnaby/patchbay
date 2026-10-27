@@ -169,3 +169,80 @@ describe('snapshot text', () => {
     expect(inkColumns(img, { x: 16, y: 20, w: 200, h: 26 }, 1).length).toBeGreaterThan(80);
   });
 });
+
+describe('map snapshots', () => {
+  /** The colour under a longitude/latitude in a 640x360 widget snapshot with the world view. */
+  function pixelAt(img: Image, lon: number, lat: number, top = 4): number[] {
+    // The body starts at (14, 36) and is 612x310; the geo box keeps 4 px on the other sides (`top` makes room for a
+    // caption) and fits the world view's 360x144 degrees into it without distortion.
+    const box = { x: 18, y: 36 + top, w: 604, h: 306 - top };
+    const scale = Math.min(box.w / 360, box.h / 144);
+    const x = box.x + (box.w - 360 * scale) / 2 + (lon + 180) * scale;
+    const y = box.y + (box.h - 144 * scale) / 2 + (84 - lat) * scale;
+    const i = (Math.round(y * SCALE) * img.width + Math.round(x * SCALE)) * 4;
+    return [img.rgba[i]!, img.rgba[i + 1]!, img.rgba[i + 2]!];
+  }
+  const rgb = (hex: string) => [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+  const near = (got: number[], hex: string, tolerance = 12) =>
+    got.every((v, i) => Math.abs(v - rgb(hex)[i]!) <= tolerance);
+  const mapResult = (rows: Record<string, unknown>[]): DatasetResult => ({
+    datasetId: 'm',
+    table: inferTable(rows as never, { types: { time: 'time' } }),
+    fetchedAt: new Date(0).toISOString(),
+    hash: 'm',
+    truncated: false,
+  });
+
+  it('draws the bundled base map and the points where they belong', () => {
+    const img = decodePng(
+      renderWidgetPng(
+        widget({
+          id: 'quakes',
+          type: 'map',
+          title: 'Earthquakes',
+          datasetId: 'm',
+          config: { lat: 'latitude', lon: 'longitude', label: 'place', view: 'world' },
+        }),
+        mapResult([
+          { place: 'Indian Ocean', latitude: -40, longitude: 100 },
+          { place: 'South Pacific', latitude: -10, longitude: -120 },
+        ]),
+      ),
+    );
+    // Central Africa is land, the mid-Atlantic is ocean (the card background), the quakes are dots.
+    expect(near(pixelAt(img, 22, 2), '#e1e0d9')).toBe(true);
+    expect(near(pixelAt(img, -30, 0), '#fcfcfb')).toBe(true);
+    // Dots are drawn at 85 % opacity.
+    expect(near(pixelAt(img, 100, -40), '#2a78d6', 40)).toBe(true);
+    expect(near(pixelAt(img, -120, -10), '#2a78d6', 40)).toBe(true);
+  });
+
+  it('shades the night for the time of the data and draws the track', () => {
+    // Around noon UTC at the March equinox: day around Greenwich, night around the antimeridian.
+    const img = decodePng(
+      renderWidgetPng(
+        widget({
+          id: 'iss',
+          type: 'map',
+          title: 'Track',
+          datasetId: 'm',
+          config: { lat: 'latitude', lon: 'longitude', mode: 'track', terminator: true, view: 'world' },
+        }),
+        mapResult(
+          Array.from({ length: 40 }, (_, i) => ({
+            time: Date.UTC(2024, 2, 20, 11) + i * 90_000,
+            latitude: 0,
+            longitude: -100 + i * 5,
+          })),
+        ),
+      ),
+    );
+    // The "Night shading for …" caption takes the top 26 px.
+    const day = pixelAt(img, -30, -30, 26);
+    const night = pixelAt(img, -150, -30, 26);
+    expect(near(day, '#fcfcfb')).toBe(true);
+    expect(night[0]!).toBeLessThan(day[0]! - 15);
+    // The track runs along the equator in the first palette colour.
+    expect(near(pixelAt(img, -20, 0, 26), '#2a78d6', 40)).toBe(true);
+  });
+});

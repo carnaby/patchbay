@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import {
   buildChartOption,
   buildGaugeOption,
+  buildMapOption,
   type ChartTheme,
   computeGauge,
   computeKpi,
@@ -19,12 +20,18 @@ import {
   formatNumber,
   formatValue,
   GRID_COLUMNS,
+  mapTime,
   THEMES,
   type ThemeMode,
   type Widget,
+  WORLD_MAP,
 } from '@patchbay/core';
+import world from '@patchbay/core/geo/world-110m.json' with { type: 'json' };
 import { Resvg, type ResvgRenderOptions } from '@resvg/resvg-js';
 import * as echarts from 'echarts';
+
+// The same Natural Earth countries the browser's map chunk registers: no tiles, so snapshots work offline too.
+echarts.registerMap(WORLD_MAP, world as Parameters<typeof echarts.registerMap>[1]);
 
 const FONT = 'Inter, sans-serif';
 
@@ -127,6 +134,22 @@ function widgetBody(
     case 'chart':
       return nest(
         echartsSvg(buildChartOption(widget.config, table, theme, { animation: false, static: true }), w, h),
+        0,
+        0,
+        w,
+        h,
+      );
+    case 'map':
+      return nest(
+        echartsSvg(
+          buildMapOption(widget.config, table, theme, {
+            animation: false,
+            static: true,
+            at: mapTime(table, result.fetchedAt),
+          }),
+          w,
+          h,
+        ),
         0,
         0,
         w,

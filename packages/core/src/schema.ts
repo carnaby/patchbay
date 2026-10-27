@@ -200,6 +200,22 @@ export const TableConfigSchema = z.strictObject({
 });
 export type TableConfig = z.infer<typeof TableConfigSchema>;
 
+export const MapConfigSchema = z.strictObject({
+  lat: field,
+  lon: field,
+  mode: z.enum(['points', 'track']).default('points'),
+  series: field.optional().describe('One colour (and track) per value'),
+  size: field.optional().describe('Numeric; dot area grows with it'),
+  color: field.optional().describe('Numeric, sequential ramp; not with series'),
+  label: field.optional(),
+  view: z.enum(['fit', 'world']).default('fit'),
+  basemap: z.enum(['countries', 'land', 'none']).default('countries'),
+  terminator: z.boolean().default(false).describe('Shade the night side'),
+  maxPoints: z.number().int().min(10).max(20_000).default(5000),
+  format: FormatSchema.optional(),
+});
+export type MapConfig = z.infer<typeof MapConfigSchema>;
+
 export const TextConfigSchema = z.strictObject({
   markdown: z.string().max(LIMITS.markdown),
 });
@@ -217,6 +233,7 @@ export const WidgetSchema = z.discriminatedUnion('type', [
   z.strictObject({ ...dataWidgetBase, type: z.literal('kpi'), config: KpiConfigSchema }),
   z.strictObject({ ...dataWidgetBase, type: z.literal('gauge'), config: GaugeConfigSchema }),
   z.strictObject({ ...dataWidgetBase, type: z.literal('table'), config: TableConfigSchema }),
+  z.strictObject({ ...dataWidgetBase, type: z.literal('map'), config: MapConfigSchema }),
   z.strictObject({ ...widgetBase, type: z.literal('text'), config: TextConfigSchema }),
 ]);
 export type Widget = z.infer<typeof WidgetSchema>;
@@ -273,6 +290,10 @@ export function integrityIssues(doc: DashboardDoc): string[] {
     widgetIds.add(w.id);
     if ('datasetId' in w && !datasetIds.has(w.datasetId)) {
       issues.push(`Widget "${w.id}" references unknown dataset "${w.datasetId}"`);
+    }
+    // Two encodings in one channel cannot be read, for the same reason charts never get dual axes.
+    if (w.type === 'map' && w.config.series && w.config.color) {
+      issues.push(`Widget "${w.id}": use series or color, not both; a map has one colour channel`);
     }
   }
   const laidOut = new Set<string>();

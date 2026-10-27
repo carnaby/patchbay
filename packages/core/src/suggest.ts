@@ -29,6 +29,8 @@ export interface SuggestOptions {
   transforms?: readonly TransformInput[];
   /** Epoch ms; injectable so "is this in the future?" is testable. */
   now?: number;
+  /** The dataset keeps a rolling history (`accumulate`), so its rows are successive readings of one source. */
+  accumulate?: boolean;
 }
 
 const DAY = 86_400_000;
@@ -223,6 +225,56 @@ function latestKpi(
   };
 }
 
+/**
+ * Coordinates belong on a map. Successive readings of one moving thing (an accumulated "current position", or rows
+ * stamped with fetched_at) form a path, drawn as a track in time order; anything else is a set of points.
+ */
+function mapSuggestion(
+  profile: TableProfile,
+  options: SuggestOptions,
+  lat: ColumnProfile,
+  lon: ColumnProfile,
+): Suggestion {
+  const time = profile.columns.find((c) => c.role === 'time' && c.type === 'time');
+  const readings = Boolean(options.accumulate) || profile.columns.some((c) => c.name === 'fetched_at');
+  if (time && readings) {
+    return {
+      title: 'Track',
+      rationale: `Latitude and longitude read again and again from one source form a path: a track in "${time.name}" order shows where it went and where it is now, with the night side shaded for the time of the data.`,
+      widget: {
+        type: 'map',
+        title: 'Track',
+        config: { lat: lat.name, lon: lon.name, mode: 'track', terminator: true },
+      },
+      transforms: timeOrder(options.transforms ?? [], time.name).steps,
+      score: 85,
+    };
+  }
+  const measure = profile.columns.find(
+    (c) => c.role === 'measure' && c.distinct > 1 && summaryOf(c).op !== 'count',
+  );
+  const name = profile.columns.find((c) => c.role === 'text' || c.role === 'dimension');
+  const group = profile.columns.find((c) => c.role === 'dimension' && c.distinct >= 2 && c.distinct <= 3);
+  const title = measure ? `${label(measure)} by location` : 'Locations';
+  return {
+    title,
+    rationale: `Latitude and longitude columns belong on a map${measure ? `; dot area shows "${measure.name}", so the largest values stand out` : ''}.`,
+    widget: {
+      type: 'map',
+      title,
+      config: {
+        lat: lat.name,
+        lon: lon.name,
+        ...(measure ? { size: measure.name } : {}),
+        ...(name ? { label: name.name } : {}),
+        ...(group ? { series: group.name } : {}),
+      },
+    },
+    transforms: [],
+    score: 70,
+  };
+}
+
 export function suggestWidgets(profile: TableProfile, options: SuggestOptions = {}): Suggestion[] {
   const max = options.max ?? 6;
   const existing = options.transforms ?? [];
@@ -361,22 +413,7 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
 
   // One point (a single weather station, say) is not worth a map.
   if (lat && lon && (lat.distinct > 1 || lon.distinct > 1)) {
-    out.push({
-      title: 'Locations',
-      rationale: 'Latitude and longitude columns can be plotted as a scatter map.',
-      widget: {
-        type: 'chart',
-        title: 'Locations',
-        config: {
-          kind: 'scatter',
-          x: lon.name,
-          y: [lat.name],
-          ...(dims[0] && dims[0].distinct <= 3 ? { series: dims[0].name } : {}),
-        },
-      },
-      transforms: [],
-      score: 70,
-    });
+    out.push(mapSuggestion(profile, options, lat, lon));
   } else if (!time && values.length >= 2) {
     out.push({
       title: `${label(values[0]!)} vs ${label(values[1]!)}`,

@@ -241,7 +241,10 @@ export function apiRoutes(deps: Deps) {
     return c.json({
       result,
       profile,
-      suggestions: suggestWidgets(profile, { transforms: dataset.transforms }),
+      suggestions: suggestWidgets(profile, {
+        transforms: dataset.transforms,
+        accumulate: dataset.accumulate > 0,
+      }),
     });
   });
 
@@ -252,7 +255,13 @@ export function apiRoutes(deps: Deps) {
     if (!dataset) throw notFound('Dataset not found');
     const result = await data.resolve({ id, ownerId: meta.ownerId }, dataset);
     const profile = profileTable(result.table);
-    return c.json({ profile, suggestions: suggestWidgets(profile, { transforms: dataset.transforms }) });
+    return c.json({
+      profile,
+      suggestions: suggestWidgets(profile, {
+        transforms: dataset.transforms,
+        accumulate: dataset.accumulate > 0,
+      }),
+    });
   });
 
   app.get('/dashboards/:id/files', async (c) =>

@@ -10,6 +10,7 @@ export const SIZE_HINTS: Record<WidgetType, { w: number; h: number }> = {
   gauge: { w: 3, h: 3 },
   chart: { w: 6, h: 4 },
   table: { w: 6, h: 5 },
+  map: { w: 6, h: 5 },
   text: { w: 4, h: 2 },
 };
 

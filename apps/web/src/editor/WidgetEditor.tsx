@@ -2,6 +2,7 @@ import {
   CHART_KINDS,
   type ChartKind,
   type Column,
+  coordinateRole,
   type Format,
   KPI_AGGS,
   parse,
@@ -102,6 +103,17 @@ export function defaultsFor(type: WidgetType, columns: Column[], previous?: Widg
       return { field: measure, min: 0, max: 100 };
     case 'table':
       return { pageSize: 25 };
+    case 'map': {
+      // The profiler's name rules, so choosing "Map" on a dataset with coordinates needs no further clicks.
+      const lat = numeric.find((c) => coordinateRole(c.name) === 'latitude') ?? numeric[0];
+      const lon = numeric.find((c) => coordinateRole(c.name) === 'longitude') ?? numeric[1] ?? lat;
+      const readings = columns.some((c) => c.name === 'fetched_at');
+      return {
+        lat: lat?.name ?? 'latitude',
+        lon: lon?.name ?? 'longitude',
+        ...(readings ? { mode: 'track' as const, terminator: true } : {}),
+      };
+    }
     case 'text':
       return { markdown: 'Write **markdown** here.' };
   }
