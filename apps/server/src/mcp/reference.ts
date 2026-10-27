@@ -95,7 +95,7 @@ ${fns}
 ## Widgets
 - chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors? }
   kinds: ${CHART_KINDS.join(', ')}. "series" splits long-format data (one row per time+category) into lines/bars.
-  xMin/xMax fix the x axis of a scatter with a numeric x (e.g. -180/180 for a longitude map).
+  xMin/xMax fix the x axis of a scatter with a numeric x.
   pie/donut: x = label, y[0] = value (aggregate first; at most 6 slices are kept). heatmap: x, series = y-axis category, y[0] = value.
 - kpi { field?, agg, compare: none|previous|first, goodWhen: up|down, sparkline, format? }   aggs: ${KPI_AGGS.join(', ')}
 - gauge { field?, agg, min, max, bands?: [{ upTo, color }], format? }
@@ -103,9 +103,16 @@ ${fns}
   that field is not null.
 - table { columns?, pageSize, format? }
 - text { markdown }   (no raw HTML)
+- map { lat, lon, mode: points|track, series?, size?, color?, label?, view: fit|world, basemap: countries|land|none,
+  terminator, maxPoints, format? }
+  Use it whenever the data has latitude/longitude (see the profile's roles). track connects rows in order: sort by time
+  first; accumulate a "current position" source (iss.position) to get a track. size = dot area (e.g. magnitude),
+  color = numeric value on a sequential ramp, series = one colour per entity (not both color and series).
+  terminator shades the night side for the time of the data. The base map is built in: no keys, no tiles.
+  view fit frames the data (at least 30° x 15°), world shows 60°S to 84°N. basemap land hides country borders.
 format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }
 
-## Sound cues (chart, kpi, gauge, table)
+## Sound cues (chart, kpi, gauge, table, map)
 An optional \`sound\` field makes browsers showing the dashboard play a short built-in sound when live data changes:
 { trigger, sound, volume, cooldownSec }
 - trigger { kind: "newRows", key? }: plays when a row with a new \`key\` value appears (e.g. "order_id"); rows that
@@ -130,12 +137,13 @@ reorderWidget { id, before: widgetId | null } (reading order, i.e. the order wid
 addStep { datasetId, step, before? }, updateStep { datasetId, stepId, set } (merged; type cannot change),
 removeStep { datasetId, stepId }, moveStep { datasetId, stepId, before: stepId | null }.
 Prefer step operations over updateDataset { set: { transforms } }: they do not overwrite steps the user changed meanwhile.
-Omit positions to auto-place. Typical sizes: kpi 3x2, gauge 3x3, chart 6x4, table 6x5, text 4x2 (w x h, row = 80 px).
+Omit positions to auto-place. Typical sizes: kpi 3x2, gauge 3x3, chart 6x4, table 6x5, map 6x5, text 4x2 (w x h, row = 80 px).
 
 ## Design guidance
 - One headline per KPI. Use compare + sparkline for live values.
 - Line/area for time, bar for categories (horizontal when labels are long or there are > 6), donut only for <= 6 parts.
 - Never mix measures with different units or scales on one chart.
+- Coordinates belong on a map, not on a scatter chart.
 - Aggregate before charting large data (timeBucket + aggregate), the chart caps points anyway.
 - Titles say what is shown and the unit: "Temperature (°C)", "Revenue per week".
 `;

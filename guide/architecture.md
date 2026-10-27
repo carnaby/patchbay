@@ -26,7 +26,7 @@ A dashboard is one JSON document:
 
 - **Datasets** describe where data comes from (`source`) and how it is processed (`transforms`), plus live behaviour
   (`refreshSec`, `accumulate`).
-- **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `text`). Several widgets can share one dataset.
+- **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `map`, `text`). Several widgets can share one dataset.
 - **Layout** is a single 12-column grid. Small screens stack widgets in reading order; there is deliberately no second,
   hand-maintained mobile layout to drift out of sync. On a phone the editor therefore only reorders (`reorderWidget`
   moves a widget in reading order and the widgets in between trade places on the same grid, see `reorderLayout`);
@@ -190,6 +190,18 @@ merged so live data animates rather than redraws. On the server the same option 
 renderer and is rasterised with `resvg` into a PNG, with no headless browser involved. The colour palette is a fixed,
 colour-vision-deficiency-validated categorical order with separate light and dark steps; series colours follow the
 series, never their rank, and there are no dual-axis charts.
+
+**Maps** use the same path. The base map is Natural Earth's 1:110m countries (public domain), committed as a 147 KB
+GeoJSON (`packages/core/geo`) and drawn by ECharts' `geo` component in an equirectangular projection. `buildMapOption`
+(`@patchbay/core/map`, an entry of its own) only refers to it by name; the browser registers it from a lazily loaded
+chunk together with the map code and ECharts' geo, lines and custom parts, so dashboards without a map never download
+them, and the snapshot renderer registers it at startup. The chunk is drawn by module reachability in
+`apps/web/vite.config.ts`, which is why the web app imports ECharts by path instead of through its index modules;
+`scripts/check-chunks.mjs` fails the build if any page imports the chunk statically. The night shading is computed in core
+(`solar.ts`) for the time of the data, so a snapshot and a live screen of the same rows draw the same picture.
+_Rejected:_ tile maps (every viewer's browser would call a third party, the CSP would have to allow it, and snapshots
+would need server-side tile fetching), ECharts' old bundled world map (unclear provenance), TopoJSON (40 % smaller on
+the wire but a runtime dependency on both sides for a file that is cached anyway).
 
 ## 9. Known limits and next steps
 

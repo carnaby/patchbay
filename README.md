@@ -51,6 +51,9 @@ It is free, needs no API keys, and runs as a single process you can host anywher
 - 🔔 **Sound cues.** A widget can play a short built-in sound when its live data changes: a bell when a new order
   arrives, an alert when a price crosses a threshold. Synthesised in the browser (no audio files), edge-triggered,
   never on load, with a cooldown, a global throttle and a per-screen mute.
+- 🗺️ **Maps without tiles.** Points (earthquakes, stations) and tracks (the ISS) on a bundled world map, sized and
+  coloured by value, with optional day/night shading. No tile server and no third-party requests, so maps work
+  offline and in agent snapshots.
 - 📱 **Installable.** A lightweight PWA: install it on a phone, tablet or desktop and it opens in its own window.
   Deliberately not offline-first, since live data needs the network; the service worker only caches the immutable
   build assets and shows a friendly offline page.
@@ -317,7 +320,6 @@ The server runs TypeScript directly with Node's type stripping, so there is no b
 - Incremental live updates (send appended rows instead of whole tables): specified in
   [guide/ideas/0001-sse-deltas.md](guide/ideas/0001-sse-deltas.md), not implemented yet.
 - Dashboard-level filters and variables (date range, city) that agents can bind widgets to.
-- A map widget for coordinate data.
 - Shared editing with named collaborators.
 - Scheduled snapshots (daily PNG to email/Slack).
 - Postgres-backed index for multi-instance deployments.
@@ -326,3 +328,7 @@ The server runs TypeScript directly with Node's type stripping, so there is no b
 
 [MIT](LICENSE). Data from third-party APIs is subject to their own terms; attributions are shown in the editor.
 Screenshots in this README were taken in `OFFLINE` mode, so the numbers in them are synthetic.
+
+The base map of the map widget is [Natural Earth](https://www.naturalearthdata.com/) 1:110m Admin 0 – Countries
+(version 5.1.2, public domain); see [packages/core/geo/README.md](packages/core/geo/README.md). The PNG renderer
+bundles the Inter typeface under the SIL Open Font License (apps/server/src/render/fonts/LICENSE.txt).

@@ -138,6 +138,33 @@ accept unrelated edits. The web editor does not offer intervals below the minimu
 For accumulating datasets, `get_data` answers with `watchers` (open browsers right now) and a `note` with the summary
 above; the data checks of `apply_operations` carry the same `note`.
 
+## Maps
+
+A `map` widget draws rows with a latitude and a longitude column on a built-in world map (Natural Earth 1:110m,
+public domain): no API key, no tiles, no requests to third parties, so it looks the same in the browser, offline and
+in `render_snapshot`.
+
+```jsonc
+{ "op": "addWidget", "widget": { "id": "quakes-map", "type": "map", "datasetId": "quakes", "config": { "lat": "latitude", "lon": "longitude", "size": "magnitude", "label": "place" } } }
+{ "op": "addWidget", "widget": { "id": "iss-track", "type": "map", "datasetId": "iss", "config": { "lat": "latitude", "lon": "longitude", "mode": "track", "terminator": true } } }
+```
+
+- `mode: "points"` (default) draws a dot per row; `"track"` connects the rows in their order (sort by time first), one
+  line per `series` value, split where it crosses the antimeridian, with the newest position marked.
+- `size` scales the dot's area with a numeric column; `color` puts a numeric column on the sequential blue ramp;
+  `series` gives each entity its categorical colour. `color` and `series` together are rejected: a map has one colour
+  channel.
+- `terminator: true` shades the night side for the newest time in the data (its first time column, else when the
+  data was fetched), never for the server's clock, so a snapshot and a live screen agree.
+- `view: "fit"` (default) frames the data with some padding and at least 30° × 15°; `"world"` shows 60°S to 84°N.
+  `basemap` is `countries` (default, de facto borders), `land` or `none`.
+- Rows without valid coordinates are left out; the map's accessible description says how many. In the browser every
+  map has a "Show as table" toggle.
+
+`suggest_widgets` and `preview_data` propose a map whenever the profile finds `latitude` and `longitude` roles: points
+sized by the first measure, or a track with night shading for accumulated positions (`accumulate` or a `fetched_at`
+column).
+
 ## Secrets
 
 Some APIs need a key. When the operator turned the feature on (`SECRETS=admins` or `users`, see

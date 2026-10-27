@@ -387,7 +387,8 @@ const TEMPLATES: Template[] = [
   {
     id: 'earthquakes',
     name: 'Earthquakes',
-    description: 'Live USGS feed: latest quakes, magnitudes by region and a world scatter.',
+    description:
+      'Live USGS feed: latest quakes on a world map, sized by magnitude, and the most active regions.',
     tags: ['public API', 'real-time'],
     ops: [
       { op: 'setMeta', title: 'Earthquakes, past 7 days' },
@@ -482,17 +483,16 @@ const TEMPLATES: Template[] = [
         op: 'addWidget',
         widget: {
           id: 'map',
-          type: 'chart',
-          title: 'Where (longitude × latitude)',
+          type: 'map',
+          title: 'Where, sized by magnitude',
           datasetId: 'quakes',
           config: {
-            kind: 'scatter',
-            x: 'longitude',
-            y: ['latitude'],
-            xMin: -180,
-            xMax: 180,
-            yMin: -90,
-            yMax: 90,
+            lat: 'latitude',
+            lon: 'longitude',
+            size: 'magnitude',
+            label: 'place',
+            view: 'world',
+            format: { style: 'number', decimals: 1, prefix: 'M' },
           },
         },
         position: { w: 6, h: 5 },
