@@ -28,7 +28,9 @@ A dashboard is one JSON document:
   (`refreshSec`, `accumulate`).
 - **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `text`). Several widgets can share one dataset.
 - **Layout** is a single 12-column grid. Small screens stack widgets in reading order; there is deliberately no second,
-  hand-maintained mobile layout to drift out of sync.
+  hand-maintained mobile layout to drift out of sync. On a phone the editor therefore only reorders (`reorderWidget`
+  moves a widget in reading order and the widgets in between trade places on the same grid, see `reorderLayout`);
+  sizes and side-by-side placement are edited on a wider screen.
 
 All schemas are `z.strictObject`: unknown keys are errors. A typo in an agent's config (`colour` instead of `colors`)
 fails loudly instead of being silently ignored.

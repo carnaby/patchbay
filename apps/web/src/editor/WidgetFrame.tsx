@@ -1,21 +1,27 @@
 import { type SoundRule, soundRuleMissingColumns, sourceSecretIds, type Widget } from '@patchbay/core';
 import {
+  ArrowDown,
+  ArrowDownToLine,
+  ArrowUp,
+  ArrowUpToLine,
   Copy,
   GripVertical,
   Image,
   Maximize2,
   Minimize2,
+  MoreVertical,
   Settings2,
   Trash2,
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { memo, useEffect, useState } from 'react';
-import { cx, IconButton, toast } from '../components/ui.tsx';
+import { memo, useEffect, useRef, useState } from 'react';
+import { cx, IconButton, Menu, MenuItem, MenuSeparator, toast } from '../components/ui.tsx';
 import { relativeTime, useSecretsStatus } from '../lib/hooks.ts';
 import { credentialErrorHint } from '../lib/secrets.ts';
 import { SOUND_LABELS, useSoundSettings } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
+import { MOVE_LABELS, type MoveDirection, reorderOp } from '../state/reorder.ts';
 import { useDatasetResult } from '../state/sync.ts';
 import { WidgetBody } from '../widgets/WidgetBody.tsx';
 
@@ -34,6 +40,7 @@ export const WidgetFrame = memo(function WidgetFrame({
   editing,
   onEdit,
   expanded = false,
+  stacked = false,
 }: {
   dashboardId: string;
   widget: Widget;
@@ -42,7 +49,13 @@ export const WidgetFrame = memo(function WidgetFrame({
   onEdit: (id: string) => void;
   /** Rendered as the maximised overlay. */
   expanded?: boolean;
+  /** Part of the single-column stack on a narrow screen: no dragging, reordering instead, touch-sized controls. */
+  stacked?: boolean;
 }) {
+  const sectionRef = useRef<HTMLElement>(null);
+  const reorderable = stacked && editing;
+  const canMoveUp = useEditor((s) => reorderable && reorderOp(s.doc!.layout, widget.id, 'up') !== null);
+  const canMoveDown = useEditor((s) => reorderable && reorderOp(s.doc!.layout, widget.id, 'down') !== null);
   const setExpanded = useEditor((s) => s.setExpanded);
   const dataset = useEditor((s) =>
     'datasetId' in widget ? s.doc?.datasets.find((d) => d.id === widget.datasetId) : undefined,
@@ -86,8 +99,35 @@ export const WidgetFrame = memo(function WidgetFrame({
     if (err) toast(err, 'bad');
   };
 
+  const remove = () => {
+    const err = apply([{ op: 'removeWidget', id: widget.id }], `Removed "${widget.title ?? widget.id}"`);
+    if (err) toast(err, 'bad');
+    else
+      toast('Widget removed', 'neutral', {
+        label: 'Undo',
+        run: () => useEditor.getState().undo(),
+      });
+  };
+
+  const move = (direction: MoveDirection) => {
+    const op = reorderOp(useEditor.getState().doc!.layout, widget.id, direction);
+    if (!op) return;
+    const top = sectionRef.current?.getBoundingClientRect().top;
+    const err = apply([op], `${MOVE_LABELS[direction]}: "${widget.title ?? widget.id}"`);
+    if (err) {
+      toast(err, 'bad');
+      return;
+    }
+    // The stack reorders around the widget; scroll with it so it (and the button) stays under the finger.
+    requestAnimationFrame(() => {
+      const after = sectionRef.current?.getBoundingClientRect().top;
+      if (top !== undefined && after !== undefined) window.scrollBy(0, after - top);
+    });
+  };
+
   return (
     <section
+      ref={sectionRef}
       className={cx(
         'group flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-line bg-surface transition-shadow',
         editing && 'hover:border-line-strong',
@@ -98,10 +138,11 @@ export const WidgetFrame = memo(function WidgetFrame({
       <header
         className={cx(
           'flex h-10 shrink-0 items-center gap-1.5 pr-1.5 pl-3',
-          editing && 'pb-drag cursor-grab active:cursor-grabbing',
+          editing && !stacked && 'pb-drag cursor-grab active:cursor-grabbing',
+          reorderable && 'h-11 pr-0.5',
         )}
       >
-        {editing ? (
+        {editing && !stacked ? (
           <GripVertical className="-ml-1.5 size-3.5 shrink-0 text-muted" aria-hidden="true" />
         ) : null}
         <h3 className="truncate text-[13.5px] font-semibold" title={widget.description ?? widget.title}>
@@ -128,7 +169,42 @@ export const WidgetFrame = memo(function WidgetFrame({
           </span>
         ) : null}
         <span className="flex-1" />
-        {editing ? (
+        {reorderable ? (
+          <div className="flex shrink-0 items-center">
+            <IconButton label={MOVE_LABELS.up} onClick={() => move('up')} disabled={!canMoveUp} touch>
+              <ArrowUp className="size-4" />
+            </IconButton>
+            <IconButton label={MOVE_LABELS.down} onClick={() => move('down')} disabled={!canMoveDown} touch>
+              <ArrowDown className="size-4" />
+            </IconButton>
+            <Menu label="Widget actions" icon={<MoreVertical className="size-4" />} touch>
+              <MenuItem icon={<Settings2 className="size-4" />} onSelect={() => onEdit(widget.id)}>
+                Edit widget
+              </MenuItem>
+              <MenuItem
+                icon={<ArrowUpToLine className="size-4" />}
+                onSelect={() => move('top')}
+                disabled={!canMoveUp}
+              >
+                {MOVE_LABELS.top}
+              </MenuItem>
+              <MenuItem
+                icon={<ArrowDownToLine className="size-4" />}
+                onSelect={() => move('bottom')}
+                disabled={!canMoveDown}
+              >
+                {MOVE_LABELS.bottom}
+              </MenuItem>
+              <MenuItem icon={<Copy className="size-4" />} onSelect={duplicate}>
+                Duplicate
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem icon={<Trash2 className="size-4" />} onSelect={remove} danger>
+                Remove
+              </MenuItem>
+            </Menu>
+          </div>
+        ) : editing ? (
           <div className="pb-no-drag flex items-center opacity-70 transition group-hover:opacity-100">
             <IconButton label="Edit widget" onClick={() => onEdit(widget.id)}>
               <Settings2 className="size-3.5" />
@@ -136,22 +212,7 @@ export const WidgetFrame = memo(function WidgetFrame({
             <IconButton label="Duplicate widget" onClick={duplicate}>
               <Copy className="size-3.5" />
             </IconButton>
-            <IconButton
-              label="Remove widget"
-              onClick={() => {
-                const err = apply(
-                  [{ op: 'removeWidget', id: widget.id }],
-                  `Removed "${widget.title ?? widget.id}"`,
-                );
-                if (err) toast(err, 'bad');
-                else
-                  toast('Widget removed', 'neutral', {
-                    label: 'Undo',
-                    run: () => useEditor.getState().undo(),
-                  });
-              }}
-              className="hover:text-bad"
-            >
+            <IconButton label="Remove widget" onClick={remove} className="hover:text-bad">
               <Trash2 className="size-3.5" />
             </IconButton>
           </div>
@@ -160,8 +221,12 @@ export const WidgetFrame = memo(function WidgetFrame({
             <IconButton
               label={expanded ? 'Close (Esc)' : 'Maximise'}
               onClick={() => setExpanded(expanded ? null : widget.id)}
+              touch={stacked}
+              // Phones have no hover to reveal it, so the stacked layout always shows it.
               className={
-                expanded ? '' : 'opacity-0 transition group-hover:opacity-100 focus-visible:opacity-100'
+                expanded || stacked
+                  ? ''
+                  : 'opacity-0 transition group-hover:opacity-100 focus-visible:opacity-100'
               }
             >
               {expanded ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}

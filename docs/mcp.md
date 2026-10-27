@@ -70,6 +70,7 @@ Prompts: `build_dashboard { topic }`, `analyze_my_data { dashboardId? }`. Resour
 { "op": "removeWidget", "id": "strongest" }
 { "op": "moveWidget", "id": "strongest", "x": 0, "y": 0, "w": 4 }
 { "op": "setLayout", "layout": [ { "i": "strongest", "x": 0, "y": 0, "w": 3, "h": 2 } ] }
+{ "op": "reorderWidget", "id": "strongest", "before": "per-day" }
 { "op": "addStep", "datasetId": "quakes", "step": { "type": "filter", "expr": "magnitude >= 4" }, "before": "s2" }
 { "op": "updateStep", "datasetId": "quakes", "stepId": "s1", "set": { "expr": "magnitude >= 5" } }
 { "op": "removeStep", "datasetId": "quakes", "stepId": "s3" }

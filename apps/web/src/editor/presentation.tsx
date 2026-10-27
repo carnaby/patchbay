@@ -155,9 +155,8 @@ export function PresentationControls({
 /** A small (i) next to the present button: how to put this dashboard on a TV or wall screen. */
 export function TvInfo({ dashboardId, isPrivate }: { dashboardId: string; isPrivate: boolean }) {
   const [open, setOpen] = useState(false);
-  const link = `${window.location.origin}/d/${dashboardId}?present=1`;
   return (
-    <div className="relative -ml-1.5">
+    <div className="relative">
       <button
         type="button"
         aria-label="Showing this on a TV"
@@ -182,42 +181,52 @@ export function TvInfo({ dashboardId, isPrivate }: { dashboardId: string; isPriv
             className="absolute right-0 z-40 mt-2 w-[min(340px,calc(100vw-24px))] rounded-xl border border-line bg-surface p-4 text-sm text-ink-2 shadow-xl"
           >
             <div className="mb-2 font-semibold text-ink">Showing this on a TV</div>
-            <ol className="list-decimal space-y-1.5 pl-4">
-              <li>Open this link in the TV's (or wall tablet's) browser. It starts without the toolbar.</li>
-              <li>Click once, or press OK on the remote, and choose Full screen.</li>
-              <li>The screen stays on and live data updates by itself. Nobody needs to touch it.</li>
-              <li>
-                Widgets with sounds stay silent until the page is clicked once: choose Enable sound, and it
-                stays on.
-              </li>
-            </ol>
-            <div className="mt-3 flex gap-2">
-              <input
-                readOnly
-                value={link}
-                onFocus={(e) => e.target.select()}
-                className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-2 font-mono text-[11px]"
-              />
-              <Button
-                size="sm"
-                icon={<Copy className="size-3.5" />}
-                onClick={() => {
-                  void navigator.clipboard.writeText(link);
-                  toast('Link copied');
-                }}
-              >
-                Copy
-              </Button>
-            </div>
-            <p className="mt-3 text-xs text-muted">
-              {isPrivate
-                ? 'This dashboard is private, so sign in on the TV first, or make it public under Share.'
-                : 'Public dashboards open without signing in.'}{' '}
-              On a tablet, install Patchbay as an app for a true full screen. Press F here to try it.
-            </p>
+            <TvInfoContent dashboardId={dashboardId} isPrivate={isPrivate} />
           </div>
         </>
       ) : null}
     </div>
+  );
+}
+
+/** The instructions themselves; narrow screens open them in a dialog from the toolbar's overflow menu. */
+export function TvInfoContent({ dashboardId, isPrivate }: { dashboardId: string; isPrivate: boolean }) {
+  const link = `${window.location.origin}/d/${dashboardId}?present=1`;
+  return (
+    <>
+      <ol className="list-decimal space-y-1.5 pl-4">
+        <li>Open this link in the TV's (or wall tablet's) browser. It starts without the toolbar.</li>
+        <li>Click once, or press OK on the remote, and choose Full screen.</li>
+        <li>The screen stays on and live data updates by itself. Nobody needs to touch it.</li>
+        <li>
+          Widgets with sounds stay silent until the page is clicked once: choose Enable sound, and it stays
+          on.
+        </li>
+      </ol>
+      <div className="mt-3 flex gap-2">
+        <input
+          readOnly
+          value={link}
+          onFocus={(e) => e.target.select()}
+          className="h-8 min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-2 font-mono text-[11px]"
+        />
+        <Button
+          size="sm"
+          icon={<Copy className="size-3.5" />}
+          onClick={() => {
+            void navigator.clipboard.writeText(link);
+            toast('Link copied');
+          }}
+        >
+          Copy
+        </Button>
+      </div>
+      <p className="mt-3 text-xs text-muted">
+        {isPrivate
+          ? 'This dashboard is private, so sign in on the TV first, or make it public under Share.'
+          : 'Public dashboards open without signing in.'}{' '}
+        On a tablet, install Patchbay as an app for a true full screen. Press F here to try it.
+      </p>
+    </>
   );
 }
