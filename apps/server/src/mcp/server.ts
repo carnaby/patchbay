@@ -43,9 +43,10 @@ const fail = (message: string): ToolResult => ({ content: [{ type: 'text', text:
 /** Rows shown per dataset in apply_operations' data checks: enough to spot a wrong column, small enough to batch. */
 const DATA_CHECK_SAMPLE = 3;
 
-/** A compact, model-friendly view of a table: columns + the first rows. */
-function sampleTable(table: DataTable, limit: number) {
-  return { columns: table.columns, rowCount: table.rows.length, rows: table.rows.slice(0, limit) };
+/** A compact, model-friendly view of a table: columns + the first (or last) rows. */
+function sampleTable(table: DataTable, limit: number, from: 'start' | 'end' = 'start') {
+  const rows = from === 'end' ? table.rows.slice(-limit) : table.rows.slice(0, limit);
+  return { columns: table.columns, rowCount: table.rows.length, rows };
 }
 
 let idCounter = 0;
@@ -387,25 +388,33 @@ export function createMcp(deps: Deps) {
           dashboardId,
           datasetId: z.string(),
           limit: z.number().int().min(1).max(500).default(50),
+          from: z
+            .enum(['start', 'end'])
+            .default('start')
+            .describe('Which rows limit keeps; "end" = the newest of an ascending time series'),
         }),
         annotations: read,
       },
-      tool(SCOPES.read, async (args: { dashboardId: string; datasetId: string; limit: number }, p) => {
-        const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
-        const dataset = doc.datasets.find((d) => d.id === args.datasetId);
-        if (!dataset)
-          return fail(
-            `No dataset "${args.datasetId}". Datasets: ${doc.datasets.map((d) => d.id).join(', ') || 'none'}`,
-          );
-        const result = await data.resolve({ id: args.dashboardId, ownerId: meta.ownerId }, dataset);
-        const profile = profileTable(result.table);
-        return json({
-          ...sampleTable(result.table, args.limit),
-          fetchedAt: result.fetchedAt,
-          error: result.error,
-          profile: profile.columns.map(({ sample: _s, ...c }) => c),
-        });
-      }),
+      tool(
+        SCOPES.read,
+        async (args: { dashboardId: string; datasetId: string; limit: number; from: 'start' | 'end' }, p) => {
+          const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
+          const dataset = doc.datasets.find((d) => d.id === args.datasetId);
+          if (!dataset)
+            return fail(
+              `No dataset "${args.datasetId}". Datasets: ${doc.datasets.map((d) => d.id).join(', ') || 'none'}`,
+            );
+          const result = await data.resolve({ id: args.dashboardId, ownerId: meta.ownerId }, dataset);
+          const profile = profileTable(result.table);
+          return json({
+            ...sampleTable(result.table, args.limit, args.from),
+            from: args.from,
+            fetchedAt: result.fetchedAt,
+            error: result.error,
+            profile: profile.columns.map(({ sample: _s, ...c }) => c),
+          });
+        },
+      ),
     );
 
     server.registerTool(
