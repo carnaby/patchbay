@@ -398,6 +398,7 @@ function ColumnSelect({
   columns,
   onChange,
   optional,
+  noneLabel = 'None',
   filter,
 }: {
   label: string;
@@ -405,6 +406,7 @@ function ColumnSelect({
   columns: Column[];
   onChange: (v: string | undefined) => void;
   optional?: boolean;
+  noneLabel?: string;
   filter?: (c: Column) => boolean;
 }) {
   const options = filter ? columns.filter(filter) : columns;
@@ -413,7 +415,7 @@ function ColumnSelect({
     <Field label={label} error={known ? null : `Column "${value}" is not in the data`}>
       {(fid) => (
         <Select id={fid} value={value ?? ''} onChange={(e) => onChange(e.target.value || undefined)}>
-          {optional ? <option value="">None</option> : null}
+          {optional ? <option value="">{noneLabel}</option> : null}
           {!known && value ? <option value={value}>{value} (missing)</option> : null}
           {options.map((c) => (
             <option key={c.name} value={c.name}>
@@ -586,21 +588,40 @@ function ValueFields({
   setConfig: SetConfig;
 }) {
   const c = widget.config;
+  const counting = c.agg === 'count';
+  // Leaving count without a column would make the widget invalid: fall back to a numeric column.
+  const fallbackField = (columns.find((col) => col.type === 'number') ?? columns[0])?.name;
   return (
     <>
       <div className="grid gap-3 sm:grid-cols-2">
         <ColumnSelect
-          label="Value column"
+          label={counting ? 'Count values of' : 'Value column'}
           value={c.field}
           columns={columns}
-          onChange={(v) => v && setConfig({ field: v }, 'Changed value column')}
+          optional={counting}
+          noneLabel="Nothing: count rows"
+          onChange={(v) =>
+            counting
+              ? setConfig({ field: v }, 'Changed counted column')
+              : v && setConfig({ field: v }, 'Changed value column')
+          }
         />
         <Field label="Aggregate">
           {(fid) => (
             <Select
               id={fid}
               value={c.agg}
-              onChange={(e) => setConfig({ agg: e.target.value }, 'Changed aggregation')}
+              onChange={(e) =>
+                setConfig(
+                  {
+                    agg: e.target.value,
+                    ...(e.target.value !== 'count' && !c.field && fallbackField
+                      ? { field: fallbackField }
+                      : {}),
+                  },
+                  'Changed aggregation',
+                )
+              }
             >
               {KPI_AGGS.map((a) => (
                 <option key={a} value={a}>

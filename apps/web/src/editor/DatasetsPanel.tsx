@@ -73,6 +73,9 @@ const REFRESH_OPTIONS = [
   { value: 3600, label: 'Every hour' },
 ];
 
+const formatInterval = (sec: number) =>
+  sec < 60 ? `${sec} s` : sec < 3600 ? `${Math.round(sec / 60)} min` : `${Math.round(sec / 360) / 10} h`;
+
 /** Skip previews for sources that are obviously not ready yet. */
 const previewable = (source: Source) =>
   !(source.kind === 'http' && source.url.length < 12) &&
@@ -614,6 +617,15 @@ function DatasetEditor({
     if (c && c.name !== draft.name) setDraft((d) => ({ ...d, name: c.name }));
   }, [draft.source, connectors, nameTouched, draft.name]);
 
+  // A connector serves the same reading until its minimum interval has passed, so faster choices would only promise
+  // a refresh that never shows (agents get theirs raised on save; here they are simply not offered).
+  const source = draft.source;
+  const minRefreshSec =
+    source.kind === 'connector'
+      ? (connectors?.find((c) => c.id === source.connector)?.minRefreshSec ?? 0)
+      : 0;
+  const refreshTooFast = draft.refreshSec > 0 && draft.refreshSec < minRefreshSec;
+
   const credentials = useCredentialContext();
   // Credential problems are explained while typing; a request that the server would refuse is not sent at all.
   const previewBlocked = issuesFor(debounced.source, credentials).length > 0;
@@ -747,7 +759,12 @@ function DatasetEditor({
       <section className="grid gap-3 sm:grid-cols-2">
         <Field
           label="Live refresh"
-          hint="While someone is watching, the server refreshes and pushes changes. Public APIs are cached to respect their limits."
+          hint={`While someone is watching, the server refreshes and pushes changes. Public APIs are cached to respect their limits${minRefreshSec > 1 ? `: this one updates at most every ${formatInterval(minRefreshSec)}` : ''}.`}
+          error={
+            refreshTooFast
+              ? `This source updates at most every ${formatInterval(minRefreshSec)}. Choose a longer interval.`
+              : null
+          }
         >
           {(fid) => (
             <Select
@@ -755,8 +772,12 @@ function DatasetEditor({
               value={draft.refreshSec}
               onChange={(e) => setDraft((d) => ({ ...d, refreshSec: Number(e.target.value) }))}
             >
+              {/* Agents may save any interval (one raised to a connector's minimum, say): show it as it is. */}
+              {REFRESH_OPTIONS.some((o) => o.value === draft.refreshSec) ? null : (
+                <option value={draft.refreshSec}>Every {formatInterval(draft.refreshSec)}</option>
+              )}
               {REFRESH_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>
+                <option key={o.value} value={o.value} disabled={o.value > 0 && o.value < minRefreshSec}>
                   {o.label}
                 </option>
               ))}
