@@ -13,11 +13,19 @@ export interface KpiResult {
 
 type Agg = KpiConfig['agg'];
 
-export function reduceColumn(table: DataTable, field: string, agg: Agg): number | null {
+/**
+ * `count` without a field counts rows; with one, the rows where that field has a value (any type), like COUNT(col)
+ * in SQL. Every other aggregate reads the field's numbers; the schema guarantees there is a field for them.
+ */
+export function reduceColumn(table: DataTable, field: string | undefined, agg: Agg): number | null {
+  if (agg === 'count') {
+    if (field === undefined) return table.rows.length;
+    return table.rows.filter((r) => r[field] !== null && r[field] !== undefined).length;
+  }
+  if (field === undefined) return null;
   const values = table.rows
     .map((r) => r[field])
     .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
-  if (agg === 'count') return table.rows.length;
   if (values.length === 0) return null;
   switch (agg) {
     case 'last':
@@ -36,9 +44,13 @@ export function reduceColumn(table: DataTable, field: string, agg: Agg): number 
 }
 
 export function computeKpi(config: KpiConfig, table: DataTable): KpiResult {
-  const series = table.rows
-    .map((r) => r[config.field])
-    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  const field = config.field;
+  const series =
+    field === undefined
+      ? []
+      : table.rows
+          .map((r) => r[field])
+          .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
   const value = reduceColumn(table, config.field, config.agg);
   let previous: number | null = null;
   if (config.compare === 'previous') previous = series.length >= 2 ? series[series.length - 2]! : null;

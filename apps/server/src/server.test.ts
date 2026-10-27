@@ -585,6 +585,8 @@ describe('MCP tools', () => {
         widget: { id: 'strongest', type: 'gauge', datasetId: 'daily', config: { field: 'max_mag', max: 10 } },
       },
       { op: 'moveWidget', id: 'per-day', x: 0, y: 0 },
+      // count needs no column: it counts rows.
+      { op: 'addWidget', widget: { id: 'days', type: 'kpi', datasetId: 'daily', config: { agg: 'count' } } },
     ];
 
     // The advertised schema is self-contained and accepts what the server accepts.

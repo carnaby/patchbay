@@ -91,8 +91,10 @@ ${fns}
 - chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels, showLegend?, yMin?, yMax?, logScale, format?, colors? }
   kinds: ${CHART_KINDS.join(', ')}. "series" splits long-format data (one row per time+category) into lines/bars.
   pie/donut: x = label, y[0] = value (aggregate first; at most 6 slices are kept). heatmap: x, series = y-axis category, y[0] = value.
-- kpi { field, agg, compare: none|previous|first, goodWhen: up|down, sparkline, format? }   aggs: ${KPI_AGGS.join(', ')}
-- gauge { field, agg, min, max, bands?: [{ upTo, color }], format? }
+- kpi { field?, agg, compare: none|previous|first, goodWhen: up|down, sparkline, format? }   aggs: ${KPI_AGGS.join(', ')}
+- gauge { field?, agg, min, max, bands?: [{ upTo, color }], format? }
+  field is required except for agg "count": without a field count counts rows, with one it counts the rows where
+  that field is not null.
 - table { columns?, pageSize, format? }
 - text { markdown }   (no raw HTML)
 format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }

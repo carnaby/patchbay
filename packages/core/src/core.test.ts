@@ -3,12 +3,15 @@ import {
   applyOps,
   buildChartOption,
   compile,
+  computeGauge,
   computeKpi,
   DocumentError,
   diffSteps,
   ExprError,
   emptyDashboard,
+  GaugeConfigSchema,
   inferTable,
+  KpiConfigSchema,
   normalizeLayout,
   OpError,
   parse,
@@ -19,6 +22,7 @@ import {
   THEMES,
   TransformError,
   TransformSchema,
+  WidgetSchema,
 } from './index.ts';
 
 describe('expressions', () => {
@@ -390,5 +394,24 @@ describe('chart + kpi builders', () => {
       table,
     );
     expect(kpi).toMatchObject({ value: 2, previous: 3, delta: -1, trend: 'good', spark: [1, 3, 2] });
+  });
+
+  it('counts rows without a field and non-null values with one', () => {
+    const gaps = inferTable([{ v: 1 }, { v: null }, { v: 'n/a' }, { v: 4 }]);
+    const kpi = (config: unknown) => computeKpi(KpiConfigSchema.parse(config), gaps).value;
+    expect(kpi({ agg: 'count' })).toBe(4);
+    expect(kpi({ agg: 'count', field: 'v' })).toBe(3);
+    expect(computeGauge(GaugeConfigSchema.parse({ agg: 'count', max: 10 }), gaps)).toBe(4);
+    // Every other aggregate reads a column, so it still needs one.
+    const noField = KpiConfigSchema.safeParse({ agg: 'sum' });
+    expect(noField.success).toBe(false);
+    expect(noField.error?.issues[0]).toMatchObject({ path: ['field'], message: 'agg "sum" needs a field' });
+    expect(KpiConfigSchema.safeParse({}).success).toBe(false);
+    expect(
+      WidgetSchema.safeParse({ id: 'n', type: 'kpi', datasetId: 'd', config: { agg: 'count' } }).success,
+    ).toBe(true);
+    expect(
+      WidgetSchema.safeParse({ id: 'g', type: 'gauge', datasetId: 'd', config: { agg: 'max' } }).success,
+    ).toBe(false);
   });
 });
