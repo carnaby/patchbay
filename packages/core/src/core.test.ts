@@ -3,12 +3,15 @@ import {
   applyOps,
   buildChartOption,
   compile,
+  computeGauge,
   computeKpi,
   DocumentError,
   diffSteps,
   ExprError,
   emptyDashboard,
+  GaugeConfigSchema,
   inferTable,
+  KpiConfigSchema,
   normalizeLayout,
   OpError,
   parse,
@@ -19,6 +22,7 @@ import {
   THEMES,
   TransformError,
   TransformSchema,
+  WidgetSchema,
 } from './index.ts';
 
 describe('expressions', () => {
@@ -100,6 +104,61 @@ describe('pipeline', () => {
     ]);
     expect(table.columns.find((c) => c.name === 'day')?.type).toBe('time');
     expect(trace.map((s) => s.rows)).toEqual([3, 3, 2, 2]);
+  });
+
+  describe('timeBucket with dropPartial', () => {
+    const HOUR = 3_600_000;
+    // Hourly readings over a rolling 7-day window that started at 14:00: 8 calendar days, first and last partial.
+    const start = Date.UTC(2026, 0, 1, 14);
+    const rolling = inferTable(
+      Array.from({ length: 7 * 24 }, (_, i) => ({ time: start + i * HOUR, v: 1 })),
+      { types: { time: 'time' } },
+    );
+    const perDay = (dropPartial?: boolean) =>
+      runPipeline(rolling, [
+        t({
+          type: 'timeBucket',
+          field: 'time',
+          unit: 'day',
+          ...(dropPartial === undefined ? {} : { dropPartial }),
+        }),
+        t({ type: 'aggregate', groupBy: ['time'], metrics: [{ op: 'sum', field: 'v', as: 'n' }] }),
+      ]).table.rows.map((r) => r.n);
+
+    it('keeps partial edge buckets by default', () => {
+      expect(perDay()).toEqual([10, 24, 24, 24, 24, 24, 24, 14]);
+      expect(perDay(false)).toEqual(perDay());
+    });
+
+    it('drops the partial first and last bucket on request', () => {
+      expect(perDay(true)).toEqual([24, 24, 24, 24, 24, 24]);
+    });
+
+    it('keeps edge buckets the data covers', () => {
+      const days = inferTable(
+        Array.from({ length: 3 * 24 }, (_, i) => ({ time: Date.UTC(2026, 0, 1) + i * HOUR, v: 1 })),
+        { types: { time: 'time' } },
+      );
+      const { table } = runPipeline(days, [
+        t({ type: 'timeBucket', field: 'time', unit: 'day', dropPartial: true }),
+      ]);
+      expect(table.rows).toHaveLength(72);
+      // Daily rows at midnight, bucketed by month: January is complete, February (one day of it) is not.
+      const daily = inferTable(
+        Array.from({ length: 32 }, (_, i) => ({ time: Date.UTC(2026, 0, 1 + i) })),
+        { types: { time: 'time' } },
+      );
+      const months = runPipeline(daily, [
+        t({ type: 'timeBucket', field: 'time', unit: 'month', dropPartial: true }),
+      ]);
+      expect(new Set(months.table.rows.map((r) => r.time))).toEqual(new Set([Date.UTC(2026, 0, 1)]));
+      // A single reading has no rhythm to judge by: nothing is dropped.
+      const one = inferTable([{ time: start }], { types: { time: 'time' } });
+      expect(
+        runPipeline(one, [t({ type: 'timeBucket', field: 'time', unit: 'day', dropPartial: true })]).table
+          .rows,
+      ).toHaveLength(1);
+    });
   });
 
   it('derives columns and runs window functions per partition', () => {
@@ -390,5 +449,24 @@ describe('chart + kpi builders', () => {
       table,
     );
     expect(kpi).toMatchObject({ value: 2, previous: 3, delta: -1, trend: 'good', spark: [1, 3, 2] });
+  });
+
+  it('counts rows without a field and non-null values with one', () => {
+    const gaps = inferTable([{ v: 1 }, { v: null }, { v: 'n/a' }, { v: 4 }]);
+    const kpi = (config: unknown) => computeKpi(KpiConfigSchema.parse(config), gaps).value;
+    expect(kpi({ agg: 'count' })).toBe(4);
+    expect(kpi({ agg: 'count', field: 'v' })).toBe(3);
+    expect(computeGauge(GaugeConfigSchema.parse({ agg: 'count', max: 10 }), gaps)).toBe(4);
+    // Every other aggregate reads a column, so it still needs one.
+    const noField = KpiConfigSchema.safeParse({ agg: 'sum' });
+    expect(noField.success).toBe(false);
+    expect(noField.error?.issues[0]).toMatchObject({ path: ['field'], message: 'agg "sum" needs a field' });
+    expect(KpiConfigSchema.safeParse({}).success).toBe(false);
+    expect(
+      WidgetSchema.safeParse({ id: 'n', type: 'kpi', datasetId: 'd', config: { agg: 'count' } }).success,
+    ).toBe(true);
+    expect(
+      WidgetSchema.safeParse({ id: 'g', type: 'gauge', datasetId: 'd', config: { agg: 'max' } }).success,
+    ).toBe(false);
   });
 });

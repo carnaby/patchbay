@@ -84,6 +84,57 @@ describe('updateWidget with sound', () => {
     expect(removed.widgets[0]).not.toHaveProperty('sound');
   });
 
+  it('spells out sound cues in the change log', () => {
+    const rule = { trigger: { kind: 'condition', expr: 'value > 5' }, sound: 'alert', cooldownSec: 30 };
+    const added = applyOps(base, [
+      {
+        op: 'addWidget',
+        widget: {
+          id: 'loud',
+          type: 'kpi',
+          title: 'Loud',
+          datasetId: 'orders',
+          config: { field: 'v' },
+          sound: rule,
+        },
+      },
+    ]);
+    expect(added.changes).toEqual([
+      'Added kpi widget "Loud"; sound cue: "alert" when `value > 5` becomes true on the last row (volume 0.7, cooldown 30 s)',
+    ]);
+    const updated = applyOps(base, [
+      {
+        op: 'updateWidget',
+        id: 'tbl',
+        set: { title: 'Orders', sound: { trigger: { kind: 'newRows', key: 'id' } } },
+      },
+      { op: 'updateWidget', id: 'tbl', set: { sound: { trigger: { kind: 'newRows' }, sound: 'cash' } } },
+    ]);
+    expect(updated.changes).toEqual([
+      'Updated widget "tbl" (title); sound cue set to "bell" when rows with a new "id" appear (volume 0.7, cooldown 10 s)',
+      'Widget "Orders": sound cue set to "cash" when the row count grows (volume 0.7, cooldown 10 s)',
+    ]);
+    const removed = applyOps(updated.doc, [
+      { op: 'updateWidget', id: 'tbl', set: { sound: null } },
+      { op: 'updateWidget', id: 'tbl', set: { sound: null } },
+    ]);
+    expect(removed.changes).toEqual([
+      'Widget "Orders": sound cue removed',
+      'Widget "Orders": no sound cue to remove',
+    ]);
+    expect(
+      applyOps(added.doc, [
+        { op: 'replaceWidget', widget: { id: 'loud', type: 'table', datasetId: 'orders', config: {} } },
+      ]).changes,
+    ).toEqual(['Replaced widget "loud" with a table; its sound cue was removed']);
+    expect(applyOps(added.doc, [{ op: 'removeWidget', id: 'loud' }]).changes).toEqual([
+      'Removed widget "Loud" and its sound cue',
+    ]);
+    expect(applyOps(added.doc, [{ op: 'removeDataset', id: 'orders', cascade: true }]).changes).toEqual([
+      'Removed dataset "Orders" and 2 widget(s) (1 with a sound cue)',
+    ]);
+  });
+
   it('rejects an invalid condition as a failing operation', () => {
     expect(() =>
       applyOps(base, [

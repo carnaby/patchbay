@@ -238,7 +238,11 @@ export function apiRoutes(deps: Deps) {
     const target = await dashboards.previewTarget(principal, id, dataset, { requireEdit: true });
     const result = await data.resolve(target, { ...dataset, accumulate: 0 }, { maxRows: 500 });
     const profile = profileTable(result.table);
-    return c.json({ result, profile, suggestions: suggestWidgets(profile) });
+    return c.json({
+      result,
+      profile,
+      suggestions: suggestWidgets(profile, { transforms: dataset.transforms }),
+    });
   });
 
   app.get('/dashboards/:id/suggest/:datasetId', async (c) => {
@@ -248,7 +252,7 @@ export function apiRoutes(deps: Deps) {
     if (!dataset) throw notFound('Dataset not found');
     const result = await data.resolve({ id, ownerId: meta.ownerId }, dataset);
     const profile = profileTable(result.table);
-    return c.json({ profile, suggestions: suggestWidgets(profile) });
+    return c.json({ profile, suggestions: suggestWidgets(profile, { transforms: dataset.transforms }) });
   });
 
   app.get('/dashboards/:id/files', async (c) =>

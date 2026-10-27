@@ -18,6 +18,8 @@ export const LIMITS = {
   inlineRows: 2000,
   transforms: 40,
   markdown: 20_000,
+  title: 120,
+  description: 1000,
 } as const;
 
 export const IdSchema = z
@@ -136,6 +138,8 @@ export const ChartConfigSchema = z.strictObject({
   showLabels: z.boolean().default(false),
   yMin: z.number().optional(),
   yMax: z.number().optional(),
+  xMin: z.number().optional().describe('Scatter with a numeric x: fixed lower bound of the x axis'),
+  xMax: z.number().optional().describe('Scatter with a numeric x: fixed upper bound of the x axis'),
   logScale: z.boolean().default(false),
   format: FormatSchema.optional(),
   colors: z
@@ -148,30 +152,45 @@ export type ChartConfig = z.infer<typeof ChartConfigSchema>;
 
 export const KPI_AGGS = ['last', 'first', 'sum', 'avg', 'min', 'max', 'count'] as const;
 
-export const KpiConfigSchema = z.strictObject({
-  field: field,
-  agg: z.enum(KPI_AGGS).default('last'),
-  compare: z
-    .enum(['none', 'previous', 'first'])
-    .default('none')
-    .describe('Show change vs previous row or first row'),
-  goodWhen: z.enum(['up', 'down']).default('up'),
-  sparkline: z.boolean().default(false),
-  format: FormatSchema.optional(),
-});
+/**
+ * `count` counts rows, so it needs no column; given one, it counts that column's non-null values. Every other
+ * aggregate reads a column, which a JSON Schema `required` cannot express per agg: hence the refinement.
+ */
+const valueField = field.optional().describe('Value column; optional for count');
+const needsField = (config: { field?: string | undefined; agg: string }, ctx: z.RefinementCtx) => {
+  if (config.field === undefined && config.agg !== 'count') {
+    ctx.addIssue({ code: 'custom', path: ['field'], message: `agg "${config.agg}" needs a field` });
+  }
+};
+
+export const KpiConfigSchema = z
+  .strictObject({
+    field: valueField,
+    agg: z.enum(KPI_AGGS).default('last'),
+    compare: z
+      .enum(['none', 'previous', 'first'])
+      .default('none')
+      .describe('Show change vs previous row or first row'),
+    goodWhen: z.enum(['up', 'down']).default('up'),
+    sparkline: z.boolean().default(false),
+    format: FormatSchema.optional(),
+  })
+  .superRefine(needsField);
 export type KpiConfig = z.infer<typeof KpiConfigSchema>;
 
-export const GaugeConfigSchema = z.strictObject({
-  field: field,
-  agg: z.enum(KPI_AGGS).default('last'),
-  min: z.number().default(0),
-  max: z.number().default(100),
-  format: FormatSchema.optional(),
-  bands: z
-    .array(z.strictObject({ upTo: z.number(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) }))
-    .max(6)
-    .optional(),
-});
+export const GaugeConfigSchema = z
+  .strictObject({
+    field: valueField,
+    agg: z.enum(KPI_AGGS).default('last'),
+    min: z.number().default(0),
+    max: z.number().default(100),
+    format: FormatSchema.optional(),
+    bands: z
+      .array(z.strictObject({ upTo: z.number(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) }))
+      .max(6)
+      .optional(),
+  })
+  .superRefine(needsField);
 export type GaugeConfig = z.infer<typeof GaugeConfigSchema>;
 
 export const TableConfigSchema = z.strictObject({
@@ -219,8 +238,8 @@ export type LayoutItem = z.infer<typeof LayoutItemSchema>;
 
 export const DashboardDocSchema = z.strictObject({
   schemaVersion: z.literal(SCHEMA_VERSION),
-  title: z.string().min(1).max(120),
-  description: z.string().max(1000).default(''),
+  title: z.string().min(1).max(LIMITS.title),
+  description: z.string().max(LIMITS.description).default(''),
   datasets: z.array(DatasetSchema).max(LIMITS.datasets).default([]),
   widgets: z.array(WidgetSchema).max(LIMITS.widgets).default([]),
   layout: z.array(LayoutItemSchema).default([]),

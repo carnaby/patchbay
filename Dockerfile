@@ -24,8 +24,8 @@ FROM base AS runtime
 LABEL org.opencontainers.image.source="https://github.com/carnaby/patchbay" \
       org.opencontainers.image.description="Live dashboards your AI can build." \
       org.opencontainers.image.licenses="MIT"
-# Fonts for the server-side PNG renderer; tini for clean signal handling.
-RUN apt-get update && apt-get install -y --no-install-recommends fonts-inter fonts-dejavu-core tini \
+# tini for clean signal handling. No font packages: the PNG renderer ships its own (apps/server/src/render/fonts).
+RUN apt-get update && apt-get install -y --no-install-recommends tini \
   && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8787 DATA_DIR=/data
 COPY --from=build /app/package.json /app/pnpm-workspace.yaml ./
