@@ -237,7 +237,83 @@ export function Segmented<T extends string>({
   );
 }
 
-/** Right-hand side panel used by the editor (datasets, widgets, versions...). */
+/* ---------- overlays ---------- */
+
+/** Open overlays, innermost last: Escape and the Tab trap belong to the innermost one only. */
+const overlayStack: symbol[] = [];
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Keyboard and focus for anything that sits on top of the page: Escape closes it, Tab stays inside, focus moves
+ * in on open (unless a field already took it with autoFocus) and goes back to where it was on close.
+ */
+export function useOverlay(open: boolean, onClose: () => void, panel: { current: HTMLElement | null }) {
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    if (!open) return;
+    const token = Symbol('overlay');
+    overlayStack.push(token);
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const node = panel.current;
+    if (node && !node.contains(document.activeElement)) node.focus({ preventScroll: true });
+    const onKey = (e: KeyboardEvent) => {
+      if (overlayStack.at(-1) !== token || !node) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeRef.current();
+      } else if (e.key === 'Tab') {
+        const items = [...node.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+          (el) => el.offsetParent !== null,
+        );
+        const first = items[0];
+        const last = items.at(-1);
+        const active = document.activeElement;
+        if (!first || !last) {
+          e.preventDefault();
+        } else if (e.shiftKey && (active === first || active === node || !node.contains(active))) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && (active === last || !node.contains(active))) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      overlayStack.splice(overlayStack.indexOf(token), 1);
+      // Only when focus was lost with the overlay; a click that moved it elsewhere on purpose wins.
+      const active = document.activeElement;
+      if (previous?.isConnected && (!active || active === document.body)) {
+        previous.focus({ preventScroll: true });
+      }
+    };
+  }, [open, panel]);
+}
+
+const NARROW = '(max-width: 639.98px)';
+
+/** True below Tailwind's `sm` breakpoint, where popovers become bottom sheets. */
+export function useNarrowScreen() {
+  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW).matches);
+  useEffect(() => {
+    const list = window.matchMedia(NARROW);
+    const onChange = () => setNarrow(list.matches);
+    list.addEventListener('change', onChange);
+    return () => list.removeEventListener('change', onChange);
+  }, []);
+  return narrow;
+}
+
+/**
+ * Right-hand side panel used by the editor (datasets, widgets, versions...). Like every overlay it is portalled
+ * to <body>: the sticky toolbar's backdrop blur makes it the containing block of `position: fixed` descendants,
+ * which would shrink an overlay opened from there to the toolbar's 56 px.
+ */
 export function Drawer({
   open,
   title,
@@ -253,28 +329,34 @@ export function Drawer({
   footer?: ReactNode;
   width?: string;
 }) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  const panel = useRef<HTMLElement>(null);
+  const titleId = useId();
+  useOverlay(open, onClose, panel);
   if (!open) return null;
-  return (
+  return createPortal(
     <div className="fixed inset-0 z-40 flex justify-end">
       <button
         type="button"
         aria-label="Close panel"
+        tabIndex={-1}
         className="absolute inset-0 bg-black/20 dark:bg-black/50"
         onClick={onClose}
       />
       <aside
+        ref={panel}
         role="dialog"
         aria-modal="true"
-        className={clsx('relative flex h-full flex-col border-l border-line bg-page shadow-2xl', width)}
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className={clsx(
+          'relative flex h-full flex-col border-l border-line bg-page shadow-2xl outline-none',
+          width,
+        )}
       >
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-line px-5">
-          <h2 className="truncate text-[15px] font-semibold">{title}</h2>
+          <h2 id={titleId} className="truncate text-[15px] font-semibold">
+            {title}
+          </h2>
           <IconButton label="Close" onClick={onClose}>
             <X className="size-4" />
           </IconButton>
@@ -286,10 +368,15 @@ export function Drawer({
           </footer>
         ) : null}
       </aside>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
+/**
+ * A dialog: centred from `sm` up, a bottom sheet on phones so it never runs off the top of the screen. Closes with
+ * its close button, a tap on the backdrop or Escape; long content scrolls inside it.
+ */
 export function Modal({
   open,
   title,
@@ -305,38 +392,49 @@ export function Modal({
   footer?: ReactNode;
   size?: 'md' | 'lg';
 }) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  const panel = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  useOverlay(open, onClose, panel);
   if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
       <button
         type="button"
         aria-label="Close"
+        tabIndex={-1}
         className="absolute inset-0 bg-black/30 dark:bg-black/60"
         onClick={onClose}
       />
       <div
+        ref={panel}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         className={clsx(
-          'relative flex max-h-[calc(100dvh-2rem)] w-full flex-col rounded-2xl border border-line bg-page shadow-2xl',
-          size === 'lg' ? 'max-w-xl' : 'max-w-md',
+          'relative flex max-h-[85dvh] w-full flex-col rounded-t-2xl border border-line bg-page pb-[env(safe-area-inset-bottom)] shadow-2xl outline-none sm:max-h-[calc(100dvh-2rem)] sm:rounded-2xl sm:pb-0',
+          size === 'lg' ? 'sm:max-w-xl' : 'sm:max-w-md',
         )}
       >
-        <div className="shrink-0 px-6 pt-5 pb-2 text-base font-semibold">{title}</div>
-        <div className="min-h-0 overflow-y-auto px-6 pb-5 text-sm text-ink-2">{children}</div>
+        <div className="flex shrink-0 items-start gap-2 pt-3 pr-3 pb-2 pl-6 sm:pt-4">
+          <h2 id={titleId} className="min-w-0 flex-1 pt-1.5 text-base font-semibold">
+            {title}
+          </h2>
+          <IconButton label="Close" onClick={onClose} className="max-sm:size-10">
+            <X className="size-4" />
+          </IconButton>
+        </div>
+        <div className="min-h-0 overflow-y-auto overscroll-contain px-6 pb-5 text-sm text-ink-2">
+          {children}
+        </div>
         {footer ? (
           <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-line px-6 py-3">
             {footer}
           </div>
         ) : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -442,7 +540,141 @@ export function CodeBlock({ children, className }: { children: string; className
   );
 }
 
-/* ---------- menus ---------- */
+/* ---------- menus and popovers ---------- */
+
+/**
+ * Fixed coordinates for a panel hanging off a trigger, kept inside the viewport: right-aligned with the trigger,
+ * at least 8 px from either edge, below it unless the trigger sits low on the screen, and never taller than the
+ * room it has (the panel scrolls inside). `place` measures; call it before opening so the first frame is right.
+ */
+function useAnchoredPosition(
+  open: boolean,
+  trigger: { current: HTMLElement | null },
+  panel: { current: HTMLElement | null },
+  width: number,
+) {
+  const [position, setPosition] = useState<CSSProperties>({});
+  const place = useCallback(() => {
+    if (!trigger.current) return;
+    const rect = trigger.current.getBoundingClientRect();
+    const panelWidth = Math.min(width, window.innerWidth - 16);
+    const right = Math.min(Math.max(8, window.innerWidth - rect.right), window.innerWidth - panelWidth - 8);
+    const below = window.innerHeight - rect.bottom;
+    // Open upwards only when the trigger sits low on the screen (the last widget on a phone).
+    setPosition(
+      below < 280 && rect.top > below
+        ? { right, width: panelWidth, bottom: window.innerHeight - rect.top + 4, maxHeight: rect.top - 12 }
+        : { right, width: panelWidth, top: rect.bottom + 4, maxHeight: below - 12 },
+    );
+  }, [trigger, width]);
+
+  useEffect(() => {
+    if (!open) return;
+    // Follow the trigger rather than closing: a phone's momentum scroll often outlasts the tap that opened it.
+    let frame = 0;
+    const follow = (e: Event) => {
+      if (e.type === 'scroll' && panel.current?.contains(e.target as Node)) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(place);
+    };
+    window.addEventListener('resize', follow);
+    window.addEventListener('scroll', follow, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', follow);
+      window.removeEventListener('scroll', follow, true);
+    };
+  }, [open, place, panel]);
+
+  return [position, place] as const;
+}
+
+/**
+ * A small trigger that shows a few paragraphs of help next to it. From `sm` up it is a popover anchored to the
+ * trigger; on phones the same content opens as a bottom sheet (`Modal`), since a popover there has no room.
+ * Either way it is portalled, closes on a click or tap outside, with Escape or with its close button.
+ */
+export function Popover({
+  label,
+  title,
+  trigger,
+  triggerClassName,
+  width = 340,
+  children,
+}: {
+  /** Accessible name of the trigger. */
+  label: string;
+  title: ReactNode;
+  trigger: ReactNode;
+  triggerClassName?: string;
+  width?: number;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const narrow = useNarrowScreen();
+  const button = useRef<HTMLButtonElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const [position, place] = useAnchoredPosition(open && !narrow, button, panel, width);
+  const close = useCallback(() => setOpen(false), []);
+  useOverlay(open && !narrow, close, panel);
+
+  return (
+    <>
+      <button
+        ref={button}
+        type="button"
+        aria-label={label}
+        title={label}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => {
+          place();
+          setOpen((o) => !o);
+        }}
+        className={triggerClassName}
+      >
+        {trigger}
+      </button>
+      {narrow ? (
+        <Modal open={open} onClose={close} title={title}>
+          {children}
+        </Modal>
+      ) : open ? (
+        createPortal(
+          <>
+            <button
+              type="button"
+              aria-label="Close"
+              tabIndex={-1}
+              className="fixed inset-0 z-50 cursor-default"
+              onClick={close}
+            />
+            <div
+              ref={panel}
+              role="dialog"
+              aria-labelledby={titleId}
+              tabIndex={-1}
+              style={position}
+              className="fixed z-50 overflow-y-auto overscroll-contain rounded-xl border border-line bg-surface p-4 text-sm text-ink-2 shadow-xl outline-none"
+            >
+              <div className="mb-2 flex items-start gap-2">
+                <h2 id={titleId} className="min-w-0 flex-1 pt-1 font-semibold text-ink">
+                  {title}
+                </h2>
+                <IconButton label="Close" onClick={close} className="-mt-1 -mr-2 size-7">
+                  <X className="size-3.5" />
+                </IconButton>
+              </div>
+              {children}
+            </div>
+          </>,
+          document.body,
+        )
+      ) : null}
+    </>
+  );
+}
 
 const MenuClose = createContext<(refocus?: boolean) => void>(() => {});
 
@@ -457,6 +689,7 @@ export function Menu({
   children,
   className,
   touch,
+  round,
 }: {
   label: string;
   icon: ReactNode;
@@ -464,27 +697,16 @@ export function Menu({
   className?: string;
   /** A 40 px trigger, like `IconButton`'s. */
   touch?: boolean;
+  /** A circular trigger, for an avatar. */
+  round?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState<CSSProperties>({});
   const trigger = useRef<HTMLButtonElement>(null);
   const list = useRef<HTMLDivElement>(null);
+  const [position, place] = useAnchoredPosition(open, trigger, list, 260);
   const close = useCallback((refocus = true) => {
     setOpen(false);
     if (refocus) trigger.current?.focus();
-  }, []);
-
-  const place = useCallback(() => {
-    if (!trigger.current) return;
-    const rect = trigger.current.getBoundingClientRect();
-    const right = Math.max(8, window.innerWidth - rect.right);
-    const below = window.innerHeight - rect.bottom;
-    // Open upwards only when the trigger sits low on the screen (the last widget on a phone).
-    setPosition(
-      below < 280 && rect.top > below
-        ? { right, bottom: window.innerHeight - rect.top + 4, maxHeight: rect.top - 12 }
-        : { right, top: rect.bottom + 4, maxHeight: below - 12 },
-    );
   }, []);
 
   const toggle = () => {
@@ -494,23 +716,8 @@ export function Menu({
   };
 
   useEffect(() => {
-    if (!open) return;
-    list.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
-    // Follow the trigger rather than closing: a phone's momentum scroll often outlasts the tap that opened it.
-    let frame = 0;
-    const follow = (e: Event) => {
-      if (e.type === 'scroll' && list.current?.contains(e.target as Node)) return;
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(place);
-    };
-    window.addEventListener('resize', follow);
-    window.addEventListener('scroll', follow, true);
-    return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener('resize', follow);
-      window.removeEventListener('scroll', follow, true);
-    };
-  }, [open, place]);
+    if (open) list.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
+  }, [open]);
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
     if (e.key === 'Escape' || e.key === 'Tab') {
@@ -546,7 +753,8 @@ export function Menu({
         aria-expanded={open}
         onClick={toggle}
         className={clsx(
-          'inline-flex shrink-0 items-center justify-center rounded-lg text-ink-2 transition hover:bg-surface-2 hover:text-ink',
+          'inline-flex shrink-0 items-center justify-center text-ink-2 transition hover:bg-surface-2 hover:text-ink',
+          round ? 'overflow-hidden rounded-full border border-line bg-surface-2' : 'rounded-lg',
           touch ? 'size-10' : 'size-8',
           open && 'bg-surface-2 text-ink',
           className,
@@ -571,7 +779,7 @@ export function Menu({
                 tabIndex={-1}
                 onKeyDown={onKeyDown}
                 style={position}
-                className="fixed z-50 w-[min(260px,calc(100vw-16px))] overflow-y-auto rounded-xl border border-line bg-surface p-1 shadow-xl"
+                className="fixed z-50 overflow-y-auto overscroll-contain rounded-xl border border-line bg-surface p-1 shadow-xl"
               >
                 {children}
               </div>
@@ -622,4 +830,9 @@ export function MenuItem({
 
 export function MenuSeparator({ className }: { className?: string }) {
   return <hr className={clsx('mx-2 my-1 h-px border-0 bg-line', className)} />;
+}
+
+/** Plain text in a menu, such as who is signed in; not an action, so arrow keys skip it. */
+export function MenuLabel({ children }: { children: ReactNode }) {
+  return <div className="px-3 py-2">{children}</div>;
 }
