@@ -514,8 +514,9 @@ describe('MCP tools', () => {
     const list = await client.listTools();
     // Every client pays for this on every connection. It was 55.7 KB before shared subschemas were emitted once;
     // raise the budget only for a deliberate addition (33,000 -> 33,500: the reorderWidget op; -> 33,600: get_data
-    // `from`, an optional KPI/gauge field and timeBucket `dropPartial`, the last advertised twice with the transforms).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(33_600);
+    // `from`, an optional KPI/gauge field and timeBucket `dropPartial`, the last advertised twice with the transforms;
+    // -> 33,800: scatter `xMin`/`xMax` and the demo.sales `live` parameter).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(33_800);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(expect.arrayContaining(['Widget', 'Transform', 'Source']));
