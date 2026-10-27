@@ -82,6 +82,11 @@ Prompts: `build_dashboard { topic }`, `analyze_my_data { dashboardId? }`. Resour
 your own); prefer the step operations over replacing `transforms` wholesale, so concurrent edits by the user survive. Positions are optional everywhere; omitted ones are
 auto-placed.
 
+A `timeBucket` step keeps every bucket by default, including a first and last bucket the data covers only partly: a
+rolling 7-day window bucketed per day gives 8 buckets, and the last one (today so far) looks like a sharp drop.
+`"dropPartial": true` drops the first or last bucket when the data starts or ends more than one sampling interval (the
+median gap between its times) inside it. Data with fewer than two distinct times is left alone.
+
 The answer of `apply_operations`:
 
 - `changes`: one line per operation (the same text the version history shows).

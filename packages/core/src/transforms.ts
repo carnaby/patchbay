@@ -98,8 +98,12 @@ export const TransformSchema = z.discriminatedUnion('type', [
       field,
       unit: z.enum(TIME_UNITS),
       as: field.optional(),
+      // Optional rather than defaulted, so the steps of existing documents do not all gain a `false` on the next save.
+      dropPartial: z.boolean().optional(),
     })
-    .describe('Truncate a time column to the start of its bucket (UTC), usually followed by aggregate'),
+    .describe(
+      'Truncate a time column to the start of its bucket (UTC), usually followed by aggregate; dropPartial skips partial edge buckets',
+    ),
   z
     .object({
       id: StepIdSchema.optional(),
@@ -199,6 +203,57 @@ export function bucketStart(ms: number, unit: TimeUnit): number {
     case 'year':
       return Date.UTC(d.getUTCFullYear(), 0, 1);
   }
+}
+
+/** Start of the bucket after the one starting at `start`. */
+export function bucketEnd(start: number, unit: TimeUnit): number {
+  const d = new Date(start);
+  switch (unit) {
+    case 'minute':
+      return start + 60_000;
+    case 'hour':
+      return start + 3_600_000;
+    case 'day':
+      return start + 86_400_000;
+    case 'week':
+      return start + 7 * 86_400_000;
+    case 'month':
+      return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+    case 'quarter':
+      return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 3, 1);
+    case 'year':
+      return Date.UTC(d.getUTCFullYear() + 1, 0, 1);
+  }
+}
+
+/**
+ * Starts of the first and last bucket when the data does not cover them. A rolling 7-day window bucketed by day has
+ * 8 buckets, the first and the last only partly filled, and the last one looks like a sudden drop.
+ *
+ * The data cannot say what it was cut from, so its own rhythm decides: with the sampling interval taken as the median
+ * gap between distinct times, the first bucket is partial when the data starts at least one interval after the
+ * bucket starts (the reading before it would have fallen inside), the last when it ends more than one interval
+ * before the bucket ends (the next reading would still have fallen inside). Fewer than two distinct times give no
+ * rhythm, and nothing is dropped.
+ */
+function partialEdgeBuckets(rows: Row[], field: string, unit: TimeUnit): Set<number> {
+  const times = [
+    ...new Set(rows.map((r) => r[field]).filter((v): v is number => typeof v === 'number')),
+  ].sort((a, b) => a - b);
+  const partial = new Set<number>();
+  if (times.length < 2) return partial;
+  const gaps = times
+    .slice(1)
+    .map((t, i) => t - times[i]!)
+    .sort((a, b) => a - b);
+  const interval = gaps[gaps.length >> 1]!;
+  const first = times[0]!;
+  const last = times[times.length - 1]!;
+  const firstStart = bucketStart(first, unit);
+  const lastStart = bucketStart(last, unit);
+  if (first - firstStart >= interval) partial.add(firstStart);
+  if (bucketEnd(lastStart, unit) - last > interval) partial.add(lastStart);
+  return partial;
 }
 
 function typesOf(table: DataTable): Record<string, ColumnType> {
@@ -332,9 +387,11 @@ function applyStep(table: DataTable, t: Transform, step: number): DataTable {
         throw new TransformError(`Column "${t.field}" is not a time column`, step);
       }
       const as = t.as ?? t.field;
-      const rows = table.rows.map((r) => {
+      const partial = t.dropPartial ? partialEdgeBuckets(table.rows, t.field, t.unit) : new Set<number>();
+      const rows = table.rows.flatMap((r) => {
         const v = r[t.field];
-        return { ...r, [as]: typeof v === 'number' ? bucketStart(v, t.unit) : null };
+        const bucket = typeof v === 'number' ? bucketStart(v, t.unit) : null;
+        return bucket !== null && partial.has(bucket) ? [] : [{ ...r, [as]: bucket }];
       });
       return retype(rows, order.includes(as) ? order : [...order, as], { ...known, [as]: 'time' });
     }

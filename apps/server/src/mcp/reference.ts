@@ -78,7 +78,11 @@ operations below instead of resending the whole pipeline.
 - sort { by: [{ field, dir: "asc"|"desc" }] }
 - limit { n, from: "start"|"end" }
 - aggregate { groupBy: [..], metrics: [{ op, field?, as? }] }   ops: ${AGGREGATE_OPS.join(', ')}
-- timeBucket { field, unit, as? }         units: ${TIME_UNITS.join(', ')} (UTC); then aggregate by that field
+- timeBucket { field, unit, as?, dropPartial? }   units: ${TIME_UNITS.join(', ')} (UTC); then aggregate by that field
+  By default every bucket is kept, also the first and last when the data covers them only partly: a rolling 7-day
+  window per day gives 8 buckets, and the last (today so far) looks like a sharp drop. dropPartial: true drops the
+  first/last bucket when the data starts or ends more than one sampling interval (the median gap between times)
+  inside it.
 - window { op, field, as?, size?, partitionBy? }   ops: ${WINDOW_OPS.join(', ')} (sort first)
 - fillNull { fields, value }
 

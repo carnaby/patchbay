@@ -399,7 +399,7 @@ export function createMcp(deps: Deps) {
           from: z
             .enum(['start', 'end'])
             .default('start')
-            .describe('Which rows limit keeps; "end" = the newest of an ascending time series'),
+            .describe('"end": the last rows (newest of a time series)'),
         }),
         annotations: read,
       },
