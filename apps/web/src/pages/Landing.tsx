@@ -7,6 +7,7 @@ import {
   Database,
   FileSpreadsheet,
   History,
+  LayoutGrid,
   Lock,
   type LucideIcon,
   Radio,
@@ -20,7 +21,7 @@ import { Link } from 'react-router';
 import { Logo } from '../components/AppShell.tsx';
 import { Button, cx } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
-import { useDocumentTitle } from '../lib/hooks.ts';
+import { useDocumentTitle, useMe } from '../lib/hooks.ts';
 import { WidgetBody } from '../widgets/WidgetBody.tsx';
 import { CopyField } from './_shared.tsx';
 
@@ -182,6 +183,8 @@ function Cable({ className }: { className?: string }) {
 }
 
 function Hero() {
+  // Same cached query as the header's account menu, so this adds no request.
+  const { data: user } = useMe();
   return (
     <section className="relative overflow-hidden border-b border-line">
       <div
@@ -201,12 +204,24 @@ function Hero() {
             Public APIs, your own CSVs, updates in real time. Wire it up by hand, or tell your AI agent what
             you want and watch it build the dashboard over MCP.
           </p>
-          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+          <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row sm:flex-wrap">
             <Link to="/new" className="w-full sm:w-auto">
               <Button variant="accent" size="lg" className="w-full" icon={<Zap className="size-4" />}>
-                Build a dashboard, no sign-up
+                {user ? 'Build a dashboard' : 'Build a dashboard, no sign-up'}
               </Button>
             </Link>
+            {user ? (
+              <Link to="/me" className="w-full sm:w-auto">
+                <Button
+                  variant="secondary"
+                  size="lg"
+                  className="w-full"
+                  icon={<LayoutGrid className="size-4" />}
+                >
+                  My dashboards
+                </Button>
+              </Link>
+            ) : null}
             <a href="#mcp" className="w-full sm:w-auto">
               <Button variant="secondary" size="lg" className="w-full" icon={<Bot className="size-4" />}>
                 Connect your AI
@@ -267,7 +282,9 @@ function HowItWorks() {
   return (
     <section className="mx-auto max-w-6xl px-4 py-20">
       <SectionTitle eyebrow="How it works" title="Source in, rules in the middle, live charts out." />
-      <div className="relative grid gap-4 md:grid-cols-3">
+      {/* grid-cols-1 makes the track minmax(0, 1fr): an implicit auto track grows to the cards' min-content
+          width and pushed the page sideways on narrow phones. */}
+      <div className="relative grid grid-cols-1 gap-4 md:grid-cols-3">
         {STEPS.map((s, i) => (
           <div key={s.title} className="relative rounded-2xl border border-line bg-surface p-6">
             <div className="mb-4 flex items-center gap-3">
@@ -278,7 +295,7 @@ function HowItWorks() {
             </div>
             <h3 className="text-lg font-semibold">{s.title}</h3>
             <p className="mt-2 text-sm text-ink-2">{s.body}</p>
-            <div className="mt-4 truncate rounded-lg bg-surface-2 px-3 py-2 font-mono text-[12px] text-ink-2">
+            <div className="mt-4 rounded-lg bg-surface-2 px-3 py-2 font-mono text-[12px] break-words text-ink-2">
               {s.example}
             </div>
           </div>
@@ -361,7 +378,7 @@ function McpSection() {
   const url = `${typeof window === 'undefined' ? '' : window.location.origin}/mcp`;
   return (
     <section id="mcp" className="scroll-mt-16 border-y border-line bg-surface-2/50">
-      <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 py-20 lg:grid-cols-2">
+      <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-10 px-4 py-20 lg:grid-cols-2">
         <div>
           <div className="mb-2 text-xs font-semibold tracking-widest text-muted uppercase">AI-first</div>
           <h2 className="text-[clamp(1.6rem,4vw,2.3rem)] leading-tight font-semibold tracking-tight text-balance">
@@ -452,7 +469,7 @@ function Features() {
       <SectionTitle eyebrow="Everything included" title="All the dashboard features. No paywall.">
         Every feature is free for everyone. There is no pro plan and no hidden limit.
       </SectionTitle>
-      <div className="grid gap-px overflow-hidden rounded-2xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-4">
         {FEATURES.map((f) => (
           <div key={f.title} className="bg-surface p-5">
             <f.icon className="mb-3 size-5 text-ink" />
