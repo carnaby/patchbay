@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import {
   Bot,
   Check,
+  ChevronDown,
   Database,
   Globe,
   History,
@@ -45,6 +46,7 @@ import { soundWidgets, useSoundCues } from '../state/sound-cues.ts';
 import { useAutosave, useLiveEvents } from '../state/sync.ts';
 import { ConnectAiPanel } from './ConnectAiPanel.tsx';
 import { DatasetsPanel } from './DatasetsPanel.tsx';
+import { DetailsInput } from './DetailsFields.tsx';
 import { Grid } from './Grid.tsx';
 import { PresentationControls, TvInfo, TvInfoContent, useIdle, usePresentation } from './presentation.tsx';
 import { PublicSecretsDialogs, SecretsSaveBanner } from './public-secrets.tsx';
@@ -228,13 +230,13 @@ function Editor({ id }: { id: string }) {
           <Logo className="shrink-0 [&>span]:hidden sm:[&>span]:inline" />
           <div className="mx-1 hidden h-6 w-px shrink-0 bg-line sm:block lg:mx-2" />
           <div className="min-w-0 flex-1">
-            {editing ? (
-              <TitleInput />
-            ) : (
-              <h1 className="truncate text-[15px] font-semibold" title={doc.description || doc.title}>
-                {doc.title}
-              </h1>
-            )}
+            <h1 className="flex min-w-0">
+              <TitleButton
+                title={doc.title}
+                hint={access.canEdit ? 'Rename, describe or share' : doc.description || 'About and sharing'}
+                onClick={() => setPanel('share')}
+              />
+            </h1>
             <div className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
               <VisibilityBadge visibility={meta.visibility} onClick={() => setPanel('share')} />
               <span aria-hidden="true">·</span>
@@ -354,7 +356,15 @@ function Editor({ id }: { id: string }) {
         {doc.description && !editing && !presenting ? (
           <p className="mb-4 max-w-3xl text-sm text-ink-2">{doc.description}</p>
         ) : null}
-        {editing ? <DescriptionInput /> : null}
+        {editing ? (
+          <DetailsInput
+            field="description"
+            inline
+            label="Dashboard description"
+            placeholder="Add a short description (optional)"
+            className="mb-3 max-w-3xl"
+          />
+        ) : null}
         {doc.widgets.length === 0 ? (
           <div className="mx-auto max-w-2xl py-16">
             <EmptyState
@@ -411,6 +421,29 @@ function Editor({ id }: { id: string }) {
 }
 
 /**
+ * The dashboard's name, as a quiet button that opens the details and sharing panel, where it is renamed. The
+ * chevron stays visible because touch screens have no hover to reveal that the title does something.
+ */
+function TitleButton({ title, hint, onClick }: { title: string; hint: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={hint}
+      aria-haspopup="dialog"
+      className="group -ml-1 flex min-w-0 max-w-full cursor-pointer items-center gap-0.5 rounded-md px-1 text-left text-[15px] font-semibold transition hover:bg-surface-2"
+    >
+      <span className="truncate">{title}</span>
+      <span className="sr-only">. Details and sharing</span>
+      <ChevronDown
+        className="size-3.5 shrink-0 text-muted transition group-hover:text-ink group-focus-visible:text-ink"
+        aria-hidden="true"
+      />
+    </button>
+  );
+}
+
+/**
  * "Private"/"Public" next to the title. People look here when they want to share, so it opens the share panel.
  * The hit area reaches down to the toolbar's bottom edge to be easier to tap without covering the title.
  */
@@ -423,7 +456,7 @@ function VisibilityBadge({ visibility, onClick }: { visibility: 'public' | 'priv
       onClick={onClick}
       aria-label={`${label}. Change who can open this dashboard`}
       title="Change who can open this dashboard"
-      className="relative -ml-1 flex shrink-0 items-center gap-1 rounded-md px-1 font-medium text-ink-2 underline decoration-line-strong decoration-dotted underline-offset-2 transition after:absolute after:-inset-x-1 after:-top-0.5 after:-bottom-2.5 hover:bg-surface-2 hover:text-ink"
+      className="relative -ml-1 flex shrink-0 cursor-pointer items-center gap-1 rounded-md px-1 font-medium text-ink-2 underline decoration-line-strong decoration-dotted underline-offset-2 transition after:absolute after:-inset-x-1 after:-top-0.5 after:-bottom-2.5 hover:bg-surface-2 hover:text-ink"
     >
       <Icon className="size-3" aria-hidden="true" />
       {label}
@@ -544,45 +577,6 @@ function ExpandedWidget({ dashboardId, live }: { dashboardId: string; live: bool
         expanded
       />
     </div>
-  );
-}
-
-function TitleInput() {
-  const title = useEditor((s) => s.doc!.title);
-  const apply = useEditor((s) => s.apply);
-  return (
-    <input
-      aria-label="Dashboard title"
-      value={title}
-      maxLength={120}
-      onChange={(e) =>
-        e.target.value.trim() &&
-        apply([{ op: 'setMeta', title: e.target.value }], 'Renamed dashboard', { coalesce: 'title' })
-      }
-      className="w-full max-w-md truncate rounded-md bg-transparent px-1 -ml-1 text-[15px] font-semibold outline-none hover:bg-surface-2 focus:bg-surface-2"
-    />
-  );
-}
-
-function DescriptionInput() {
-  const description = useEditor((s) => s.doc!.description);
-  const apply = useEditor((s) => s.apply);
-  return (
-    <textarea
-      aria-label="Dashboard description"
-      placeholder="Add a short description (optional)"
-      value={description}
-      rows={1}
-      maxLength={1000}
-      onChange={(e) =>
-        apply([{ op: 'setMeta', description: e.target.value }], 'Edited description', {
-          coalesce: 'description',
-        })
-      }
-      className={cx(
-        'mb-3 block w-full max-w-3xl resize-none rounded-md bg-transparent px-1 -ml-1 text-sm text-ink-2 outline-none hover:bg-surface-2 focus:bg-surface-2',
-      )}
-    />
   );
 }
 

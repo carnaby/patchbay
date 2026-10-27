@@ -17,6 +17,7 @@ import {
   IdSchema,
   integrityIssues,
   LayoutItemSchema,
+  LIMITS,
   SourceSchema,
   type Widget,
   WidgetSchema,
@@ -36,8 +37,8 @@ const position = z
 export const OpSchema = z.discriminatedUnion('op', [
   z.strictObject({
     op: z.literal('setMeta'),
-    title: z.string().min(1).max(120).optional(),
-    description: z.string().max(1000).optional(),
+    title: z.string().min(1).max(LIMITS.title).optional(),
+    description: z.string().max(LIMITS.description).optional(),
   }),
   z.strictObject({ op: z.literal('addDataset'), dataset: DatasetSchema }),
   z.strictObject({
