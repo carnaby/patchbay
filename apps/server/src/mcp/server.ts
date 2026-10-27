@@ -40,9 +40,20 @@ const json = (value: unknown): ToolResult => ({
 });
 const fail = (message: string): ToolResult => ({ content: [{ type: 'text', text: message }], isError: true });
 
-/** A compact, model-friendly view of a table: columns + the first rows. */
-function sampleTable(table: DataTable, limit: number) {
-  return { columns: table.columns, rowCount: table.rows.length, rows: table.rows.slice(0, limit) };
+/** Rows shown per dataset in apply_operations' data checks: enough to spot a wrong column, small enough to batch. */
+const DATA_CHECK_SAMPLE = 3;
+
+/**
+ * Agents watching an accumulating dataset over MCP saw rows arrive at the rhythm of their own calls, not refreshSec,
+ * and could not tell why. The refresh loop only runs while a browser watches (LiveHub), so say so where they look.
+ */
+const ACCUMULATE_NOTE =
+  'The accumulate history is kept in server memory. It gains a reading every refreshSec only while someone has the dashboard open; with nobody watching, only when the data is requested (get_data, render_snapshot, this check), so it has gaps. Never faster than the source updates (a connector minRefreshSec, http 30 s). A restart clears it.';
+
+/** A compact, model-friendly view of a table: columns + the first (or last) rows. */
+function sampleTable(table: DataTable, limit: number, from: 'start' | 'end' = 'start') {
+  const rows = from === 'end' ? table.rows.slice(-limit) : table.rows.slice(0, limit);
+  return { columns: table.columns, rowCount: table.rows.length, rows };
 }
 
 let idCounter = 0;
@@ -307,14 +318,19 @@ export function createMcp(deps: Deps) {
                 ]
               : [];
           });
+          // rowCount is the full result and sampleRows a few of its rows, named apart: a bare `rows: 5` read like a
+          // row count when it was the sample size.
           const dataChecks = await Promise.all(
             touchedDatasets.map(async (d) => {
-              const r = await data.resolve(target, d, { maxRows: 5 });
+              const r = await data.resolve(target, d);
               return {
                 datasetId: d.id,
-                rows: r.table.rows.length,
+                rowCount: r.table.rows.length,
+                ...(r.truncated ? { truncated: true } : {}),
                 columns: r.table.columns.map((c) => `${c.name}:${c.type}`),
+                sampleRows: r.table.rows.slice(0, DATA_CHECK_SAMPLE),
                 error: r.error,
+                ...(d.accumulate > 0 ? { note: ACCUMULATE_NOTE } : {}),
               };
             }),
           );
@@ -380,25 +396,37 @@ export function createMcp(deps: Deps) {
           dashboardId,
           datasetId: z.string(),
           limit: z.number().int().min(1).max(500).default(50),
+          from: z
+            .enum(['start', 'end'])
+            .default('start')
+            .describe('"end": the last rows (newest of a time series)'),
         }),
         annotations: read,
       },
-      tool(SCOPES.read, async (args: { dashboardId: string; datasetId: string; limit: number }, p) => {
-        const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
-        const dataset = doc.datasets.find((d) => d.id === args.datasetId);
-        if (!dataset)
-          return fail(
-            `No dataset "${args.datasetId}". Datasets: ${doc.datasets.map((d) => d.id).join(', ') || 'none'}`,
-          );
-        const result = await data.resolve({ id: args.dashboardId, ownerId: meta.ownerId }, dataset);
-        const profile = profileTable(result.table);
-        return json({
-          ...sampleTable(result.table, args.limit),
-          fetchedAt: result.fetchedAt,
-          error: result.error,
-          profile: profile.columns.map(({ sample: _s, ...c }) => c),
-        });
-      }),
+      tool(
+        SCOPES.read,
+        async (args: { dashboardId: string; datasetId: string; limit: number; from: 'start' | 'end' }, p) => {
+          const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
+          const dataset = doc.datasets.find((d) => d.id === args.datasetId);
+          if (!dataset)
+            return fail(
+              `No dataset "${args.datasetId}". Datasets: ${doc.datasets.map((d) => d.id).join(', ') || 'none'}`,
+            );
+          const result = await data.resolve({ id: args.dashboardId, ownerId: meta.ownerId }, dataset);
+          const profile = profileTable(result.table);
+          return json({
+            ...sampleTable(result.table, args.limit, args.from),
+            from: args.from,
+            fetchedAt: result.fetchedAt,
+            error: result.error,
+            // Open browsers decide whether the history grows on its own, so tell the agent how many there are.
+            ...(dataset.accumulate > 0
+              ? { watchers: deps.hub.watchers(args.dashboardId), note: ACCUMULATE_NOTE }
+              : {}),
+            profile: profile.columns.map(({ sample: _s, ...c }) => c),
+          });
+        },
+      ),
     );
 
     server.registerTool(

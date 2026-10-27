@@ -130,11 +130,17 @@ export function actorOf(p: Principal): Actor {
   return { kind: 'anonymous', label: 'Anonymous' };
 }
 
+/** What the service needs to know about connectors (the ConnectorService, or a stand-in in tests). */
+export interface ConnectorLookup {
+  has(id: string): boolean;
+  get(id: string): { info: { minRefreshSec: number } } | undefined;
+}
+
 export class DashboardService {
   private readonly store: FolderStore;
   private readonly index: DashboardIndex;
   private readonly hub: LiveHub;
-  private readonly connectors: { has(id: string): boolean };
+  private readonly connectors: ConnectorLookup;
   private readonly secrets: Secrets;
   private readonly secretMode: SecretMode;
   private readonly users: Users;
@@ -145,7 +151,7 @@ export class DashboardService {
     store: FolderStore,
     index: DashboardIndex,
     hub: LiveHub,
-    connectors: { has(id: string): boolean },
+    connectors: ConnectorLookup,
     secrets: { store: Secrets; mode: SecretMode; users: Users },
   ) {
     this.store = store;
@@ -188,6 +194,41 @@ export class DashboardService {
     );
     const message = `Dataset "${bad.datasetId}": ${unknownConnectorMessage(bad.connector)}`;
     throw index >= 0 ? new OpError(unknownConnectorMessage(bad.connector), index) : badRequest(message);
+  }
+
+  /**
+   * Raises a new or changed refreshSec that is below its connector's minRefreshSec to that minimum, as one more
+   * operation, and says so in the change log. The connector cache would serve the same reading until then anyway; a
+   * stored "every 5 s" on a source that updates every 15 min only misleads whoever reads the document. Raising beats
+   * rejecting: the batch an agent sent still saves. Datasets the batch did not touch are left alone, so documents
+   * saved before a minimum went up keep loading and accept unrelated edits.
+   */
+  private raiseRefreshToMinimum(before: DashboardDoc, result: { doc: DashboardDoc; changes: string[] }) {
+    const previous = new Map(before.datasets.map((d) => [d.id, d]));
+    const raises = result.doc.datasets.flatMap((d) => {
+      if (d.source.kind !== 'connector' || d.refreshSec <= 0) return [];
+      const min = this.connectors.get(d.source.connector)?.info.minRefreshSec ?? 0;
+      if (d.refreshSec >= min) return [];
+      const old = previous.get(d.id);
+      const untouched =
+        old?.refreshSec === d.refreshSec && JSON.stringify(old.source) === JSON.stringify(d.source);
+      return untouched ? [] : [{ dataset: d, connector: d.source.connector, min }];
+    });
+    if (raises.length === 0) return result;
+    const raised = applyOps(
+      result.doc,
+      raises.map(({ dataset, min }) => ({ op: 'updateDataset', id: dataset.id, set: { refreshSec: min } })),
+    );
+    return {
+      doc: raised.doc,
+      changes: [
+        ...result.changes,
+        ...raises.map(
+          ({ dataset, connector, min }) =>
+            `Raised refreshSec of dataset "${dataset.name}" from ${dataset.refreshSec} s to ${min} s, the minimum of the ${connector} connector`,
+        ),
+      ],
+    };
   }
 
   private publicMeta(m: StoredMeta, title: string): DashboardMeta {
@@ -379,8 +420,9 @@ export class DashboardService {
     if (options.dryRun) {
       const { meta, doc } = await this.load(id);
       if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
-      const result = applyOps(doc, ops);
-      this.checkOpsConnectors(doc, result.doc, ops);
+      const applied = applyOps(doc, ops);
+      this.checkOpsConnectors(doc, applied.doc, ops);
+      const result = this.raiseRefreshToMinimum(doc, applied);
       // A dry run answers exactly like the save would, so agents learn about secret rules before saving.
       this.checkSecretRefs(meta, doc, result.doc, p, options);
       return { envelope: this.envelope(meta, result.doc, p), changes: result.changes, dryRun: true };
@@ -392,9 +434,9 @@ export class DashboardService {
         if (options.baseVersion !== undefined && options.baseVersion !== meta.version) {
           throw new ConflictError(this.envelope(meta, doc, p));
         }
-        const result = applyOps(doc, ops);
-        this.checkOpsConnectors(doc, result.doc, ops);
-        return result;
+        const applied = applyOps(doc, ops);
+        this.checkOpsConnectors(doc, applied.doc, ops);
+        return this.raiseRefreshToMinimum(doc, applied);
       },
       options,
     );
