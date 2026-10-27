@@ -155,3 +155,18 @@ export function soundRuleMissingColumns(rule: SoundRule, table: DataTable): stri
     return [];
   }
 }
+
+/**
+ * One line for the change log. Agents read `changes` instead of fetching the document again, so a sound cue is
+ * spelled out there, including the defaults it got.
+ */
+export function describeSoundRule(rule: SoundRule): string {
+  const t = rule.trigger;
+  const when =
+    t.kind === 'condition'
+      ? `when \`${t.expr}\` becomes true on the last row`
+      : t.key
+        ? `when rows with a new "${t.key}" appear`
+        : 'when the row count grows';
+  return `"${rule.sound}" ${when} (volume ${rule.volume}, cooldown ${rule.cooldownSec} s)`;
+}

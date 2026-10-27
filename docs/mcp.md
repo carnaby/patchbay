@@ -81,6 +81,16 @@ Prompts: `build_dashboard { topic }`, `analyze_my_data { dashboardId? }`. Resour
 your own); prefer the step operations over replacing `transforms` wholesale, so concurrent edits by the user survive. Positions are optional everywhere; omitted ones are
 auto-placed.
 
+`changes` in the answer has one line per operation. Sound cues are spelled out whenever an operation adds, changes or
+removes one (trigger, sound, volume and cooldown, defaults included), so there is no need to call `get_dashboard` to
+check them:
+
+```text
+Added kpi widget "Strongest"; sound cue: "alert" when `magnitude >= 6` becomes true on the last row (volume 0.7, cooldown 10 s)
+Widget "Orders": sound cue set to "bell" when rows with a new "order_id" appear (volume 0.7, cooldown 10 s)
+Widget "Orders": sound cue removed
+```
+
 ## Secrets
 
 Some APIs need a key. When the operator turned the feature on (`SECRETS=admins` or `users`, see

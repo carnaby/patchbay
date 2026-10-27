@@ -577,6 +577,9 @@ describe('MCP tools', () => {
     expect(applied.isError).toBeFalsy();
     const result = JSON.parse(text(applied));
     expect(result.changes).toHaveLength(operations.length);
+    // Sound cues are spelled out, so the agent need not fetch the document to check them.
+    expect(result.changes[3]).toContain('sound cue: "alert" when `max_mag >= 6` becomes true');
+    expect(result.changes[5]).toContain('its sound cue was removed');
     expect(result.dataChecks[0]).toMatchObject({ datasetId: 'daily' });
     expect(result.dataChecks[0].error).toBeUndefined();
     expect(result.dataChecks[0].rows).toBeGreaterThan(0);
