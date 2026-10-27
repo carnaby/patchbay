@@ -488,8 +488,8 @@ describe('MCP tools', () => {
   it('keeps tools/list compact', async () => {
     const list = await client.listTools();
     // Every client pays for this on every connection. It was 55.7 KB before shared subschemas were emitted once;
-    // raise the budget only for a deliberate addition.
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(33_000);
+    // raise the budget only for a deliberate addition (33,000 -> 33,500: the reorderWidget op).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(33_500);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(expect.arrayContaining(['Widget', 'Transform', 'Source']));
