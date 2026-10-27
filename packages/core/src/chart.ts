@@ -171,6 +171,8 @@ function cartesianOption(
     theme,
     { entityColors: opts.entityColors, other: folded ? OTHER : undefined },
   );
+  const labelled =
+    config.showLabels || (opts.static && !multi && table.rows.length <= 12 && markType === 'bar');
   const series = groups.map((g, idx) => {
     const data =
       axisKind === 'category'
@@ -211,7 +213,7 @@ function cartesianOption(
     }
     if (markType === 'scatter') s.itemStyle = { borderColor: theme.surface, borderWidth: 1, opacity: 0.85 };
     if (config.stacked && markType !== 'scatter') s.stack = 'total';
-    if (config.showLabels || (opts.static && !multi && table.rows.length <= 12 && markType === 'bar')) {
+    if (labelled) {
       s.label = {
         show: true,
         position: config.horizontal ? 'right' : 'top',
@@ -261,6 +263,21 @@ function cartesianOption(
     series[0].markLine = marks.markLine;
     widenForLines(valueAxis, config, marks.values);
   }
+  // containLabel reserves room for axis labels only. On horizontal bars the value labels sit right of the bars
+  // and a reference line's label is centred on it at the top, so near the value axis end both would be cut off.
+  let right = 16;
+  if (horizontal && labelled) {
+    const widest = Math.max(
+      0,
+      ...groups
+        .flatMap((g) =>
+          g.points.map(([, y]) => (typeof y === 'number' ? formatNumber(y, config.format) : '')),
+        )
+        .map((t) => t.length),
+    );
+    right = Math.max(right, textWidth(widest, 12) + 10);
+  }
+  if (horizontal && marks) right = Math.max(right, Math.ceil(textWidth(marks.longest, 11) / 2) + 6);
   return {
     ...base,
     tooltip: tooltip(theme, isScatter ? 'item' : 'axis', config),
@@ -275,7 +292,7 @@ function cartesianOption(
           textStyle: { color: theme.textSecondary },
         }
       : { show: false },
-    grid: { left: 8, right: 16, top: showLegend ? 32 : 16, bottom: 8, containLabel: true },
+    grid: { left: 8, right, top: showLegend ? 32 : 16, bottom: 8, containLabel: true },
     xAxis: horizontal ? valueAxis : categoryAxis,
     yAxis: horizontal ? { ...categoryAxis, inverse: true } : valueAxis,
     series,
@@ -284,16 +301,24 @@ function cartesianOption(
 
 const STAT_NAMES = { avg: 'Average', median: 'Median', min: 'Minimum', max: 'Maximum' } as const;
 
+/**
+ * A generous estimate of a label's width in px. The option is built without a canvas to measure text, and the
+ * browser and the PNG renderer must reserve the same room, so a per-character width it is (digits and Latin text
+ * in the UI font stay below 0.6 em).
+ */
+const textWidth = (chars: number, fontSize: number) => Math.ceil(chars * fontSize * 0.6);
+
 /** Dashed benchmark lines on the value axis, drawn as a markLine on the first series. */
 function referenceMarks(
   config: ChartConfig,
   table: DataTable,
   theme: ChartTheme,
   horizontal: boolean,
-): { markLine: Option; values: number[] } | null {
+): { markLine: Option; values: number[]; longest: number } | null {
   if (!config.referenceLines?.length) return null;
   if (!(REFERENCE_LINE_KINDS as readonly string[]).includes(config.kind)) return null;
   const values: number[] = [];
+  let longest = 0;
   const data = config.referenceLines.flatMap((line) => {
     const value = referenceLineValue(line, config, table);
     if (value === null) return [];
@@ -301,6 +326,7 @@ function referenceMarks(
     const color = line.color ?? 'neutral';
     const name = line.label ?? (line.stat ? STAT_NAMES[line.stat] : '');
     const text = `${name ? `${name} · ` : ''}${formatNumber(value, config.format)}`;
+    longest = Math.max(longest, text.length);
     return [
       {
         [horizontal ? 'xAxis' : 'yAxis']: value,
@@ -311,6 +337,9 @@ function referenceMarks(
           formatter: () => text,
           color: resolveColor(color, theme, 'text'),
           fontSize: 11,
+          // The markLine is drawn above the series, so a halo keeps its label readable where it crosses a line or bar.
+          textBorderColor: theme.surface,
+          textBorderWidth: 3,
           // Horizontal bars invert the category axis, so a vertical line starts at the top, clear of the axis labels.
           position: horizontal ? 'start' : 'insideEndTop',
         },
@@ -318,7 +347,7 @@ function referenceMarks(
     ];
   });
   if (!data.length) return null;
-  return { markLine: { silent: true, symbol: 'none', animation: false, data }, values };
+  return { markLine: { silent: true, symbol: 'none', animation: false, data }, values, longest };
 }
 
 /**
