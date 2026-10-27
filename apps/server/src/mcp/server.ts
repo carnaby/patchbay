@@ -43,6 +43,13 @@ const fail = (message: string): ToolResult => ({ content: [{ type: 'text', text:
 /** Rows shown per dataset in apply_operations' data checks: enough to spot a wrong column, small enough to batch. */
 const DATA_CHECK_SAMPLE = 3;
 
+/**
+ * Agents watching an accumulating dataset over MCP saw rows arrive at the rhythm of their own calls, not refreshSec,
+ * and could not tell why. The refresh loop only runs while a browser watches (LiveHub), so say so where they look.
+ */
+const ACCUMULATE_NOTE =
+  'The accumulate history is kept in server memory. It gains a reading every refreshSec only while someone has the dashboard open; with nobody watching, only when the data is requested (get_data, render_snapshot, this check), so it has gaps. Never faster than the source updates (a connector minRefreshSec, http 30 s). A restart clears it.';
+
 /** A compact, model-friendly view of a table: columns + the first (or last) rows. */
 function sampleTable(table: DataTable, limit: number, from: 'start' | 'end' = 'start') {
   const rows = from === 'end' ? table.rows.slice(-limit) : table.rows.slice(0, limit);
@@ -323,6 +330,7 @@ export function createMcp(deps: Deps) {
                 columns: r.table.columns.map((c) => `${c.name}:${c.type}`),
                 sampleRows: r.table.rows.slice(0, DATA_CHECK_SAMPLE),
                 error: r.error,
+                ...(d.accumulate > 0 ? { note: ACCUMULATE_NOTE } : {}),
               };
             }),
           );
@@ -411,6 +419,10 @@ export function createMcp(deps: Deps) {
             from: args.from,
             fetchedAt: result.fetchedAt,
             error: result.error,
+            // Open browsers decide whether the history grows on its own, so tell the agent how many there are.
+            ...(dataset.accumulate > 0
+              ? { watchers: deps.hub.watchers(args.dashboardId), note: ACCUMULATE_NOTE }
+              : {}),
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
           });
         },

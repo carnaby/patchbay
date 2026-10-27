@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { fromJsonSchema, type JsonSchemaType } from '@modelcontextprotocol/server';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
@@ -748,6 +748,56 @@ describe('MCP tools', () => {
     const end = await read({ from: 'end' });
     expect(end.rowCount).toBe(10);
     expect(end.rows.map((r: { v: number }) => r.v)).toEqual([7, 8, 9]);
+  });
+
+  it('grows accumulate history without viewers only when the data is requested, and says so', async () => {
+    const id = JSON.parse(
+      text(await client.callTool({ name: 'create_dashboard', arguments: { title: 'ISS track' } })),
+    ).dashboardId;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const applied = JSON.parse(
+        text(
+          await client.callTool({
+            name: 'apply_operations',
+            arguments: {
+              dashboardId: id,
+              operations: [
+                {
+                  op: 'addDataset',
+                  dataset: {
+                    id: 'iss',
+                    name: 'ISS',
+                    source: { kind: 'connector', connector: 'iss.position', params: {} },
+                    refreshSec: 5,
+                    accumulate: 100,
+                  },
+                },
+              ],
+            },
+          }),
+        ),
+      );
+      // The data check itself loaded the first reading.
+      expect(applied.dataChecks[0]).toMatchObject({ rowCount: 1, note: expect.stringContaining('memory') });
+      const rows = async () => {
+        const r = JSON.parse(
+          text(await client.callTool({ name: 'get_data', arguments: { dashboardId: id, datasetId: 'iss' } })),
+        );
+        expect(r.watchers).toBe(0);
+        expect(r.note).toContain('only when the data is requested');
+        return r.rowCount as number;
+      };
+      // Nobody watches, so no refresh loop runs; a request within the connector's 5 s adds nothing.
+      expect(await rows()).toBe(1);
+      vi.setSystemTime(Date.now() + 60_000);
+      // A minute later there is exactly one new reading, from this request, not twelve from refreshSec: 5.
+      expect(await rows()).toBe(2);
+      expect(await rows()).toBe(2);
+      expect(deps.hub.watchers(id)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reports invalid operations without changing anything', async () => {

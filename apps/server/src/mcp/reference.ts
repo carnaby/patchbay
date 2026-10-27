@@ -46,6 +46,12 @@ ${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows.
 - refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers.
 - accumulate N keeps a rolling history of the last N rows across refreshes and adds a "fetched_at" time column.
   Use it to chart sources that only return the current value (weather.current, crypto.price, iss.position).
+  The history lives in server memory and gains a reading only when the dataset is loaded and the source has a new
+  one. While a browser has the dashboard open, the server loads it every refreshSec. With nobody watching nothing
+  refreshes: readings are added only when the data is requested (get_data, render_snapshot, the data check of
+  apply_operations, a page load), so the history follows those requests and has gaps. A connector has a new reading
+  at most every minRefreshSec, an http source every 30 s. A server restart or a new source starts it afresh. Inline
+  and upload sources count as new on every load: do not accumulate them.
 
 ## Secrets (http sources)
 Some APIs need a key. The user saves keys under Settings → Secrets; you can list them (list_secrets) but never read,
