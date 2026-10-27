@@ -6,27 +6,47 @@ import {
   Database,
   Globe,
   History,
+  Info,
+  LayoutGrid,
   Lock,
+  LogIn,
   MonitorPlay,
+  Moon,
+  MoreHorizontal,
   Pencil,
   Plus,
   Redo2,
   Share2,
+  Sun,
   Undo2,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import { Logo, ThemeToggle, UserMenu } from '../components/AppShell.tsx';
-import { Badge, Button, cx, EmptyState, IconButton, Spinner } from '../components/ui.tsx';
+import {
+  Badge,
+  Button,
+  cx,
+  EmptyState,
+  IconButton,
+  Menu,
+  MenuItem,
+  MenuSeparator,
+  Modal,
+  Spinner,
+} from '../components/ui.tsx';
 import { ApiError, api } from '../lib/api.ts';
-import { relativeTime, useDocumentTitle } from '../lib/hooks.ts';
+import { relativeTime, setTheme, useDocumentTitle, useMe, useTheme } from '../lib/hooks.ts';
+import { setMuted, useSoundSettings } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
 import { soundWidgets, useSoundCues } from '../state/sound-cues.ts';
 import { useAutosave, useLiveEvents } from '../state/sync.ts';
 import { ConnectAiPanel } from './ConnectAiPanel.tsx';
 import { DatasetsPanel } from './DatasetsPanel.tsx';
 import { Grid } from './Grid.tsx';
-import { PresentationControls, TvInfo, useIdle, usePresentation } from './presentation.tsx';
+import { PresentationControls, TvInfo, TvInfoContent, useIdle, usePresentation } from './presentation.tsx';
 import { PublicSecretsDialogs, SecretsSaveBanner } from './public-secrets.tsx';
 import { SharePanel } from './SharePanel.tsx';
 import { MuteButton } from './sound-controls.tsx';
@@ -196,9 +216,17 @@ function Editor({ id }: { id: string }) {
           presenting && 'hidden',
         )}
       >
-        <div className="flex h-14 items-center gap-2 px-3 sm:px-4">
-          <Logo className="[&>span]:hidden sm:[&>span]:inline" />
-          <div className="mx-2 hidden h-6 w-px bg-line sm:block" />
+        {/*
+          What stays visible as the screen narrows (nothing may overlap, everything stays reachable):
+          - always: logo mark, title + status line, Edit/Done, and below lg the "More" menu;
+          - sm and up: the labelled Share button, theme and account;
+          - lg and up: history, AI, present, TV info and mute inline, plus the editing tools in this row.
+          Below lg the editing tools get a row of their own; everything else lives in the "More" menu.
+          Below sm, controls grow to 40 px touch targets.
+        */}
+        <div className="flex h-14 items-center gap-1.5 px-3 sm:gap-2 sm:px-4">
+          <Logo className="shrink-0 [&>span]:hidden sm:[&>span]:inline" />
+          <div className="mx-1 hidden h-6 w-px shrink-0 bg-line sm:block lg:mx-2" />
           <div className="min-w-0 flex-1">
             {editing ? (
               <TitleInput />
@@ -207,27 +235,21 @@ function Editor({ id }: { id: string }) {
                 {doc.title}
               </h1>
             )}
-            <div className="flex items-center gap-2 text-[11.5px] text-muted">
-              {meta.visibility === 'private' ? (
-                <span className="flex items-center gap-1">
-                  <Lock className="size-3" /> Private
-                </span>
-              ) : (
-                <span className="flex items-center gap-1">
-                  <Globe className="size-3" /> Public
-                </span>
-              )}
+            <div className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
+              <VisibilityBadge visibility={meta.visibility} onClick={() => setPanel('share')} />
               <span aria-hidden="true">·</span>
-              {access.canEdit ? <span>{status}</span> : <span>Updated {relativeTime(meta.updatedAt)}</span>}
+              <span className="min-w-0 truncate">
+                {access.canEdit ? status : `Updated ${relativeTime(meta.updatedAt)}`}
+              </span>
               {lastRemote ? (
-                <span className="hidden truncate md:inline">
+                <span className="hidden min-w-0 truncate md:inline">
                   · {lastRemote.actor.label} {relativeTime(new Date(lastRemote.at).toISOString())}
                 </span>
               ) : null}
             </div>
           </div>
           {access.canEdit && editing ? (
-            <div className="hidden items-center sm:flex">
+            <div className="hidden shrink-0 items-center lg:flex">
               <IconButton label="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo}>
                 <Undo2 className="size-4" />
               </IconButton>
@@ -246,49 +268,79 @@ function Editor({ id }: { id: string }) {
               <Button size="sm" variant="ghost" icon={<Plus className="size-4" />} onClick={addWidget}>
                 Widget
               </Button>
+              <div className="mx-1 h-6 w-px bg-line" />
             </div>
           ) : null}
-          <IconButton label="Version history" onClick={() => setPanel('versions')}>
-            <History className="size-4" />
-          </IconButton>
-          <IconButton label="Connect an AI agent" onClick={() => setPanel('ai')}>
-            <Bot className="size-4" />
-          </IconButton>
-          <IconButton label="Share" onClick={() => setPanel('share')}>
-            <Share2 className="size-4" />
-          </IconButton>
-          {hasSounds ? <MuteButton /> : null}
-          <IconButton label="Present on a screen (F)" onClick={() => void presentation.start()}>
-            <MonitorPlay className="size-4" />
-          </IconButton>
-          <TvInfo dashboardId={id} isPrivate={meta.visibility === 'private'} />
+          <div className="hidden shrink-0 items-center lg:flex">
+            <IconButton label="Version history" onClick={() => setPanel('versions')}>
+              <History className="size-4" />
+            </IconButton>
+            <IconButton label="Connect an AI agent" onClick={() => setPanel('ai')}>
+              <Bot className="size-4" />
+            </IconButton>
+            {hasSounds ? <MuteButton /> : null}
+            <IconButton label="Present on a screen (F)" onClick={() => void presentation.start()}>
+              <MonitorPlay className="size-4" />
+            </IconButton>
+            <TvInfo dashboardId={id} isPrivate={meta.visibility === 'private'} />
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            icon={<Share2 className="size-4" />}
+            onClick={() => setPanel('share')}
+            className="max-sm:hidden"
+          >
+            Share
+          </Button>
           {access.canEdit ? (
             <Button
               size="sm"
               variant={editing ? 'primary' : 'secondary'}
               icon={editing ? <Check className="size-4" /> : <Pencil className="size-4" />}
               onClick={() => setEditing(!editing)}
+              className="max-sm:h-10"
             >
               {editing ? 'Done' : 'Edit'}
             </Button>
           ) : null}
-          <div className="hidden items-center gap-1 sm:flex">
+          <ToolbarMenu
+            dashboardId={id}
+            isPrivate={meta.visibility === 'private'}
+            hasSounds={hasSounds}
+            onPanel={setPanel}
+            onPresent={() => void presentation.start()}
+          />
+          <div className="hidden shrink-0 items-center gap-1 sm:flex">
             <ThemeToggle />
             <UserMenu />
           </div>
         </div>
-        {editing ? (
-          <div className="flex items-center gap-2 border-t border-line px-4 py-1.5 text-xs text-muted sm:hidden">
-            <IconButton label="Undo" onClick={undo} disabled={!canUndo}>
+        {access.canEdit && editing ? (
+          <div className="flex items-center gap-1 border-t border-line px-3 py-1 sm:px-4 lg:hidden">
+            <IconButton label="Undo" onClick={undo} disabled={!canUndo} className="max-sm:size-10">
               <Undo2 className="size-4" />
             </IconButton>
-            <IconButton label="Redo" onClick={redo} disabled={!canRedo}>
+            <IconButton label="Redo" onClick={redo} disabled={!canRedo} className="max-sm:size-10">
               <Redo2 className="size-4" />
             </IconButton>
-            <Button size="sm" variant="ghost" onClick={() => setPanel('data')}>
+            <div className="mx-1 h-6 w-px bg-line" />
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Database className="size-4" />}
+              onClick={() => setPanel('data')}
+              className="max-sm:h-10"
+            >
               Data
             </Button>
-            <Button size="sm" variant="ghost" onClick={addWidget}>
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Plus className="size-4" />}
+              onClick={addWidget}
+              className="max-sm:h-10"
+            >
               Widget
             </Button>
           </div>
@@ -355,6 +407,119 @@ function Editor({ id }: { id: string }) {
         onCreated={(wid) => setWidgetId(wid)}
       />
     </div>
+  );
+}
+
+/**
+ * "Private"/"Public" next to the title. People look here when they want to share, so it opens the share panel.
+ * The hit area reaches down to the toolbar's bottom edge to be easier to tap without covering the title.
+ */
+function VisibilityBadge({ visibility, onClick }: { visibility: 'public' | 'private'; onClick: () => void }) {
+  const Icon = visibility === 'private' ? Lock : Globe;
+  const label = visibility === 'private' ? 'Private' : 'Public';
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={`${label}. Change who can open this dashboard`}
+      title="Change who can open this dashboard"
+      className="relative -ml-1 flex shrink-0 items-center gap-1 rounded-md px-1 font-medium text-ink-2 underline decoration-line-strong decoration-dotted underline-offset-2 transition after:absolute after:-inset-x-1 after:-top-0.5 after:-bottom-2.5 hover:bg-surface-2 hover:text-ink"
+    >
+      <Icon className="size-3" aria-hidden="true" />
+      {label}
+    </button>
+  );
+}
+
+/**
+ * Overflow for whatever the toolbar has no room for at the current width. Items that are visible in the toolbar
+ * at a breakpoint are hidden here at that breakpoint, so nothing shows up twice.
+ */
+function ToolbarMenu({
+  dashboardId,
+  isPrivate,
+  hasSounds,
+  onPanel,
+  onPresent,
+}: {
+  dashboardId: string;
+  isPrivate: boolean;
+  hasSounds: boolean;
+  onPanel: (panel: Panel) => void;
+  onPresent: () => void;
+}) {
+  const [tvOpen, setTvOpen] = useState(false);
+  const { muted } = useSoundSettings();
+  const theme = useTheme();
+  const { data: me } = useMe();
+  const navigate = useNavigate();
+  const location = useLocation();
+  return (
+    <>
+      <Menu
+        label="More actions"
+        icon={<MoreHorizontal className="size-4" />}
+        className="max-sm:size-10 lg:hidden"
+      >
+        <MenuItem
+          icon={<Share2 className="size-4" />}
+          onSelect={() => onPanel('share')}
+          className="sm:hidden"
+        >
+          Share
+        </MenuItem>
+        <MenuItem icon={<History className="size-4" />} onSelect={() => onPanel('versions')}>
+          Version history
+        </MenuItem>
+        <MenuItem icon={<Bot className="size-4" />} onSelect={() => onPanel('ai')}>
+          Connect an AI agent
+        </MenuItem>
+        <MenuItem icon={<MonitorPlay className="size-4" />} onSelect={onPresent}>
+          Present on a screen
+        </MenuItem>
+        <MenuItem icon={<Info className="size-4" />} onSelect={() => setTvOpen(true)}>
+          Showing this on a TV
+        </MenuItem>
+        {hasSounds ? (
+          <MenuItem
+            icon={muted ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
+            onSelect={() => setMuted(!muted)}
+          >
+            {muted ? 'Unmute sounds on this screen' : 'Mute sounds on this screen'}
+          </MenuItem>
+        ) : null}
+        <MenuSeparator className="sm:hidden" />
+        <MenuItem
+          icon={theme === 'dark' ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          onSelect={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          className="sm:hidden"
+        >
+          {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+        </MenuItem>
+        {me ? (
+          <MenuItem
+            icon={<LayoutGrid className="size-4" />}
+            onSelect={() => navigate('/me')}
+            className="sm:hidden"
+          >
+            My dashboards
+          </MenuItem>
+        ) : (
+          <MenuItem
+            icon={<LogIn className="size-4" />}
+            onSelect={() =>
+              navigate(`/login?returnTo=${encodeURIComponent(location.pathname + location.search)}`)
+            }
+            className="sm:hidden"
+          >
+            Sign in
+          </MenuItem>
+        )}
+      </Menu>
+      <Modal open={tvOpen} onClose={() => setTvOpen(false)} title="Showing this on a TV">
+        <TvInfoContent dashboardId={dashboardId} isPrivate={isPrivate} />
+      </Modal>
+    </>
   );
 }
 
