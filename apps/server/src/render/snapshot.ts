@@ -80,12 +80,17 @@ function echartsSvg(option: Record<string, unknown>, width: number, height: numb
   }
 }
 
-/** Places an SVG document inside a parent SVG at (x, y). */
-function nest(svg: string, x: number, y: number, width: number, height: number): string {
+/**
+ * Places an SVG document inside a parent SVG at (x, y). It clips to its box unless `clip` is false: resvg drops a
+ * clipped `<svg>` inside another clipped `<svg>` altogether once its content reaches far beyond the box, which is
+ * what a zoomed-in map is (the whole world's land, scaled up).
+ */
+function nest(svg: string, x: number, y: number, width: number, height: number, clip = true): string {
   const start = svg.indexOf('<svg');
   const end = svg.indexOf('>', start);
-  const attrs = svg.slice(start + 4, end).replace(/\s(width|height|x|y)="[^"]*"/g, '');
-  return `<svg x="${x}" y="${y}" width="${width}" height="${height}"${attrs}>${svg.slice(end + 1)}`;
+  const attrs = svg.slice(start + 4, end).replace(/\s(width|height|x|y|overflow)="[^"]*"/g, '');
+  const overflow = clip ? '' : ' overflow="visible"';
+  return `<svg x="${x}" y="${y}" width="${width}" height="${height}"${overflow}${attrs}>${svg.slice(end + 1)}`;
 }
 
 function text(
@@ -307,7 +312,8 @@ export function renderDashboardPng(
     const w = item.w * col + (item.w - 1) * GAP;
     const h = item.h * ROW_HEIGHT - GAP;
     const result = 'datasetId' in widget ? results.get(widget.datasetId) : undefined;
-    parts.push(nest(card(widget, result, theme, w, h, doc.colors), x, y, w, h));
+    // A map card is bounded by construction (title, then the map, which clips itself), so it may stay unclipped.
+    parts.push(nest(card(widget, result, theme, w, h, doc.colors), x, y, w, h, widget.type !== 'map'));
   }
   parts.push('</svg>');
   return toPng(parts.join(''));

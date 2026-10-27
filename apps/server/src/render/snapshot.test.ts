@@ -4,6 +4,7 @@ import {
   type DatasetResult,
   emptyDashboard,
   inferTable,
+  parseDashboard,
   resolveColor,
   THEMES,
   type WidgetInput,
@@ -246,6 +247,51 @@ describe('map snapshots', () => {
     expect(night[0]!).toBeLessThan(day[0]! - 15);
     // The track runs along the equator in the first palette colour.
     expect(near(pixelAt(img, -20, 0, 26), '#2a78d6', 40)).toBe(true);
+  });
+
+  it('draws a zoomed-in map inside a dashboard, with the dashboard colour of each entity', () => {
+    // Two cities a few degrees apart: `fit` zooms in about twelvefold, so the land runs far beyond the card.
+    const rows = [
+      { city: 'Bratislava', lat: 48.15, lon: 17.11 },
+      { city: 'Kosice', lat: 48.72, lon: 21.26 },
+    ];
+    const doc = parseDashboard({
+      ...emptyDashboard('Cities'),
+      colors: { Kosice: 'accent-5' },
+      datasets: [
+        {
+          id: 'cities',
+          name: 'Cities',
+          source: { kind: 'inline', rows },
+        },
+      ],
+      widgets: [
+        {
+          id: 'map',
+          type: 'map',
+          datasetId: 'cities',
+          config: { lat: 'lat', lon: 'lon', series: 'city' },
+        },
+      ],
+      layout: [{ i: 'map', x: 0, y: 0, w: 6, h: 5 }],
+    });
+    const results = new Map([['cities', { ...mapResult(rows), datasetId: 'cities' }]]);
+    const img = decodePng(renderDashboardPng(doc, results));
+    // Dashboard snapshots are not scaled, and pixelsOf expects widget coordinates: divide the card's box by SCALE.
+    const card = { x: 12 / SCALE, y: 64 / SCALE, w: 620 / SCALE, h: 388 / SCALE };
+    expect(pixelsOf(img, '#e1e0d9', card)).toBeGreaterThan(20_000);
+    // Dots are drawn at 85 % opacity over the land: Bratislava takes the first free slot, Kosice its dashboard colour.
+    const onLand = (hex: string) =>
+      `#${[1, 3, 5]
+        .map(
+          (i) =>
+            Number.parseInt(hex.slice(i, i + 2), 16) * 0.85 +
+            Number.parseInt('e1e0d9'.slice(i - 1, i + 1), 16) * 0.15,
+        )
+        .map((v) => Math.round(v).toString(16).padStart(2, '0'))
+        .join('')}`;
+    expect(pixelsOf(img, onLand(THEMES.light.categorical[0]!), card)).toBeGreaterThan(10);
+    expect(pixelsOf(img, onLand(THEMES.light.categorical[4]!), card)).toBeGreaterThan(10);
   });
 });
 
