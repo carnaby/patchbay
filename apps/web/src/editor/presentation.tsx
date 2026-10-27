@@ -5,7 +5,7 @@
  */
 import { Copy, Info, Minimize2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Button, cx, toast } from '../components/ui.tsx';
+import { Button, cx, Popover, toast } from '../components/ui.tsx';
 import { EnableSoundButton, MuteButton } from './sound-controls.tsx';
 
 const IDLE_MS = 2500;
@@ -154,38 +154,15 @@ export function PresentationControls({
 
 /** A small (i) next to the present button: how to put this dashboard on a TV or wall screen. */
 export function TvInfo({ dashboardId, isPrivate }: { dashboardId: string; isPrivate: boolean }) {
-  const [open, setOpen] = useState(false);
   return (
-    <div className="relative">
-      <button
-        type="button"
-        aria-label="Showing this on a TV"
-        title="Showing this on a TV"
-        aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-        className="flex size-5 items-center justify-center rounded-full text-muted transition hover:bg-surface-2 hover:text-ink"
-      >
-        <Info className="size-3.5" />
-      </button>
-      {open ? (
-        <>
-          <button
-            type="button"
-            aria-label="Close"
-            className="fixed inset-0 z-30 cursor-default"
-            onClick={() => setOpen(false)}
-          />
-          <div
-            role="dialog"
-            aria-label="Showing this on a TV"
-            className="absolute right-0 z-40 mt-2 w-[min(340px,calc(100vw-24px))] rounded-xl border border-line bg-surface p-4 text-sm text-ink-2 shadow-xl"
-          >
-            <div className="mb-2 font-semibold text-ink">Showing this on a TV</div>
-            <TvInfoContent dashboardId={dashboardId} isPrivate={isPrivate} />
-          </div>
-        </>
-      ) : null}
-    </div>
+    <Popover
+      label="Showing this on a TV"
+      title="Showing this on a TV"
+      trigger={<Info className="size-3.5" />}
+      triggerClassName="flex size-5 items-center justify-center rounded-full text-muted transition hover:bg-surface-2 hover:text-ink aria-expanded:bg-surface-2 aria-expanded:text-ink"
+    >
+      <TvInfoContent dashboardId={dashboardId} isPrivate={isPrivate} />
+    </Popover>
   );
 }
 
