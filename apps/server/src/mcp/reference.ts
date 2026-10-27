@@ -43,9 +43,16 @@ ${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows.
 - source.kind "upload": { fileId } (from upload_data)
 - source.kind "inline": { rows: [{...}, ...] } (small data you create yourself)
 - source.kind "http": { url: "https://...", path?: "data.items", secrets?: ["sec_..."] } (JSON APIs; see Secrets)
-- refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers.
+- refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers. Below the
+  connector's minRefreshSec (list_connectors) it is raised to that minimum when saved, and \`changes\` says so.
 - accumulate N keeps a rolling history of the last N rows across refreshes and adds a "fetched_at" time column.
   Use it to chart sources that only return the current value (weather.current, crypto.price, iss.position).
+  The history lives in server memory and gains a reading only when the dataset is loaded and the source has a new
+  one. While a browser has the dashboard open, the server loads it every refreshSec. With nobody watching nothing
+  refreshes: readings are added only when the data is requested (get_data, render_snapshot, the data check of
+  apply_operations, a page load), so the history follows those requests and has gaps. A connector has a new reading
+  at most every minRefreshSec, an http source every 30 s. A server restart or a new source starts it afresh. Inline
+  and upload sources count as new on every load: do not accumulate them.
 
 ## Secrets (http sources)
 Some APIs need a key. The user saves keys under Settings → Secrets; you can list them (list_secrets) but never read,
@@ -71,21 +78,29 @@ operations below instead of resending the whole pipeline.
 - sort { by: [{ field, dir: "asc"|"desc" }] }
 - limit { n, from: "start"|"end" }
 - aggregate { groupBy: [..], metrics: [{ op, field?, as? }] }   ops: ${AGGREGATE_OPS.join(', ')}
-- timeBucket { field, unit, as? }         units: ${TIME_UNITS.join(', ')} (UTC); then aggregate by that field
+- timeBucket { field, unit, as?, dropPartial? }   units: ${TIME_UNITS.join(', ')} (UTC); then aggregate by that field
+  By default every bucket is kept, also the first and last when the data covers them only partly: a rolling 7-day
+  window per day gives 8 buckets, and the last (today so far) looks like a sharp drop. dropPartial: true drops the
+  first/last bucket when the data starts or ends more than one sampling interval (the median gap between times)
+  inside it.
 - window { op, field, as?, size?, partitionBy? }   ops: ${WINDOW_OPS.join(', ')} (sort first)
 - fillNull { fields, value }
 
 ## Expressions
 Operators: + - * / % ^, == != < <= > >=, && || ! (or: and, or, not), cond ? a : b. Strings in "double" or 'single'
-quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Functions:
+quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Trigonometry works in radians (convert
+with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed point. Functions:
 ${fns}
 
 ## Widgets
-- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels, showLegend?, yMin?, yMax?, logScale, format?, colors? }
+- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors? }
   kinds: ${CHART_KINDS.join(', ')}. "series" splits long-format data (one row per time+category) into lines/bars.
+  xMin/xMax fix the x axis of a scatter with a numeric x (e.g. -180/180 for a longitude map).
   pie/donut: x = label, y[0] = value (aggregate first; at most 6 slices are kept). heatmap: x, series = y-axis category, y[0] = value.
-- kpi { field, agg, compare: none|previous|first, goodWhen: up|down, sparkline, format? }   aggs: ${KPI_AGGS.join(', ')}
-- gauge { field, agg, min, max, bands?: [{ upTo, color }], format? }
+- kpi { field?, agg, compare: none|previous|first, goodWhen: up|down, sparkline, format? }   aggs: ${KPI_AGGS.join(', ')}
+- gauge { field?, agg, min, max, bands?: [{ upTo, color }], format? }
+  field is required except for agg "count": without a field count counts rows, with one it counts the rows where
+  that field is not null.
 - table { columns?, pageSize, format? }
 - text { markdown }   (no raw HTML)
 format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }
@@ -101,6 +116,8 @@ An optional \`sound\` field makes browsers showing the dashboard play a short bu
 - Never plays on page load, after a reconnect or after the dataset changed: the first result is the baseline.
   Viewers can mute their own screen; browsers stay silent until the page is clicked once.
 Example: { "op": "updateWidget", "id": "orders", "set": { "sound": { "trigger": { "kind": "newRows", "key": "order_id" }, "sound": "bell" } } }
+To try it without real data, put the widget on a demo.sales dataset with params { "live": true } and refreshSec 5:
+it returns single orders (time, order_id, ...) and a new one arrives every few seconds.
 Remove with set: { sound: null }. Only add a sound when the user asks for it or the dashboard is clearly a wall screen
 for events people must notice. Use sounds sparingly: at most one or two widgets per dashboard, a distinct sound per
 meaning (bell/cash for new orders or sales, alert for a threshold), and a cooldown long enough not to annoy.

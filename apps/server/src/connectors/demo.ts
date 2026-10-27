@@ -68,17 +68,66 @@ export const demoSignal: Connector = {
   },
 };
 
+const REGIONS = ['Europe', 'North America', 'Asia', 'LATAM'];
+const PRODUCTS = [
+  { name: 'Mixer Pro', price: 899 },
+  { name: 'Studio Monitor', price: 349 },
+  { name: 'Headphones', price: 149 },
+  { name: 'Audio Interface', price: 229 },
+  { name: 'Cables', price: 19 },
+];
+const CHANNELS = ['Online', 'Retail', 'Partner'];
+/** Live mode: chance of an order in any given second, about one every 8 s. */
+const ORDER_CHANCE = 0.12;
+const LIVE_WINDOW_SEC = 30 * 60;
+
+/**
+ * Individual orders of the last 30 minutes. Every second decides on its own (seeded by the second),
+ * so the same order keeps the same id and values on every refresh and new ones appear at the end:
+ * exactly what live refresh and a newRows sound keyed by order_id need.
+ */
+function liveOrders(now: number) {
+  const end = floorTo(now, 1000) / 1000;
+  const rows = [];
+  for (let sec = end - LIVE_WINDOW_SEC + 1; sec <= end; sec++) {
+    const r = rng(seedOf('order', sec));
+    if (r() >= ORDER_CHANCE) continue;
+    const product = PRODUCTS[Math.floor(r() ** 1.4 * PRODUCTS.length)]!;
+    const units = 1 + Math.floor(r() ** 3 * 6);
+    rows.push({
+      time: sec * 1000,
+      order_id: `SO-${sec}`,
+      region: REGIONS[Math.floor(r() ** 1.2 * REGIONS.length)]!,
+      product: product.name,
+      channel: CHANNELS[Math.floor(r() * CHANNELS.length)]!,
+      units,
+      revenue: round(units * product.price * (0.85 + r() * 0.2), 2),
+    });
+  }
+  return inferTable(rows, { types: { time: 'time' } });
+}
+
 export const demoSales: Connector = {
   info: {
     id: 'demo.sales',
     name: 'Sales (demo)',
     category: 'Demo',
     description:
-      'A synthetic order-level sales dataset (date, region, product, channel, units, revenue) for analytics demos.',
+      'Synthetic sales for analytics demos: one row per order with date, region, product, channel, units and revenue. With live: true it returns the orders of the last 30 minutes instead (time to the second, order_id), with a new order every few seconds, for live refresh and sound cues.',
     params: [
       { name: 'days', label: 'Days', type: 'number', required: false, default: 90, description: '7-730' },
+      {
+        name: 'live',
+        label: 'Live orders',
+        type: 'boolean',
+        required: false,
+        default: false,
+        description:
+          'Orders of the last 30 minutes with time and order_id; refresh every few seconds. Ignores days.',
+      },
     ],
-    minRefreshSec: 60,
+    // Low so live mode can refresh every few seconds; the daily data is cheap to regenerate.
+    minRefreshSec: 2,
     docsUrl: 'https://github.com/carnaby/patchbay',
     attribution: 'Synthetic data',
   },
@@ -86,18 +135,13 @@ export const demoSales: Connector = {
     return this.sample(params);
   },
   sample(params) {
+    if (params.live === true) return liveOrders(Date.now());
     const days = Math.min(Math.max(Number(params.days ?? 90), 7), 730);
     const r = rng(42);
     const end = floorTo(Date.now(), DAY);
-    const regions = ['Europe', 'North America', 'Asia', 'LATAM'];
-    const products = [
-      { name: 'Mixer Pro', price: 899 },
-      { name: 'Studio Monitor', price: 349 },
-      { name: 'Headphones', price: 149 },
-      { name: 'Audio Interface', price: 229 },
-      { name: 'Cables', price: 19 },
-    ];
-    const channels = ['Online', 'Retail', 'Partner'];
+    const regions = REGIONS;
+    const products = PRODUCTS;
+    const channels = CHANNELS;
     const rows = [];
     for (let d = 0; d < days; d++) {
       const date = end - (days - 1 - d) * DAY;

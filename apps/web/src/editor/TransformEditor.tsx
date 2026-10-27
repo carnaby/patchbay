@@ -399,6 +399,18 @@ function StepFields({
               </option>
             ))}
           </Select>
+          <Select
+            value={step.dropPartial ? 'drop' : 'keep'}
+            onChange={(e) => {
+              const { dropPartial: _off, ...rest } = step;
+              onChange(e.target.value === 'drop' ? { ...rest, dropPartial: true } : rest);
+            }}
+            className="h-8 text-[13px]"
+            title="The first and last bucket are often only partly covered by the data (a rolling window), which looks like a sudden drop"
+          >
+            <option value="keep">all buckets</option>
+            <option value="drop">complete buckets only</option>
+          </Select>
         </div>
       );
     case 'window':

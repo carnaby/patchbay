@@ -1,9 +1,9 @@
 import { Download, LayoutGrid, LogOut, Moon, Settings, Shield, Sun } from 'lucide-react';
-import { type ReactNode, useState } from 'react';
-import { Link, Outlet, useLocation } from 'react-router';
+import type { ReactNode } from 'react';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 import { setTheme, useLogout, useMe, useTheme } from '../lib/hooks.ts';
 import { useInstallPrompt } from '../lib/pwa.ts';
-import { Button, cx, IconButton } from './ui.tsx';
+import { Button, cx, IconButton, Menu, MenuItem, MenuLabel } from './ui.tsx';
 
 export function Logo({ className }: { className?: string }) {
   return (
@@ -53,8 +53,8 @@ export function ThemeToggle() {
 export function UserMenu() {
   const { data: user, isLoading } = useMe();
   const logout = useLogout();
-  const [open, setOpen] = useState(false);
   const location = useLocation();
+  const navigate = useNavigate();
   if (isLoading) return <div className="size-8" />;
   if (!user) {
     return (
@@ -65,78 +65,38 @@ export function UserMenu() {
       </Link>
     );
   }
+  // A portalled Menu: the header's backdrop blur would otherwise confine the click-outside layer to the header.
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex size-8 items-center justify-center overflow-hidden rounded-full border border-line bg-surface-2 text-xs font-semibold"
-        aria-label="Account menu"
-      >
-        {user.avatarUrl ? (
+    <Menu
+      label="Account menu"
+      round
+      icon={
+        user.avatarUrl ? (
           <img src={user.avatarUrl} alt="" className="size-full object-cover" referrerPolicy="no-referrer" />
         ) : (
-          user.name.slice(0, 1).toUpperCase()
-        )}
-      </button>
-      {open ? (
-        <>
-          <button
-            type="button"
-            aria-label="Close menu"
-            className="fixed inset-0 z-30 cursor-default"
-            onClick={() => setOpen(false)}
-          />
-          <div className="absolute right-0 z-40 mt-2 w-60 overflow-hidden rounded-xl border border-line bg-surface p-1 shadow-xl">
-            <div className="px-3 py-2">
-              <div className="truncate text-sm font-medium">{user.name}</div>
-              <div className="truncate text-xs text-muted">{user.email}</div>
-            </div>
-            <MenuLink to="/me" icon={<LayoutGrid className="size-4" />} onClick={() => setOpen(false)}>
-              My dashboards
-            </MenuLink>
-            <MenuLink to="/settings" icon={<Settings className="size-4" />} onClick={() => setOpen(false)}>
-              AI connections &amp; tokens
-            </MenuLink>
-            {user.isAdmin ? (
-              <MenuLink to="/admin" icon={<Shield className="size-4" />} onClick={() => setOpen(false)}>
-                Admin
-              </MenuLink>
-            ) : null}
-            <button
-              type="button"
-              onClick={logout}
-              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-ink-2 hover:bg-surface-2 hover:text-ink"
-            >
-              <LogOut className="size-4" /> Sign out
-            </button>
-          </div>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-function MenuLink({
-  to,
-  icon,
-  children,
-  onClick,
-}: {
-  to: string;
-  icon: ReactNode;
-  children: ReactNode;
-  onClick: () => void;
-}) {
-  return (
-    <Link
-      to={to}
-      onClick={onClick}
-      className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-ink-2 hover:bg-surface-2 hover:text-ink"
+          <span className="text-xs font-semibold text-ink">{user.name.slice(0, 1).toUpperCase()}</span>
+        )
+      }
     >
-      {icon}
-      {children}
-    </Link>
+      <MenuLabel>
+        <div className="truncate text-sm font-medium text-ink">{user.name}</div>
+        <div className="truncate text-xs text-muted">{user.email}</div>
+      </MenuLabel>
+      <MenuItem icon={<LayoutGrid className="size-4" />} onSelect={() => navigate('/me')}>
+        My dashboards
+      </MenuItem>
+      <MenuItem icon={<Settings className="size-4" />} onSelect={() => navigate('/settings')}>
+        AI connections &amp; tokens
+      </MenuItem>
+      {user.isAdmin ? (
+        <MenuItem icon={<Shield className="size-4" />} onSelect={() => navigate('/admin')}>
+          Admin
+        </MenuItem>
+      ) : null}
+      <MenuItem icon={<LogOut className="size-4" />} onSelect={() => void logout()}>
+        Sign out
+      </MenuItem>
+    </Menu>
   );
 }
 

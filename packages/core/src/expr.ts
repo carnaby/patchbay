@@ -269,6 +269,18 @@ const math =
     const r = fn(...(ns as number[]));
     return Number.isFinite(r) ? r : null;
   };
+/** Mean Earth radius (IUGG); a sphere is within 0.5 % of the ellipsoid, plenty for dashboards. */
+const EARTH_RADIUS_KM = 6371.0088;
+
+function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad;
+  const dLon = (lon2 - lon1) * rad;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLon / 2) ** 2;
+  // Clamped because rounding can push `a` a hair above 1 for antipodal points, and asin would return NaN.
+  return 2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(Math.min(1, a)));
+}
+
 const dateOf = (v: Scalar): Date | null => {
   const n = typeof v === 'string' ? Date.parse(v) : num(v);
   return n === null || Number.isNaN(n) ? null : new Date(n);
@@ -297,6 +309,21 @@ export const FUNCTIONS: Record<string, { args: string; doc: string; fn: (...a: S
   log: { args: 'x', doc: 'Natural logarithm', fn: math(Math.log) },
   log10: { args: 'x', doc: 'Base-10 logarithm', fn: math(Math.log10) },
   exp: { args: 'x', doc: 'e^x', fn: math(Math.exp) },
+  pi: { args: '', doc: 'The constant π (3.14159…)', fn: () => Math.PI },
+  sin: { args: 'x', doc: 'Sine of x radians', fn: math(Math.sin) },
+  cos: { args: 'x', doc: 'Cosine of x radians', fn: math(Math.cos) },
+  tan: { args: 'x', doc: 'Tangent of x radians', fn: math(Math.tan) },
+  asin: { args: 'x', doc: 'Arcsine in radians', fn: math(Math.asin) },
+  acos: { args: 'x', doc: 'Arccosine in radians', fn: math(Math.acos) },
+  atan: { args: 'x', doc: 'Arctangent in radians', fn: math(Math.atan) },
+  atan2: { args: 'y, x', doc: 'Angle of the point (x, y) in radians', fn: math(Math.atan2) },
+  radians: { args: 'deg', doc: 'Degrees to radians', fn: math((d) => (d * Math.PI) / 180) },
+  degrees: { args: 'rad', doc: 'Radians to degrees', fn: math((r) => (r * 180) / Math.PI) },
+  distance: {
+    args: 'lat1, lon1, lat2, lon2',
+    doc: 'Great-circle distance in km between two points in degrees',
+    fn: math(haversineKm),
+  },
   min: { args: 'a, b, ...', doc: 'Smallest argument', fn: math(Math.min) },
   max: { args: 'a, b, ...', doc: 'Largest argument', fn: math(Math.max) },
   clamp: {

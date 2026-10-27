@@ -6,6 +6,8 @@
  * option builder as the browser, rendered through ECharts' SSR SVG renderer
  * and rasterised with resvg (no headless browser needed).
  */
+
+import { fileURLToPath } from 'node:url';
 import {
   buildChartOption,
   buildGaugeOption,
@@ -21,10 +23,26 @@ import {
   type ThemeMode,
   type Widget,
 } from '@patchbay/core';
-import { Resvg } from '@resvg/resvg-js';
+import { Resvg, type ResvgRenderOptions } from '@resvg/resvg-js';
 import * as echarts from 'echarts';
 
-const FONT = 'Inter, DejaVu Sans, sans-serif';
+const FONT = 'Inter, sans-serif';
+
+/**
+ * The renderer brings its own fonts instead of asking the OS. resvg finds system fonts through
+ * fontconfig, and the slim runtime image has no fonts.conf, so it found none and every text node
+ * rendered empty while shapes still drew. On a desktop it picks whatever happens to be installed.
+ * Inter covers Latin, Greek, Cyrillic and the symbols used below (▲ ▼ ■ ⚠ …); scripts it lacks
+ * (CJK, Arabic) render as boxes, a fair price for snapshots that look the same on every host.
+ */
+const FONT_OPTIONS: ResvgRenderOptions['font'] = {
+  loadSystemFonts: false,
+  fontFiles: ['Inter-Regular.ttf', 'Inter-SemiBold.ttf', 'Inter-Bold.ttf'].map((file) =>
+    fileURLToPath(new URL(`./fonts/${file}`, import.meta.url)),
+  ),
+  defaultFontFamily: 'Inter',
+  sansSerifFamily: 'Inter',
+};
 const ROW_HEIGHT = 80;
 const GAP = 12;
 const HEADER = 36;
@@ -216,7 +234,7 @@ function card(
 
 function toPng(svg: string, scale = 1): Buffer {
   return new Resvg(svg, {
-    font: { loadSystemFonts: true, defaultFontFamily: 'Inter' },
+    font: FONT_OPTIONS,
     fitTo: scale === 1 ? { mode: 'original' } : { mode: 'zoom', value: scale },
   })
     .render()

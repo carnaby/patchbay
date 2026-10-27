@@ -34,7 +34,7 @@ Scopes:
 | `list_dashboards`  | read  | The user's dashboards with URLs.                                                                                                                                                                                       |
 | `get_dashboard`    | read  | One dashboard's document and metadata.                                                                                                                                                                                 |
 | `preview_data`     | read  | Run a source + transforms **without saving**: columns, sample rows, row count per step, column profile, suggested widgets as operations.                                                                               |
-| `get_data`         | read  | The processed rows of a saved dataset, with a profile.                                                                                                                                                                 |
+| `get_data`         | read  | The processed rows of a saved dataset, with `rowCount` and a profile. `limit` (default 50) keeps the first rows; `from: "end"` keeps the last ones instead, i.e. the newest of an ascending time series.               |
 | `suggest_widgets`  | read  | Rules-based visualisation suggestions for a saved dataset, as ready-to-apply operations with rationales.                                                                                                               |
 | `render_snapshot`  | read  | PNG of the dashboard or a single widget (light or dark), plus any data errors.                                                                                                                                         |
 | `list_versions`    | read  | Version history with actor and change log.                                                                                                                                                                             |
@@ -65,6 +65,7 @@ Prompts: `build_dashboard { topic }`, `analyze_my_data { dashboardId? }`. Resour
 { "op": "updateDataset", "id": "quakes", "set": { "transforms": [ … ] } }
 { "op": "removeDataset", "id": "quakes", "cascade": true }
 { "op": "addWidget", "widget": { "id": "strongest", "type": "kpi", "datasetId": "quakes", "config": { "field": "magnitude", "agg": "max" } }, "position": { "w": 3, "h": 2 } }
+{ "op": "addWidget", "widget": { "id": "quake-count", "type": "kpi", "datasetId": "quakes", "config": { "agg": "count" } } } // count: rows, or with "field" the non-null values
 { "op": "updateWidget", "id": "strongest", "set": { "title": "Strongest quake", "config": { "format": { "decimals": 1 } } } }
 { "op": "replaceWidget", "widget": { … } }
 { "op": "removeWidget", "id": "strongest" }
@@ -80,6 +81,62 @@ Prompts: `build_dashboard { topic }`, `analyze_my_data { dashboardId? }`. Resour
 `updateWidget.set.config` is shallow-merged into the current config. Pipeline steps have stable ids (`s1`, `s2`, …, or
 your own); prefer the step operations over replacing `transforms` wholesale, so concurrent edits by the user survive. Positions are optional everywhere; omitted ones are
 auto-placed.
+
+A `timeBucket` step keeps every bucket by default, including a first and last bucket the data covers only partly: a
+rolling 7-day window bucketed per day gives 8 buckets, and the last one (today so far) looks like a sharp drop.
+`"dropPartial": true` drops the first or last bucket when the data starts or ends more than one sampling interval (the
+median gap between its times) inside it. Data with fewer than two distinct times is left alone.
+
+The answer of `apply_operations`:
+
+- `changes`: one line per operation (the same text the version history shows).
+- `dataChecks`: one entry per dataset the batch added or changed, loaded right away so a broken source surfaces at
+  once: `rowCount` (rows after the whole pipeline), `columns` (`name:type`), `sampleRows` (the first 3 rows, a sample,
+  not a count) and `error`. `truncated: true` means the result has more rows than the 10,000 that widgets receive.
+- `warnings`, when there is something to fix that did not fail the batch (see "Secrets").
+
+Sound cues are spelled out in `changes` whenever an operation adds, changes or removes one (trigger, sound, volume and
+cooldown, defaults included), so there is no need to call `get_dashboard` to check them:
+
+```text
+Added kpi widget "Strongest"; sound cue: "alert" when `magnitude >= 6` becomes true on the last row (volume 0.7, cooldown 10 s)
+Widget "Orders": sound cue set to "bell" when rows with a new "order_id" appear (volume 0.7, cooldown 10 s)
+Widget "Orders": sound cue removed
+```
+
+## Live data: `refreshSec` and `accumulate`
+
+The refresh loop runs on the server, but only while somebody watches: when the first browser opens a dashboard (its
+live stream), the server starts reloading each dataset with `refreshSec > 0` on that interval and pushes changed
+results to every viewer; when the last one leaves, the loop stops. MCP calls never start it.
+
+Every connector has a `minRefreshSec` (see `list_connectors`): the server caches its answers that long, to stay
+within the upstream's rate limits. A `refreshSec` below it is not rejected but raised to the minimum when an
+operation adds the dataset or changes its `refreshSec` or source (dry runs included), and `changes` gets a line of
+its own:
+
+```text
+Raised refreshSec of dataset "Quakes" from 5 s to 60 s, the minimum of the earthquakes connector
+```
+
+Datasets the batch did not touch keep their stored value, so documents saved before a minimum went up still load and
+accept unrelated edits. The web editor does not offer intervals below the minimum.
+
+`accumulate: N` keeps the last N rows across loads and adds a `fetched_at` column. Precisely:
+
+- The history is kept in server memory, per dashboard and dataset. A restart clears it, and so does changing the
+  dataset's source (or replacing a secret it uses).
+- It gains the current reading each time the dataset is **loaded** and the source has a **new** reading. Loads come
+  from the refresh loop (every `refreshSec` while someone watches), page loads, and the tools that read data:
+  `get_data`, `render_snapshot`, `suggest_widgets` and the data check of `apply_operations`.
+- With nobody watching, the history therefore grows at the rhythm of those requests and has gaps where nothing asked.
+  An agent polling `get_data` every 10 s sees one new row per call, whatever `refreshSec` says.
+- A source never has a new reading more often than it updates: a connector at most every `minRefreshSec` (see
+  `list_connectors`; the cache is shared by all dashboards), an `http` source every 30 s. Inline and upload sources
+  count as new on every load, so do not accumulate them.
+
+For accumulating datasets, `get_data` answers with `watchers` (open browsers right now) and a `note` with the summary
+above; the data checks of `apply_operations` carry the same `note`.
 
 ## Secrets
 

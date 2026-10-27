@@ -1232,7 +1232,7 @@ describe('secrets over MCP', () => {
       text(await client.callTool({ name: 'apply_operations', arguments: { dashboardId: id, operations } })),
     );
     expect(applied.dataChecks.find((d: { datasetId: string }) => d.datasetId === 'orders')).toMatchObject({
-      rows: 2,
+      rowCount: 2,
     });
     expect(applied.warnings).toEqual([expect.stringContaining('"token"')]);
 

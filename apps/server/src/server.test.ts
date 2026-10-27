@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { fromJsonSchema, type JsonSchemaType } from '@modelcontextprotocol/server';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
@@ -174,6 +174,17 @@ describe('dashboards over REST', () => {
     // What the template picker offers (GET /api/templates) is exactly what create accepts.
     for (const t of listTemplates()) expect(buildTemplate(t.id).title).toBeTruthy();
     expect((await call('/api/dashboards', { body: { template: 'weather' } })).status).toBe(201);
+  });
+
+  it('ships templates whose refresh intervals respect their connectors', () => {
+    // Templates are stored as they are, without the save-time raise, so they must be right by themselves.
+    for (const t of listTemplates()) {
+      for (const d of buildTemplate(t.id).datasets) {
+        if (d.source.kind !== 'connector' || d.refreshSec === 0) continue;
+        const min = deps.connectors.get(d.source.connector)!.info.minRefreshSec;
+        expect(d.refreshSec, `${t.id}/${d.id}`).toBeGreaterThanOrEqual(min);
+      }
+    }
   });
 
   it('rejects cross-site writes', async () => {
@@ -443,25 +454,39 @@ describe('OAuth 2.1 for MCP', () => {
 
 describe('MCP tools', () => {
   let client: Client;
+  const extraClients: Client[] = [];
 
-  beforeAll(async () => {
-    const cookie = await login('agent-owner@example.com');
+  /** An MCP client for a user of its own, so a test's write budget (rate limit) and clock tricks stay its own. */
+  async function connectAgent(email: string) {
+    const cookie = await login(email);
     const pat = await call('/api/tokens', {
       body: { name: 'test', scopes: ['dashboards:read', 'dashboards:write'] },
       cookie,
     });
     expect(pat.json.token).toMatch(/^pb_pat_/);
-    client = new Client({ name: 'vitest', version: '1.0.0' });
+    const c = new Client({ name: 'vitest', version: '1.0.0' });
     const transport = new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`), {
       requestInit: { headers: { authorization: `Bearer ${pat.json.token}` } },
       fetch: async (url, init) => app.request(String(url), init as RequestInit),
     });
-    await client.connect(transport);
+    await c.connect(transport);
+    return c;
+  }
+
+  beforeAll(async () => {
+    client = await connectAgent('agent-owner@example.com');
   });
 
   afterAll(async () => {
     await client?.close();
+    for (const c of extraClients) await c.close();
   });
+
+  const ownClient = async (email: string) => {
+    const c = await connectAgent(email);
+    extraClients.push(c);
+    return c;
+  };
 
   const text = (r: { content?: unknown }) =>
     (r.content as { type: string; text?: string }[]).find((c) => c.type === 'text')!.text!;
@@ -488,8 +513,10 @@ describe('MCP tools', () => {
   it('keeps tools/list compact', async () => {
     const list = await client.listTools();
     // Every client pays for this on every connection. It was 55.7 KB before shared subschemas were emitted once;
-    // raise the budget only for a deliberate addition (33,000 -> 33,500: the reorderWidget op).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(33_500);
+    // raise the budget only for a deliberate addition (33,000 -> 33,500: the reorderWidget op; -> 33,600: get_data
+    // `from`, an optional KPI/gauge field and timeBucket `dropPartial`, the last advertised twice with the transforms;
+    // -> 33,800: scatter `xMin`/`xMax` and the demo.sales `live` parameter).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(33_800);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(expect.arrayContaining(['Widget', 'Transform', 'Source']));
@@ -560,6 +587,8 @@ describe('MCP tools', () => {
         widget: { id: 'strongest', type: 'gauge', datasetId: 'daily', config: { field: 'max_mag', max: 10 } },
       },
       { op: 'moveWidget', id: 'per-day', x: 0, y: 0 },
+      // count needs no column: it counts rows.
+      { op: 'addWidget', widget: { id: 'days', type: 'kpi', datasetId: 'daily', config: { agg: 'count' } } },
     ];
 
     // The advertised schema is self-contained and accepts what the server accepts.
@@ -577,9 +606,12 @@ describe('MCP tools', () => {
     expect(applied.isError).toBeFalsy();
     const result = JSON.parse(text(applied));
     expect(result.changes).toHaveLength(operations.length);
+    // Sound cues are spelled out, so the agent need not fetch the document to check them.
+    expect(result.changes[3]).toContain('sound cue: "alert" when `max_mag >= 6` becomes true');
+    expect(result.changes[5]).toContain('its sound cue was removed');
     expect(result.dataChecks[0]).toMatchObject({ datasetId: 'daily' });
     expect(result.dataChecks[0].error).toBeUndefined();
-    expect(result.dataChecks[0].rows).toBeGreaterThan(0);
+    expect(result.dataChecks[0].rowCount).toBeGreaterThan(0);
 
     // Strict objects still reject unknown keys, on the server and in the advertised schema.
     const typo = [
@@ -701,7 +733,12 @@ describe('MCP tools', () => {
     });
     const result = JSON.parse(text(applied));
     expect(result.version).toBe(2);
-    expect(result.dataChecks[0].rows).toBeGreaterThan(0);
+    // The total and the sample are separate fields, so neither reads as the other.
+    const check = result.dataChecks[0];
+    expect(check).not.toHaveProperty('rows');
+    expect(check.sampleRows).toHaveLength(3);
+    expect(check.sampleRows[0]).toHaveProperty('magnitude');
+    expect(check.rowCount).toBeGreaterThan(check.sampleRows.length);
 
     const snap = await client.callTool({ name: 'render_snapshot', arguments: { dashboardId: id } });
     const image = (snap.content as { type: string; data?: string }[]).find((c) => c.type === 'image')!;
@@ -711,6 +748,171 @@ describe('MCP tools', () => {
       text(await client.callTool({ name: 'list_versions', arguments: { dashboardId: id } })),
     );
     expect(versions[0].actor).toMatchObject({ kind: 'mcp', label: 'Personal token (MCP)' });
+  });
+
+  it('reads the newest rows of a time series with get_data from: "end"', async () => {
+    const id = JSON.parse(
+      text(await client.callTool({ name: 'create_dashboard', arguments: { title: 'Series' } })),
+    ).dashboardId;
+    const rows = Array.from({ length: 10 }, (_, i) => ({ t: Date.UTC(2026, 0, i + 1), v: i }));
+    await client.callTool({
+      name: 'apply_operations',
+      arguments: {
+        dashboardId: id,
+        operations: [{ op: 'addDataset', dataset: { id: 's', name: 'S', source: { kind: 'inline', rows } } }],
+      },
+    });
+    const read = async (extra: Record<string, unknown>) =>
+      JSON.parse(
+        text(
+          await client.callTool({
+            name: 'get_data',
+            arguments: { dashboardId: id, datasetId: 's', limit: 3, ...extra },
+          }),
+        ),
+      );
+    const start = await read({});
+    expect(start.from).toBe('start');
+    expect(start.rows.map((r: { v: number }) => r.v)).toEqual([0, 1, 2]);
+    const end = await read({ from: 'end' });
+    expect(end.rowCount).toBe(10);
+    expect(end.rows.map((r: { v: number }) => r.v)).toEqual([7, 8, 9]);
+  });
+
+  it('grows accumulate history without viewers only when the data is requested, and says so', async () => {
+    // Own user: the clock jump below would otherwise skew the shared client's rate-limit bucket.
+    const agent = await ownClient('iss-watcher@example.com');
+    const id = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'ISS track' } })),
+    ).dashboardId;
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const applied = JSON.parse(
+        text(
+          await agent.callTool({
+            name: 'apply_operations',
+            arguments: {
+              dashboardId: id,
+              operations: [
+                {
+                  op: 'addDataset',
+                  dataset: {
+                    id: 'iss',
+                    name: 'ISS',
+                    source: { kind: 'connector', connector: 'iss.position', params: {} },
+                    refreshSec: 5,
+                    accumulate: 100,
+                  },
+                },
+              ],
+            },
+          }),
+        ),
+      );
+      // The data check itself loaded the first reading.
+      expect(applied.dataChecks[0]).toMatchObject({ rowCount: 1, note: expect.stringContaining('memory') });
+      const rows = async () => {
+        const r = JSON.parse(
+          text(await agent.callTool({ name: 'get_data', arguments: { dashboardId: id, datasetId: 'iss' } })),
+        );
+        expect(r.watchers).toBe(0);
+        expect(r.note).toContain('only when the data is requested');
+        return r.rowCount as number;
+      };
+      // Nobody watches, so no refresh loop runs; a request within the connector's 5 s adds nothing.
+      expect(await rows()).toBe(1);
+      vi.setSystemTime(Date.now() + 60_000);
+      // A minute later there is exactly one new reading, from this request, not twelve from refreshSec: 5.
+      expect(await rows()).toBe(2);
+      expect(await rows()).toBe(2);
+      expect(deps.hub.watchers(id)).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops partial edge buckets of a rolling window on request', async () => {
+    // Hourly readings for 7 days from 14:00: per day that is 8 buckets, the first and last only partly covered.
+    const start = Date.UTC(2026, 0, 1, 14);
+    const rows = Array.from({ length: 7 * 24 }, (_, i) => ({ time: start + i * 3_600_000, v: 1 }));
+    const perDay = async (bucket: Record<string, unknown>) =>
+      JSON.parse(
+        text(
+          await client.callTool({
+            name: 'preview_data',
+            arguments: {
+              source: { kind: 'inline', rows },
+              transforms: [
+                { type: 'timeBucket', field: 'time', unit: 'day', ...bucket },
+                {
+                  type: 'aggregate',
+                  groupBy: ['time'],
+                  metrics: [{ op: 'sum', field: 'v', as: 'readings' }],
+                },
+              ],
+            },
+          }),
+        ),
+      ).rows.map((r: { readings: number }) => r.readings);
+    expect(await perDay({})).toEqual([10, 24, 24, 24, 24, 24, 24, 14]);
+    expect(await perDay({ dropPartial: true })).toEqual([24, 24, 24, 24, 24, 24]);
+  });
+
+  it('raises refreshSec below the connector minimum and says so', async () => {
+    const agent = await ownClient('too-fast@example.com');
+    const id = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'Too fast' } })),
+    ).dashboardId;
+    const apply = async (operations: unknown[], dryRun = false) =>
+      JSON.parse(
+        text(
+          await agent.callTool({
+            name: 'apply_operations',
+            arguments: { dashboardId: id, operations, dryRun },
+          }),
+        ),
+      );
+    const quakes = {
+      id: 'quakes',
+      name: 'Quakes',
+      source: { kind: 'connector', connector: 'earthquakes', params: {} },
+      refreshSec: 5,
+    };
+    const raised =
+      'Raised refreshSec of dataset "Quakes" from 5 s to 60 s, the minimum of the earthquakes connector';
+    // The dry run answers exactly like the save.
+    expect((await apply([{ op: 'addDataset', dataset: quakes }], true)).changes).toEqual([
+      'Added dataset "Quakes"',
+      raised,
+    ]);
+    expect((await apply([{ op: 'addDataset', dataset: quakes }])).changes).toContain(raised);
+    const stored = async () =>
+      JSON.parse(text(await agent.callTool({ name: 'get_dashboard', arguments: { dashboardId: id } }))).doc
+        .datasets[0].refreshSec;
+    expect(await stored()).toBe(60);
+    expect(
+      (await apply([{ op: 'updateDataset', id: 'quakes', set: { refreshSec: 30 } }])).changes[1],
+    ).toContain('from 30 s to 60 s');
+    expect(
+      (await apply([{ op: 'updateDataset', id: 'quakes', set: { refreshSec: 0 } }])).changes,
+    ).toHaveLength(1);
+    expect(
+      (await apply([{ op: 'updateDataset', id: 'quakes', set: { refreshSec: 600 } }])).changes,
+    ).toHaveLength(1);
+
+    // A document saved with a lower value keeps it through unrelated edits.
+    const meta = (await deps.store.readMeta(id))!;
+    const doc = (await deps.store.readDoc(id))!;
+    await deps.store.writeDoc(
+      meta,
+      { ...doc, datasets: [{ ...doc.datasets[0]!, refreshSec: 5 }] },
+      { kind: 'user', label: 'test' },
+      ['Saved before the minimum went up'],
+    );
+    expect((await apply([{ op: 'setMeta', title: 'Renamed' }])).changes).toEqual([
+      'Updated title/description',
+    ]);
+    expect(await stored()).toBe(5);
   });
 
   it('reports invalid operations without changing anything', async () => {

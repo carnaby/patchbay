@@ -17,11 +17,12 @@ import {
   IdSchema,
   integrityIssues,
   LayoutItemSchema,
+  LIMITS,
   SourceSchema,
   type Widget,
   WidgetSchema,
 } from './schema.ts';
-import { SoundRuleSchema } from './sound.ts';
+import { describeSoundRule, type SoundRule, SoundRuleSchema } from './sound.ts';
 import { StepIdSchema, type Transform, TransformSchema, withStepIds } from './transforms.ts';
 
 const position = z
@@ -36,8 +37,8 @@ const position = z
 export const OpSchema = z.discriminatedUnion('op', [
   z.strictObject({
     op: z.literal('setMeta'),
-    title: z.string().min(1).max(120).optional(),
-    description: z.string().max(1000).optional(),
+    title: z.string().min(1).max(LIMITS.title).optional(),
+    description: z.string().max(LIMITS.description).optional(),
   }),
   z.strictObject({ op: z.literal('addDataset'), dataset: DatasetSchema }),
   z.strictObject({
@@ -128,6 +129,8 @@ export interface ApplyResult {
   changes: string[];
 }
 
+const soundOf = (w: Widget): SoundRule | undefined => ('sound' in w ? w.sound : undefined);
+
 function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): DashboardDoc {
   const fail = (msg: string): never => {
     throw new OpError(msg, index);
@@ -163,7 +166,10 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
         );
       }
       const gone = new Set(users.map((w) => w.id));
-      changes.push(`Removed dataset "${current.name}"${gone.size ? ` and ${gone.size} widget(s)` : ''}`);
+      const silenced = users.filter((w) => soundOf(w)).length;
+      changes.push(
+        `Removed dataset "${current.name}"${gone.size ? ` and ${gone.size} widget(s)` : ''}${silenced ? ` (${silenced} with a sound cue)` : ''}`,
+      );
       return {
         ...doc,
         datasets: doc.datasets.filter((d) => d.id !== op.id),
@@ -228,7 +234,10 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
     case 'addWidget': {
       if (doc.widgets.some((w) => w.id === op.widget.id)) fail(`Widget "${op.widget.id}" already exists`);
       const item = placeItem(doc.layout, op.widget.id, op.widget.type, op.position);
-      changes.push(`Added ${op.widget.type} widget "${op.widget.title ?? op.widget.id}"`);
+      const added = soundOf(op.widget);
+      changes.push(
+        `Added ${op.widget.type} widget "${op.widget.title ?? op.widget.id}"${added ? `; sound cue: ${describeSoundRule(added)}` : ''}`,
+      );
       return { ...doc, widgets: [...doc.widgets, op.widget], layout: [...doc.layout, item] };
     }
     case 'updateWidget': {
@@ -243,17 +252,37 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
       if (sound === null) delete merged.sound;
       const next = WidgetSchema.safeParse(merged);
       if (!next.success) fail(formatZodIssues(next.error).join('; '));
-      changes.push(`Updated widget "${current.title ?? current.id}" (${Object.keys(op.set).join(', ')})`);
+      const name = `"${current.title ?? current.id}"`;
+      const fields = Object.keys(op.set).filter((k) => k !== 'sound');
+      const updated = fields.length ? `Updated widget ${name} (${fields.join(', ')})` : '';
+      const now = soundOf(next.data as Widget);
+      const cue =
+        sound === undefined
+          ? ''
+          : sound === null
+            ? soundOf(current)
+              ? 'sound cue removed'
+              : 'no sound cue to remove'
+            : `sound cue set to ${describeSoundRule(now!)}`;
+      changes.push(updated && cue ? `${updated}; ${cue}` : updated || `Widget ${name}: ${cue}`);
       return { ...doc, widgets: doc.widgets.map((w) => (w.id === op.id ? (next.data as Widget) : w)) };
     }
     case 'replaceWidget': {
-      widget(op.widget.id);
-      changes.push(`Replaced widget "${op.widget.title ?? op.widget.id}" with a ${op.widget.type}`);
+      const before = soundOf(widget(op.widget.id));
+      const after = soundOf(op.widget);
+      const cue = after
+        ? `; sound cue: ${describeSoundRule(after)}`
+        : before
+          ? '; its sound cue was removed'
+          : '';
+      changes.push(`Replaced widget "${op.widget.title ?? op.widget.id}" with a ${op.widget.type}${cue}`);
       return { ...doc, widgets: doc.widgets.map((w) => (w.id === op.widget.id ? op.widget : w)) };
     }
     case 'removeWidget': {
       const current = widget(op.id);
-      changes.push(`Removed widget "${current.title ?? current.id}"`);
+      changes.push(
+        `Removed widget "${current.title ?? current.id}"${soundOf(current) ? ' and its sound cue' : ''}`,
+      );
       return {
         ...doc,
         widgets: doc.widgets.filter((w) => w.id !== op.id),

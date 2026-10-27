@@ -2,4 +2,5 @@
 # shell scripts behave the same on every machine.
 * text=auto eol=lf
 *.png binary
+*.ttf binary
 *.svg text eol=lf
