@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query';
 import { Copy, Download, Globe, KeyRound, Lock, Trash2, UserCheck } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
-import { Button, Card, cx, Drawer, Modal, toast } from '../components/ui.tsx';
+import { Button, Card, cx, Drawer, Modal, Spinner, toast } from '../components/ui.tsx';
 import { api, errorMessage } from '../lib/api.ts';
 import { forgetEditKey, saveEditKey } from '../lib/edit-keys.ts';
 import { useMe } from '../lib/hooks.ts';
@@ -76,57 +76,34 @@ export function SharePanel({
   return (
     <Drawer open={open} onClose={onClose} title="Share">
       <div className="space-y-5">
-        <Card className="space-y-3 p-4">
-          <div className="text-[13px] font-medium text-ink-2">Link</div>
-          <div className="flex gap-2">
-            <input
-              readOnly
-              value={url}
-              className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-3 font-mono text-xs"
-              onFocus={(e) => e.target.select()}
-            />
-            <Button
-              icon={<Copy className="size-4" />}
-              onClick={() => {
-                void navigator.clipboard.writeText(url);
-                toast('Link copied');
-              }}
-            >
-              Copy
-            </Button>
-          </div>
-          <p className="text-xs text-muted">
-            {meta.visibility === 'public'
-              ? 'Anyone with the link can view. Only editors can change it.'
-              : 'Only you can open it, after signing in.'}
-          </p>
-          {meta.visibility === 'public' && secretCount > 0 ? (
-            <p className="flex items-center gap-1.5 rounded-lg border border-warn/50 bg-warn/10 px-2.5 py-1.5 text-xs text-ink">
-              <KeyRound className="size-3.5 shrink-0 text-warn" aria-hidden="true" />
-              Public · shows data fetched with {secretCount} secret{secretCount === 1 ? '' : 's'}
-            </p>
-          ) : null}
-        </Card>
-
         {access.isOwner ? (
+          // First in the panel: "how do I make it public" is the question people open it with.
           <Card className="space-y-3 p-4">
-            <div className="text-[13px] font-medium text-ink-2">Visibility</div>
+            <div className="text-[13px] font-medium text-ink-2">Who can open this dashboard</div>
             <div className="grid grid-cols-2 gap-2">
-              {(['public', 'private'] as const).map((v) => (
+              {(['private', 'public'] as const).map((v) => (
                 <button
                   key={v}
                   type="button"
+                  aria-pressed={meta.visibility === v}
+                  disabled={visibility.isPending}
                   onClick={() => v !== meta.visibility && visibility.mutate(v)}
                   className={cx(
-                    'flex items-center gap-2 rounded-xl border p-3 text-left text-sm transition',
+                    'flex min-h-14 items-center gap-2 rounded-xl border p-3 text-left text-sm transition disabled:opacity-60',
                     meta.visibility === v ? 'border-ink bg-surface-2' : 'border-line hover:border-ink-2',
                   )}
                 >
-                  {v === 'public' ? <Globe className="size-4" /> : <Lock className="size-4" />}
-                  <span>
+                  {visibility.isPending && visibility.variables === v ? (
+                    <Spinner className="shrink-0" />
+                  ) : v === 'public' ? (
+                    <Globe className="size-4 shrink-0" />
+                  ) : (
+                    <Lock className="size-4 shrink-0" />
+                  )}
+                  <span className="min-w-0">
                     <span className="block font-medium capitalize">{v}</span>
                     <span className="text-xs text-muted">
-                      {v === 'public' ? 'Anyone with the link' : 'Only you'}
+                      {v === 'public' ? 'Anyone with the link can view' : 'Only you, signed in'}
                     </span>
                   </span>
                 </button>
@@ -159,6 +136,38 @@ export function SharePanel({
             ) : null}
           </Card>
         ) : null}
+
+        <Card className="space-y-3 p-4">
+          <div className="text-[13px] font-medium text-ink-2">Link</div>
+          <div className="flex gap-2">
+            <input
+              readOnly
+              value={url}
+              className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-3 font-mono text-xs"
+              onFocus={(e) => e.target.select()}
+            />
+            <Button
+              icon={<Copy className="size-4" />}
+              onClick={() => {
+                void navigator.clipboard.writeText(url);
+                toast('Link copied');
+              }}
+            >
+              Copy
+            </Button>
+          </div>
+          <p className="text-xs text-muted">
+            {meta.visibility === 'public'
+              ? 'Anyone with the link can view. Only editors can change it.'
+              : 'Only you can open it, after signing in.'}
+          </p>
+          {meta.visibility === 'public' && secretCount > 0 ? (
+            <p className="flex items-center gap-1.5 rounded-lg border border-warn/50 bg-warn/10 px-2.5 py-1.5 text-xs text-ink">
+              <KeyRound className="size-3.5 shrink-0 text-warn" aria-hidden="true" />
+              Public · shows data fetched with {secretCount} secret{secretCount === 1 ? '' : 's'}
+            </p>
+          ) : null}
+        </Card>
 
         <Card className="space-y-2 p-4">
           <div className="text-[13px] font-medium text-ink-2">More</div>
