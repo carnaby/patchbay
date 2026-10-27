@@ -138,6 +138,8 @@ export const ChartConfigSchema = z.strictObject({
   showLabels: z.boolean().default(false),
   yMin: z.number().optional(),
   yMax: z.number().optional(),
+  xMin: z.number().optional().describe('Scatter with a numeric x: fixed lower bound of the x axis'),
+  xMax: z.number().optional().describe('Scatter with a numeric x: fixed upper bound of the x axis'),
   logScale: z.boolean().default(false),
   format: FormatSchema.optional(),
   colors: z

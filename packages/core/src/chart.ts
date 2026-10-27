@@ -213,6 +213,8 @@ function cartesianOption(
     ...(categories ? { data: categories } : {}),
     ...(isTime ? { axisLabel: { color: theme.muted, hideOverlap: true } } : {}),
     boundaryGap: markType === 'bar' || axisKind === 'category' ? markType === 'bar' : false,
+    // Fixed bounds keep a lat/lon scatter "map" from rescaling every time the data moves.
+    ...(valueX ? { min: config.xMin, max: config.xMax } : {}),
   };
   const valueAxis: Option = {
     type: config.logScale ? 'log' : 'value',

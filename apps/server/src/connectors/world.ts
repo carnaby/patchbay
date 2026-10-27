@@ -14,6 +14,140 @@ interface UsgsFeature {
   geometry: { coordinates: [number, number, number] };
 }
 
+const US_STATES: Record<string, string> = {
+  AL: 'Alabama',
+  AK: 'Alaska',
+  AZ: 'Arizona',
+  AR: 'Arkansas',
+  CA: 'California',
+  CO: 'Colorado',
+  CT: 'Connecticut',
+  DE: 'Delaware',
+  FL: 'Florida',
+  GA: 'Georgia',
+  HI: 'Hawaii',
+  ID: 'Idaho',
+  IL: 'Illinois',
+  IN: 'Indiana',
+  IA: 'Iowa',
+  KS: 'Kansas',
+  KY: 'Kentucky',
+  LA: 'Louisiana',
+  ME: 'Maine',
+  MD: 'Maryland',
+  MA: 'Massachusetts',
+  MI: 'Michigan',
+  MN: 'Minnesota',
+  MS: 'Mississippi',
+  MO: 'Missouri',
+  MT: 'Montana',
+  NE: 'Nebraska',
+  NV: 'Nevada',
+  NH: 'New Hampshire',
+  NJ: 'New Jersey',
+  NM: 'New Mexico',
+  NY: 'New York',
+  NC: 'North Carolina',
+  ND: 'North Dakota',
+  OH: 'Ohio',
+  OK: 'Oklahoma',
+  OR: 'Oregon',
+  PA: 'Pennsylvania',
+  RI: 'Rhode Island',
+  SC: 'South Carolina',
+  SD: 'South Dakota',
+  TN: 'Tennessee',
+  TX: 'Texas',
+  UT: 'Utah',
+  VT: 'Vermont',
+  VA: 'Virginia',
+  WA: 'Washington',
+  WV: 'West Virginia',
+  WI: 'Wisconsin',
+  WY: 'Wyoming',
+  PR: 'Puerto Rico',
+  // USGS writes Baja California as "B.C., MX".
+  MX: 'Mexico',
+};
+
+/** Island groups and areas the feed names on their own, folded into the place people look for. */
+const REGION_ALIASES: Record<string, string> = {
+  'fiji islands': 'Fiji',
+  'philippine islands': 'Philippines',
+  'kermadec islands': 'New Zealand',
+  'aleutian islands': 'Alaska',
+  'andreanof islands': 'Alaska',
+  'fox islands': 'Alaska',
+  'rat islands': 'Alaska',
+  honshu: 'Japan',
+  hokkaido: 'Japan',
+  kyushu: 'Japan',
+  'izu islands': 'Japan',
+  'bonin islands': 'Japan',
+  'ryukyu islands': 'Japan',
+  'baja california': 'Mexico',
+};
+
+/** Names that start with a compass word but are names, not "the southern part of X". */
+const KEEP_QUALIFIER = new Set([
+  'central america',
+  'central african republic',
+  'northern mariana islands',
+  'western sahara',
+  'western australia',
+  'northern territory',
+]);
+
+/**
+ * One name per region. The USGS "place" ends in a state code ("CA"), a state name ("Alaska"), a
+ * country, or a Flinn-Engdahl region such as "Japan region" or "south of the Fiji Islands", so
+ * grouping by its last part split California and Japan into several bars.
+ */
+export function normalizeRegion(place: string | null | undefined): string | null {
+  if (!place) return null;
+  let region = (place.split(',').pop() ?? '')
+    .trim()
+    .replace(/^\d+(\.\d+)?\s*km\s+[NSEW]{1,3}\s+of\s+/i, '')
+    .replace(/^(near|off)\s+the\s+(\w+\s+)?coast\s+of\s+/i, '')
+    .replace(/^(north|south|east|west)(east|west)?\s+of\s+(the\s+)?/i, '')
+    .replace(/\s+region$/i, '')
+    .trim();
+  if (!KEEP_QUALIFIER.has(region.toLowerCase())) {
+    region = region.replace(
+      /^(northern|southern|eastern|western|central|(north|south)(east|west)ern|(north|south)-central)\s+/i,
+      '',
+    );
+  }
+  const state = US_STATES[region];
+  if (state) return state;
+  region = REGION_ALIASES[region.toLowerCase()] ?? region;
+  return region ? region[0]!.toUpperCase() + region.slice(1) : null;
+}
+
+/** Raw place strings in the feed's own shapes; "{km}" is filled in per row. */
+const SAMPLE_PLACES: { place: string; at: [number, number] }[] = [
+  { place: '{km} km NW of The Geysers, CA', at: [38.8, -122.8] },
+  { place: '{km} km SE of Ridgecrest, CA', at: [35.6, -117.6] },
+  { place: 'Central California', at: [36.5, -120.5] },
+  { place: '{km} km SSE of Sand Point, Alaska', at: [55.1, -160.4] },
+  { place: 'Southern Alaska', at: [60, -150] },
+  { place: 'Rat Islands, Aleutian Islands, Alaska', at: [51.5, 178.5] },
+  { place: '{km} km E of Iwaki, Japan', at: [37, 141.5] },
+  { place: 'Japan region', at: [36, 142] },
+  { place: 'near the east coast of Honshu, Japan', at: [38.5, 142.5] },
+  { place: '{km} km SW of Abepura, Indonesia', at: [-2.7, 140.5] },
+  { place: 'Fiji region', at: [-18, 178] },
+  { place: 'south of the Fiji Islands', at: [-24, -178] },
+  { place: '{km} km NNE of Ovalle, Chile', at: [-30.4, -71] },
+  { place: '{km} km N of Ensenada, B.C., MX', at: [32.2, -116.6] },
+  { place: '{km} km NW of Toyah, TX', at: [31.4, -103.9] },
+  { place: '{km} km SE of Pahala, Hawaii', at: [19.1, -155.4] },
+  { place: 'Kermadec Islands region', at: [-30, -178] },
+  { place: '{km} km ESE of Kos, Greece', at: [36.8, 27.4] },
+  { place: '{km} km S of Sindirgi, Turkey', at: [39.1, 28.2] },
+  { place: '{km} km WSW of Lima, Peru', at: [-12.1, -77.4] },
+];
+
 export const earthquakes: Connector = {
   info: {
     id: 'earthquakes',
@@ -63,7 +197,7 @@ export const earthquakes: Connector = {
         time: f.properties.time,
         magnitude: f.properties.mag,
         place: f.properties.place,
-        region: f.properties.place?.split(', ').pop() ?? null,
+        region: normalizeRegion(f.properties.place),
         latitude: f.geometry.coordinates[1],
         longitude: f.geometry.coordinates[0],
         depth_km: f.geometry.coordinates[2],
@@ -78,41 +212,19 @@ export const earthquakes: Connector = {
     const minMag = Number(params.minMagnitude) || 1;
     const end = floorTo(Date.now(), 60_000);
     const r = rng(seedOf('quake', floorTo(end, HOUR)));
-    const regions = [
-      'Alaska',
-      'California',
-      'Japan',
-      'Indonesia',
-      'Chile',
-      'Turkey',
-      'Greece',
-      'Iceland',
-      'Peru',
-      'New Zealand',
-    ];
-    const coords: Record<string, [number, number]> = {
-      Alaska: [61, -150],
-      California: [36, -119],
-      Japan: [36, 138],
-      Indonesia: [-2, 118],
-      Chile: [-30, -71],
-      Turkey: [39, 35],
-      Greece: [38, 23],
-      Iceland: [64, -19],
-      Peru: [-10, -76],
-      'New Zealand': [-41, 174],
-    };
     const count = Math.max(3, Math.round(hours * 1.2));
     const rows = Array.from({ length: count }, () => {
-      const region = regions[Math.floor(r() * regions.length)]!;
-      const [lat, lon] = coords[region]!;
+      const spot = SAMPLE_PLACES[Math.floor(r() * SAMPLE_PLACES.length)]!;
+      const [lat, lon] = spot.at;
+      // Raw places in the live feed's shapes, through the same normalisation, so offline data tells the truth.
+      const place = spot.place.replace('{km}', String(1 + Math.round(r() * 80)));
       return {
         time: end - Math.floor(r() * hours * HOUR),
         magnitude: round(Math.max(minMag, minMag + -Math.log(1 - r()) * 0.8), 1),
-        place: `${Math.round(r() * 80)} km of ${region}`,
-        region,
-        latitude: round(lat + (r() - 0.5) * 6, 3),
-        longitude: round(lon + (r() - 0.5) * 6, 3),
+        place,
+        region: normalizeRegion(place),
+        latitude: round(lat + (r() - 0.5) * 3, 3),
+        longitude: round(lon + (r() - 0.5) * 3, 3),
         depth_km: round(r() * 60, 1),
         tsunami: false,
         url: 'https://earthquake.usgs.gov/earthquakes/map/',
