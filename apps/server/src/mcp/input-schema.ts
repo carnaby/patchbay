@@ -10,7 +10,15 @@
  * `~standard.validate`), so the server stays exactly as strict as before.
  */
 import type { StandardSchemaWithJSON } from '@modelcontextprotocol/server';
-import { FormatSchema, SoundRuleSchema, SourceSchema, TransformSchema, WidgetSchema } from '@patchbay/core';
+import {
+  BandsSchema,
+  ColorSchema,
+  FormatSchema,
+  SoundRuleSchema,
+  SourceSchema,
+  TransformSchema,
+  WidgetSchema,
+} from '@patchbay/core';
 import { z } from 'zod';
 
 type Json = Record<string, unknown>;
@@ -22,6 +30,8 @@ const SHARED = new Map<z.ZodType, string>([
   [WidgetSchema, 'Widget'],
   [SoundRuleSchema, 'SoundRule'],
   [FormatSchema, 'Format'],
+  [ColorSchema, 'Color'],
+  [BandsSchema, 'Bands'],
 ]);
 
 /**

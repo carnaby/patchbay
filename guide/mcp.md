@@ -27,23 +27,23 @@ Scopes:
 
 ## Tools
 
-| Tool               | Scope | What it does                                                                                                                                                                                                           |
-| ------------------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get_reference`    | read  | The full authoring guide: document schema, transforms, expression functions, widget configs, design rules.                                                                                                             |
-| `list_connectors`  | read  | Built-in public data sources and their parameters.                                                                                                                                                                     |
-| `list_dashboards`  | read  | The user's dashboards with URLs.                                                                                                                                                                                       |
-| `get_dashboard`    | read  | One dashboard's document and metadata.                                                                                                                                                                                 |
-| `preview_data`     | read  | Run a source + transforms **without saving**: columns, sample rows, row count per step, column profile, suggested widgets as operations.                                                                               |
-| `get_data`         | read  | The processed rows of a saved dataset, with `rowCount` and a profile. `limit` (default 50) keeps the first rows; `from: "end"` keeps the last ones instead, i.e. the newest of an ascending time series.               |
-| `suggest_widgets`  | read  | Rules-based visualisation suggestions for a saved dataset, as ready-to-apply operations with rationales.                                                                                                               |
-| `render_snapshot`  | read  | PNG of the dashboard or a single widget (light or dark), plus any data errors.                                                                                                                                         |
-| `list_versions`    | read  | Version history with actor and change log.                                                                                                                                                                             |
-| `list_secrets`     | read  | The user's saved secrets for HTTP sources: id, name, origin, path prefix, how each is sent, timestamps. Never values. See "Secrets" below.                                                                             |
-| `create_dashboard` | write | New dashboard (private by default), optionally from a template.                                                                                                                                                        |
-| `apply_operations` | write | Atomic batch of operations; `dryRun` to validate only; `baseVersion` for optimistic concurrency. Returns the change log, a data check for every touched dataset and, when a URL looks like it holds a key, `warnings`. |
-| `upload_data`      | write | Store CSV/JSON (≤ 5 MB) in a dashboard; returns the file id, profile, a ready `addDataset` op and suggestions.                                                                                                         |
-| `restore_version`  | write | Restore an earlier version (as a new version).                                                                                                                                                                         |
-| `set_visibility`   | write | Public or private.                                                                                                                                                                                                     |
+| Tool               | Scope | What it does                                                                                                                                                                                                                                                |
+| ------------------ | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_reference`    | read  | The full authoring guide: document schema, transforms, expression functions, widget configs, design rules.                                                                                                                                                  |
+| `list_connectors`  | read  | Built-in public data sources and their parameters.                                                                                                                                                                                                          |
+| `list_dashboards`  | read  | The user's dashboards with URLs.                                                                                                                                                                                                                            |
+| `get_dashboard`    | read  | One dashboard's document and metadata.                                                                                                                                                                                                                      |
+| `preview_data`     | read  | Run a source + transforms **without saving**: columns, sample rows, row count per step, column profile, suggested widgets as operations.                                                                                                                    |
+| `get_data`         | read  | The processed rows of a saved dataset, with `rowCount` and a profile. `limit` (default 50) keeps the first rows; `from: "end"` keeps the last ones instead, i.e. the newest of an ascending time series.                                                    |
+| `suggest_widgets`  | read  | Rules-based visualisation suggestions for a saved dataset, as ready-to-apply operations with rationales.                                                                                                                                                    |
+| `render_snapshot`  | read  | PNG of the dashboard or a single widget (light or dark), plus any data errors.                                                                                                                                                                              |
+| `list_versions`    | read  | Version history with actor and change log.                                                                                                                                                                                                                  |
+| `list_secrets`     | read  | The user's saved secrets for HTTP sources: id, name, origin, path prefix, how each is sent, timestamps. Never values. See "Secrets" below.                                                                                                                  |
+| `create_dashboard` | write | New dashboard (private by default), optionally from a template.                                                                                                                                                                                             |
+| `apply_operations` | write | Atomic batch of operations; `dryRun` to validate only; `baseVersion` for optimistic concurrency. Returns the change log, a data check for every touched dataset and `warnings` (a URL that looks like it holds a key, hard-to-see colours, truncated bars). |
+| `upload_data`      | write | Store CSV/JSON (≤ 5 MB) in a dashboard; returns the file id, profile, a ready `addDataset` op and suggestions.                                                                                                                                              |
+| `restore_version`  | write | Restore an earlier version (as a new version).                                                                                                                                                                                                              |
+| `set_visibility`   | write | Public or private.                                                                                                                                                                                                                                          |
 
 There is intentionally no delete tool.
 
@@ -51,7 +51,7 @@ Input schemas are JSON Schema 2020-12. Closed sets are enums: `create_dashboard.
 source. Unknown ids are rejected (an operation that adds or re-points a dataset to an unknown connector fails the whole
 batch), but dashboards saved with a since-removed connector still load and accept edits that leave that source alone.
 To keep `tools/list` small, `apply_operations` defines its large shared parts once under
-`$defs` (`Source`, `Transform`, `Widget`, `SoundRule`, `Format`) and points to them with local `$ref`s, each carrying
+`$defs` (`Source`, `Transform`, `Widget`, `SoundRule`, `Format`, `Color`, `Bands`) and points to them with local `$ref`s, each carrying
 `"type": "object"` for clients that do not resolve references. The server validates every call with the full strict
 schema either way.
 
@@ -61,6 +61,7 @@ Prompts: `build_dashboard { topic }`, `analyze_my_data { dashboardId? }`. Resour
 
 ```jsonc
 { "op": "setMeta", "title": "…", "description": "…" }
+{ "op": "setMeta", "colors": { "Bratislava": "accent-2", "Kosice": "accent-5" } } // dashboard-wide entity colours; null removes
 { "op": "addDataset", "dataset": { "id": "quakes", "name": "Quakes", "source": { … }, "transforms": [ … ], "refreshSec": 60 } }
 { "op": "updateDataset", "id": "quakes", "set": { "transforms": [ … ] } }
 { "op": "removeDataset", "id": "quakes", "cascade": true }
@@ -93,7 +94,7 @@ The answer of `apply_operations`:
 - `dataChecks`: one entry per dataset the batch added or changed, loaded right away so a broken source surfaces at
   once: `rowCount` (rows after the whole pipeline), `columns` (`name:type`), `sampleRows` (the first 3 rows, a sample,
   not a count) and `error`. `truncated: true` means the result has more rows than the 10,000 that widgets receive.
-- `warnings`, when there is something to fix that did not fail the batch (see "Secrets").
+- `warnings`, when there is something to fix that did not fail the batch (see "Secrets" and "Colour and formatting").
 
 Sound cues are spelled out in `changes` whenever an operation adds, changes or removes one (trigger, sound, volume and
 cooldown, defaults included), so there is no need to call `get_dashboard` to check them:
@@ -103,6 +104,43 @@ Added kpi widget "Strongest"; sound cue: "alert" when `magnitude >= 6` becomes t
 Widget "Orders": sound cue set to "bell" when rows with a new "order_id" appear (volume 0.7, cooldown 10 s)
 Widget "Orders": sound cue removed
 ```
+
+## Colour and formatting
+
+Wherever a colour can be set, it is a named token or `#rrggbb`. Tokens adapt to light and dark mode: `accent-1` …
+`accent-8` are the chart palette in order, `positive`, `warning`, `serious`, `negative` and `neutral` the status
+colours. Each token resolves per theme and per use: marks (lines, bars, arcs) take the palette or status colour, text
+is adjusted until it has at least 4.5:1 contrast against the card, and table cells get a light tint under normal text.
+Hex keeps working, so older documents and brand colours stay valid, but it does not adapt.
+
+```jsonc
+// Colour follows the entity: a map from series value, y column or slice label to a colour.
+{ "op": "updateWidget", "id": "sun", "set": { "config": { "colors": { "sun": "warning", "shadow": "accent-1" } } } }
+// A benchmark instead of a truncated axis (line, area, bar, scatter; at most 3).
+{ "op": "updateWidget", "id": "stations", "set": { "config": { "referenceLines": [{ "stat": "avg", "label": "Network average" }] } } }
+// KPI value bands and a change that is neither good nor bad.
+{ "op": "updateWidget", "id": "temp", "set": { "config": { "goodWhen": "neutral", "bands": [{ "upTo": 0, "color": "accent-1" }] } } }
+// Table column labels, per-column formats and bands, and row rules in the expression language.
+{ "op": "updateWidget", "id": "orders", "set": { "config": {
+  "columns": ["id", { "field": "total", "label": "Total", "format": { "style": "currency" } }, { "field": "stock", "bands": [{ "upTo": 5, "color": "warning" }] }],
+  "rules": [{ "when": "status == \"late\"", "color": "negative", "label": "late orders" }] } } }
+```
+
+Unmapped series keep the automatic order on the palette slots the map left free, so a mapped colour never appears on
+a second entity. `setMeta { colors }` sets the same kind of map for the whole dashboard; a widget's own map wins. Pie
+and donut slices take their colour from their label, so they keep it when their sizes change. The array form of
+`colors` still works and keeps its old meaning: a palette used in series order.
+
+`apply_operations` adds `warnings` (the batch is still saved) for the widgets it touched, and for the dashboard map
+when it changed:
+
+- a custom hex colour below 3:1 contrast against the card in either theme (WCAG non-text contrast);
+- two entries of a colour map that resolve to the same colour;
+- a bar chart (or stacked area) with `yMin` above zero: bars should start at zero, so use a reference line to show a
+  benchmark. Such charts still render as configured.
+
+Reference lines that cannot be drawn fail the batch: a chart kind without a value axis (pie, donut, funnel, radar,
+heatmap), both or neither of `value` and `stat`, or a `field` that is not one of the chart's `y` columns.
 
 ## Live data: `refreshSec` and `accumulate`
 
@@ -137,6 +175,34 @@ accept unrelated edits. The web editor does not offer intervals below the minimu
 
 For accumulating datasets, `get_data` answers with `watchers` (open browsers right now) and a `note` with the summary
 above; the data checks of `apply_operations` carry the same `note`.
+
+## Maps
+
+A `map` widget draws rows with a latitude and a longitude column on a built-in world map (Natural Earth 1:110m,
+public domain): no API key, no tiles, no requests to third parties, so it looks the same in the browser, offline and
+in `render_snapshot`.
+
+```jsonc
+{ "op": "addWidget", "widget": { "id": "quakes-map", "type": "map", "datasetId": "quakes", "config": { "lat": "latitude", "lon": "longitude", "size": "magnitude", "label": "place" } } }
+{ "op": "addWidget", "widget": { "id": "iss-track", "type": "map", "datasetId": "iss", "config": { "lat": "latitude", "lon": "longitude", "mode": "track", "terminator": true } } }
+```
+
+- `mode: "points"` (default) draws a dot per row; `"track"` connects the rows in their order (sort by time first), one
+  line per `series` value, split where it crosses the antimeridian, with the newest position marked.
+- `size` scales the dot's area with a numeric column; `color` puts a numeric column on the sequential blue ramp;
+  `series` gives each entity its categorical colour. `color` and `series` together are rejected: a map has one colour
+  channel. Entity colours follow the same rules as charts: the widget's `colors` map, then the dashboard's
+  (`setMeta { colors }`), then the palette slots left free, so a city has one colour on every chart and map.
+- `terminator: true` shades the night side for the newest time in the data (its first time column, else when the
+  data was fetched), never for the server's clock, so a snapshot and a live screen agree.
+- `view: "fit"` (default) frames the data with some padding and at least 30° × 15°; `"world"` shows 60°S to 84°N.
+  `basemap` is `countries` (default, de facto borders), `land` or `none`.
+- Rows without valid coordinates are left out; the map's accessible description says how many. In the browser every
+  map has a "Show as table" toggle.
+
+`suggest_widgets` and `preview_data` propose a map whenever the profile finds `latitude` and `longitude` roles: points
+sized by the first measure, or a track with night shading for accumulated positions (`accumulate` or a `fetched_at`
+column).
 
 ## Secrets
 

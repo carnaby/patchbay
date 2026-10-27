@@ -14,6 +14,8 @@ function mobileHeight(widget: Widget, h: number) {
   if (widget.type === 'kpi') return widget.config.sparkline ? 150 : 112;
   if (widget.type === 'gauge') return 190;
   if (widget.type === 'text') return Math.max(h, 2) * 60;
+  // A world map is about twice as wide as tall; more height on a phone would only add empty sea.
+  if (widget.type === 'map') return 280;
   return Math.min(Math.max(h, 3), 6) * 72;
 }
 

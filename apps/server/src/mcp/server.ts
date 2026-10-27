@@ -13,6 +13,7 @@ import {
   type DatasetResult,
   DatasetSchema,
   type DataTable,
+  formattingWarnings,
   OpSchema,
   profileTable,
   SourceSchema,
@@ -318,6 +319,22 @@ export function createMcp(deps: Deps) {
                 ]
               : [];
           });
+          type WidgetOp = { op: string; id?: string; widget?: { id: string }; colors?: unknown };
+          const widgetOps = args.operations as WidgetOp[];
+          warnings.push(
+            ...formattingWarnings(result.envelope.doc, {
+              widgets: new Set(
+                widgetOps.flatMap((o) =>
+                  o.op === 'addWidget' || o.op === 'replaceWidget'
+                    ? [o.widget!.id]
+                    : o.op === 'updateWidget'
+                      ? [o.id!]
+                      : [],
+                ),
+              ),
+              colors: widgetOps.some((o) => o.op === 'setMeta' && o.colors !== undefined),
+            }),
+          );
           // rowCount is the full result and sampleRows a few of its rows, named apart: a bare `rows: 5` read like a
           // row count when it was the sample size.
           const dataChecks = await Promise.all(
@@ -381,7 +398,10 @@ export function createMcp(deps: Deps) {
             ...sampleTable(result.table, args.sampleRows),
             trace: result.trace,
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
-            suggestions: suggestionOps(dataset, suggestWidgets(profile, { transforms: dataset.transforms })),
+            suggestions: suggestionOps(
+              dataset,
+              suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
+            ),
           });
         },
       ),
@@ -447,7 +467,10 @@ export function createMcp(deps: Deps) {
         return json({
           rows: profile.rows,
           columns: profile.columns.map(({ sample: _s, ...c }) => c),
-          suggestions: suggestionOps(dataset, suggestWidgets(profile, { transforms: dataset.transforms })),
+          suggestions: suggestionOps(
+            dataset,
+            suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
+          ),
         });
       }),
     );
@@ -483,7 +506,10 @@ export function createMcp(deps: Deps) {
             addDatasetOp: { op: 'addDataset', dataset },
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
             sample: result.table.rows.slice(0, 5),
-            suggestions: suggestionOps(dataset, suggestWidgets(profile, { transforms: dataset.transforms })),
+            suggestions: suggestionOps(
+              dataset,
+              suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
+            ),
             hint: 'Apply addDatasetOp first, then the ops of the suggestions you like (or your own).',
           });
         },
@@ -522,6 +548,7 @@ export function createMcp(deps: Deps) {
             args.widgetId && widget
               ? renderWidgetPng(widget, 'datasetId' in widget ? results.get(widget.datasetId) : undefined, {
                   theme: args.theme,
+                  entityColors: doc.colors,
                 })
               : renderDashboardPng(doc, results, { theme: args.theme });
           const problems = [...results.values()]

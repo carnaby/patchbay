@@ -8,7 +8,8 @@
  */
 import { z } from 'zod';
 import { SoundRuleSchema } from './sound.ts';
-import { TransformSchema, withStepIds } from './transforms.ts';
+import { COLOR_TOKENS } from './theme.ts';
+import { ExpressionSchema, TransformSchema, withStepIds } from './transforms.ts';
 
 export const SCHEMA_VERSION = 1;
 export const GRID_COLUMNS = 12;
@@ -111,6 +112,36 @@ export const FormatSchema = z.strictObject({
 });
 export type Format = z.infer<typeof FormatSchema>;
 
+/** Hex stays valid so every existing document (and deliberate brand colours) keeps loading; tokens are preferred. */
+export const ColorSchema = z
+  .union([z.enum(COLOR_TOKENS), z.string().regex(/^#[0-9a-fA-F]{6}$/)])
+  .describe('Named colour or #rrggbb');
+
+export const MAX_COLOR_ENTRIES = 60;
+export const ColorMapSchema = z
+  .record(field, ColorSchema)
+  .refine((m) => Object.keys(m).length <= MAX_COLOR_ENTRIES, `At most ${MAX_COLOR_ENTRIES} colours`);
+
+/**
+ * Ascending `upTo`; a value takes the first band whose upTo is >= it. Field descriptions for the colour features
+ * live in the MCP reference text, not here: every byte of these schemas is paid on each MCP connection.
+ */
+export const BandsSchema = z.array(z.strictObject({ upTo: z.number(), color: ColorSchema })).max(6);
+export type Bands = z.infer<typeof BandsSchema>;
+
+export const REFERENCE_STATS = ['avg', 'median', 'min', 'max'] as const;
+/** Only these kinds have a value axis to draw a reference line on. */
+export const REFERENCE_LINE_KINDS = ['line', 'area', 'bar', 'scatter'] as const;
+export const ReferenceLineSchema = z.strictObject({
+  value: z.number().optional(),
+  stat: z.enum(REFERENCE_STATS).optional(),
+  /** The column the statistic is computed on; default the first y. */
+  field: field.optional(),
+  label: z.string().max(60).optional(),
+  color: ColorSchema.optional(),
+});
+export type ReferenceLine = z.infer<typeof ReferenceLineSchema>;
+
 export const CHART_KINDS = [
   'line',
   'area',
@@ -142,11 +173,9 @@ export const ChartConfigSchema = z.strictObject({
   xMax: z.number().optional().describe('Scatter with a numeric x: fixed upper bound of the x axis'),
   logScale: z.boolean().default(false),
   format: FormatSchema.optional(),
-  colors: z
-    .array(z.string().regex(/^#[0-9a-fA-F]{6}$/))
-    .max(12)
-    .optional(),
+  colors: z.union([z.array(ColorSchema).max(12), ColorMapSchema]).optional(),
   maxPoints: z.number().int().min(10).max(20_000).default(5000),
+  referenceLines: z.array(ReferenceLineSchema).max(3).optional(),
 });
 export type ChartConfig = z.infer<typeof ChartConfigSchema>;
 
@@ -171,9 +200,10 @@ export const KpiConfigSchema = z
       .enum(['none', 'previous', 'first'])
       .default('none')
       .describe('Show change vs previous row or first row'),
-    goodWhen: z.enum(['up', 'down']).default('up'),
+    goodWhen: z.enum(['up', 'down', 'neutral']).default('up'),
     sparkline: z.boolean().default(false),
     format: FormatSchema.optional(),
+    bands: BandsSchema.optional(),
   })
   .superRefine(needsField);
 export type KpiConfig = z.infer<typeof KpiConfigSchema>;
@@ -185,20 +215,60 @@ export const GaugeConfigSchema = z
     min: z.number().default(0),
     max: z.number().default(100),
     format: FormatSchema.optional(),
-    bands: z
-      .array(z.strictObject({ upTo: z.number(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/) }))
-      .max(6)
-      .optional(),
+    bands: BandsSchema.optional(),
   })
   .superRefine(needsField);
 export type GaugeConfig = z.infer<typeof GaugeConfigSchema>;
 
+const colorAs = z.enum(['fill', 'text']).default('fill');
+
+export const TableColumnSchema = z.strictObject({
+  field,
+  label: z.string().min(1).max(80).optional(),
+  format: FormatSchema.optional(),
+  bands: BandsSchema.optional(),
+  colorAs,
+});
+export type TableColumn = z.infer<typeof TableColumnSchema>;
+
+export const TableRuleSchema = z.strictObject({
+  when: ExpressionSchema,
+  color: ColorSchema,
+  columns: z.array(field).max(40).optional(),
+  colorAs,
+  label: z.string().max(60).optional(),
+});
+export type TableRule = z.infer<typeof TableRuleSchema>;
+
 export const TableConfigSchema = z.strictObject({
-  columns: z.array(field).max(40).optional().describe('Columns to show; default all'),
+  columns: z
+    .array(z.union([field, TableColumnSchema]))
+    .max(40)
+    .optional()
+    .describe('Columns to show; default all'),
   pageSize: z.number().int().min(5).max(200).default(25),
   format: FormatSchema.optional(),
+  rules: z.array(TableRuleSchema).max(6).optional(),
 });
 export type TableConfig = z.infer<typeof TableConfigSchema>;
+
+export const MapConfigSchema = z.strictObject({
+  lat: field,
+  lon: field,
+  mode: z.enum(['points', 'track']).default('points'),
+  series: field.optional().describe('One colour (and track) per value'),
+  size: field.optional().describe('Numeric; dot area grows with it'),
+  color: field.optional().describe('Numeric, sequential ramp; not with series'),
+  label: field.optional(),
+  view: z.enum(['fit', 'world']).default('fit'),
+  basemap: z.enum(['countries', 'land', 'none']).default('countries'),
+  terminator: z.boolean().default(false).describe('Shade the night side'),
+  maxPoints: z.number().int().min(10).max(20_000).default(5000),
+  format: FormatSchema.optional(),
+  // Map form only: the array form of chart colors exists for documents older than colour maps.
+  colors: ColorMapSchema.optional(),
+});
+export type MapConfig = z.infer<typeof MapConfigSchema>;
 
 export const TextConfigSchema = z.strictObject({
   markdown: z.string().max(LIMITS.markdown),
@@ -217,6 +287,7 @@ export const WidgetSchema = z.discriminatedUnion('type', [
   z.strictObject({ ...dataWidgetBase, type: z.literal('kpi'), config: KpiConfigSchema }),
   z.strictObject({ ...dataWidgetBase, type: z.literal('gauge'), config: GaugeConfigSchema }),
   z.strictObject({ ...dataWidgetBase, type: z.literal('table'), config: TableConfigSchema }),
+  z.strictObject({ ...dataWidgetBase, type: z.literal('map'), config: MapConfigSchema }),
   z.strictObject({ ...widgetBase, type: z.literal('text'), config: TextConfigSchema }),
 ]);
 export type Widget = z.infer<typeof WidgetSchema>;
@@ -243,12 +314,42 @@ export const DashboardDocSchema = z.strictObject({
   datasets: z.array(DatasetSchema).max(LIMITS.datasets).default([]),
   widgets: z.array(WidgetSchema).max(LIMITS.widgets).default([]),
   layout: z.array(LayoutItemSchema).default([]),
+  // Optional, not defaulted: documents without it must round-trip unchanged.
+  colors: ColorMapSchema.optional().describe(
+    "Dashboard-wide colour per entity (series value, y column or slice label); a widget's own map wins",
+  ),
 });
 export type DashboardDoc = z.infer<typeof DashboardDocSchema>;
 export type DashboardDocInput = z.input<typeof DashboardDocSchema>;
 
 export function emptyDashboard(title = 'Untitled dashboard'): DashboardDoc {
   return { schemaVersion: SCHEMA_VERSION, title, description: '', datasets: [], widgets: [], layout: [] };
+}
+
+/**
+ * A line for a column the chart does not plot would be a second scale in disguise, and pies or heatmaps have no
+ * value axis to draw on, so both are refused rather than silently not drawn.
+ */
+function referenceLineIssues(id: string, config: ChartConfig): string[] {
+  const lines = config.referenceLines ?? [];
+  if (!lines.length) return [];
+  if (!(REFERENCE_LINE_KINDS as readonly string[]).includes(config.kind)) {
+    return [
+      `Chart "${id}" is a ${config.kind}, which has no value axis for reference lines (only ${REFERENCE_LINE_KINDS.join(', ')})`,
+    ];
+  }
+  const issues: string[] = [];
+  lines.forEach((line, i) => {
+    const name = `Reference line ${i + 1} of "${id}"`;
+    if ((line.value === undefined) === (line.stat === undefined))
+      issues.push(`${name}: give either value or stat`);
+    if (line.field !== undefined && !config.y.includes(line.field)) {
+      issues.push(
+        `${name}: field "${line.field}" is not one of the chart's y columns (${config.y.join(', ')})`,
+      );
+    }
+  });
+  return issues;
 }
 
 /** Problems that a schema alone cannot express (cross references, duplicates, overlaps). */
@@ -274,6 +375,11 @@ export function integrityIssues(doc: DashboardDoc): string[] {
     if ('datasetId' in w && !datasetIds.has(w.datasetId)) {
       issues.push(`Widget "${w.id}" references unknown dataset "${w.datasetId}"`);
     }
+    // Two encodings in one channel cannot be read, for the same reason charts never get dual axes.
+    if (w.type === 'map' && w.config.series && w.config.color) {
+      issues.push(`Widget "${w.id}": use series or color, not both; a map has one colour channel`);
+    }
+    if (w.type === 'chart') issues.push(...referenceLineIssues(w.id, w.config));
   }
   const laidOut = new Set<string>();
   for (const item of doc.layout) {

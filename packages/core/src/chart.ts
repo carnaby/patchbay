@@ -5,10 +5,12 @@
  * a canvas renderer, while the server feeds the exact same object to ECharts'
  * SSR SVG renderer to produce PNG snapshots an agent can look at.
  */
+import { type ColorMap, mappedColor, seriesColors } from './colors.ts';
 import { formatNumber, formatTime } from './format.ts';
-import type { ChartConfig, GaugeConfig } from './schema.ts';
+import { type ChartConfig, type GaugeConfig, REFERENCE_LINE_KINDS } from './schema.ts';
+import { referenceLineValue } from './stats.ts';
 import { columnType, type DataTable, type Scalar } from './table.ts';
-import { type ChartTheme, MAX_SERIES } from './theme.ts';
+import { type ChartTheme, MAX_SERIES, resolveColor } from './theme.ts';
 
 type Option = Record<string, unknown>;
 
@@ -16,9 +18,12 @@ export interface ChartBuildOptions {
   animation?: boolean;
   /** Static renders (snapshots) have no hover, so a few direct labels help. */
   static?: boolean;
+  /** Dashboard-wide entity colours (`doc.colors`). */
+  entityColors?: ColorMap | undefined;
 }
 
-const OTHER = 'Other';
+/** The key that collects folded series; maps fold entities the same way. */
+export const OTHER = 'Other';
 
 function baseOption(theme: ChartTheme, opts: ChartBuildOptions): Option {
   return {
@@ -54,8 +59,16 @@ function tooltip(theme: ChartTheme, trigger: 'axis' | 'item', config: ChartConfi
   };
 }
 
-/** Distinct values in first-seen order, folding the tail into "Other". */
-function seriesKeys(values: Scalar[]): { keys: string[]; folded: boolean } {
+const byName = (a: string, b: string) => a.localeCompare(b, 'en', { numeric: true });
+
+/**
+ * Distinct values sorted by name, folding the tail into "Other". Keys with a colour of their own are kept out of
+ * "Other" first: someone named that entity, so it should stay visible.
+ */
+export function seriesKeys(
+  values: Scalar[],
+  named: (key: string) => boolean,
+): { keys: string[]; folded: boolean } {
   const seen: string[] = [];
   const set = new Set<string>();
   for (const v of values) {
@@ -65,9 +78,10 @@ function seriesKeys(values: Scalar[]): { keys: string[]; folded: boolean } {
       seen.push(k);
     }
   }
-  seen.sort((a, b) => a.localeCompare(b, 'en', { numeric: true }));
+  seen.sort(byName);
   if (seen.length <= MAX_SERIES) return { keys: seen, folded: false };
-  return { keys: [...seen.slice(0, MAX_SERIES - 1), OTHER], folded: true };
+  const kept = [...seen.filter(named), ...seen.filter((k) => !named(k))].slice(0, MAX_SERIES - 1);
+  return { keys: [...kept.sort(byName), OTHER], folded: true };
 }
 
 function emptyOption(theme: ChartTheme, message: string): Option {
@@ -97,8 +111,7 @@ export function buildChartOption(
   const table: DataTable =
     input.rows.length > config.maxPoints ? { ...input, rows: input.rows.slice(-config.maxPoints) } : input;
   const xType = columnType(table, config.x);
-  const colors = config.colors?.length ? config.colors : theme.categorical;
-  const base = { ...baseOption(theme, opts), color: colors };
+  const base = baseOption(theme, opts);
 
   switch (config.kind) {
     case 'pie':
@@ -108,7 +121,7 @@ export function buildChartOption(
     case 'heatmap':
       return heatmapOption(config, table, theme, base);
     case 'radar':
-      return radarOption(config, table, theme, base);
+      return radarOption(config, table, theme, base, opts);
     default:
       return cartesianOption(config, table, theme, base, xType, opts);
   }
@@ -132,8 +145,14 @@ function cartesianOption(
 
   type Series = { name: string; points: [Scalar, Scalar][] };
   const groups: Series[] = [];
+  let folded = false;
   if (config.series) {
-    const { keys, folded } = seriesKeys(table.rows.map((r) => r[config.series!] ?? null));
+    const split = seriesKeys(
+      table.rows.map((r) => r[config.series!] ?? null),
+      (k) => mappedColor(k, config.colors, opts.entityColors) !== undefined,
+    );
+    const keys = split.keys;
+    folded = split.folded;
     const keySet = new Set(keys);
     const y = config.y[0]!;
     const byKey = new Map<string, Series>(keys.map((k) => [k, { name: k, points: [] }]));
@@ -150,6 +169,14 @@ function cartesianOption(
   }
 
   const multi = groups.length > 1;
+  const colors = seriesColors(
+    groups.map((g) => g.name),
+    config.colors,
+    theme,
+    { entityColors: opts.entityColors, other: folded ? OTHER : undefined },
+  );
+  const labelled =
+    config.showLabels || (opts.static && !multi && table.rows.length <= 12 && markType === 'bar');
   const series = groups.map((g, idx) => {
     const data =
       axisKind === 'category'
@@ -190,7 +217,7 @@ function cartesianOption(
     }
     if (markType === 'scatter') s.itemStyle = { borderColor: theme.surface, borderWidth: 1, opacity: 0.85 };
     if (config.stacked && markType !== 'scatter') s.stack = 'total';
-    if (config.showLabels || (opts.static && !multi && table.rows.length <= 12 && markType === 'bar')) {
+    if (labelled) {
       s.label = {
         show: true,
         position: config.horizontal ? 'right' : 'top',
@@ -201,7 +228,8 @@ function cartesianOption(
         },
       };
     }
-    if (idx >= MAX_SERIES) s.itemStyle = { ...(s.itemStyle as object), color: theme.muted };
+    // Set per series rather than through `option.color`, so the colour belongs to the entity, not the rank.
+    s.itemStyle = { ...(s.itemStyle as object), color: colors[idx] };
     return s;
   });
 
@@ -234,6 +262,26 @@ function cartesianOption(
     },
   };
   const horizontal = config.horizontal && markType === 'bar';
+  const marks = referenceMarks(config, table, theme, horizontal);
+  if (marks && series[0]) {
+    series[0].markLine = marks.markLine;
+    widenForLines(valueAxis, config, marks.values);
+  }
+  // containLabel reserves room for axis labels only. On horizontal bars the value labels sit right of the bars
+  // and a reference line's label is centred on it at the top, so near the value axis end both would be cut off.
+  let right = 16;
+  if (horizontal && labelled) {
+    const widest = Math.max(
+      0,
+      ...groups
+        .flatMap((g) =>
+          g.points.map(([, y]) => (typeof y === 'number' ? formatNumber(y, config.format) : '')),
+        )
+        .map((t) => t.length),
+    );
+    right = Math.max(right, textWidth(widest, 12) + 10);
+  }
+  if (horizontal && marks) right = Math.max(right, Math.ceil(textWidth(marks.longest, 11) / 2) + 6);
   return {
     ...base,
     tooltip: tooltip(theme, isScatter ? 'item' : 'axis', config),
@@ -248,11 +296,91 @@ function cartesianOption(
           textStyle: { color: theme.textSecondary },
         }
       : { show: false },
-    grid: { left: 8, right: 16, top: showLegend ? 32 : 16, bottom: 8, containLabel: true },
+    grid: { left: 8, right, top: showLegend ? 32 : 16, bottom: 8, containLabel: true },
     xAxis: horizontal ? valueAxis : categoryAxis,
     yAxis: horizontal ? { ...categoryAxis, inverse: true } : valueAxis,
     series,
   };
+}
+
+const STAT_NAMES = { avg: 'Average', median: 'Median', min: 'Minimum', max: 'Maximum' } as const;
+
+/**
+ * A generous estimate of a label's width in px. The option is built without a canvas to measure text, and the
+ * browser and the PNG renderer must reserve the same room, so a per-character width it is (digits and Latin text
+ * in the UI font stay below 0.6 em).
+ */
+const textWidth = (chars: number, fontSize: number) => Math.ceil(chars * fontSize * 0.6);
+
+/** Dashed benchmark lines on the value axis, drawn as a markLine on the first series. */
+function referenceMarks(
+  config: ChartConfig,
+  table: DataTable,
+  theme: ChartTheme,
+  horizontal: boolean,
+): { markLine: Option; values: number[]; longest: number } | null {
+  if (!config.referenceLines?.length) return null;
+  if (!(REFERENCE_LINE_KINDS as readonly string[]).includes(config.kind)) return null;
+  const values: number[] = [];
+  let longest = 0;
+  const data = config.referenceLines.flatMap((line) => {
+    const value = referenceLineValue(line, config, table);
+    if (value === null) return [];
+    values.push(value);
+    const color = line.color ?? 'neutral';
+    const name = line.label ?? (line.stat ? STAT_NAMES[line.stat] : '');
+    const text = `${name ? `${name} · ` : ''}${formatNumber(value, config.format)}`;
+    longest = Math.max(longest, text.length);
+    return [
+      {
+        [horizontal ? 'xAxis' : 'yAxis']: value,
+        lineStyle: { color: resolveColor(color, theme, 'mark'), type: 'dashed', width: 1.5 },
+        label: {
+          show: true,
+          // A function, not a template string: a label like "{a}" must stay literal.
+          formatter: () => text,
+          color: resolveColor(color, theme, 'text'),
+          fontSize: 11,
+          // The markLine is drawn above the series, so a halo keeps its label readable where it crosses a line or bar.
+          textBorderColor: theme.surface,
+          textBorderWidth: 3,
+          // Horizontal bars invert the category axis, so a vertical line starts at the top, clear of the axis labels.
+          position: horizontal ? 'start' : 'insideEndTop',
+        },
+      },
+    ];
+  });
+  if (!data.length) return null;
+  return { markLine: { silent: true, symbol: 'none', animation: false, data }, values, longest };
+}
+
+/**
+ * ECharts sizes the axis to the data only, so a benchmark outside the data range would be invisible. The bound is
+ * moved just past the line, rounded to a step of the range; bounds the author fixed are left alone, and returning
+ * undefined keeps ECharts' own rounding whenever the line is inside the data already.
+ */
+function widenForLines(axis: Option, config: ChartConfig, values: number[]) {
+  if (config.logScale || !values.length) return;
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  const step = (e: { min: number; max: number }) => {
+    const span = Math.max(e.max, hi) - Math.min(e.min, lo) || Math.abs(hi) || 1;
+    return { span, unit: 10 ** Math.floor(Math.log10(span / 5)) };
+  };
+  if (config.yMin === undefined) {
+    axis.min = (e: { min: number; max: number }) => {
+      if (lo >= e.min) return undefined;
+      const { span, unit } = step(e);
+      return Math.floor((lo - span * 0.05) / unit) * unit;
+    };
+  }
+  if (config.yMax === undefined) {
+    axis.max = (e: { min: number; max: number }) => {
+      if (hi <= e.max) return undefined;
+      const { span, unit } = step(e);
+      return Math.ceil((hi + span * 0.05) / unit) * unit;
+    };
+  }
 }
 
 function proportionOption(
@@ -269,7 +397,9 @@ function proportionOption(
     const v = row[y];
     if (typeof v === 'number') totals.set(k, (totals.get(k) ?? 0) + v);
   }
-  let items = [...totals.entries()].map(([name, value]) => ({ name, value }));
+  let items: { name: string; value: number; itemStyle?: { color: string | undefined } }[] = [
+    ...totals.entries(),
+  ].map(([name, value]) => ({ name, value }));
   if (config.kind !== 'funnel') {
     items.sort((a, b) => b.value - a.value);
     const limit = config.kind === 'pie' || config.kind === 'donut' ? 6 : MAX_SERIES;
@@ -277,6 +407,18 @@ function proportionOption(
       const rest = items.slice(limit - 1).reduce((s, i) => s + i.value, 0);
       items = [...items.slice(0, limit - 1), { name: OTHER, value: rest }];
     }
+  }
+  if (config.kind !== 'funnel') {
+    // Slices stay sorted by value but take their colour from the label, so two slices whose values cross keep
+    // their colours. The surface-coloured border keeps neighbours apart now that they are not adjacent slots.
+    const folded = items.some((i) => i.name === OTHER) && !totals.has(OTHER);
+    const names = items.map((i) => i.name).sort(byName);
+    const colors = seriesColors(names, config.colors, theme, {
+      entityColors: opts.entityColors,
+      other: folded ? OTHER : undefined,
+    });
+    const colorOf = new Map(names.map((n, i) => [n, colors[i]!]));
+    items = items.map((i) => ({ ...i, itemStyle: { color: colorOf.get(i.name) } }));
   }
   const label = {
     show: true,
@@ -383,8 +525,15 @@ function heatmapOption(config: ChartConfig, table: DataTable, theme: ChartTheme,
   };
 }
 
-function radarOption(config: ChartConfig, table: DataTable, theme: ChartTheme, base: Option): Option {
+function radarOption(
+  config: ChartConfig,
+  table: DataTable,
+  theme: ChartTheme,
+  base: Option,
+  opts: ChartBuildOptions,
+): Option {
   const rows = table.rows.slice(0, 24);
+  const colors = seriesColors(config.y, config.colors, theme, { entityColors: opts.entityColors });
   const indicators = rows.map((r) => {
     const max = Math.max(...config.y.map((y) => (typeof r[y] === 'number' ? (r[y] as number) : 0)));
     return { name: String(r[config.x] ?? ''), max: max > 0 ? max * 1.15 : 1 };
@@ -409,9 +558,10 @@ function radarOption(config: ChartConfig, table: DataTable, theme: ChartTheme, b
     series: [
       {
         type: 'radar',
-        data: config.y.map((y) => ({
+        data: config.y.map((y, i) => ({
           name: y,
           value: rows.map((r) => (typeof r[y] === 'number' ? r[y] : 0)),
+          itemStyle: { color: colors[i] },
           areaStyle: { opacity: 0.15 },
           lineStyle: { width: 2 },
         })),
@@ -428,7 +578,10 @@ export function buildGaugeOption(
 ): Option {
   const range = config.max - config.min || 1;
   const bands = config.bands?.length
-    ? config.bands.map((b) => [Math.min(Math.max((b.upTo - config.min) / range, 0), 1), b.color])
+    ? config.bands.map((b) => [
+        Math.min(Math.max((b.upTo - config.min) / range, 0), 1),
+        resolveColor(b.color, theme, 'mark'),
+      ])
     : [[1, theme.categorical[0]]];
   return {
     ...baseOption(theme, opts),

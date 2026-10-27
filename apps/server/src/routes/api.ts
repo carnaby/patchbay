@@ -241,7 +241,10 @@ export function apiRoutes(deps: Deps) {
     return c.json({
       result,
       profile,
-      suggestions: suggestWidgets(profile, { transforms: dataset.transforms }),
+      suggestions: suggestWidgets(profile, {
+        transforms: dataset.transforms,
+        accumulate: dataset.accumulate > 0,
+      }),
     });
   });
 
@@ -252,7 +255,13 @@ export function apiRoutes(deps: Deps) {
     if (!dataset) throw notFound('Dataset not found');
     const result = await data.resolve({ id, ownerId: meta.ownerId }, dataset);
     const profile = profileTable(result.table);
-    return c.json({ profile, suggestions: suggestWidgets(profile, { transforms: dataset.transforms }) });
+    return c.json({
+      profile,
+      suggestions: suggestWidgets(profile, {
+        transforms: dataset.transforms,
+        accumulate: dataset.accumulate > 0,
+      }),
+    });
   });
 
   app.get('/dashboards/:id/files', async (c) =>
@@ -358,7 +367,10 @@ export function apiRoutes(deps: Deps) {
       const widget = doc.widgets.find((w) => w.id === widgetId);
       if (!widget) throw notFound('Widget not found');
       const dataset = 'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
-      png = renderWidgetPng(widget, dataset ? await data.resolve(target, dataset) : undefined, { theme });
+      png = renderWidgetPng(widget, dataset ? await data.resolve(target, dataset) : undefined, {
+        theme,
+        entityColors: doc.colors,
+      });
     } else {
       png = renderDashboardPng(doc, await resolveAll(doc.datasets), { theme });
     }

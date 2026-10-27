@@ -229,6 +229,17 @@ describe('latest value over a forecast', () => {
     expect(kpi.title).toBe('Latest temperature 2m');
     expect(kpi.transforms).toEqual([{ type: 'sort', by: [{ field: 'time', dir: 'asc' }] }]);
   });
+
+  it('shows a temperature change in a neutral colour, a revenue change as good or bad', () => {
+    const past = forecast.map((r) => ({ ...r, time: r.time - 3 * 24 * HOUR }));
+    const temp = kpiOf(suggest(past));
+    expect(temp.widget.config).toMatchObject({ compare: 'previous', goodWhen: 'neutral' });
+    expect(temp.rationale).toMatch(/neither good nor bad/);
+    const revenue = kpiOf(
+      suggest(past.map(({ time, temperature_2m }) => ({ time, revenue: temperature_2m }))),
+    );
+    expect(revenue.widget.config).not.toHaveProperty('goodWhen');
+  });
 });
 
 describe('locations', () => {
@@ -239,6 +250,57 @@ describe('locations', () => {
       latitude: 48.15,
       longitude: 17.11,
     }));
-    expect(suggest(rows).some((s) => s.title === 'Locations')).toBe(false);
+    expect(suggest(rows).some((s) => s.widget.type === 'map')).toBe(false);
+  });
+
+  it('puts earthquakes on a map sized by magnitude, not on a scatter chart', () => {
+    const rows = Array.from({ length: 20 }, (_, i) => ({
+      time: NOW - i * HOUR,
+      magnitude: 2.5 + (i % 7) * 0.6,
+      place: `Place ${i}`,
+      latitude: -40 + i * 4,
+      longitude: -170 + i * 17,
+    }));
+    const map = suggest(rows).find((s) => s.widget.type === 'map')!;
+    expect(map.title).toBe('magnitude by location');
+    expect(map.widget.config).toEqual({
+      lat: 'latitude',
+      lon: 'longitude',
+      size: 'magnitude',
+      label: 'place',
+    });
+    expect(map.transforms).toEqual([]);
+    expect(suggest(rows).some((s) => (s.widget.config as { kind?: string }).kind === 'scatter')).toBe(false);
+  });
+
+  it('turns successive positions of one source into a track with night shading, in time order', () => {
+    const rows = Array.from({ length: 12 }, (_, i) => ({
+      time: NOW - i * 60_000,
+      latitude: 50 * Math.sin(i / 3),
+      longitude: -180 + i * 25,
+      altitude_km: 418 + i,
+      fetched_at: NOW - i * 60_000,
+    }));
+    const track = suggest(rows).find((s) => s.widget.type === 'map')!;
+    expect(track.title).toBe('Track');
+    expect(track.widget.config).toEqual({
+      lat: 'latitude',
+      lon: 'longitude',
+      mode: 'track',
+      terminator: true,
+    });
+    expect(track.transforms).toEqual([{ type: 'sort', by: [{ field: 'time', dir: 'asc' }] }]);
+  });
+
+  it('knows an accumulated source is a track even without fetched_at', () => {
+    const rows = Array.from({ length: 6 }, (_, i) => ({ time: NOW - i * 5000, lat: i, lon: i * 2 }));
+    const table = inferTable(rows as never, { types: { time: 'time' } });
+    const profile = profileTable(table);
+    const points = suggestWidgets(profile, { now: NOW }).find((s) => s.widget.type === 'map')!;
+    expect((points.widget.config as { mode?: string }).mode).toBeUndefined();
+    const track = suggestWidgets(profile, { now: NOW, accumulate: true }).find(
+      (s) => s.widget.type === 'map',
+    )!;
+    expect((track.widget.config as { mode?: string }).mode).toBe('track');
   });
 });

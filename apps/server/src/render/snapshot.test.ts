@@ -4,6 +4,9 @@ import {
   type DatasetResult,
   emptyDashboard,
   inferTable,
+  parseDashboard,
+  resolveColor,
+  THEMES,
   type WidgetInput,
   WidgetSchema,
 } from '@patchbay/core';
@@ -168,4 +171,207 @@ describe('snapshot text', () => {
     // Dashboard snapshots are not scaled; the title sits at (16, 40) in 22 px bold.
     expect(inkColumns(img, { x: 16, y: 20, w: 200, h: 26 }, 1).length).toBeGreaterThan(80);
   });
+});
+
+describe('map snapshots', () => {
+  /** The colour under a longitude/latitude in a 640x360 widget snapshot with the world view. */
+  function pixelAt(img: Image, lon: number, lat: number, top = 4): number[] {
+    // The body starts at (14, 36) and is 612x310; the geo box keeps 4 px on the other sides (`top` makes room for a
+    // caption) and fits the world view's 360x144 degrees into it without distortion.
+    const box = { x: 18, y: 36 + top, w: 604, h: 306 - top };
+    const scale = Math.min(box.w / 360, box.h / 144);
+    const x = box.x + (box.w - 360 * scale) / 2 + (lon + 180) * scale;
+    const y = box.y + (box.h - 144 * scale) / 2 + (84 - lat) * scale;
+    const i = (Math.round(y * SCALE) * img.width + Math.round(x * SCALE)) * 4;
+    return [img.rgba[i]!, img.rgba[i + 1]!, img.rgba[i + 2]!];
+  }
+  const rgb = (hex: string) => [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+  const near = (got: number[], hex: string, tolerance = 12) =>
+    got.every((v, i) => Math.abs(v - rgb(hex)[i]!) <= tolerance);
+  const mapResult = (rows: Record<string, unknown>[]): DatasetResult => ({
+    datasetId: 'm',
+    table: inferTable(rows as never, { types: { time: 'time' } }),
+    fetchedAt: new Date(0).toISOString(),
+    hash: 'm',
+    truncated: false,
+  });
+
+  it('draws the bundled base map and the points where they belong', () => {
+    const img = decodePng(
+      renderWidgetPng(
+        widget({
+          id: 'quakes',
+          type: 'map',
+          title: 'Earthquakes',
+          datasetId: 'm',
+          config: { lat: 'latitude', lon: 'longitude', label: 'place', view: 'world' },
+        }),
+        mapResult([
+          { place: 'Indian Ocean', latitude: -40, longitude: 100 },
+          { place: 'South Pacific', latitude: -10, longitude: -120 },
+        ]),
+      ),
+    );
+    // Central Africa is land, the mid-Atlantic is ocean (the card background), the quakes are dots.
+    expect(near(pixelAt(img, 22, 2), '#e1e0d9')).toBe(true);
+    expect(near(pixelAt(img, -30, 0), '#fcfcfb')).toBe(true);
+    // Dots are drawn at 85 % opacity.
+    expect(near(pixelAt(img, 100, -40), '#2a78d6', 40)).toBe(true);
+    expect(near(pixelAt(img, -120, -10), '#2a78d6', 40)).toBe(true);
+  });
+
+  it('shades the night for the time of the data and draws the track', () => {
+    // Around noon UTC at the March equinox: day around Greenwich, night around the antimeridian.
+    const img = decodePng(
+      renderWidgetPng(
+        widget({
+          id: 'iss',
+          type: 'map',
+          title: 'Track',
+          datasetId: 'm',
+          config: { lat: 'latitude', lon: 'longitude', mode: 'track', terminator: true, view: 'world' },
+        }),
+        mapResult(
+          Array.from({ length: 40 }, (_, i) => ({
+            time: Date.UTC(2024, 2, 20, 11) + i * 90_000,
+            latitude: 0,
+            longitude: -100 + i * 5,
+          })),
+        ),
+      ),
+    );
+    // The "Night shading for …" caption takes the top 26 px.
+    const day = pixelAt(img, -30, -30, 26);
+    const night = pixelAt(img, -150, -30, 26);
+    expect(near(day, '#fcfcfb')).toBe(true);
+    expect(night[0]!).toBeLessThan(day[0]! - 15);
+    // The track runs along the equator in the first palette colour.
+    expect(near(pixelAt(img, -20, 0, 26), '#2a78d6', 40)).toBe(true);
+  });
+
+  it('draws a zoomed-in map inside a dashboard, with the dashboard colour of each entity', () => {
+    // Two cities a few degrees apart: `fit` zooms in about twelvefold, so the land runs far beyond the card.
+    const rows = [
+      { city: 'Bratislava', lat: 48.15, lon: 17.11 },
+      { city: 'Kosice', lat: 48.72, lon: 21.26 },
+    ];
+    const doc = parseDashboard({
+      ...emptyDashboard('Cities'),
+      colors: { Kosice: 'accent-5' },
+      datasets: [
+        {
+          id: 'cities',
+          name: 'Cities',
+          source: { kind: 'inline', rows },
+        },
+      ],
+      widgets: [
+        {
+          id: 'map',
+          type: 'map',
+          datasetId: 'cities',
+          config: { lat: 'lat', lon: 'lon', series: 'city' },
+        },
+      ],
+      layout: [{ i: 'map', x: 0, y: 0, w: 6, h: 5 }],
+    });
+    const results = new Map([['cities', { ...mapResult(rows), datasetId: 'cities' }]]);
+    const img = decodePng(renderDashboardPng(doc, results));
+    // Dashboard snapshots are not scaled, and pixelsOf expects widget coordinates: divide the card's box by SCALE.
+    const card = { x: 12 / SCALE, y: 64 / SCALE, w: 620 / SCALE, h: 388 / SCALE };
+    expect(pixelsOf(img, '#e1e0d9', card)).toBeGreaterThan(20_000);
+    // Dots are drawn at 85 % opacity over the land: Bratislava takes the first free slot, Kosice its dashboard colour.
+    const onLand = (hex: string) =>
+      `#${[1, 3, 5]
+        .map(
+          (i) =>
+            Number.parseInt(hex.slice(i, i + 2), 16) * 0.85 +
+            Number.parseInt('e1e0d9'.slice(i - 1, i + 1), 16) * 0.15,
+        )
+        .map((v) => Math.round(v).toString(16).padStart(2, '0'))
+        .join('')}`;
+    expect(pixelsOf(img, onLand(THEMES.light.categorical[0]!), card)).toBeGreaterThan(10);
+    expect(pixelsOf(img, onLand(THEMES.light.categorical[4]!), card)).toBeGreaterThan(10);
+  });
+});
+
+/** Pixels within a small distance of a colour, optionally inside an SVG-coordinate box. */
+function pixelsOf(img: Image, hex: string, box?: { x: number; y: number; w: number; h: number }): number {
+  const want = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+  const x0 = box ? Math.round(box.x * SCALE) : 0;
+  const y0 = box ? Math.round(box.y * SCALE) : 0;
+  const x1 = box ? Math.round((box.x + box.w) * SCALE) : img.width;
+  const y1 = box ? Math.round((box.y + box.h) * SCALE) : img.height;
+  let n = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * img.width + x) * 4;
+      if (want.every((v, c) => Math.abs(img.rgba[i + c]! - v) <= 6)) n++;
+    }
+  }
+  return n;
+}
+
+describe('snapshot colours', () => {
+  for (const mode of ['light', 'dark'] as const) {
+    const theme = THEMES[mode];
+    const draw = (input: WidgetInput, entityColors?: Record<string, string>) =>
+      decodePng(renderWidgetPng(widget(input), result, { theme: mode, entityColors }));
+
+    it(`draws mapped series colours and a reference line in ${mode}`, () => {
+      const img = draw({
+        id: 'c',
+        type: 'chart',
+        title: 'Revenue',
+        datasetId: 'sales',
+        config: {
+          kind: 'bar',
+          x: 'month',
+          y: ['revenue'],
+          colors: { revenue: 'accent-3' },
+          referenceLines: [{ value: 2500, label: 'Target', color: 'negative' }],
+        },
+      });
+      expect(pixelsOf(img, theme.categorical[2]!)).toBeGreaterThan(2000);
+      expect(pixelsOf(img, theme.categorical[0]!)).toBe(0);
+      // The dashed line above every bar: the axis was widened to show it.
+      expect(pixelsOf(img, theme.status.critical, { x: 60, y: 36, w: 560, h: 120 })).toBeGreaterThan(100);
+    });
+
+    it(`uses dashboard entity colours in widget snapshots in ${mode}`, () => {
+      const img = draw(
+        { id: 'c', type: 'chart', datasetId: 'sales', config: { kind: 'bar', x: 'month', y: ['units'] } },
+        { units: 'accent-5' },
+      );
+      expect(pixelsOf(img, theme.categorical[4]!)).toBeGreaterThan(2000);
+    });
+
+    it(`colours a KPI value from its bands with contrast in ${mode}`, () => {
+      const img = draw({
+        id: 'k',
+        type: 'kpi',
+        datasetId: 'sales',
+        config: { field: 'revenue', bands: [{ upTo: 2000, color: 'warning' }] },
+      });
+      expect(
+        pixelsOf(img, resolveColor('warning', theme, 'text'), { x: 14, y: 36, w: 300, h: 50 }),
+      ).toBeGreaterThan(100);
+    });
+
+    it(`tints table cells from rules in ${mode}`, () => {
+      const img = draw({
+        id: 't',
+        type: 'table',
+        datasetId: 'sales',
+        config: {
+          columns: [{ field: 'month', label: 'Month' }, 'revenue'],
+          rules: [{ when: 'revenue > 1600', color: 'positive' }],
+        },
+      });
+      // Only the February row (the second) is tinted.
+      const fill = resolveColor('positive', theme, 'fill');
+      expect(pixelsOf(img, fill, { x: 10, y: 78, w: 600, h: 18 })).toBeGreaterThan(3000);
+      expect(pixelsOf(img, fill, { x: 10, y: 58, w: 600, h: 18 })).toBe(0);
+    });
+  }
 });

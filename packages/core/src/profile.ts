@@ -38,15 +38,22 @@ export interface TableProfile {
 const URL_RE = /^https?:\/\//i;
 const ID_NAME = /(^id$|_id$|Id$|^uuid$|^key$|^code$)/;
 
+/** Whether a numeric column's name says it holds a latitude or a longitude; shared with the map editor's defaults. */
+export function coordinateRole(columnName: string): 'latitude' | 'longitude' | null {
+  const name = columnName.toLowerCase();
+  if (/^(lat|latitude)$/.test(name) || name.endsWith('.lat') || name.endsWith('latitude')) return 'latitude';
+  if (/^(lon|lng|long|longitude)$/.test(name) || name.endsWith('.lon') || name.endsWith('longitude'))
+    return 'longitude';
+  return null;
+}
+
 function roleOf(col: Column, values: Scalar[], distinct: number, rows: number): ColumnRole {
   const name = col.name.toLowerCase();
   if (col.type === 'time') return 'time';
   if (col.type === 'boolean') return 'flag';
   if (col.type === 'number') {
-    if (/^(lat|latitude)$/.test(name) || name.endsWith('.lat') || name.endsWith('latitude'))
-      return 'latitude';
-    if (/^(lon|lng|long|longitude)$/.test(name) || name.endsWith('.lon') || name.endsWith('longitude'))
-      return 'longitude';
+    const coordinate = coordinateRole(col.name);
+    if (coordinate) return coordinate;
     if (/^(year|yr)$/.test(name)) return 'time';
     if (ID_NAME.test(col.name) && distinct === rows) return 'identifier';
     return 'measure';

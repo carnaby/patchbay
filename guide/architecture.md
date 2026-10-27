@@ -21,16 +21,18 @@ logic is covered by fast unit tests.
 A dashboard is one JSON document:
 
 ```ts
-{ schemaVersion: 1, title, description, datasets: Dataset[], widgets: Widget[], layout: LayoutItem[] }
+{ schemaVersion: 1, title, description, datasets: Dataset[], widgets: Widget[], layout: LayoutItem[], colors? }
 ```
 
 - **Datasets** describe where data comes from (`source`) and how it is processed (`transforms`), plus live behaviour
   (`refreshSec`, `accumulate`).
-- **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `text`). Several widgets can share one dataset.
+- **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `map`, `text`). Several widgets can share one dataset.
 - **Layout** is a single 12-column grid. Small screens stack widgets in reading order; there is deliberately no second,
   hand-maintained mobile layout to drift out of sync. On a phone the editor therefore only reorders (`reorderWidget`
   moves a widget in reading order and the widgets in between trade places on the same grid, see `reorderLayout`);
   sizes and side-by-side placement are edited on a wider screen.
+- **Colors** (optional) map entities (series values, columns, slice labels) to colours for every chart of the
+  dashboard. It is absent unless set, so documents without it round-trip unchanged.
 
 All schemas are `z.strictObject`: unknown keys are errors. A typo in an agent's config (`colour` instead of `colors`)
 fails loudly instead of being silently ignored.
@@ -191,6 +193,30 @@ renderer and is rasterised with `resvg` into a PNG, with no headless browser inv
 colour-vision-deficiency-validated categorical order with separate light and dark steps; series colours follow the
 series, never their rank, and there are no dual-axis charts.
 
+Documents store colours as named tokens (`accent-1` … `accent-8`, `positive`, `warning`, `serious`, `negative`,
+`neutral`) or hex. `resolveColor(color, theme, usage)` in `theme.ts` is the only place a colour becomes hex: marks take
+the palette and status colours of the current theme, text is moved in OKLCH lightness (hue kept) until it reaches
+4.5:1 against the card (`ensureContrast`), and table cells get a light tint under normal ink, which stays readable by
+construction. A test checks every token in both themes. `seriesColors` (`colors.ts`) decides every series and slice
+colour: the widget's map, then the dashboard's, then the automatic order over the palette slots left free; pies
+colour slices by label, not rank, so a slice keeps its colour when values cross. Table cells (`cells.ts`: labels,
+per-column formats, bands, row rules in the expression language), KPI value bands and reference lines are computed
+in core as well, so the browser and the PNG renderer never disagree on a colour. _Rejected:_ colour by a hash of the
+key (needs unvalidated hues), conditional colour as a pipeline step (presentation would leak into data and could not
+follow the theme), free hex only (colours that vanish in one theme).
+
+**Maps** use the same path. The base map is Natural Earth's 1:110m countries (public domain), committed as a 147 KB
+GeoJSON (`packages/core/geo`) and drawn by ECharts' `geo` component in an equirectangular projection. `buildMapOption`
+(`@patchbay/core/map`, an entry of its own) only refers to it by name; the browser registers it from a lazily loaded
+chunk together with the map code and ECharts' geo, lines and custom parts, so dashboards without a map never download
+them, and the snapshot renderer registers it at startup. The chunk is drawn by module reachability in
+`apps/web/vite.config.ts`, which is why the web app imports ECharts by path instead of through its index modules;
+`scripts/check-chunks.mjs` fails the build if any page imports the chunk statically. Entity colours come from `seriesColors`, like every chart's. The night shading is computed in core
+(`solar.ts`) for the time of the data, so a snapshot and a live screen of the same rows draw the same picture.
+_Rejected:_ tile maps (every viewer's browser would call a third party, the CSP would have to allow it, and snapshots
+would need server-side tile fetching), ECharts' old bundled world map (unclear provenance), TopoJSON (40 % smaller on
+the wire but a runtime dependency on both sides for a file that is cached anyway).
+
 ## 9. Known limits and next steps
 
 - Live updates send the whole processed table on every change. For rolling windows that is mostly redundant;
@@ -202,6 +228,7 @@ series, never their rank, and there are no dual-axis charts.
 ## 10. Testing strategy
 
 - `packages/core`: unit tests for the expression language (including injection attempts), every transform, op atomicity,
+  colour tokens and contrast in both themes, series colours, table cell styling, reference lines,
   layout normalisation, profiling and suggestions.
 - `apps/server`: worker pool tests (identical results to inline, main thread stays responsive, timeouts replace the
   worker, queue limit), and integration tests through `app.request()` against a real temporary data directory: permissions,

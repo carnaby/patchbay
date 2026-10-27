@@ -2,9 +2,11 @@ import {
   CHART_KINDS,
   type ChartKind,
   type Column,
+  coordinateRole,
   type Format,
   KPI_AGGS,
   parse,
+  REFERENCE_LINE_KINDS,
   SOUND_IDS,
   type SoundRule,
   type Suggestion,
@@ -23,6 +25,7 @@ import {
   Grid3x3,
   Hash,
   LineChart,
+  Map as MapIcon,
   PieChart,
   Play,
   Radar,
@@ -30,7 +33,7 @@ import {
   Table2,
   Type,
 } from 'lucide-react';
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useState } from 'react';
 import {
   Button,
   Card,
@@ -49,12 +52,21 @@ import { api } from '../lib/api.ts';
 import { previewSound, SOUND_LABELS } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
 import { useDatasetResult } from '../state/sync.ts';
+import {
+  ChartColorFields,
+  ReferenceLineFields,
+  TableColumnChooser,
+  TableRulesFields,
+  TruncatedBarHint,
+  ValueBandsSection,
+} from './FormattingFields.tsx';
 
 const TYPE_OPTIONS: { value: WidgetType; label: string; icon: ReactNode }[] = [
   { value: 'chart', label: 'Chart', icon: <LineChart className="size-3.5" /> },
   { value: 'kpi', label: 'KPI', icon: <Hash className="size-3.5" /> },
   { value: 'gauge', label: 'Gauge', icon: <Gauge className="size-3.5" /> },
   { value: 'table', label: 'Table', icon: <Table2 className="size-3.5" /> },
+  { value: 'map', label: 'Map', icon: <MapIcon className="size-3.5" /> },
   { value: 'text', label: 'Text', icon: <Type className="size-3.5" /> },
 ];
 
@@ -102,6 +114,17 @@ export function defaultsFor(type: WidgetType, columns: Column[], previous?: Widg
       return { field: measure, min: 0, max: 100 };
     case 'table':
       return { pageSize: 25 };
+    case 'map': {
+      // The profiler's name rules, so choosing "Map" on a dataset with coordinates needs no further clicks.
+      const lat = numeric.find((c) => coordinateRole(c.name) === 'latitude') ?? numeric[0];
+      const lon = numeric.find((c) => coordinateRole(c.name) === 'longitude') ?? numeric[1] ?? lat;
+      const readings = columns.some((c) => c.name === 'fetched_at');
+      return {
+        lat: lat?.name ?? 'latitude',
+        lon: lon?.name ?? 'longitude',
+        ...(readings ? { mode: 'track' as const, terminator: true } : {}),
+      };
+    }
     case 'text':
       return { markdown: 'Write **markdown** here.' };
   }
@@ -235,7 +258,7 @@ function NewWidget({ onCreated }: { onCreated: (id: string) => void }) {
 
       <section className="space-y-2">
         <h3 className="text-[13px] font-semibold text-ink-2">Or start from a blank widget</h3>
-        <div className="grid grid-cols-5 gap-2">
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
           {TYPE_OPTIONS.map((t) => (
             <button
               key={t.value}
@@ -346,6 +369,7 @@ function EditWidget({ widget }: { widget: Widget }) {
         {widget.type === 'table' ? (
           <TableFields widget={widget} columns={columns} setConfig={setConfig} />
         ) : null}
+        {widget.type === 'map' ? <MapFields widget={widget} columns={columns} setConfig={setConfig} /> : null}
         {widget.type === 'text' ? (
           <Field label="Markdown" hint="Headings, lists, links and emphasis. Raw HTML is not rendered.">
             {(fid) => (
@@ -359,6 +383,20 @@ function EditWidget({ widget }: { widget: Widget }) {
           </Field>
         ) : null}
       </Card>
+
+      {widget.type === 'chart' ? (
+        <>
+          <ChartColorFields widget={widget} setConfig={setConfig} />
+          <ReferenceLineFields widget={widget} setConfig={setConfig} />
+        </>
+      ) : null}
+      {widget.type === 'map' ? <ChartColorFields widget={widget} setConfig={setConfig} /> : null}
+      {widget.type === 'kpi' || widget.type === 'gauge' ? (
+        <ValueBandsSection widget={widget} setConfig={setConfig} />
+      ) : null}
+      {widget.type === 'table' ? (
+        <TableRulesFields widget={widget} columns={columns} setConfig={setConfig} />
+      ) : null}
 
       {widget.type !== 'text' ? (
         <FormatFields
@@ -400,6 +438,8 @@ function ColumnSelect({
   optional,
   noneLabel = 'None',
   filter,
+  disabled,
+  hint,
 }: {
   label: string;
   value: string | undefined;
@@ -408,13 +448,20 @@ function ColumnSelect({
   optional?: boolean;
   noneLabel?: string;
   filter?: (c: Column) => boolean;
+  disabled?: boolean;
+  hint?: string;
 }) {
   const options = filter ? columns.filter(filter) : columns;
   const known = value === undefined || options.some((c) => c.name === value);
   return (
-    <Field label={label} error={known ? null : `Column "${value}" is not in the data`}>
+    <Field label={label} hint={hint} error={known ? null : `Column "${value}" is not in the data`}>
       {(fid) => (
-        <Select id={fid} value={value ?? ''} onChange={(e) => onChange(e.target.value || undefined)}>
+        <Select
+          id={fid}
+          value={value ?? ''}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.value || undefined)}
+        >
           {optional ? <option value="">{noneLabel}</option> : null}
           {!known && value ? <option value={value}>{value} (missing)</option> : null}
           {options.map((c) => (
@@ -449,7 +496,18 @@ function ChartFields({
             <button
               key={k}
               type="button"
-              onClick={() => setConfig({ kind: k }, `Changed chart to ${k}`)}
+              onClick={() =>
+                setConfig(
+                  {
+                    kind: k,
+                    // Kinds without a value axis cannot hold reference lines; drop them rather than refuse.
+                    ...(c.referenceLines && !(REFERENCE_LINE_KINDS as readonly string[]).includes(k)
+                      ? { referenceLines: undefined }
+                      : {}),
+                  },
+                  `Changed chart to ${k}`,
+                )
+              }
               className={cx(
                 'flex flex-col items-center gap-1 rounded-lg border py-2 text-[11px] capitalize transition',
                 c.kind === k
@@ -497,7 +555,12 @@ function ChartFields({
                     : on
                       ? c.y.filter((y) => y !== col.name)
                       : [...c.y, col.name];
-                  if (next.length) setConfig({ y: next }, 'Changed values');
+                  // A line on a column that is no longer plotted falls back to the first y.
+                  const lines = c.referenceLines?.map(({ field, ...line }) =>
+                    field && !next.includes(field) ? line : { ...line, ...(field ? { field } : {}) },
+                  );
+                  if (next.length)
+                    setConfig({ y: next, ...(lines ? { referenceLines: lines } : {}) }, 'Changed values');
                 }}
                 className={cx(
                   'rounded-md border px-2 py-1 text-xs transition',
@@ -564,6 +627,123 @@ function ChartFields({
           ) : null}
         </div>
       ) : null}
+      <TruncatedBarHint config={c} />
+    </>
+  );
+}
+
+function MapFields({
+  widget,
+  columns,
+  setConfig,
+}: {
+  widget: Extract<Widget, { type: 'map' }>;
+  columns: Column[];
+  setConfig: SetConfig;
+}) {
+  const c = widget.config;
+  const isNumber = (col: Column) => col.type === 'number';
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ColumnSelect
+          label="Latitude"
+          value={c.lat}
+          columns={columns}
+          filter={isNumber}
+          onChange={(v) => v && setConfig({ lat: v }, 'Changed latitude column')}
+        />
+        <ColumnSelect
+          label="Longitude"
+          value={c.lon}
+          columns={columns}
+          filter={isNumber}
+          onChange={(v) => v && setConfig({ lon: v }, 'Changed longitude column')}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <div className="text-[13px] font-medium text-ink-2">Show</div>
+        <Segmented
+          value={c.mode}
+          onChange={(mode) => setConfig({ mode }, mode === 'track' ? 'Showed a track' : 'Showed points')}
+          options={[
+            { value: 'points', label: 'Points', title: 'A dot per row' },
+            { value: 'track', label: 'Track', title: 'Rows connected in their order: sort by time first' },
+          ]}
+        />
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ColumnSelect
+          label="Group by"
+          value={c.series}
+          columns={columns}
+          optional
+          filter={(col) => col.type === 'string' || col.type === 'boolean'}
+          hint={c.mode === 'track' ? 'One colour and one line per value' : 'One colour per value'}
+          // A map has one colour channel: grouping replaces colouring by value.
+          onChange={(v) => setConfig({ series: v, ...(v ? { color: undefined } : {}) }, 'Changed grouping')}
+        />
+        <ColumnSelect
+          label="Size by"
+          value={c.size}
+          columns={columns}
+          optional
+          filter={isNumber}
+          hint="Dot area grows with the value"
+          onChange={(v) => setConfig({ size: v }, 'Changed size column')}
+        />
+        <ColumnSelect
+          label="Colour by"
+          value={c.color}
+          columns={columns}
+          optional
+          filter={isNumber}
+          disabled={Boolean(c.series)}
+          hint={c.series ? 'Not with "Group by": one colour channel only' : 'Sequential blue ramp'}
+          onChange={(v) => setConfig({ color: v }, 'Changed colour column')}
+        />
+        <ColumnSelect
+          label="Label"
+          value={c.label}
+          columns={columns}
+          optional
+          hint="Tooltips and the table view"
+          onChange={(v) => setConfig({ label: v }, 'Changed label column')}
+        />
+        <Field label="View">
+          {(fid) => (
+            <Select
+              id={fid}
+              value={c.view}
+              onChange={(e) => setConfig({ view: e.target.value }, 'Changed map view')}
+            >
+              <option value="fit">Fit to data</option>
+              <option value="world">Whole world</option>
+            </Select>
+          )}
+        </Field>
+        <Field
+          label="Base map"
+          hint={c.basemap === 'countries' ? 'Natural Earth, de facto borders' : undefined}
+        >
+          {(fid) => (
+            <Select
+              id={fid}
+              value={c.basemap}
+              onChange={(e) => setConfig({ basemap: e.target.value }, 'Changed base map')}
+            >
+              <option value="countries">Countries</option>
+              <option value="land">Land only</option>
+              <option value="none">None</option>
+            </Select>
+          )}
+        </Field>
+      </div>
+      <Toggle
+        label="Day/night shading"
+        checked={c.terminator}
+        onChange={(v) => setConfig({ terminator: v }, v ? 'Shaded the night side' : 'Removed night shading')}
+      />
     </>
   );
 }
@@ -671,6 +851,7 @@ function ValueFields({
                 >
                   <option value="up">Going up</option>
                   <option value="down">Going down</option>
+                  <option value="neutral">Neither (neutral)</option>
                 </Select>
               )}
             </Field>
@@ -708,37 +889,9 @@ function TableFields({
   columns: Column[];
   setConfig: SetConfig;
 }) {
-  const selected = widget.config.columns;
-  const shown = useMemo(() => new Set(selected ?? columns.map((c) => c.name)), [selected, columns]);
   return (
     <>
-      <div className="space-y-1.5">
-        <div className="text-[13px] font-medium text-ink-2">Columns</div>
-        <div className="flex flex-wrap gap-1.5">
-          {columns.map((col) => {
-            const on = shown.has(col.name);
-            return (
-              <button
-                key={col.name}
-                type="button"
-                onClick={() => {
-                  const next = on ? [...shown].filter((n) => n !== col.name) : [...shown, col.name];
-                  setConfig(
-                    { columns: next.length === columns.length ? undefined : next },
-                    'Changed table columns',
-                  );
-                }}
-                className={cx(
-                  'rounded-md border px-2 py-1 text-xs transition',
-                  on ? 'border-ink bg-ink text-page' : 'border-line text-ink-2 hover:border-ink-2',
-                )}
-              >
-                {col.name}
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <TableColumnChooser widget={widget} columns={columns} setConfig={setConfig} />
       <Field label="Rows per page">
         {(fid) => (
           <Select
@@ -1032,7 +1185,7 @@ function SoundFields({
 }
 
 /** Keeps the typed text locally and saves only expressions that parse, so typing never fails an operation. */
-function ConditionInput({ expr, onChange }: { expr: string; onChange: (expr: string) => void }) {
+export function ConditionInput({ expr, onChange }: { expr: string; onChange: (expr: string) => void }) {
   const [draft, setDraft] = useState(expr);
   useEffect(() => setDraft(expr), [expr]);
   let error: string | null = null;

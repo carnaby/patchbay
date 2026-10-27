@@ -7,10 +7,12 @@ import {
   Copy,
   GripVertical,
   Image,
+  Map as MapIcon,
   Maximize2,
   Minimize2,
   MoreVertical,
   Settings2,
+  Table2,
   Trash2,
   Volume2,
   VolumeX,
@@ -61,11 +63,14 @@ export const WidgetFrame = memo(function WidgetFrame({
     'datasetId' in widget ? s.doc?.datasets.find((d) => d.id === widget.datasetId) : undefined,
   );
   const flashAt = useEditor((s) => s.flash[widget.id]);
+  const entityColors = useEditor((s) => s.doc?.colors);
   const isOwner = useEditor((s) => Boolean(s.access?.isOwner));
   const { data: secretsStatus } = useSecretsStatus();
   const apply = useEditor((s) => s.apply);
   const query = useDatasetResult(dashboardId, dataset, live);
   const [flashing, setFlashing] = useState(false);
+  // Per screen and not saved: the table is a way to read this map, not a setting of the dashboard.
+  const [asTable, setAsTable] = useState(false);
 
   useEffect(() => {
     if (!flashAt) return;
@@ -125,6 +130,24 @@ export const WidgetFrame = memo(function WidgetFrame({
     });
   };
 
+  const tableToggle =
+    widget.type === 'map' ? (
+      <IconButton
+        label={asTable ? 'Show as map' : 'Show as table'}
+        aria-pressed={asTable}
+        onClick={() => setAsTable((v) => !v)}
+        touch={reorderable}
+        // Hover reveals it like the other view controls; keyboard focus and phones always show it.
+        className={
+          editing || stacked || expanded || asTable
+            ? ''
+            : 'opacity-0 transition group-hover:opacity-100 focus-visible:opacity-100'
+        }
+      >
+        {asTable ? <MapIcon className="size-3.5" /> : <Table2 className="size-3.5" />}
+      </IconButton>
+    ) : null;
+
   return (
     <section
       ref={sectionRef}
@@ -171,6 +194,7 @@ export const WidgetFrame = memo(function WidgetFrame({
         <span className="flex-1" />
         {reorderable ? (
           <div className="flex shrink-0 items-center">
+            {tableToggle}
             <IconButton label={MOVE_LABELS.up} onClick={() => move('up')} disabled={!canMoveUp} touch>
               <ArrowUp className="size-4" />
             </IconButton>
@@ -206,6 +230,7 @@ export const WidgetFrame = memo(function WidgetFrame({
           </div>
         ) : editing ? (
           <div className="pb-no-drag flex items-center opacity-70 transition group-hover:opacity-100">
+            {tableToggle}
             <IconButton label="Edit widget" onClick={() => onEdit(widget.id)}>
               <Settings2 className="size-3.5" />
             </IconButton>
@@ -218,6 +243,7 @@ export const WidgetFrame = memo(function WidgetFrame({
           </div>
         ) : (
           <div className="pb-no-drag flex items-center">
+            {tableToggle}
             <IconButton
               label={expanded ? 'Close (Esc)' : 'Maximise'}
               onClick={() => setExpanded(expanded ? null : widget.id)}
@@ -247,7 +273,9 @@ export const WidgetFrame = memo(function WidgetFrame({
         <WidgetBody
           widget={widget}
           result={result}
+          entityColors={entityColors}
           loading={query.isFetching || !query.isFetched}
+          asTable={asTable}
           errorHint={
             isOwner && result?.error && dataset
               ? credentialErrorHint(result.error, {

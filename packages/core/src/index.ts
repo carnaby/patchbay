@@ -1,4 +1,6 @@
+export * from './cells.ts';
 export * from './chart.ts';
+export * from './colors.ts';
 export * from './expr.ts';
 export * from './format.ts';
 export * from './layout.ts';

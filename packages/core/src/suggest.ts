@@ -29,6 +29,8 @@ export interface SuggestOptions {
   transforms?: readonly TransformInput[];
   /** Epoch ms; injectable so "is this in the future?" is testable. */
   now?: number;
+  /** The dataset keeps a rolling history (`accumulate`), so its rows are successive readings of one source. */
+  accumulate?: boolean;
 }
 
 const DAY = 86_400_000;
@@ -74,6 +76,14 @@ const SIZE = set(
 const LEVEL = set(
   'temperature temp celsius fahrenheit kelvin humidity pressure hpa speed velocity kmh mph rate ratio pct percent percentage % share proportion probability score rating stars index aqi avg average mean median density concentration price margin age cover visibility uv ph bpm deg degrees direction bearing heading angle per capita pm10 pm2 pm25 ozone',
 );
+/**
+ * Weather-like readings where a rise is neither good nor bad. Colouring their change green or red would claim a
+ * judgement the data does not make, so their KPIs get `goodWhen: "neutral"`.
+ */
+const NEUTRAL_CHANGE = set(
+  'temperature temp celsius fahrenheit kelvin humidity pressure hpa wind direction bearing heading altitude elevation',
+);
+const neutralChange = (col: ColumnProfile) => words(col.name).some((w) => NEUTRAL_CHANGE.has(w));
 
 /**
  * Decides from the column name whether totals of a measure mean anything. Summing magnitudes,
@@ -206,6 +216,11 @@ function latestKpi(
     reasons.push(
       `Every row of "${time.name}" is in the future (a forecast), so the KPI shows the first upcoming value.`,
     );
+  const neutral = trend && neutralChange(m);
+  if (neutral)
+    reasons.push(
+      `A rise in "${m.name}" is neither good nor bad, so the change is shown in a neutral colour (goodWhen "neutral").`,
+    );
   if (order.kept && order.dir === 'desc')
     reasons.push(
       `The pipeline already sorts "${time.name}" newest first; that order is kept, so the KPI reads the ${agg} row${trend ? '' : ' and has no change indicator or sparkline'}.`,
@@ -216,10 +231,65 @@ function latestKpi(
     widget: {
       type: 'kpi',
       title,
-      config: { field: m.name, agg, ...(trend ? { compare: 'previous' as const, sparkline: true } : {}) },
+      config: {
+        field: m.name,
+        agg,
+        ...(trend ? { compare: 'previous' as const, sparkline: true } : {}),
+        ...(neutral ? { goodWhen: 'neutral' as const } : {}),
+      },
     },
     transforms: steps,
     score: 88,
+  };
+}
+
+/**
+ * Coordinates belong on a map. Successive readings of one moving thing (an accumulated "current position", or rows
+ * stamped with fetched_at) form a path, drawn as a track in time order; anything else is a set of points.
+ */
+function mapSuggestion(
+  profile: TableProfile,
+  options: SuggestOptions,
+  lat: ColumnProfile,
+  lon: ColumnProfile,
+): Suggestion {
+  const time = profile.columns.find((c) => c.role === 'time' && c.type === 'time');
+  const readings = Boolean(options.accumulate) || profile.columns.some((c) => c.name === 'fetched_at');
+  if (time && readings) {
+    return {
+      title: 'Track',
+      rationale: `Latitude and longitude read again and again from one source form a path: a track in "${time.name}" order shows where it went and where it is now, with the night side shaded for the time of the data.`,
+      widget: {
+        type: 'map',
+        title: 'Track',
+        config: { lat: lat.name, lon: lon.name, mode: 'track', terminator: true },
+      },
+      transforms: timeOrder(options.transforms ?? [], time.name).steps,
+      score: 85,
+    };
+  }
+  const measure = profile.columns.find(
+    (c) => c.role === 'measure' && c.distinct > 1 && summaryOf(c).op !== 'count',
+  );
+  const name = profile.columns.find((c) => c.role === 'text' || c.role === 'dimension');
+  const group = profile.columns.find((c) => c.role === 'dimension' && c.distinct >= 2 && c.distinct <= 3);
+  const title = measure ? `${label(measure)} by location` : 'Locations';
+  return {
+    title,
+    rationale: `Latitude and longitude columns belong on a map${measure ? `; dot area shows "${measure.name}", so the largest values stand out` : ''}.`,
+    widget: {
+      type: 'map',
+      title,
+      config: {
+        lat: lat.name,
+        lon: lon.name,
+        ...(measure ? { size: measure.name } : {}),
+        ...(name ? { label: name.name } : {}),
+        ...(group ? { series: group.name } : {}),
+      },
+    },
+    transforms: [],
+    score: 70,
   };
 }
 
@@ -361,22 +431,7 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
 
   // One point (a single weather station, say) is not worth a map.
   if (lat && lon && (lat.distinct > 1 || lon.distinct > 1)) {
-    out.push({
-      title: 'Locations',
-      rationale: 'Latitude and longitude columns can be plotted as a scatter map.',
-      widget: {
-        type: 'chart',
-        title: 'Locations',
-        config: {
-          kind: 'scatter',
-          x: lon.name,
-          y: [lat.name],
-          ...(dims[0] && dims[0].distinct <= 3 ? { series: dims[0].name } : {}),
-        },
-      },
-      transforms: [],
-      score: 70,
-    });
+    out.push(mapSuggestion(profile, options, lat, lon));
   } else if (!time && values.length >= 2) {
     out.push({
       title: `${label(values[0]!)} vs ${label(values[1]!)}`,
