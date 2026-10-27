@@ -8,6 +8,7 @@ import { api, errorMessage } from '../lib/api.ts';
 import { forgetEditKey, saveEditKey } from '../lib/edit-keys.ts';
 import { useMe } from '../lib/hooks.ts';
 import { useEditor } from '../state/editor.ts';
+import { DetailsCard } from './DetailsFields.tsx';
 import { withPublicSecretsConfirmation } from './public-secrets.tsx';
 
 export function SharePanel({
@@ -74,10 +75,12 @@ export function SharePanel({
   });
 
   return (
-    <Drawer open={open} onClose={onClose} title="Share">
+    <Drawer open={open} onClose={onClose} title="Details and sharing">
       <div className="space-y-5">
+        {/* The toolbar's title opens this panel, so renaming is the first thing in it. */}
+        <DetailsCard />
         {access.isOwner ? (
-          // First in the panel: "how do I make it public" is the question people open it with.
+          // Right after the name: "how do I make it public" is the question most people open it with.
           <Card className="space-y-3 p-4">
             <div className="text-[13px] font-medium text-ink-2">Who can open this dashboard</div>
             <div className="grid grid-cols-2 gap-2">

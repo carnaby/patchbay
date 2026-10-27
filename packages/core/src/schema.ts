@@ -18,6 +18,8 @@ export const LIMITS = {
   inlineRows: 2000,
   transforms: 40,
   markdown: 20_000,
+  title: 120,
+  description: 1000,
 } as const;
 
 export const IdSchema = z
@@ -219,8 +221,8 @@ export type LayoutItem = z.infer<typeof LayoutItemSchema>;
 
 export const DashboardDocSchema = z.strictObject({
   schemaVersion: z.literal(SCHEMA_VERSION),
-  title: z.string().min(1).max(120),
-  description: z.string().max(1000).default(''),
+  title: z.string().min(1).max(LIMITS.title),
+  description: z.string().max(LIMITS.description).default(''),
   datasets: z.array(DatasetSchema).max(LIMITS.datasets).default([]),
   widgets: z.array(WidgetSchema).max(LIMITS.widgets).default([]),
   layout: z.array(LayoutItemSchema).default([]),
