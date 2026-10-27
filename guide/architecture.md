@@ -100,7 +100,7 @@ instances.
 - **Accumulate** turns "current value" sources (current weather, a spot price, the ISS position) into rolling time
   series by appending each new reading with a `fetched_at` column. The buffer is in memory by design; it is a live view,
   not a database.
-- **Secrets for HTTP sources** ([proposal 0003](proposals/0003-source-secrets.md)). A dataset holds only secret ids;
+- **Secrets for HTTP sources** (design record kept by the maintainer). A dataset holds only secret ids;
   `DataService` asks `DashboardService.credentialsFor` for the values, resolved against the **dashboard owner's**
   secrets (never the viewer's, the editor's or the agent's), and gets an `HttpError` with a generic message when they
   cannot be used. A dataset whose secrets cannot all be resolved is never fetched without them. `safeFetchJson` keeps
@@ -194,7 +194,7 @@ series, never their rank, and there are no dual-axis charts.
 ## 9. Known limits and next steps
 
 - Live updates send the whole processed table on every change. For rolling windows that is mostly redundant;
-  [proposal 0001](proposals/0001-sse-deltas.md) specifies incremental deltas. It needs no new infrastructure and is
+  [idea 0001](ideas/0001-sse-deltas.md) specifies incremental deltas. It needs no new infrastructure and is
   deliberately left for when the traffic is measurable.
 - One process owns the data directory (see §3). Horizontal scaling would need Postgres, object storage and a pub/sub
   for the live hub; nothing below that scale needs an extra service.

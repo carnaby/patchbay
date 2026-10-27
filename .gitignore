@@ -6,3 +6,4 @@ data
 coverage
 .DS_Store
 patchbay.env
+docs/

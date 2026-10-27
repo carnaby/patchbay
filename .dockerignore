@@ -5,5 +5,7 @@ data
 .env
 *.log
 coverage
-docs/images
+.github/assets
 deploy
+docs
+guide

@@ -1,6 +1,6 @@
 # Patchbay on a home server or NAS, published through a Cloudflare Tunnel.
 # No port is opened on the host: cloudflared dials out to Cloudflare, which terminates TLS and forwards
-# requests to http://patchbay:8787 on this project's private network. See docs/deployment.md.
+# requests to http://patchbay:8787 on this project's private network. See guide/deployment.md.
 #
 #   cp .env.example .env                    # PUID/PGID, PATCHBAY_DOMAIN, TUNNEL_TOKEN
 #   cp patchbay.env.example patchbay.env    # Google OAuth, ADMIN_EMAILS, ...
