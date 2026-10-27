@@ -1,7 +1,15 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.6.3/schema.json",
   "files": {
-    "includes": ["**", "!**/dist", "!**/node_modules", "!**/data", "!apps/web/public", "!docs"]
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/node_modules",
+      "!**/data",
+      "!apps/web/public",
+      "!docs",
+      "!packages/core/geo/world-110m.json"
+    ]
   },
   "formatter": {
     "enabled": true,
