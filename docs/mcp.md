@@ -104,6 +104,18 @@ The refresh loop runs on the server, but only while somebody watches: when the f
 live stream), the server starts reloading each dataset with `refreshSec > 0` on that interval and pushes changed
 results to every viewer; when the last one leaves, the loop stops. MCP calls never start it.
 
+Every connector has a `minRefreshSec` (see `list_connectors`): the server caches its answers that long, to stay
+within the upstream's rate limits. A `refreshSec` below it is not rejected but raised to the minimum when an
+operation adds the dataset or changes its `refreshSec` or source (dry runs included), and `changes` gets a line of
+its own:
+
+```text
+Raised refreshSec of dataset "Quakes" from 5 s to 60 s, the minimum of the earthquakes connector
+```
+
+Datasets the batch did not touch keep their stored value, so documents saved before a minimum went up still load and
+accept unrelated edits. The web editor does not offer intervals below the minimum.
+
 `accumulate: N` keeps the last N rows across loads and adds a `fetched_at` column. Precisely:
 
 - The history is kept in server memory, per dashboard and dataset. A restart clears it, and so does changing the
