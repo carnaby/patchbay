@@ -40,6 +40,9 @@ const json = (value: unknown): ToolResult => ({
 });
 const fail = (message: string): ToolResult => ({ content: [{ type: 'text', text: message }], isError: true });
 
+/** Rows shown per dataset in apply_operations' data checks: enough to spot a wrong column, small enough to batch. */
+const DATA_CHECK_SAMPLE = 3;
+
 /** A compact, model-friendly view of a table: columns + the first rows. */
 function sampleTable(table: DataTable, limit: number) {
   return { columns: table.columns, rowCount: table.rows.length, rows: table.rows.slice(0, limit) };
@@ -307,13 +310,17 @@ export function createMcp(deps: Deps) {
                 ]
               : [];
           });
+          // rowCount is the full result and sampleRows a few of its rows, named apart: a bare `rows: 5` read like a
+          // row count when it was the sample size.
           const dataChecks = await Promise.all(
             touchedDatasets.map(async (d) => {
-              const r = await data.resolve(target, d, { maxRows: 5 });
+              const r = await data.resolve(target, d);
               return {
                 datasetId: d.id,
-                rows: r.table.rows.length,
+                rowCount: r.table.rows.length,
+                ...(r.truncated ? { truncated: true } : {}),
                 columns: r.table.columns.map((c) => `${c.name}:${c.type}`),
+                sampleRows: r.table.rows.slice(0, DATA_CHECK_SAMPLE),
                 error: r.error,
               };
             }),
