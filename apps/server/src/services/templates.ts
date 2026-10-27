@@ -454,7 +454,7 @@ const TEMPLATES: Template[] = [
           type: 'kpi',
           title: 'Quakes this week',
           datasetId: 'quakes',
-          config: { field: 'magnitude', agg: 'count' },
+          config: { agg: 'count' },
         },
       },
       {
@@ -609,7 +609,7 @@ const TEMPLATES: Template[] = [
           type: 'kpi',
           title: 'Orders',
           datasetId: 'orders',
-          config: { field: 'revenue', agg: 'count' },
+          config: { agg: 'count' },
         },
       },
       {

@@ -65,6 +65,7 @@ Prompts: `build_dashboard { topic }`, `analyze_my_data { dashboardId? }`. Resour
 { "op": "updateDataset", "id": "quakes", "set": { "transforms": [ … ] } }
 { "op": "removeDataset", "id": "quakes", "cascade": true }
 { "op": "addWidget", "widget": { "id": "strongest", "type": "kpi", "datasetId": "quakes", "config": { "field": "magnitude", "agg": "max" } }, "position": { "w": 3, "h": 2 } }
+{ "op": "addWidget", "widget": { "id": "quake-count", "type": "kpi", "datasetId": "quakes", "config": { "agg": "count" } } } // count: rows, or with "field" the non-null values
 { "op": "updateWidget", "id": "strongest", "set": { "title": "Strongest quake", "config": { "format": { "decimals": 1 } } } }
 { "op": "replaceWidget", "widget": { … } }
 { "op": "removeWidget", "id": "strongest" }
