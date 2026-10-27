@@ -109,6 +109,7 @@ meaning (bell/cash for new orders or sales, alert for a threshold), and a cooldo
 setMeta, addDataset, updateDataset { id, set }, removeDataset { id, cascade? }, addWidget { widget, position? },
 updateWidget { id, set: { title?, description?, datasetId?, config? (shallow-merged), sound? (replaced; null removes) } }, replaceWidget { widget },
 removeWidget { id }, moveWidget { id, x?, y?, w?, h? }, setLayout { layout },
+reorderWidget { id, before: widgetId | null } (reading order, i.e. the order widgets stack in on phones; sizes kept),
 addStep { datasetId, step, before? }, updateStep { datasetId, stepId, set } (merged; type cannot change),
 removeStep { datasetId, stepId }, moveStep { datasetId, stepId, before: stepId | null }.
 Prefer step operations over updateDataset { set: { transforms } }: they do not overwrite steps the user changed meanwhile.
