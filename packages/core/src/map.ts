@@ -190,6 +190,10 @@ function categoryKeys(values: Scalar[]): { keys: string[]; folded: boolean } {
   return { keys: [...keys.slice(0, MAX_SERIES - 1), OTHER], folded: true };
 }
 
+/** "#rrggbb" at the given opacity. */
+const translucent = (hex: string, alpha: number) =>
+  `rgba(${[1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16)).join(',')},${alpha})`;
+
 function emptyOption(theme: ChartTheme, message: string): Option {
   return {
     backgroundColor: 'transparent',
@@ -405,13 +409,15 @@ export function buildMapOption(
       sizeRange.max === sizeRange.min
         ? [sizeRange.min]
         : [sizeRange.min, (sizeRange.min + sizeRange.max) / 2, sizeRange.max];
-    const children: Option[] = [{ type: 'text', left: 0, top: 6, style: { ...muted, text: config.size } }];
+    // Every element gets its own z: a group's z does not carry over to its children, and land would cover them.
+    const children: Option[] = [{ type: 'text', x: 0, y: 6, z: 11, style: { ...muted, text: config.size } }];
     let x = config.size.length * 6.5 + 8;
     for (const v of steps) {
       const d = dotSize(v, sizeRange);
       const label = fmt(v);
       children.push({
         type: 'circle',
+        z: 11,
         shape: { cx: x + d / 2, cy: 12, r: d / 2 },
         // Neutral when colour carries something else, so the key does not read as one of the groups.
         style: {
@@ -421,10 +427,17 @@ export function buildMapOption(
           lineWidth: 1,
         },
       });
-      children.push({ type: 'text', x: x + d + 4, y: 6, style: { ...muted, text: label } });
+      children.push({ type: 'text', x: x + d + 4, y: 6, z: 11, style: { ...muted, text: label } });
       x += d + 4 + label.length * 6.5 + 10;
     }
-    graphic.push({ id: 'size-legend', type: 'group', left: 2, bottom: 2, z: 10, children });
+    // A backing in the card colour keeps the key readable where the map runs underneath it.
+    children.unshift({
+      type: 'rect',
+      z: 10,
+      shape: { x: -4, y: -1, width: x - 4, height: 26, r: 4 },
+      style: { fill: translucent(theme.surface, 0.85) },
+    });
+    graphic.push({ id: 'size-legend', type: 'group', left: 2, bottom: 2, children });
   }
 
   const option: Option = {
@@ -508,6 +521,9 @@ export function buildMapOption(
       text: [fmt(colorRange.max), `${config.color} ${fmt(colorRange.min)}`],
       textGap: 6,
       textStyle: { color: theme.muted, fontSize: 11 },
+      backgroundColor: translucent(theme.surface, 0.85),
+      padding: [4, 6],
+      borderRadius: 4,
     };
   }
   return option;
