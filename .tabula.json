@@ -1,0 +1,4 @@
+{
+  "sync": ["docs/**", ".superpowers/sdd/*/progress.md"],
+  "state": ["docs/handoff/*.md"]
+}
