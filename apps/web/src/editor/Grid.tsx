@@ -1,6 +1,8 @@
 import { GRID_COLUMNS, type LayoutItem, readingOrder, type Widget } from '@patchbay/core';
+import { ArrowUpDown, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { GridLayout, type Layout, useContainerWidth, verticalCompactor } from 'react-grid-layout';
+import { IconButton, Kbd } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
 import { WidgetFrame } from './WidgetFrame.tsx';
 
@@ -29,7 +31,8 @@ function sameLayout(
 
 /**
  * One layout for desktop (12 columns). Below the breakpoint widgets stack in
- * reading order instead of keeping a second, hand-maintained mobile layout.
+ * reading order instead of keeping a second, hand-maintained mobile layout;
+ * editing there means reordering, which moves widgets on the same grid.
  */
 export function Grid({
   dashboardId,
@@ -68,6 +71,7 @@ export function Grid({
     <div ref={containerRef} className="w-full">
       {!mounted ? null : mobile ? (
         <div className="flex flex-col gap-3">
+          {editing ? <StackHint /> : null}
           {readingOrder(doc.layout).map((id) => {
             const widget = widgets.get(id);
             const item = doc.layout.find((l) => l.i === id)!;
@@ -78,7 +82,8 @@ export function Grid({
                   dashboardId={dashboardId}
                   widget={widget}
                   live={live}
-                  editing={false}
+                  editing={editing}
+                  stacked
                   onEdit={onEditWidget}
                 />
               </div>
@@ -120,6 +125,49 @@ export function Grid({
           })}
         </GridLayout>
       )}
+      {mounted && !mobile && editing ? (
+        <p className="mt-6 text-center text-xs text-muted">
+          Drag widgets by their title, resize from the corner. <Kbd>Ctrl</Kbd>+<Kbd>Z</Kbd> undo,{' '}
+          <Kbd>Ctrl</Kbd>+<Kbd>Shift</Kbd>+<Kbd>Z</Kbd> redo. Every change is saved and versioned.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+const HINT_KEY = 'pb-stack-hint-dismissed';
+
+/** A short tip on why a narrow screen only offers reordering; dismissing it is remembered per browser. */
+function StackHint() {
+  const [dismissed, setDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(HINT_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  if (dismissed) return null;
+  return (
+    <div className="flex items-center gap-2 rounded-lg bg-surface-2 py-1 pr-1 pl-3 text-xs text-ink-2">
+      <ArrowUpDown className="size-3.5 shrink-0 text-muted" aria-hidden="true" />
+      <span className="min-w-0 flex-1">
+        Reorder with the arrows. Resizing and side-by-side placement need a wider screen.
+      </span>
+      <IconButton
+        label="Hide this tip"
+        touch
+        className="shrink-0"
+        onClick={() => {
+          setDismissed(true);
+          try {
+            localStorage.setItem(HINT_KEY, '1');
+          } catch {
+            // Storage blocked: the tip just comes back next time.
+          }
+        }}
+      >
+        <X className="size-3.5" />
+      </IconButton>
     </div>
   );
 }

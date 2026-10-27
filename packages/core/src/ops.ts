@@ -7,7 +7,7 @@
  * produce, easy to review in a diff, and safe to rebase onto a newer version.
  */
 import { z } from 'zod';
-import { normalizeLayout, placeItem } from './layout.ts';
+import { normalizeLayout, placeItem, reorderLayout } from './layout.ts';
 import {
   type DashboardDoc,
   DashboardDocSchema,
@@ -102,6 +102,13 @@ export const OpSchema = z.discriminatedUnion('op', [
   z.strictObject({ op: z.literal('removeWidget'), id: IdSchema }),
   z.strictObject({ op: z.literal('moveWidget'), id: IdSchema, ...position.shape }),
   z.strictObject({ op: z.literal('setLayout'), layout: z.array(LayoutItemSchema) }),
+  z
+    .strictObject({
+      op: z.literal('reorderWidget'),
+      id: IdSchema,
+      before: IdSchema.nullable().describe('null = last'),
+    })
+    .describe('Move a widget in reading order (how phones stack widgets); sizes are kept'),
 ]);
 export type Op = z.infer<typeof OpSchema>;
 export type OpInput = z.input<typeof OpSchema>;
@@ -269,6 +276,18 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
     case 'setLayout':
       changes.push('Rearranged layout');
       return { ...doc, layout: op.layout };
+    case 'reorderWidget': {
+      const current = widget(op.id);
+      const target = op.before === null ? null : widget(op.before);
+      if (target?.id === op.id) fail('A widget cannot be placed before itself');
+      changes.push(
+        target
+          ? `Moved widget "${current.title ?? current.id}" before "${target.title ?? target.id}"`
+          : `Moved widget "${current.title ?? current.id}" to the end`,
+      );
+      // Normalise first: a reorder replayed onto someone else's newer layout must work on a consistent grid.
+      return { ...doc, layout: reorderLayout(normalizeLayout(doc.layout, doc.widgets), op.id, op.before) };
+    }
   }
 }
 
