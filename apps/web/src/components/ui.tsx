@@ -3,14 +3,22 @@ import { clsx } from 'clsx';
 import { Loader2, X } from 'lucide-react';
 import {
   type ButtonHTMLAttributes,
+  type CSSProperties,
+  createContext,
   forwardRef,
   type InputHTMLAttributes,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
+  useCallback,
+  useContext,
   useEffect,
   useId,
+  useRef,
+  useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { create } from 'zustand';
 
 export { clsx as cx };
@@ -62,15 +70,22 @@ export function IconButton({
   className,
   children,
   active,
+  touch,
   ...rest
-}: ButtonHTMLAttributes<HTMLButtonElement> & { label: string; active?: boolean }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & {
+  label: string;
+  active?: boolean;
+  /** 40 px instead of 32 px, for controls that are mainly used with a finger. */
+  touch?: boolean;
+}) {
   return (
     <button
       type="button"
       aria-label={label}
       title={label}
       className={clsx(
-        'inline-flex size-8 items-center justify-center rounded-lg text-ink-2 transition hover:bg-surface-2 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent',
+        'inline-flex items-center justify-center rounded-lg text-ink-2 transition hover:bg-surface-2 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent',
+        touch ? 'size-10' : 'size-8',
         active && 'bg-surface-2 text-ink',
         className,
       )}
@@ -425,4 +440,186 @@ export function CodeBlock({ children, className }: { children: string; className
       {children}
     </pre>
   );
+}
+
+/* ---------- menus ---------- */
+
+const MenuClose = createContext<(refocus?: boolean) => void>(() => {});
+
+/**
+ * A button that opens a list of actions. The list is portalled to <body> with fixed positioning, because
+ * widget frames clip their overflow and the toolbar's backdrop blur would otherwise become its containing block.
+ * Items are at least 40 px tall so they work as touch targets.
+ */
+export function Menu({
+  label,
+  icon,
+  children,
+  className,
+  touch,
+}: {
+  label: string;
+  icon: ReactNode;
+  children: ReactNode;
+  className?: string;
+  /** A 40 px trigger, like `IconButton`'s. */
+  touch?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState<CSSProperties>({});
+  const trigger = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const close = useCallback((refocus = true) => {
+    setOpen(false);
+    if (refocus) trigger.current?.focus();
+  }, []);
+
+  const place = useCallback(() => {
+    if (!trigger.current) return;
+    const rect = trigger.current.getBoundingClientRect();
+    const right = Math.max(8, window.innerWidth - rect.right);
+    const below = window.innerHeight - rect.bottom;
+    // Open upwards only when the trigger sits low on the screen (the last widget on a phone).
+    setPosition(
+      below < 280 && rect.top > below
+        ? { right, bottom: window.innerHeight - rect.top + 4, maxHeight: rect.top - 12 }
+        : { right, top: rect.bottom + 4, maxHeight: below - 12 },
+    );
+  }, []);
+
+  const toggle = () => {
+    if (open) return close();
+    place();
+    setOpen(true);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    list.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
+    // Follow the trigger rather than closing: a phone's momentum scroll often outlasts the tap that opened it.
+    let frame = 0;
+    const follow = (e: Event) => {
+      if (e.type === 'scroll' && list.current?.contains(e.target as Node)) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(place);
+    };
+    window.addEventListener('resize', follow);
+    window.addEventListener('scroll', follow, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', follow);
+      window.removeEventListener('scroll', follow, true);
+    };
+  }, [open, place]);
+
+  const onKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key === 'Escape' || e.key === 'Tab') {
+      e.preventDefault();
+      e.stopPropagation();
+      close();
+      return;
+    }
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return;
+    e.preventDefault();
+    // Items hidden at this breakpoint (display: none) have no offsetParent and are skipped.
+    const items = [
+      ...(list.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not(:disabled)') ?? []),
+    ].filter((el) => el.offsetParent !== null);
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const next =
+      e.key === 'Home'
+        ? 0
+        : e.key === 'End'
+          ? items.length - 1
+          : (at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+    items[next]?.focus();
+  };
+
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        aria-label={label}
+        title={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={toggle}
+        className={clsx(
+          'inline-flex shrink-0 items-center justify-center rounded-lg text-ink-2 transition hover:bg-surface-2 hover:text-ink',
+          touch ? 'size-10' : 'size-8',
+          open && 'bg-surface-2 text-ink',
+          className,
+        )}
+      >
+        {icon}
+      </button>
+      {open
+        ? createPortal(
+            <MenuClose.Provider value={close}>
+              <button
+                type="button"
+                aria-label="Close menu"
+                tabIndex={-1}
+                className="fixed inset-0 z-50 cursor-default"
+                onClick={() => close(false)}
+              />
+              <div
+                ref={list}
+                role="menu"
+                aria-label={label}
+                tabIndex={-1}
+                onKeyDown={onKeyDown}
+                style={position}
+                className="fixed z-50 w-[min(260px,calc(100vw-16px))] overflow-y-auto rounded-xl border border-line bg-surface p-1 shadow-xl"
+              >
+                {children}
+              </div>
+            </MenuClose.Provider>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+export function MenuItem({
+  icon,
+  children,
+  onSelect,
+  disabled,
+  danger,
+  className,
+}: {
+  icon?: ReactNode;
+  children: ReactNode;
+  onSelect: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+  className?: string;
+}) {
+  const close = useContext(MenuClose);
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      disabled={disabled}
+      onClick={() => {
+        close(false);
+        onSelect();
+      }}
+      className={clsx(
+        'flex min-h-10 w-full items-center gap-2.5 rounded-lg px-3 text-left text-sm outline-none transition focus-visible:bg-surface-2 disabled:pointer-events-none disabled:opacity-40',
+        danger ? 'text-bad hover:bg-bad/5' : 'text-ink-2 hover:bg-surface-2 hover:text-ink',
+        className,
+      )}
+    >
+      {icon ? <span className="flex size-4 shrink-0 items-center justify-center">{icon}</span> : null}
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+    </button>
+  );
+}
+
+export function MenuSeparator({ className }: { className?: string }) {
+  return <hr className={clsx('mx-2 my-1 h-px border-0 bg-line', className)} />;
 }
