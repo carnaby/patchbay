@@ -88,12 +88,14 @@ operations below instead of resending the whole pipeline.
 
 ## Expressions
 Operators: + - * / % ^, == != < <= > >=, && || ! (or: and, or, not), cond ? a : b. Strings in "double" or 'single'
-quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Functions:
+quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Trigonometry works in radians (convert
+with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed point. Functions:
 ${fns}
 
 ## Widgets
-- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels, showLegend?, yMin?, yMax?, logScale, format?, colors? }
+- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors? }
   kinds: ${CHART_KINDS.join(', ')}. "series" splits long-format data (one row per time+category) into lines/bars.
+  xMin/xMax fix the x axis of a scatter with a numeric x (e.g. -180/180 for a longitude map).
   pie/donut: x = label, y[0] = value (aggregate first; at most 6 slices are kept). heatmap: x, series = y-axis category, y[0] = value.
 - kpi { field?, agg, compare: none|previous|first, goodWhen: up|down, sparkline, format? }   aggs: ${KPI_AGGS.join(', ')}
 - gauge { field?, agg, min, max, bands?: [{ upTo, color }], format? }
@@ -114,6 +116,8 @@ An optional \`sound\` field makes browsers showing the dashboard play a short bu
 - Never plays on page load, after a reconnect or after the dataset changed: the first result is the baseline.
   Viewers can mute their own screen; browsers stay silent until the page is clicked once.
 Example: { "op": "updateWidget", "id": "orders", "set": { "sound": { "trigger": { "kind": "newRows", "key": "order_id" }, "sound": "bell" } } }
+To try it without real data, put the widget on a demo.sales dataset with params { "live": true } and refreshSec 5:
+it returns single orders (time, order_id, ...) and a new one arrives every few seconds.
 Remove with set: { sound: null }. Only add a sound when the user asks for it or the dashboard is clearly a wall screen
 for events people must notice. Use sounds sparingly: at most one or two widgets per dashboard, a distinct sound per
 meaning (bell/cash for new orders or sales, alert for a threshold), and a cooldown long enough not to annoy.
