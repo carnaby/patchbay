@@ -13,6 +13,11 @@ services:
     # Matches the owner of ./data, so the bind mount is writable without chown or root.
     user: "${PUID:?set PUID in .env}:${PGID:?set PGID in .env}"
     env_file: patchbay.env
+    # infra-admin (services): healthcheck timing is owned by the infra admin; do not change it in this project.
+    # Policy: Tabula global decision "Healthcheck intervals on the home NAS" (#cb98). Requests go to the services project.
+    # Only the interval is set; the check itself comes from the image.
+    healthcheck:
+      interval: 30m
     environment:
       PUBLIC_URL: https://${PATCHBAY_DOMAIN:?set PATCHBAY_DOMAIN in .env}
       # Every request arrives through Cloudflare (no published port), so CF-Connecting-IP can be trusted.
