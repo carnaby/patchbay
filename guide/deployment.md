@@ -215,6 +215,9 @@ defaults suit one container with 384 MB of memory; raise them only with more mem
 | `PIPELINE_WORKER_MEMORY_MB`  | 96       | Heap of each pipeline worker; a job that needs more fails instead of exhausting the container.             |
 | `PIPELINE_WORKERS`           | CPUs − 1 | Pipeline worker threads (at most 4). Each one can take its whole heap: keep `1` at 384 MB.                 |
 | `URL_SOURCES`                | everyone | `signed-in`: http and feed sources load only for dashboards owned by a signed-in user.                     |
+| `MEMORY_LIMIT_MB`            | detected | Memory the guard measures against (see [Memory guard](#memory-guard)); `0` turns the guard off.            |
+| `MEMORY_SOFT_FRACTION`       | 0.8      | Share of that memory above which new heavy work gets 503; lower on small limits (128 MB stay free).        |
+| `MEMORY_HARD_FRACTION`       | 0.9      | Share above which writes, MCP calls and new live streams get 503 too; lower on small limits (64 MB free).  |
 
 Fixed limits, for reference: uploads are parsed in the pipeline worker and refused as soon as they pass the cell limit;
 an upload has at most 500 columns with names of up to 200 characters, and a JSON upload nests at most 64 levels and
@@ -258,16 +261,46 @@ Measured with the production flags (`--memory 384m --cpus 2 --read-only`, `PIPEL
 `URL_SOURCES=signed-in`), as the container's highest anonymous memory over 60–90 s of each load: a snapshot storm (25
 clients cycling the widgets of a 60-chart dashboard, plus full renders after every edit) 275 MB; 500,000-cell uploads
 three at a time with 5 MB JSON uploads, deeply nested JSON and over-limit feeds 290 MB; 160 concurrent reads of 20
-different 2–4 MB results 267 MB. All of them at once need more than 384 MB: the container is killed after about half a
-minute, at about 350 MB. With `--memory 512m` the same run peaks at 415 MB (449 MB with the kernel's share) and keeps
-answering. So 384 MB holds any one kind of heavy load at its limits with about 100 MB to spare, and 512 MB holds all of
-them together. Each extra pipeline worker adds 104 MB; keep one at either size.
+different 2–4 MB results 267 MB. All of them at once need more than 384 MB: without the memory guard below, the
+container is killed after about half a minute, at about 350 MB, and with `--memory 512m` the same run peaks at 415 MB
+(447 MB with the kernel's share). With the guard, that run (90 s, with three viewers opening the template dashboards
+every second and keeping live streams open) holds at 384 MB: at most 341 MB with the kernel's share, the attackers
+get 503 for nearly all their heavy requests, and every viewer request and health check answers (viewers p99 under
+400 ms, `/healthz` at most 190 ms). At 512 MB it peaks at 413 MB, and viewers' p99 drops from 3.9 s to 1.2 s. A quiet
+instance (every template opened and drawn, a 160,000-cell upload) stays under 200 MB and never reaches the guard.
+Each extra pipeline worker adds 104 MB; keep one at either size.
 
 A worker that hits its heap limit fails its job, and its replacement starts only after it has exited, so a worker slot
 never holds two heaps. The worker limits hold only while Node runs without `--max-old-space-size` (or
 `--max-old-space-size-percentage`): V8 applies that flag to every thread, overriding each worker's own limit, and the
 server warns when a worker starts with a different limit than it asked for. The main thread's heap therefore keeps
 V8's default limit; its use is bounded by the limits above rather than by a flag.
+
+#### Memory guard
+
+The limits above bound each kind of work; the OOM killer sees their sum. So the server also watches the container's
+real memory use and stops new work from adding to it while it is high (`util/memory-pressure.ts`). It reads the
+cgroup's charge without the page cache the kernel can drop (cgroup v2: `memory.current` minus `active_file` and
+`inactive_file`; cgroup v1 likewise), at most every 250 ms (about 12 µs per read), and compares it with the
+container's limit:
+
+- **Soft** (`MEMORY_SOFT_FRACTION`): new heavy work gets `503` with `Retry-After: 5`: snapshots that are not cached,
+  uploads and other bodies over 1 MB, the heavy jobs above, pipelines over 20,000 cells and results over 512 KB that
+  are not serialised already.
+- **Hard** (`MEMORY_HARD_FRACTION`): also writes, MCP calls and new live streams, with `Retry-After: 10`.
+- `/healthz`, static files, dashboard documents, small results and results already in memory keep answering at
+  either level, and work already running always finishes. Live refreshes skip a beat, as when a queue is full.
+
+A level is left once use is 5 % of the limit below its threshold, so it does not flap. While above soft, the main
+thread collects its garbage and idle workers collect or stop (the snapshot and feed workers start again on demand),
+at most every 5 s. Each change of level is logged once with its numbers (`[memory] soft pressure: 262 MB of 384 MB
+(68%), refusing new heavy work`), and the admin page shows the current use.
+
+The default thresholds keep a fixed amount free rather than a share, because a heavy job takes the same memory in any
+container: 0.8 and 0.9 of the limit, but at least 128 MB and 64 MB below it. At 384 MB that is 256 MB and 320 MB; at
+512 MB, 384 MB and 448 MB; from 640 MB up, 80 % and 90 %. Without a cgroup limit (a development machine, Windows)
+the guard is off unless `MEMORY_LIMIT_MB` is set, and then compares the process's own resident memory with it.
+`MEMORY_LIMIT_MB` also overrides a detected limit, and `0` turns the guard off.
 
 ## Analytics (optional)
 

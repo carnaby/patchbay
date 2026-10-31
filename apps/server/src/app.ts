@@ -188,9 +188,13 @@ export function createApp(deps: Deps) {
   const largeBodies = newLargeBodyGate();
   app.use('*', (c, next) => {
     if (!isLargeBody(c.req.raw)) return next();
-    // Refused before it is read: a large body costs two to three times its size until it is answered.
+    // Refused before it is read, on arrival and again when its turn comes after a wait: a large body costs two to
+    // three times its size until it is answered.
     memoryGuard.admitHeavy();
-    return largeBodies.run(clientKey(c, config.trustProxy), next);
+    return largeBodies.run(clientKey(c, config.trustProxy), () => {
+      memoryGuard.admitHeavy();
+      return next();
+    });
   });
   // After the size limit, before any route parses a body. /mcp checks its body itself, once the caller is known.
   app.use('*', (c, next) => (c.req.path === '/mcp' ? next() : jsonBodyGuard(c, next)));

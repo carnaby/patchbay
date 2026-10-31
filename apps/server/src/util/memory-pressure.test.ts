@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  defaultThresholds,
   detectMemoryReader,
   MemoryGuard,
   type MemoryGuardOptions,
@@ -175,6 +176,25 @@ describe('MemoryGuard', () => {
     expect(() => guard.admitHeavy()).not.toThrow();
     expect(guard.state()).toBeNull();
     expect(guard.describe()).toContain('off');
+  });
+
+  it('keeps a fixed amount free above its default thresholds on small limits, and 80% / 90% on large ones', () => {
+    const at = (limitMb: number) => {
+      const { soft, hard } = defaultThresholds(limitMb * MB);
+      return [Math.round(soft * limitMb), Math.round(hard * limitMb)];
+    };
+    expect(at(384)).toEqual([256, 320]);
+    expect(at(512)).toEqual([384, 448]);
+    expect(at(4096)).toEqual([3277, 3686]);
+    // Tiny limits: never below half, and hard always above soft.
+    expect(at(128)).toEqual([64, 70]);
+  });
+
+  it('uses configured thresholds over the defaults, keeping hard above soft', () => {
+    const guard = new MemoryGuard({ reader: null, soft: 0.6 });
+    expect(guard.thresholds(384 * MB)).toEqual({ soft: 0.6, hard: 1 - 64 / 384 });
+    const inverted = new MemoryGuard({ reader: null, soft: 0.9, hard: 0.85 });
+    expect(inverted.thresholds(384 * MB).hard).toBeCloseTo(0.95);
   });
 
   it('starts from normal when configured again', () => {

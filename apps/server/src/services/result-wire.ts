@@ -48,6 +48,12 @@ export const RESPONSE_BUDGET: ByteBudgetOptions = {
 /** Bodies below this skip the budget: they are what the rate limit already bounds. */
 const SMALL_BODY_BYTES = 32 * 1024;
 
+/**
+ * Under memory pressure, results at least this large are sent only when their bytes exist already. Far above what
+ * ordinary dashboards send (the templates' largest result is 150 KB), and an eighth of MAX_RESULT_BYTES.
+ */
+const LARGE_RESULT_BYTES = 512 * 1024;
+
 /** A response not read to its end after this long gives its share back, and its connection is ended. */
 const MAX_HOLD_MS = 60_000;
 
@@ -173,7 +179,7 @@ export class ResultWire {
   private admitSerialisation(table: DataTable, format: RowsFormat) {
     if (memoryGuard.level() === 'normal') return;
     if (this.serialised.get(this.keyOf(table, format)) !== undefined) return;
-    if (wireSize(table, format) >= SMALL_BODY_BYTES) memoryGuard.admitHeavy();
+    if (wireSize(table, format) >= LARGE_RESULT_BYTES) memoryGuard.admitHeavy();
   }
 
   /**

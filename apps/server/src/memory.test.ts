@@ -76,18 +76,20 @@ async function call(path: string, init: Init = {}) {
   return { status: res.status, json, headers: res.headers };
 }
 
+/** Rows of about 70 bytes as JSON: 10,000 of them (the most a result sends) are about 700 KB. */
 const csv = (rows: number) =>
-  ['n,label,value', ...Array.from({ length: rows }, (_, i) => `${i},row ${i},${(i * 7919) % 1000}`)].join(
-    '\n',
-  );
+  [
+    'n,label,value',
+    ...Array.from({ length: rows }, (_, i) => `${i},row ${i} ${'x'.repeat(40)},${(i * 7919) % 1000}`),
+  ].join('\n');
 
-/** An anonymous dashboard with an uploaded table of 2,000 rows (about 60 KB as JSON) and a widget on it. */
-async function dashboard() {
+/** An anonymous dashboard with an uploaded table and a widget on it. */
+async function dashboard(rows = 2000) {
   const { envelope, editKey } = (await call('/api/dashboards', { body: {} })).json;
   const id = envelope.meta.id as string;
   const headers = { 'x-edit-key': editKey as string };
   const up = await call(`/api/dashboards/${id}/files`, {
-    body: { name: 't.csv', content: csv(2000) },
+    body: { name: 't.csv', content: csv(rows) },
     headers,
   });
   expect(up.status).toBe(201);
@@ -128,10 +130,10 @@ describe('memory guard', () => {
   });
 
   it('above soft refuses new heavy work and keeps light reads, cached results and the health check', async () => {
-    const d = await dashboard();
+    const d = await dashboard(12_000);
     // Served once before the pressure: its serialised bytes are cached.
     expect((await call(`/api/dashboards/${d.id}/data/u?rows=arrays`)).status).toBe(200);
-    pressure(0.85);
+    pressure(0.75);
 
     expectRefused(
       await call(`/api/dashboards/${d.id}/files`, {
@@ -157,10 +159,16 @@ describe('memory guard', () => {
     expect(memoryGuard.state()).toMatchObject({ level: 'soft', refused: { soft: 3, hard: 0 } });
   });
 
-  it('refuses pipelines that need a worker above soft; inline ones still run', async () => {
-    const d = await dashboard();
-    const fileId = (await call(`/api/dashboards/${d.id}/files`, { headers: d.headers })).json[0].id;
-    const withSource = (id: string, transforms: unknown[]) =>
+  it('refuses pipelines over large tables above soft; small ones still run, in the worker too', async () => {
+    const d = await dashboard(12_000);
+    const large = (await call(`/api/dashboards/${d.id}/files`, { headers: d.headers })).json[0].id;
+    const small = (
+      await call(`/api/dashboards/${d.id}/files`, {
+        body: { name: 's.csv', content: csv(100) },
+        headers: d.headers,
+      })
+    ).json.id;
+    const withSource = (id: string, fileId: string, transforms: unknown[]) =>
       call(`/api/dashboards/${d.id}/ops`, {
         headers: d.headers,
         body: {
@@ -169,11 +177,13 @@ describe('memory guard', () => {
           ],
         },
       });
-    pressure(0.85);
-    expect((await withSource('f', [{ type: 'filter', expr: 'value > 500' }])).status).toBe(200);
-    expectRefused(await call(`/api/dashboards/${d.id}/data/f?rows=arrays`), '5');
-    expect((await withSource('l', [{ type: 'limit', n: 5 }])).status).toBe(200);
-    expect((await call(`/api/dashboards/${d.id}/data/l?rows=arrays`)).status).toBe(200);
+    pressure(0.75);
+    const filter = [{ type: 'filter', expr: 'value > 500' }];
+    expect((await withSource('big', large, filter)).status).toBe(200);
+    expectRefused(await call(`/api/dashboards/${d.id}/data/big?rows=arrays`), '5');
+    // Expressions always run in the worker, whatever the table's size.
+    expect((await withSource('small', small, filter)).status).toBe(200);
+    expect((await call(`/api/dashboards/${d.id}/data/small?rows=arrays`)).status).toBe(200);
   });
 
   it('above hard also refuses writes and new live streams, never the health check or plain reads', async () => {
@@ -195,7 +205,7 @@ describe('memory guard', () => {
 
   it('admits again once memory is back below the threshold', async () => {
     const d = await dashboard();
-    pressure(0.85);
+    pressure(0.75);
     expectRefused(await call(`/api/dashboards/${d.id}/snapshot.png?widget=w`), '5');
     pressure(0.5);
     expect((await call(`/api/dashboards/${d.id}/snapshot.png?widget=w`)).status).toBe(200);
@@ -211,7 +221,7 @@ describe('memory guard', () => {
     );
     const second = heavyWork.run(async () => 'second');
     await new Promise((resolve) => setTimeout(resolve, 5));
-    pressure(0.85);
+    pressure(0.75);
     const nested = heavyWork.run(async () => 'never');
     await expect(nested).rejects.toBeInstanceOf(MemoryPressureError);
     release();

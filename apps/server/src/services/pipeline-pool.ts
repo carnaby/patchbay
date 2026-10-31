@@ -301,11 +301,14 @@ export class WorkerPool implements PipelineRunner {
         return Promise.reject(e);
       }
     }
-    // A job for a worker copies its table there and grows the worker's heap: none start while memory is short.
-    try {
-      memoryGuard.admitHeavy();
-    } catch (e) {
-      return Promise.reject(e);
+    // A large table is copied to the worker and grows its heap: no such job starts while memory is short. Small
+    // tables go to a worker only for their expressions, and refusing them would break ordinary dashboards.
+    if (table.rows.length * Math.max(table.columns.length, 1) >= this.inlineBelowCells) {
+      try {
+        memoryGuard.admitHeavy();
+      } catch (e) {
+        return Promise.reject(e);
+      }
     }
     return this.submit({ kind: 'pipeline', table, transforms });
   }

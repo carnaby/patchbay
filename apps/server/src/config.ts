@@ -68,10 +68,13 @@ const EnvSchema = z.object({
    * without one the guard is off unless this is set. 0 turns the guard off.
    */
   MEMORY_LIMIT_MB: optional(z.coerce.number().int().min(0)),
-  /** Fraction of the limit above which new heavy work (renders, uploads, large pipelines and results) waits. */
-  MEMORY_SOFT_FRACTION: z.coerce.number().gt(0).lt(1).default(0.8),
-  /** Fraction of the limit above which writes and new live streams wait too. */
-  MEMORY_HARD_FRACTION: z.coerce.number().gt(0).max(1).default(0.9),
+  /**
+   * Fraction of the limit above which new heavy work (renders, uploads, large pipelines and results) is refused.
+   * Default: 0.8, lowered on small limits to keep 128 MB free above it (`defaultThresholds`).
+   */
+  MEMORY_SOFT_FRACTION: optional(z.coerce.number().gt(0).lt(1)),
+  /** Fraction above which writes and new live streams are refused too. Default: 0.9, keeping at least 64 MB free. */
+  MEMORY_HARD_FRACTION: optional(z.coerce.number().gt(0).max(1)),
   /** everyone: any dashboard may load http and feed sources. signed-in: only dashboards with an owner. */
   URL_SOURCES: z.enum(['everyone', 'signed-in']).default('everyone'),
   /** Who may store credentials for HTTP sources. Off unless the operator decides otherwise, see proposal 0003. */
@@ -151,7 +154,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   ) {
     throw new Error('DEV_LOGIN is only allowed with NODE_ENV != production and a localhost PUBLIC_URL');
   }
-  if (parsed.MEMORY_HARD_FRACTION <= parsed.MEMORY_SOFT_FRACTION) {
+  if (
+    parsed.MEMORY_SOFT_FRACTION !== undefined &&
+    parsed.MEMORY_HARD_FRACTION !== undefined &&
+    parsed.MEMORY_HARD_FRACTION <= parsed.MEMORY_SOFT_FRACTION
+  ) {
     throw new Error('MEMORY_HARD_FRACTION must be larger than MEMORY_SOFT_FRACTION');
   }
   return {

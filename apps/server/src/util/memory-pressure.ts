@@ -147,10 +147,10 @@ export function detectMemoryReader(options: DetectOptions = {}): MemoryReader | 
 export interface MemoryGuardOptions {
   /** null: the guard is off and admits everything. */
   reader: MemoryReader | null;
-  /** Fraction of the limit at which new heavy work is refused. */
-  soft?: number;
-  /** Fraction of the limit at which writes and new live streams are refused too. */
-  hard?: number;
+  /** Fraction of the limit at which new heavy work is refused; by default from the limit (`defaultThresholds`). */
+  soft?: number | undefined;
+  /** Fraction of the limit at which writes and new live streams are refused too; by default from the limit. */
+  hard?: number | undefined;
   /** A level is left once use is this fraction of the limit below its threshold. */
   margin?: number;
   /** A sample is reused this long: requests in a burst share one read of the cgroup files. */
@@ -174,12 +174,31 @@ export interface MemoryState {
   refused: { soft: number; hard: number };
 }
 
-const DEFAULTS = { soft: 0.8, hard: 0.9, margin: 0.05, sampleMs: 250, reliefMs: 5000 };
+const DEFAULTS = { margin: 0.05, sampleMs: 250, reliefMs: 5000 };
+
+const MB = 1024 * 1024;
+/** What one heavy job can add within a second: a worker heap filled to its limit (96 MB) plus the copy sent to it. */
+const SOFT_RESERVE_BYTES = 128 * MB;
+/** What work already running can still add once heavy work is refused: bodies being read, socket buffers, results. */
+const HARD_RESERVE_BYTES = 64 * MB;
+
+/**
+ * The thresholds for a limit when none are configured. The room needed above each is a fixed amount, not a share:
+ * a heavy job takes the same memory in a 384 MB container as in a 4 GB one, because every worker has its own heap
+ * limit. So a small container keeps that room (soft at 256 MB and hard at 320 MB of 384 MB), and a large one uses
+ * 80% and 90%.
+ */
+export function defaultThresholds(limitBytes: number): { soft: number; hard: number } {
+  const soft = Math.max(0.5, Math.min(0.8, 1 - SOFT_RESERVE_BYTES / limitBytes));
+  const hard = Math.max(soft + 0.05, Math.min(0.9, 1 - HARD_RESERVE_BYTES / limitBytes));
+  return { soft, hard };
+}
 
 const mb = (bytes: number) => Math.round(bytes / 1048576);
 
 export class MemoryGuard {
-  private options: Required<Omit<MemoryGuardOptions, 'reader'>> & { reader: MemoryReader | null };
+  private options: Required<Omit<MemoryGuardOptions, 'reader' | 'soft' | 'hard'>> &
+    Pick<MemoryGuardOptions, 'reader' | 'soft' | 'hard'>;
   private reading: MemoryReading | null = null;
   private sampledAt = Number.NEGATIVE_INFINITY;
   private relievedAt = Number.NEGATIVE_INFINITY;
@@ -213,7 +232,15 @@ export class MemoryGuard {
   }
 
   get enabled(): boolean {
-    return this.options.reader !== null;
+    return Boolean(this.options.reader);
+  }
+
+  /** The thresholds in force for a limit: the configured ones, the rest from `defaultThresholds`. */
+  thresholds(limitBytes: number): { soft: number; hard: number } {
+    const fallback = defaultThresholds(limitBytes);
+    const soft = this.options.soft ?? fallback.soft;
+    const hard = this.options.hard ?? fallback.hard;
+    return { soft, hard: hard > soft ? hard : Math.min(1, soft + 0.05) };
   }
 
   /**
@@ -255,8 +282,7 @@ export class MemoryGuard {
       usedBytes: r.usedBytes,
       limitBytes: r.limitBytes,
       source: r.source,
-      soft: this.options.soft,
-      hard: this.options.hard,
+      ...this.thresholds(r.limitBytes),
       refused: { ...this.refused },
     };
   }
@@ -266,10 +292,9 @@ export class MemoryGuard {
     if (!this.options.reader)
       return 'memory guard off: no memory limit found (set MEMORY_LIMIT_MB to turn it on)';
     const r = this.sample() ?? this.reading;
-    const { soft, hard } = this.options;
-    return r
-      ? `memory guard on: ${mb(r.usedBytes)} MB of ${mb(r.limitBytes)} MB in use (${r.source}); new heavy work waits above ${Math.round(soft * 100)}%, writes and live streams above ${Math.round(hard * 100)}%`
-      : 'memory guard on, but memory use cannot be read yet';
+    if (!r) return 'memory guard on, but memory use cannot be read yet';
+    const { soft, hard } = this.thresholds(r.limitBytes);
+    return `memory guard on: ${mb(r.usedBytes)} MB of ${mb(r.limitBytes)} MB in use (${r.source}); new heavy work waits above ${mb(soft * r.limitBytes)} MB, writes and live streams above ${mb(hard * r.limitBytes)} MB`;
   }
 
   private sample(): MemoryReading | null {
@@ -287,7 +312,7 @@ export class MemoryGuard {
     // A failed read keeps the last level: guessing "normal" would admit work exactly when the files are unreadable.
     if (!reading || !(reading.limitBytes > 0)) return null;
     this.reading = reading;
-    const next = this.next(reading.usedBytes / reading.limitBytes);
+    const next = this.next(reading.usedBytes / reading.limitBytes, this.thresholds(reading.limitBytes));
     if (next !== this.current) {
       this.options.log(
         `[memory] ${next === 'normal' ? 'back to normal' : `${next} pressure`}: ${mb(reading.usedBytes)} MB of ${mb(reading.limitBytes)} MB (${Math.round((reading.usedBytes / reading.limitBytes) * 100)}%)${next === 'soft' ? ', refusing new heavy work' : next === 'hard' ? ', refusing new heavy work, writes and live streams' : ''}`,
@@ -298,8 +323,8 @@ export class MemoryGuard {
     return reading;
   }
 
-  private next(fraction: number): PressureLevel {
-    const { soft, hard, margin } = this.options;
+  private next(fraction: number, { soft, hard }: { soft: number; hard: number }): PressureLevel {
+    const { margin } = this.options;
     if (fraction >= hard) return 'hard';
     if (this.current === 'hard' && fraction >= hard - margin) return 'hard';
     if (fraction >= soft) return 'soft';

@@ -287,6 +287,9 @@ after every step.
 | `TRUST_PROXY`                              | off                     | `1`: IP from `X-Forwarded-For`; `cloudflare`: from `CF-Connecting-IP`  |
 | `PIPELINE_WORKERS`                         | CPUs − 1, max 4         | Worker threads for data processing; `0` processes on the main thread.  |
 | `PIPELINE_TIMEOUT_MS`                      | `10000`                 | Hard time limit for one pipeline run in a worker.                      |
+| `MEMORY_LIMIT_MB`                          | the container's limit   | Memory the memory guard measures against; `0` turns the guard off.     |
+| `MEMORY_SOFT_FRACTION`                     | `0.8`, less when small  | Above this share of it, new heavy work gets 503 and Retry-After.       |
+| `MEMORY_HARD_FRACTION`                     | `0.9`, less when small  | Above this share, writes and new live streams get 503 too.             |
 | `SECRETS`                                  | `off`                   | Who may store credentials for HTTP sources: `off`, `admins`, `users`.  |
 | `SECRETS_KEY`                              | –                       | 32 random bytes, base64. Required unless `SECRETS=off`.                |
 | `SECRETS_KEY_PREVIOUS`                     | –                       | Old key(s) during rotation, comma-separated.                           |
