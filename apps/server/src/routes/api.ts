@@ -12,7 +12,14 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import { ALL_SCOPES } from '../auth/tokens.ts';
-import { type Ctx, clientIp, type Deps, type Env, requireUser } from '../context.ts';
+import {
+  type Ctx,
+  clientKey,
+  type Deps,
+  type Env,
+  IPV6_CREATE_PREFIX,
+  requireSessionUser,
+} from '../context.ts';
 import { SnapshotCache, snapshotCache } from '../render/cache.ts';
 import { RenderBusyError, snapshotGate } from '../render/gate.ts';
 import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
@@ -21,6 +28,7 @@ import { badRequest, forbidden, HttpError, notFound } from '../util/errors.ts';
 
 /** Live stream heartbeat while nothing else is sent. */
 const HEARTBEAT_MS = 25_000;
+const SHOWCASE_TTL_MS = 1000;
 
 const CreateBody = z.object({
   title: z.string().min(1).max(120).optional(),
@@ -70,7 +78,7 @@ export function apiRoutes(deps: Deps) {
 
   // Per-IP budget for all API traffic, plus a tighter one for writes.
   app.use('*', async (c, next) => {
-    const ip = clientIp(c, config.trustProxy);
+    const ip = clientKey(c, config.trustProxy);
     if (!deps.limits.api.take(ip)) throw new HttpError(429, 'Too many requests, slow down a little');
     if (c.req.method !== 'GET' && !deps.limits.writes.take(ip))
       throw new HttpError(429, 'Too many changes, slow down a little');
@@ -125,16 +133,40 @@ export function apiRoutes(deps: Deps) {
       ],
     }),
   ];
-  app.get('/showcase', async (c) => {
+  // Every open landing page polls this every 2 s and the answer is the same for everyone, so all visitors share one
+  // resolve per second, and concurrent requests wait for the one already running instead of starting their own.
+  let showcaseCache: { body: Promise<string>; settledAt: number | null } | null = null;
+  const showcaseBody = () => {
+    const cached = showcaseCache;
+    if (cached && (cached.settledAt === null || Date.now() - cached.settledAt < SHOWCASE_TTL_MS))
+      return cached.body;
     const target = { id: 'showcase00', ownerId: null };
-    const results = await Promise.all(showcase.map((d) => data.resolve(target, d)));
-    return c.json(Object.fromEntries(results.map((r) => [r.datasetId, r])));
+    const entry: { body: Promise<string>; settledAt: number | null } = {
+      body: Promise.all(showcase.map((d) => data.resolve(target, d))).then((results) =>
+        JSON.stringify(Object.fromEntries(results.map((r) => [r.datasetId, r]))),
+      ),
+      settledAt: null,
+    };
+    entry.body.then(
+      () => {
+        entry.settledAt = Date.now();
+      },
+      () => {
+        if (showcaseCache === entry) showcaseCache = null;
+      },
+    );
+    showcaseCache = entry;
+    return entry.body;
+  };
+  app.get('/showcase', async (c) => {
+    c.header('content-type', 'application/json; charset=UTF-8');
+    return c.body(await showcaseBody());
   });
 
   app.get('/dashboards', (c) => c.json(dashboards.listMine(c.get('principal'))));
 
   app.post('/dashboards', async (c) => {
-    if (!deps.limits.creates.take(clientIp(c, config.trustProxy))) {
+    if (!deps.limits.creates.take(clientKey(c, config.trustProxy, IPV6_CREATE_PREFIX))) {
       throw new HttpError(429, 'Too many new dashboards from your network. Try again later.');
     }
     const body = CreateBody.parse(await c.req.json().catch(() => ({})));
@@ -205,7 +237,7 @@ export function apiRoutes(deps: Deps) {
     c.json(await dashboards.claim(c.req.param('id'), c.get('principal'))),
   );
   app.post('/dashboards/:id/duplicate', async (c) => {
-    if (!deps.limits.creates.take(clientIp(c, config.trustProxy))) {
+    if (!deps.limits.creates.take(clientKey(c, config.trustProxy, IPV6_CREATE_PREFIX))) {
       throw new HttpError(429, 'Too many new dashboards from your network. Try again later.');
     }
     return c.json(await dashboards.duplicate(c.req.param('id'), c.get('principal')), 201);
@@ -298,7 +330,7 @@ export function apiRoutes(deps: Deps) {
     const id = c.req.param('id');
     const principal = c.get('principal');
     const { meta } = await dashboards.loadViewable(id, principal);
-    const ip = clientIp(c, config.trustProxy);
+    const ip = clientKey(c, config.trustProxy);
     if ((openStreams.get(ip) ?? 0) >= 30) throw new HttpError(429, 'Too many open live connections');
     openStreams.set(ip, (openStreams.get(ip) ?? 0) + 1);
     const res = streamSSE(c, async (stream) => {
@@ -400,13 +432,13 @@ export function apiRoutes(deps: Deps) {
     });
   });
 
-  // Personal access tokens and connected OAuth clients.
-  app.get('/tokens', (c) =>
-    c.json({ tokens: tokens.listPats(requireUser(c).id), grants: tokens.listGrants(requireUser(c).id) }),
-  );
+  // Personal access tokens and connected OAuth clients: managed only from a web session, never with a token.
+  app.get('/tokens', (c) => {
+    const user = requireSessionUser(c);
+    return c.json({ tokens: tokens.listPats(user.id), grants: tokens.listGrants(user.id) });
+  });
   app.post('/tokens', async (c) => {
-    const user = requireUser(c);
-    if (c.get('token')) throw forbidden('Tokens cannot create tokens; use the web UI');
+    const user = requireSessionUser(c);
     const body = z
       .object({
         name: z.string().min(1).max(80),
@@ -417,11 +449,12 @@ export function apiRoutes(deps: Deps) {
     return c.json(tokens.createPat(user.id, body.name, body.scopes, body.expiresInDays), 201);
   });
   app.delete('/tokens/:id', (c) => {
-    if (!tokens.revokePat(requireUser(c).id, c.req.param('id'))) throw notFound('Token not found');
+    if (!tokens.revokePat(requireSessionUser(c).id, c.req.param('id'))) throw notFound('Token not found');
     return c.json({ ok: true });
   });
   app.delete('/grants/:id', (c) => {
-    if (!tokens.revokeGrant(requireUser(c).id, c.req.param('id'))) throw notFound('Connection not found');
+    if (!tokens.revokeGrant(requireSessionUser(c).id, c.req.param('id')))
+      throw notFound('Connection not found');
     return c.json({ ok: true });
   });
 

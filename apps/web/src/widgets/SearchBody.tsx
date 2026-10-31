@@ -1,4 +1,4 @@
-import { type SearchConfig, searchPlaceholder, searchUrl } from '@patchbay/core';
+import { type SearchConfig, searchPlaceholder, searchTargetHost, searchUrl } from '@patchbay/core';
 import { Search } from 'lucide-react';
 import { useState } from 'react';
 
@@ -9,6 +9,8 @@ import { useState } from 'react';
 export function SearchBody({ config }: { config: SearchConfig }) {
   const [query, setQuery] = useState('');
   const placeholder = searchPlaceholder(config);
+  // The placeholder names a custom engine's host only until the first keystroke; this keeps it in view.
+  const targetHost = searchTargetHost(config, query);
   const go = () => {
     const url = searchUrl(config, query);
     if (!url) return;
@@ -36,6 +38,14 @@ export function SearchBody({ config }: { config: SearchConfig }) {
           }}
           className="h-full min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted"
         />
+        {targetHost ? (
+          <span
+            className="max-w-[45%] shrink-0 truncate font-mono text-[11px] text-muted"
+            title={`Searches on ${targetHost}`}
+          >
+            {targetHost}
+          </span>
+        ) : null}
       </label>
     </search>
   );

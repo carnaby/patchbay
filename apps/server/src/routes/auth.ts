@@ -4,13 +4,32 @@ import { Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { z } from 'zod';
 import { SESSION_COOKIE } from '../auth/users.ts';
-import { type Ctx, clientIp, type Deps, type Env } from '../context.ts';
+import { type Ctx, clientKey, type Deps, type Env } from '../context.ts';
 import { badRequest, HttpError } from '../util/errors.ts';
 
-/** Only same-site relative paths, so `returnTo` cannot become an open redirect. */
+const RETURN_FALLBACK = '/me';
+// A placeholder origin: what matters is whether the value stays on the origin it is resolved against.
+const RETURN_BASE = 'https://return-to.invalid';
+
+/**
+ * Only same-origin paths, so `returnTo` cannot become an open redirect. Browsers drop tabs and newlines and read
+ * `\` as `/` when they resolve a Location header, so `/<tab>/evil.com` would leave the site. Anything with control
+ * or invisible characters, whitespace or backslashes is refused, and the rest must resolve to a path on our origin.
+ * Applied when the value arrives and again when it comes back from the cookie.
+ */
 export function safeReturnTo(raw: string | undefined | null): string {
-  if (!raw?.startsWith('/') || raw.startsWith('//') || raw.includes('\\')) return '/me';
-  return raw.slice(0, 500);
+  if (typeof raw !== 'string' || !raw.startsWith('/') || raw.length > 500) return RETURN_FALLBACK;
+  if (/[\s\\\p{Cc}\p{Cf}]/u.test(raw)) return RETURN_FALLBACK;
+  let url: URL;
+  try {
+    url = new URL(raw, RETURN_BASE);
+  } catch {
+    return RETURN_FALLBACK;
+  }
+  if (url.origin !== RETURN_BASE) return RETURN_FALLBACK;
+  const path = `${url.pathname}${url.search}${url.hash}`;
+  // Dot segments can normalise into a protocol-relative URL ("/.//evil.com" becomes "//evil.com").
+  return path.startsWith('//') ? RETURN_FALLBACK : path;
 }
 
 export function authRoutes(deps: Deps) {
@@ -36,7 +55,7 @@ export function authRoutes(deps: Deps) {
 
   app.get('/google', (c) => {
     if (!google) throw new HttpError(404, 'Google sign-in is not configured');
-    if (!deps.limits.auth.take(`login:${clientIp(c, config.trustProxy)}`))
+    if (!deps.limits.auth.take(`login:${clientKey(c, config.trustProxy)}`))
       throw new HttpError(429, 'Too many attempts');
     const state = generateState();
     const verifier = generateCodeVerifier();

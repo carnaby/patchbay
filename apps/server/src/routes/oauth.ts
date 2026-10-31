@@ -15,7 +15,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { normalizeScopes, SCOPES } from '../auth/tokens.ts';
-import { clientIp, type Deps, type Env, requireUser } from '../context.ts';
+import { clientKey, type Deps, type Env, IPV6_CREATE_PREFIX, requireSessionUser } from '../context.ts';
 import { now } from '../db.ts';
 import { newId, randomToken, sha256, verifyPkce } from '../util/crypto.ts';
 import { HttpError, notFound } from '../util/errors.ts';
@@ -85,25 +85,41 @@ export function redirectMatches(registered: string[], candidate: string): boolea
   }
 }
 
+/**
+ * Registration is open to anyone, so every field and list is capped and only these fields are stored. Unknown
+ * metadata is dropped rather than refused: RFC 7591 §2 says a server must ignore metadata it does not understand,
+ * and real clients send extras (contacts, policy_uri, software_statement, ...).
+ */
+const shortList = z.array(z.string().max(64)).max(8);
 const RegistrationSchema = z.object({
-  redirect_uris: z.array(z.string().max(2000)).min(1).max(10),
+  redirect_uris: z.array(z.string().max(1000)).min(1).max(8),
   client_name: z.string().max(120).optional(),
-  client_uri: z.url().optional(),
-  logo_uri: z.url().optional(),
-  token_endpoint_auth_method: z.string().optional(),
-  grant_types: z.array(z.string()).optional(),
-  response_types: z.array(z.string()).optional(),
-  scope: z.string().optional(),
+  client_uri: z.url().max(1000).optional(),
+  logo_uri: z.url().max(1000).optional(),
+  token_endpoint_auth_method: z.string().max(64).optional(),
+  grant_types: shortList.optional(),
+  response_types: shortList.optional(),
+  scope: z.string().max(500).optional(),
+  software_id: z.string().max(200).optional(),
+  software_version: z.string().max(100).optional(),
 });
 
 const CimdSchema = z.object({
-  client_id: z.string(),
+  client_id: z.string().max(1000),
   client_name: z.string().max(120),
-  redirect_uris: z.array(z.string()).min(1).max(20),
-  client_uri: z.string().optional(),
-  logo_uri: z.string().optional(),
-  token_endpoint_auth_method: z.string().optional(),
+  redirect_uris: z.array(z.string().max(1000)).min(1).max(20),
+  client_uri: z.string().max(1000).optional(),
+  logo_uri: z.string().max(1000).optional(),
+  token_endpoint_auth_method: z.string().max(64).optional(),
 });
+
+/** Where approving sends the user, in the form the consent screen shows it. */
+export function describeRedirect(raw: string): { kind: 'web' | 'loopback' | 'app'; target: string } {
+  const url = new URL(raw);
+  if (url.protocol === 'https:') return { kind: 'web', target: url.host };
+  if (url.protocol === 'http:') return { kind: 'loopback', target: url.host };
+  return { kind: 'app', target: url.host ? `${url.protocol}//${url.host}` : url.protocol };
+}
 
 function oauthError(status: 400 | 401, error: string, description: string) {
   return new HttpError(status, description, { error, error_description: description });
@@ -142,6 +158,10 @@ export function oauthRoutes(deps: Deps) {
     }),
   );
 
+  /** Feeds the purge of unused registrations (Users.purgeOAuthClients). */
+  const markClientUsed = (clientId: string) =>
+    db.prepare('UPDATE oauth_clients SET last_used_at = ? WHERE client_id = ?').run(now(), clientId);
+
   const getClient = (clientId: string) =>
     (db.prepare('SELECT * FROM oauth_clients WHERE client_id = ?').get(clientId) as ClientRow | undefined) ??
     null;
@@ -167,7 +187,8 @@ export function oauthRoutes(deps: Deps) {
     if (failedAt && Date.now() - failedAt < CIMD_FAILURE_TTL_MS) {
       throw oauthError(400, 'invalid_client', 'Client metadata document is unavailable');
     }
-    const doc = CimdSchema.safeParse(await safeFetchJson(clientId).catch(() => null));
+    // No redirects: the document must live at the URL that is the client's identity, not wherever that URL points.
+    const doc = CimdSchema.safeParse(await safeFetchJson(clientId, { redirects: 0 }).catch(() => null));
     if (!doc.success) {
       cimdFailures.set(clientId, Date.now());
       if (cimdFailures.size > 1000) cimdFailures.delete(cimdFailures.keys().next().value!);
@@ -188,7 +209,7 @@ export function oauthRoutes(deps: Deps) {
   }
 
   app.post('/oauth/register', async (c) => {
-    if (!deps.limits.auth.take(`register:${clientIp(c, config.trustProxy)}`, 5))
+    if (!deps.limits.auth.take(`register:${clientKey(c, config.trustProxy, IPV6_CREATE_PREFIX)}`, 5))
       throw new HttpError(429, 'Too many registrations');
     const body = RegistrationSchema.safeParse(await c.req.json().catch(() => null));
     if (!body.success) throw oauthError(400, 'invalid_client_metadata', 'Invalid registration request');
@@ -221,7 +242,7 @@ export function oauthRoutes(deps: Deps) {
   });
 
   app.get('/oauth/authorize', async (c) => {
-    if (!deps.limits.auth.take(`authorize:${clientIp(c, config.trustProxy)}`)) {
+    if (!deps.limits.auth.take(`authorize:${clientKey(c, config.trustProxy)}`)) {
       return c.redirect('/oauth/error?reason=Too%20many%20requests');
     }
     const q = c.req.query();
@@ -282,23 +303,29 @@ export function oauthRoutes(deps: Deps) {
     return row;
   };
 
-  /** Data for the consent screen (session required). */
+  /** Data for the consent screen. A web session is required: a token must never approve a new grant. */
   app.get('/api/oauth/requests/:id', (c) => {
-    requireUser(c);
+    requireSessionUser(c);
     const row = pendingRequest(c.req.param('id'));
     const client = getClient(row.client_id);
+    const kind = client?.kind ?? 'dcr';
+    const redirect = describeRedirect(row.redirect_uri);
+    // Names are self-declared either way; what the user can check is who published the metadata (the host of a
+    // metadata document URL) and where the code goes.
     return c.json({
       id: row.id,
       clientName: client?.name ?? row.client_id,
-      clientKind: client?.kind ?? 'dcr',
+      clientKind: kind,
       clientId: row.client_id,
-      redirectHost: new URL(row.redirect_uri).host || row.redirect_uri,
+      clientHost: kind === 'cimd' ? new URL(row.client_id).host : null,
+      redirectHost: redirect.target,
+      redirectKind: redirect.kind,
       scopes: row.scopes.split(' '),
     });
   });
 
   app.post('/api/oauth/requests/:id', async (c) => {
-    const user = requireUser(c);
+    const user = requireSessionUser(c);
     const row = pendingRequest(c.req.param('id'));
     const body = z
       .object({ approve: z.boolean(), scopes: z.array(z.string()).optional() })
@@ -339,7 +366,7 @@ export function oauthRoutes(deps: Deps) {
 
   app.post('/oauth/token', async (c) => {
     c.header('Cache-Control', 'no-store');
-    if (!deps.limits.auth.take(`token:${clientIp(c, config.trustProxy)}`))
+    if (!deps.limits.auth.take(`token:${clientKey(c, config.trustProxy)}`))
       throw new HttpError(429, 'Too many requests');
     const form = await c.req.parseBody().catch(() => ({}) as Record<string, string>);
     const f = (k: string) => (typeof form[k] === 'string' ? (form[k] as string) : undefined);
@@ -388,6 +415,7 @@ export function oauthRoutes(deps: Deps) {
         row.resource,
         row.grant_id ?? undefined,
       );
+      markClientUsed(clientId);
       return c.json({
         access_token: issued.accessToken,
         token_type: 'Bearer',
@@ -404,6 +432,7 @@ export function oauthRoutes(deps: Deps) {
       const issued = tokens.refresh(refresh, clientId, scope ? scope.split(' ') : undefined);
       if (!issued)
         throw oauthError(400, 'invalid_grant', 'The refresh token is invalid, expired or was revoked');
+      markClientUsed(clientId);
       return c.json({
         access_token: issued.accessToken,
         token_type: 'Bearer',

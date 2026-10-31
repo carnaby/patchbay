@@ -203,7 +203,7 @@ describe('dashboards over REST', () => {
     });
     const id = created.json.envelope.meta.id;
     expect((await call(`/api/dashboards/${id}`, { cookie: alice })).status).toBe(200);
-    expect((await call(`/api/dashboards/${id}`)).status).toBe(401);
+    expect((await call(`/api/dashboards/${id}`)).status).toBe(404);
     expect((await call(`/api/dashboards/${id}`, { cookie: bob })).status).toBe(404);
     expect((await call(`/api/dashboards/${id}/snapshot.png`, { cookie: bob })).status).toBe(404);
     const admin = await login('admin@example.com');
@@ -453,8 +453,12 @@ describe('OAuth 2.1 for MCP', () => {
     expect(tokenRes.status).toBe(200);
     const tokens = (await tokenRes.json()) as { access_token: string; refresh_token: string; scope: string };
     expect(tokens.scope).toBe('dashboards:read dashboards:write');
-    const me = await call('/api/me', { headers: { authorization: `Bearer ${tokens.access_token}` } });
-    expect(me.json.user.email).toBe('oauth-user@example.com');
+    // Access tokens are bound to /mcp, so they are checked against the token store rather than the REST API.
+    const holder = (raw: string) => {
+      const verified = deps.tokens.verify(raw);
+      return verified ? deps.users.byId(verified.userId)?.email : null;
+    };
+    expect(holder(tokens.access_token)).toBe('oauth-user@example.com');
 
     const rotated = (await (
       await form({ grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: clientId })
@@ -472,17 +476,13 @@ describe('OAuth 2.1 for MCP', () => {
       redirect_uri: redirectUri,
     });
     expect(replay.status).toBe(400);
-    expect(
-      (await call('/api/me', { headers: { authorization: `Bearer ${rotated.access_token}` } })).status,
-    ).toBe(401);
+    expect(holder(rotated.access_token)).toBeNull();
     // Replaying the old refresh token revokes the whole grant.
     expect(
       (await form({ grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: clientId }))
         .status,
     ).toBe(400);
-    expect(
-      (await call('/api/me', { headers: { authorization: `Bearer ${rotated.access_token}` } })).status,
-    ).toBe(401);
+    expect(holder(rotated.access_token)).toBeNull();
   });
 
   it('never redirects to an unregistered redirect_uri', async () => {

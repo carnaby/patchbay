@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { AlertTriangle, BadgeCheck, Bot, Eye, KeyRound, PencilLine } from 'lucide-react';
+import { AlertTriangle, Bot, CornerDownRight, Eye, Globe, KeyRound, PencilLine } from 'lucide-react';
 import type { ComponentType } from 'react';
 import { Navigate, useLocation, useSearchParams } from 'react-router';
 import { Button, Card, EmptyState, Spinner } from '../components/ui.tsx';
@@ -11,7 +11,10 @@ interface ConsentRequest {
   clientName: string;
   clientKind: 'dcr' | 'cimd';
   clientId: string;
+  /** Host of the metadata document URL for CIMD clients; null for self-registered ones. */
+  clientHost: string | null;
   redirectHost: string;
+  redirectKind: 'web' | 'loopback' | 'app';
   scopes: string[];
 }
 
@@ -82,26 +85,62 @@ export default function OAuthConsent() {
                 <Bot className="size-5" />
               </span>
               <div className="min-w-0">
-                <h1 className="truncate text-lg font-semibold">{request.data.clientName}</h1>
-                <p className="text-sm text-ink-2">wants to access your Patchbay account</p>
+                <h1 className="truncate text-lg font-semibold">“{request.data.clientName}”</h1>
+                <p className="text-sm text-ink-2">
+                  An app calling itself this wants to access your Patchbay account
+                </p>
               </div>
             </div>
 
-            {request.data.clientKind === 'cimd' ? (
-              <p className="mb-4 flex gap-2 text-sm text-ink-2">
-                <BadgeCheck className="mt-0.5 size-4 shrink-0 text-good" />
-                <span>
-                  Identity published at{' '}
-                  <span className="font-mono text-[12px] break-all text-ink">{request.data.clientId}</span>
-                </span>
-              </p>
-            ) : (
+            {/* Any app can call itself "Claude": the name is self-declared, so the addresses are what to check. */}
+            <dl className="mb-4 space-y-2 rounded-lg border border-line bg-surface-2 px-3 py-2.5 text-sm">
+              <div>
+                <dt className="text-xs text-muted">Identity</dt>
+                <dd className="flex items-center gap-1.5">
+                  <Globe className="size-3.5 shrink-0 text-ink-2" aria-hidden="true" />
+                  {request.data.clientHost ? (
+                    <span>
+                      Published by{' '}
+                      <span className="font-mono text-[13px] font-medium break-all">
+                        {request.data.clientHost}
+                      </span>
+                    </span>
+                  ) : (
+                    <span>Registered itself: name and identity are not verified</span>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-xs text-muted">After approving, you are sent to</dt>
+                <dd className="flex items-center gap-1.5">
+                  <CornerDownRight className="size-3.5 shrink-0 text-ink-2" aria-hidden="true" />
+                  <span className="font-mono text-[13px] font-medium break-all">
+                    {request.data.redirectHost}
+                  </span>
+                  {request.data.redirectKind !== 'web' ? (
+                    <span className="text-xs text-ink-2">
+                      (
+                      {request.data.redirectKind === 'loopback'
+                        ? 'an app on this computer'
+                        : 'an installed app'}
+                      )
+                    </span>
+                  ) : null}
+                </dd>
+              </div>
+            </dl>
+            {request.data.clientKind === 'dcr' ? (
               <p className="mb-4 flex gap-2 rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-ink-2">
                 <AlertTriangle className="mt-0.5 size-4 shrink-0 text-ink" />
                 <span>
-                  This app registered itself and its name is not verified. Only continue if you just started
-                  connecting it.
+                  Only continue if you just started connecting this app yourself and the address above is the
+                  one you expect.
                 </span>
+              </p>
+            ) : (
+              <p className="mb-4 text-xs text-ink-2">
+                The name is chosen by the app. Only continue if you started connecting it and you recognise
+                the addresses above.
               </p>
             )}
 
@@ -128,9 +167,8 @@ export default function OAuthConsent() {
             </ul>
 
             <p className="mt-4 text-xs text-muted">
-              Signed in as <span className="text-ink-2">{user.email}</span>. After approving you return to{' '}
-              <span className="font-mono text-ink-2">{request.data.redirectHost}</span>. You can revoke access
-              any time in AI connections.
+              Signed in as <span className="text-ink-2">{user.email}</span>. You can revoke access any time in
+              AI connections.
             </p>
 
             <div className="mt-6 grid grid-cols-2 gap-2">

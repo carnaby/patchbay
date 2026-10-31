@@ -115,6 +115,10 @@ export function createApp(deps: Deps) {
         fontSrc: ["'self'", 'data:'],
         frameAncestors: ["'none'"],
         formAction: ["'self'"],
+        // base-uri has no default-src fallback, and an injected <base> could re-point relative script URLs.
+        // object-src is spelled out so plugins stay off even if default-src is ever widened.
+        baseUri: ["'none'"],
+        objectSrc: ["'none'"],
       },
       crossOriginEmbedderPolicy: false,
     }),

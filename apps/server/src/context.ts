@@ -57,9 +57,13 @@ export function identify(deps: Deps) {
     const auth = c.req.header('authorization');
     if (auth?.startsWith('Bearer ')) {
       token = deps.tokens.verify(auth.slice(7).trim());
-      // OAuth access tokens are audience-bound to the MCP resource; PATs work everywhere.
-      if (token && token.kind === 'access' && token.resource !== deps.config.mcpResource) token = null;
       if (!token) throw unauthorized('Invalid or expired access token');
+      // OAuth access tokens are audience-bound to the MCP resource (RFC 8707), so /mcp is the only place that
+      // accepts them: one leaked from an MCP client must not reach the REST API. PATs work everywhere.
+      if (token.kind !== 'pat')
+        throw unauthorized(
+          'OAuth access tokens only work on /mcp; use a personal access token for the REST API',
+        );
       user = deps.users.byId(token.userId);
     } else {
       user = deps.users.userForSession(getCookie(c, SESSION_COOKIE));
@@ -108,6 +112,16 @@ export function requireUser(c: Ctx): UserRow {
   return user;
 }
 
+/**
+ * For routes that manage access itself (tokens, connected clients, OAuth consent): a bearer token must not be able
+ * to mint, list or revoke credentials, or a leaked one could approve a fresh grant that outlives its own revocation.
+ */
+export function requireSessionUser(c: Ctx): UserRow {
+  const user = requireUser(c);
+  if (c.get('token')) throw forbidden('This needs a signed-in session in the web app, not a token');
+  return user;
+}
+
 export function clientIp(c: Ctx, trustProxy: TrustProxy): string {
   if (trustProxy === 'cloudflare') {
     // Cloudflare overwrites this header on every request it proxies. Without it the request did not come
@@ -121,4 +135,50 @@ export function clientIp(c: Ctx, trustProxy: TrustProxy): string {
   }
   const env = c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined;
   return env?.incoming?.socket?.remoteAddress ?? 'unknown';
+}
+
+/**
+ * One IPv6 subscriber usually holds a whole /64 (often a /56 or /48), so keying limits by the full address would
+ * hand everyone 2^64 buckets. Limits that create lasting state use the wider prefix.
+ */
+export const IPV6_CLIENT_PREFIX = 64;
+export const IPV6_CREATE_PREFIX = 56;
+
+/** The key every per-client limit uses: an IPv4 address as is, an IPv6 address reduced to its prefix. */
+export function rateKey(ip: string, v6Prefix: number = IPV6_CLIENT_PREFIX): string {
+  const bare = ip.split('%')[0]!;
+  const family = isIP(bare);
+  if (family === 4) return bare;
+  if (family !== 6) return ip;
+  const groups = ipv6Groups(bare);
+  // A dual-stack socket reports IPv4 clients as ::ffff:a.b.c.d; they are IPv4 clients.
+  if (groups.slice(0, 5).every((g) => g === 0) && groups[5] === 0xffff) {
+    const [hi, lo] = [groups[6]!, groups[7]!];
+    return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  }
+  const masked = groups.map((g, i) => {
+    const bits = Math.max(0, Math.min(16, v6Prefix - i * 16));
+    return bits === 0 ? 0 : g & ((0xffff << (16 - bits)) & 0xffff);
+  });
+  return `${masked.map((g) => g.toString(16)).join(':')}/${v6Prefix}`;
+}
+
+/** Eight 16-bit groups of a valid IPv6 address (`::` expanded, a trailing dotted IPv4 part converted). */
+function ipv6Groups(ip: string): number[] {
+  let text = ip;
+  const v4 = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+  if (v4) {
+    const [a, b, c, d] = v4.slice(1).map(Number) as [number, number, number, number];
+    text = `${text.slice(0, v4.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head = '', tail] = text.split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const fill = tail === undefined ? [] : Array<string>(8 - left.length - right.length).fill('0');
+  return [...left, ...fill, ...right].map((g) => Number.parseInt(g, 16));
+}
+
+/** The rate limit key for the caller of this request. */
+export function clientKey(c: Ctx, trustProxy: TrustProxy, v6Prefix: number = IPV6_CLIENT_PREFIX): string {
+  return rateKey(clientIp(c, trustProxy), v6Prefix);
 }

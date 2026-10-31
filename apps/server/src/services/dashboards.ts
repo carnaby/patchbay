@@ -400,17 +400,24 @@ export class DashboardService {
     return { meta, doc };
   }
 
-  /** Loads for viewing. Private dashboards look like 404 to strangers (no existence leak). */
+  /**
+   * Loads for viewing. A private dashboard answers exactly like a missing one to everyone who may not see it,
+   * signed in or not, so ids cannot be probed for existence.
+   */
   async loadViewable(id: string, p: Principal) {
     const loaded = await this.load(id).catch((e) => {
       if (e instanceof HttpError) throw e;
       throw notFound('Dashboard not found');
     });
-    if (!this.canView(loaded.meta, p)) {
-      if (!p.user) throw unauthorized('This dashboard is private. Sign in to view it.');
-      throw notFound('Dashboard not found');
-    }
+    if (!this.canView(loaded.meta, p)) throw notFound('Dashboard not found');
     return loaded;
+  }
+
+  /** Refuses a change; to someone who cannot even see the dashboard the refusal is the same 404 as for a missing one. */
+  private assertCanEdit(meta: StoredMeta, p: Principal, message = 'You cannot edit this dashboard') {
+    if (this.canEdit(meta, p)) return;
+    if (!this.canView(meta, p)) throw notFound('Dashboard not found');
+    throw forbidden(message);
   }
 
   async get(id: string, p: Principal, options: { touch?: boolean } = {}): Promise<DashboardEnvelope> {
@@ -496,7 +503,7 @@ export class DashboardService {
   ): Promise<{ envelope: DashboardEnvelope; changes: string[] }> {
     const result = await this.store.withLock(id, async () => {
       const { meta, doc } = await this.load(id);
-      if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
+      this.assertCanEdit(meta, p);
       const next = mutate(doc, meta);
       this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
       this.checkSize(meta.ownerId, doc, next.doc);
@@ -567,7 +574,7 @@ export class DashboardService {
     if (ops.length > 100) throw badRequest('At most 100 operations per batch');
     if (options.dryRun) {
       const { meta, doc } = await this.load(id);
-      if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
+      this.assertCanEdit(meta, p);
       const applied = applyOps(doc, ops);
       this.checkOpsConnectors(doc, applied.doc, ops);
       const result = this.raiseRefreshToMinimum(doc, applied);
@@ -601,7 +608,10 @@ export class DashboardService {
   ) {
     const result = await this.store.withLock(id, async () => {
       const { meta, doc } = await this.load(id);
-      if (!p.user || meta.ownerId !== p.user.id) throw forbidden('Only the owner can change visibility');
+      if (!p.user || meta.ownerId !== p.user.id) {
+        if (!this.canView(meta, p)) throw notFound('Dashboard not found');
+        throw forbidden('Only the owner can change visibility');
+      }
       const secretIds = docSecretIds(doc);
       if (visibility === 'public' && meta.visibility !== 'public' && secretIds.length) {
         this.assertMayShowSecrets(p, meta.ownerId, secretIds, options, TOKEN_PUBLISH);
@@ -626,6 +636,7 @@ export class DashboardService {
       const { meta, doc } = await this.load(id);
       if (meta.ownerId) {
         if (meta.ownerId === p.user!.id) return this.envelope(meta, doc, p);
+        if (!this.canView(meta, p)) throw notFound('Dashboard not found');
         throw forbidden('This dashboard already has an owner');
       }
       if (!this.canEdit(meta, p)) throw forbidden('A valid edit key is required to claim this dashboard');
@@ -673,7 +684,10 @@ export class DashboardService {
     const meta = await this.store.readMeta(id);
     if (!meta) throw notFound('Dashboard not found');
     const isOwner = p.user !== null && meta.ownerId === p.user.id;
-    if (!isOwner && !p.isAdmin) throw forbidden('Only the owner or an admin can delete a dashboard');
+    if (!isOwner && !p.isAdmin) {
+      if (!this.canView(meta, p)) throw notFound('Dashboard not found');
+      throw forbidden('Only the owner or an admin can delete a dashboard');
+    }
     await this.store.withLock(id, () => this.store.remove(id));
     this.index.remove(id);
     this.hub.deleted(id);
@@ -685,6 +699,8 @@ export class DashboardService {
   }
 
   async restore(id: string, p: Principal, version: number, options: PublicSecretsConfirmation = {}) {
+    // Before reading the version, so "version not found" never tells a stranger that the dashboard exists.
+    this.assertCanEdit((await this.load(id)).meta, p);
     const stored = await this.store.readVersion(id, version);
     if (!stored) throw notFound(`Version ${version} not found`);
     // A restored reference to a deleted or rebound secret shows "not available" at use time instead of blocking the
@@ -711,7 +727,7 @@ export class DashboardService {
     input: { name: string; content: string; format?: 'csv' | 'json' | undefined },
   ): Promise<UploadedFile> {
     const { meta } = await this.load(id);
-    if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
+    this.assertCanEdit(meta, p);
     if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) throw badRequest('Files are limited to 5 MB');
     const existing = await this.store.listFiles(id);
     if (existing.length >= MAX_FILES || storedBytes(existing) >= MAX_DASHBOARD_BYTES) {
@@ -768,13 +784,13 @@ export class DashboardService {
   /** Uploaded files are visible to editors only; viewers see data only through datasets. */
   async listFiles(id: string, p: Principal) {
     const { meta } = await this.loadViewable(id, p);
-    if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
+    this.assertCanEdit(meta, p);
     return this.store.listFiles(id);
   }
 
   async deleteFile(id: string, p: Principal, fileId: string) {
     const { meta, doc } = await this.load(id);
-    if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
+    this.assertCanEdit(meta, p);
     const users = doc.datasets.filter((d) => d.source.kind === 'upload' && d.source.fileId === fileId);
     if (users.length) throw badRequest(`File is used by dataset(s): ${users.map((d) => d.name).join(', ')}`);
     await this.store.deleteFile(id, fileId);

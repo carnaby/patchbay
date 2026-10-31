@@ -447,7 +447,12 @@ describe('managing secrets over REST', () => {
       ['dashboards:read', 'dashboards:write'],
       `${BASE}/mcp`,
     );
-    for (const token of [pat, oauth.accessToken]) {
+    // OAuth access tokens do not reach the REST API at all (they are bound to /mcp).
+    for (const path of ['/api/secrets', `/api/secrets/${existing.id}`]) {
+      const headers = { authorization: `Bearer ${oauth.accessToken}` };
+      expect((await env.call(path, { method: 'DELETE', headers })).status).toBe(401);
+    }
+    for (const token of [pat]) {
       const headers = { authorization: `Bearer ${token}` };
       const body = { name: 'T', sendTo: `${API}/`, placement: 'bearer', value: value() };
       const attempts = [
