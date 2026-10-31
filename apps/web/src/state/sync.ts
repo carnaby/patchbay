@@ -15,10 +15,10 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from '../components/ui.tsx';
-import { ApiError, api, errorMessage } from '../lib/api.ts';
-import { publicSecretsRequest } from '../lib/secrets.ts';
+import { ApiError, api } from '../lib/api.ts';
 import { useEditor } from './editor.ts';
 import { openLiveChannel } from './live-channel.ts';
+import { performSave } from './save.ts';
 
 const SAVE_DEBOUNCE_MS = 600;
 
@@ -37,34 +37,9 @@ export function useAutosave() {
     if (!id || !doc || saving || conflict) return;
     if (doc === useEditor.getState().saved) return;
     if (secretsPrompt?.doc === doc) return;
-    const timer = setTimeout(async () => {
+    const timer = setTimeout(() => {
       const job = useEditor.getState().beginSave();
-      if (!job) return;
-      try {
-        const res = await api<{ envelope: DashboardEnvelope }>(`/api/dashboards/${id}`, {
-          method: 'PUT',
-          body: {
-            doc: job.doc,
-            baseVersion: job.baseVersion,
-            changes: job.labels,
-            ...(job.confirmPublicSecrets ? { confirmPublicSecrets: true } : {}),
-          },
-          dashboardId: id,
-        });
-        useEditor.getState().saveSucceeded(job.doc, res.envelope);
-      } catch (e) {
-        const secrets = publicSecretsRequest(e);
-        if (secrets) {
-          // Not a failure and not retried on its own: the user decides in the dialog (PublicSecretsPrompt).
-          useEditor.getState().saveNeedsConfirmation(job.doc, secrets);
-        } else if (e instanceof ApiError && e.status === 409 && e.body.current) {
-          const outcome = useEditor.getState().rebaseOnto(e.body.current as DashboardEnvelope);
-          if (outcome === 'rebased') toast('The dashboard changed elsewhere. Your edits were merged on top.');
-        } else {
-          useEditor.getState().saveFailed(errorMessage(e));
-          toast(`Could not save: ${errorMessage(e)}`, 'bad');
-        }
-      }
+      if (job) void performSave(id, job, (message, tone) => toast(message, tone));
     }, SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [id, doc, saving, conflict, secretsPrompt]);

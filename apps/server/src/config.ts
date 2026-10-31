@@ -50,6 +50,11 @@ const EnvSchema = z.object({
    * cannot be created or grown; signed-in users are not affected.
    */
   ANONYMOUS_STORAGE_LIMIT_MB: z.coerce.number().int().min(0).default(1024),
+  /**
+   * Disk space one signed-in user's dashboards may take, in MB (0 = no limit). Above it, that user's dashboards
+   * cannot be created or grown; administrators are not limited.
+   */
+  USER_STORAGE_LIMIT_MB: z.coerce.number().int().min(0).default(500),
   WEB_DIST: z.string().optional(),
   SHOWCASE_DIR: z.string().optional(),
   TRUST_PROXY: trustProxy,
@@ -185,6 +190,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     pruneAnonymousAfterDays: parsed.PRUNE_ANONYMOUS_AFTER_DAYS,
     pruneBlankAnonymousAfterHours: parsed.PRUNE_BLANK_ANONYMOUS_AFTER_HOURS,
     anonymousStorageBytes: parsed.ANONYMOUS_STORAGE_LIMIT_MB * 1024 * 1024,
+    userStorageBytes: parsed.USER_STORAGE_LIMIT_MB * 1024 * 1024,
     webDist: parsed.WEB_DIST,
     showcaseDir: parsed.SHOWCASE_DIR ?? join(import.meta.dirname, '../../../showcase'),
     trustProxy: parsed.TRUST_PROXY,

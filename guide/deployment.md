@@ -91,9 +91,9 @@ docker compose up -d
 - `SECRETS` and `SECRETS_KEY` (in `patchbay.env`) decide whether users may store credentials for HTTP sources; leave
   `SECRETS=off` unless you mean it, and read "Secrets for HTTP sources" below first. If you set a key, keep
   `patchbay.env` out of the backup of `data/` (see Backups).
-- `PRUNE_ANONYMOUS_AFTER_DAYS=60`, `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS=24` and `ANONYMOUS_STORAGE_LIMIT_MB=1024` are
-  set in the compose file, because anyone can create anonymous dashboards on a public instance; see "Anonymous
-  dashboards and disk space".
+- `PRUNE_ANONYMOUS_AFTER_DAYS=60`, `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS=24`, `ANONYMOUS_STORAGE_LIMIT_MB=1024` and
+  `USER_STORAGE_LIMIT_MB=500` are set in the compose file, because anyone can create anonymous dashboards (or sign in
+  with a Google account) on a public instance; see "Anonymous dashboards and disk space".
 - `PIPELINE_WORKERS=1` and a 512 MB memory limit suit a 2-core machine. 384 MB also holds thanks to the memory
   guard, but it refuses heavy work much sooner under load; see "Memory budget" for the measurements at both sizes.
 - `URL_SOURCES=signed-in` is set in the compose file: the instance runs on a home connection, so only dashboards
@@ -179,7 +179,7 @@ stored (never names or values), so you know whom to tell.
 ## Anonymous dashboards and disk space
 
 Anyone can create a dashboard without an account (it is public and editable with its edit key), so on a public
-instance strangers decide how much disk is used. Three settings bound it:
+instance strangers decide how much disk is used. Three settings bound it, and a fourth bounds each signed-in user:
 
 - `ANONYMOUS_STORAGE_LIMIT_MB` (default `1024`, `0` = no limit) is the disk space all anonymous dashboards may take
   together, counted from what is really on disk (documents, versions, parsed uploads). Above it, anonymous dashboards
@@ -191,6 +191,10 @@ instance strangers decide how much disk is used. Three settings bound it:
   dashboards alive by viewing them, which is what the storage limit is for.
 - `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS` (default `0` = keep) deletes anonymous dashboards still blank that many hours
   after creation: never edited, no data, no widgets. Viewing does not keep them.
+- `USER_STORAGE_LIMIT_MB` (default `500`, `0` = no limit) is the disk space one signed-in user's dashboards may take,
+  counted the same way. Above it, the API answers `507` to that user's new dashboards, writes that grow a document,
+  uploads, copies (a copy's uploads count in full, though they share the original's bytes on disk) and claims;
+  edits that do not grow a document and deletes keep working. Administrators (`ADMIN_EMAILS`) are not limited.
 
 Both pruning settings default to off: without Google sign-in every dashboard is anonymous, and a self-hosted instance
 should not start deleting its owner's work after an upgrade. Turn them on for a public instance; the NAS compose file
@@ -209,7 +213,7 @@ defaults suit one container with 384 MB of memory; raise them only with more mem
 
 | Variable                     | Default  | What it bounds                                                                                             |
 | ---------------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `UPLOAD_MAX_CELLS`           | 500000   | Rows × columns of an upload to a dashboard with an owner, and of an HTTP response kept in memory.          |
+| `UPLOAD_MAX_CELLS`           | 500000   | Rows × columns of an upload to an owned dashboard, and of an HTTP response or inline rows in memory.       |
 | `UPLOAD_MAX_CELLS_ANONYMOUS` | 200000   | The same for anonymous dashboards.                                                                         |
 | `DATA_CACHE_MB`              | 32       | Parsed tables (uploads, inline rows, HTTP responses) kept between requests, least recently used first out. |
 | `PIPELINE_WORKER_MEMORY_MB`  | 96       | Heap of each pipeline worker; a job that needs more fails instead of exhausting the container.             |
@@ -221,8 +225,11 @@ defaults suit one container with 384 MB of memory; raise them only with more mem
 
 Fixed limits, for reference: uploads are parsed in the pipeline worker and refused as soon as they pass the cell limit;
 an upload has at most 500 columns with names of up to 200 characters, and a JSON upload nests at most 64 levels and
-holds at most three values per allowed cell, checked before it is parsed. Uploads are parsed and saved one at a time
-across the server (two more may wait). A request body over 1 MB is received in full before it is processed, one at a
+holds at most three values per allowed cell, checked before it is parsed. Inline rows may use at most 200 different
+column names (checked when saved). Every table built from a source has at most 500 columns, and inline rows and HTTP
+responses keep at most `UPLOAD_MAX_CELLS` cells; both are checked record by record while the table is built, so a
+single wide record cannot multiply it. Uploads are parsed and saved one at a time
+across the server (two more may wait). A request body over 256 KB is received in full before it is processed, one at a
 time (eight more may wait): it has to arrive at 32 KB/s or faster on average after its first 5 s and within 60 s, or the
 request gets `408` and the connection is closed, so a slow sender never holds the turn of others; bodies that are
 arriving or waiting hold at most 16 MB together, two per client. Node waits at most 20 s for a request's headers and 90
@@ -310,10 +317,11 @@ cgroup's charge without the page cache the kernel can drop (cgroup v2: `memory.c
 compares it with the container's limit:
 
 - **Soft** (`MEMORY_SOFT_FRACTION`): new heavy work gets `503` with `Retry-After: 5`: snapshots that are not cached,
-  uploads and other bodies over 1 MB, the heavy jobs above, pipelines over 20,000 cells and results over 512 KB that
-  are not serialised already. One exception: on a resting server, where no heavy work has run for 30 s and 112 MB
-  are still free (up to 272 MB at 384 MB), one job may start; the 30 s start again when it ends. A burst gets at
-  most one job every 30 s through it; a visitor after the burst gets served.
+  uploads and other bodies over 256 KB, the heavy jobs above, pipelines over 20,000 cells and results over 512 KB
+  that are not serialised already. One exception: on a resting server, where no heavy work has run for 30 s and 112
+  MB are still free (up to 272 MB at 384 MB), one job may start; the 30 s start again when it ends. A burst gets at
+  most one job every 30 s through it; a visitor after the burst gets served. A large body counts as running from
+  the moment it is admitted, while it still arrives, so slow uploads cannot all pass that one admission.
 - **Hard** (`MEMORY_HARD_FRACTION`): no new heavy work, writes, MCP calls or live streams, with `Retry-After: 10`.
 - `/healthz`, static files, dashboard documents, small results and results already in memory keep answering at
   either level, and work already running always finishes. Live refreshes skip a beat, as when a queue is full.

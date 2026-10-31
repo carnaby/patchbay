@@ -290,4 +290,66 @@ describe('large request bodies', () => {
     expect(refused.status).toBe(408);
     expect(refused.headers.get('connection')).toBe('close');
   });
+
+  /** A full save of an anonymous dashboard whose document is about `kb` KB, with its exact length declared. */
+  async function largeSave(kb: number) {
+    const { envelope, editKey } = (await call('/api/dashboards', { body: {} })).json;
+    const text = 'x'.repeat(900);
+    const rows = Array.from({ length: Math.ceil((kb * 1024) / 920) }, (_, i) => ({ i, text }));
+    const body = JSON.stringify({
+      doc: { ...envelope.doc, datasets: [{ id: 'd', name: 'd', source: { kind: 'inline', rows } }] },
+      baseVersion: 1,
+    });
+    const url = `${BASE}/api/dashboards/${envelope.meta.id}`;
+    const headers = {
+      origin: BASE,
+      'content-type': 'application/json',
+      'content-length': String(Buffer.byteLength(body)),
+      'x-edit-key': editKey as string,
+    };
+    return { url, headers, body };
+  }
+
+  it('from 256 KB take turns, so a burst of 1 MB saves is never parsed side by side; smaller saves do not', async () => {
+    const small = await largeSave(200);
+    expect(Number(small.headers['content-length'])).toBeLessThan(256 * 1024);
+    expect((await app.request(small.url, { method: 'PUT', ...small })).status).toBe(200);
+    const one = await largeSave(900);
+    expect((await app.request(one.url, { method: 'PUT', ...one })).status).toBe(200);
+    const burst = await Promise.all(Array.from({ length: 12 }, () => largeSave(900)));
+    const answers = await Promise.all(burst.map((s) => app.request(s.url, { method: 'PUT', ...s })));
+    const statuses = answers.map((r) => r.status);
+    // All from one client here: two at a time are received or wait for their turn, the rest come back later.
+    expect(statuses.filter((s) => s === 200).length).toBeGreaterThanOrEqual(1);
+    expect(statuses.filter((s) => s === 503).length).toBeGreaterThanOrEqual(8);
+    expect(answers.find((r) => r.status === 503)?.headers.get('retry-after')).toBe('5');
+  });
+
+  it('under soft pressure, count from admission: a body still arriving keeps the resting server’s one admission', async () => {
+    const slow = await largeSave(300);
+    const fast = await largeSave(300);
+    pressure(0.7);
+    const bytes = new TextEncoder().encode(slow.body);
+    let sent = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const next = bytes.subarray(sent, sent + 100 * 1024);
+        sent += next.byteLength;
+        controller.enqueue(next);
+        if (sent >= bytes.byteLength) controller.close();
+      },
+    });
+    const arriving = app.request(slow.url, {
+      method: 'PUT',
+      headers: slow.headers,
+      body: stream,
+      duplex: 'half',
+    } as RequestInit);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const refused = await app.request(fast.url, { method: 'PUT', ...fast });
+    expect(refused.status).toBe(503);
+    expect(((await refused.json()) as { error: string }).error).toContain('low on memory');
+    expect((await arriving).status).toBe(200);
+  });
 });

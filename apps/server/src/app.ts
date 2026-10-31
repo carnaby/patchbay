@@ -41,6 +41,7 @@ import {
   withReceivedBody,
 } from './util/json-body.ts';
 import { memoryGuard } from './util/memory-pressure.ts';
+import { OutboundLimiter } from './util/outbound.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { runAsClient } from './util/request-context.ts';
 import type { UpstreamTestSeam } from './util/safe-fetch.ts';
@@ -77,7 +78,9 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   }
   // DataService is built before DashboardService, which decides about credentials, so the resolver is bound late.
   let dashboards: DashboardService | undefined;
+  const outbound = new OutboundLimiter();
   const data = new DataService(connectors, store, pipeline, {
+    outbound,
     credentials: (target, dataset) => dashboards!.credentialsFor(target, dataset),
     urlPolicy: (target, url) => dashboards!.assertMayFetchUrl(target, url),
     offline: config.offline,
@@ -106,6 +109,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       uploadMaxCellsAnonymous: config.uploadMaxCellsAnonymous,
       urlSources: config.urlSources,
       anonymousStorageBytes: config.anonymousStorageBytes,
+      userStorageBytes: config.userStorageBytes,
       trustedUrls: trustedSourceUrls(useCases),
     },
   );
@@ -128,6 +132,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     connectors,
     pipeline,
     data,
+    outbound,
     wire,
     hub,
     dashboards,
@@ -243,30 +248,34 @@ export function createApp(deps: Deps, options: AppOptions = {}) {
     const declared = c.req.header('content-length');
     if (declared !== undefined && !c.req.raw.headers.has('transfer-encoding') && Number(declared) > max)
       return tooLarge(c);
-    // Refused before a byte is read, and again when its turn comes: a large body costs two to three times its size
-    // until it is answered.
-    memoryGuard.admitHeavy();
-    const client = clientKey(c, config.trustProxy);
-    let body: ReceivedBody;
+    // Admitted, and counted as heavy work, before a byte is read: a large body costs two to three times its size
+    // until it is answered, and bodies still arriving must not all pass the check a resting server allows once.
+    const reservation = memoryGuard.reserveHeavy();
     try {
-      body = await receiver.receive(c.req.raw, client, max);
-    } catch (e) {
-      if (e instanceof BodyTooLargeError) return tooLarge(c);
-      // The rest of a slow body is not waited for: the connection closes after the answer.
-      if (e instanceof BodyTimeoutError) return c.json({ error: e.message }, 408, { Connection: 'close' });
-      throw e;
-    }
-    try {
-      c.req.raw = withReceivedBody(c.req.raw, body.chunks);
-      return await largeBodies.run(client, () =>
-        memoryGuard.runHeavy(() => {
+      const client = clientKey(c, config.trustProxy);
+      let body: ReceivedBody;
+      try {
+        body = await receiver.receive(c.req.raw, client, max);
+      } catch (e) {
+        if (e instanceof BodyTooLargeError) return tooLarge(c);
+        // The rest of a slow body is not waited for: the connection closes after the answer.
+        if (e instanceof BodyTimeoutError) return c.json({ error: e.message }, 408, { Connection: 'close' });
+        throw e;
+      }
+      try {
+        c.req.raw = withReceivedBody(c.req.raw, body.chunks);
+        return await largeBodies.run(client, () => {
           // From here the turn bounds what the body costs.
           body.release();
-          return next();
-        }),
-      );
+          // Memory may have run short while it waited: writes stop at the hard threshold, like everywhere else.
+          memoryGuard.admitRequest();
+          return reservation.run(next);
+        });
+      } finally {
+        body.release();
+      }
     } finally {
-      body.release();
+      reservation.release();
     }
   });
   app.use('*', (c, next) =>

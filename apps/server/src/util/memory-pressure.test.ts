@@ -85,6 +85,32 @@ describe('MemoryGuard', () => {
     expect(guard.state()?.refused).toEqual({ soft: 4, hard: 0 });
   });
 
+  it('counts a reserved job from its admission, so work that waits before it runs cannot all pass at rest', async () => {
+    const { guard, at, tick } = setup({ coolDownMs: 30_000 });
+    expect(at(0.82)).toBe('soft');
+    // Three slow uploads arrive together: the first takes the resting server's one admission, while it still arrives.
+    const first = guard.reserveHeavy();
+    expect(guard.heavyRunning()).toBe(1);
+    expect(() => guard.reserveHeavy()).toThrow(MemoryPressureError);
+    expect(() => guard.reserveHeavy()).toThrow(MemoryPressureError);
+    // Its work runs inside the reservation: what it starts is admitted.
+    await expect(first.run(async () => guard.runHeavy(async () => 'inner'))).resolves.toBe('inner');
+    first.release();
+    first.release();
+    expect(guard.heavyRunning()).toBe(0);
+    // Then the cool-down starts again, as after any heavy job.
+    expect(() => guard.reserveHeavy()).toThrow(MemoryPressureError);
+    tick(30_000);
+    const next = guard.reserveHeavy();
+    next.release();
+    // Below soft, reservations never refuse.
+    at(0.5);
+    const many = [guard.reserveHeavy(), guard.reserveHeavy(), guard.reserveHeavy()];
+    expect(guard.heavyRunning()).toBe(3);
+    for (const r of many) r.release();
+    expect(guard.heavyRunning()).toBe(0);
+  });
+
   it('above soft admits the lone job only while one job’s growth still fits under the limit', () => {
     let used = 270 * MB;
     const guard = new MemoryGuard({

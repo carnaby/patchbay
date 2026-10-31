@@ -24,6 +24,8 @@ services:
       PRUNE_ANONYMOUS_AFTER_DAYS: "60"
       PRUNE_BLANK_ANONYMOUS_AFTER_HOURS: "24"
       ANONYMOUS_STORAGE_LIMIT_MB: "1024"
+      # Anyone with a Google account can sign in, so each account's dashboards are capped too (MB; admins exempt).
+      USER_STORAGE_LIMIT_MB: "500"
       # Served from a home connection: only dashboards with a signed-in owner may make it fetch URLs.
       URL_SOURCES: signed-in
       # Optional Umami analytics, from .env (see guide/deployment.md). Empty means off. Set here, these override

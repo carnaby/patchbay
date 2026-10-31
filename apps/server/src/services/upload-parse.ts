@@ -10,7 +10,7 @@
  * Column names and the number of columns are bounded too: every row of a data response repeats the names, so a
  * small file with very long names becomes a very large response.
  */
-import { type DataTable, inferTable, LIMITS } from '@patchbay/core';
+import { type DataTable, inferTableCapped, LIMITS, TableTooWideError } from '@patchbay/core';
 import Papa from 'papaparse';
 import { jsonShapeProblem, MAX_JSON_DEPTH } from '../util/json-shape.ts';
 
@@ -94,6 +94,26 @@ function check(table: DataTable, maxCells: number): DataTable {
   return table;
 }
 
+/**
+ * The table of `records`, never larger than the limits while it is built: a wide record after many narrow ones
+ * would otherwise make every row as wide as it before any check could see the size.
+ */
+function limitedTable(records: unknown[], maxCells: number): DataTable {
+  let result: ReturnType<typeof inferTableCapped>;
+  try {
+    result = inferTableCapped(records, { maxColumns: UPLOAD_MAX_COLUMNS, maxCells });
+  } catch (e) {
+    if (e instanceof TableTooWideError)
+      throw new UploadError(
+        `The file has more than ${fmt(UPLOAD_MAX_COLUMNS)} columns; uploads are limited to ${fmt(UPLOAD_MAX_COLUMNS)}. Remove columns you do not need.`,
+      );
+    throw e;
+  }
+  const { table, capped } = result;
+  if (capped) throw tooLarge(records.length, Math.max(table.columns.length, 1), maxCells, false);
+  return check(table, maxCells);
+}
+
 function parseCsv(content: string, maxCells: number): DataTable {
   const records: Record<string, string>[] = [];
   let columns = 0;
@@ -127,7 +147,7 @@ function parseCsv(content: string, maxCells: number): DataTable {
   if (stopped) throw tooLarge(records.length, columns, maxCells, true);
   if (records.length === 0 && firstError !== null)
     throw new UploadError(`Could not parse CSV: ${firstError}`);
-  return check(inferTable(records), maxCells);
+  return limitedTable(records, maxCells);
 }
 
 function parseJson(content: string, maxCells: number): DataTable {
@@ -144,14 +164,9 @@ function parseJson(content: string, maxCells: number): DataTable {
     : json && typeof json === 'object'
       ? (Object.values(json).find(Array.isArray) ?? [json])
       : [json];
-  // Flattening every record first would build the oversized table this check exists to avoid; the first records
-  // tell the width (and the names) well enough to refuse early, and the exact checks below catch the rest.
-  const head = inferTable(records.slice(0, 200)).columns;
-  const columns = columnsProblem(head.map((c) => c.name));
-  if (columns) throw columns;
-  if (records.length * Math.max(head.length, 1) > maxCells)
-    throw tooLarge(records.length, head.length, maxCells, false);
-  return check(inferTable(records), maxCells);
+  // A quick refusal for files that are plainly too large; `limitedTable` holds the exact limits while it builds.
+  if (records.length > maxCells) throw tooLarge(records.length, 1, maxCells, true);
+  return limitedTable(records, maxCells);
 }
 
 export function parseUpload(input: UploadInput): DataTable {

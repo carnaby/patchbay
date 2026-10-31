@@ -81,9 +81,22 @@ function coerce(value: unknown, type: ColumnType): Scalar {
   }
 }
 
-/** Flattens one level of nested objects into dotted keys (`a.b`). Arrays are serialised. */
-function flatten(record: Record<string, unknown>, out: Record<string, unknown> = {}, prefix = '', depth = 0) {
-  for (const [key, value] of Object.entries(record)) {
+/**
+ * Flattens one level of nested objects into dotted keys (`a.b`). Arrays are serialised. Stops once it holds more
+ * than `limit` keys: the caller refuses such a record anyway, and a record of 400,000 keys copied whole (with an
+ * entry pair per key) filled a worker's heap before the column limit could say so.
+ */
+function flatten(
+  record: Record<string, unknown>,
+  limit: number,
+  out: Record<string, unknown> = {},
+  prefix = '',
+  depth = 0,
+  count = { keys: 0 },
+) {
+  for (const key in record) {
+    if (!Object.hasOwn(record, key)) continue;
+    const value = record[key];
     const name = prefix ? `${prefix}.${key}` : key;
     if (
       value &&
@@ -92,32 +105,90 @@ function flatten(record: Record<string, unknown>, out: Record<string, unknown> =
       !(value instanceof Date) &&
       depth < 2
     ) {
-      flatten(value as Record<string, unknown>, out, name, depth + 1);
+      flatten(value as Record<string, unknown>, limit, out, name, depth + 1, count);
     } else {
+      if (!Object.hasOwn(out, name)) count.keys++;
       out[name] = value;
     }
+    if (count.keys > limit) break;
   }
   return out;
+}
+
+/**
+ * Columns `inferTable` builds unless told otherwise: far more than a chart or a table can show, the same as an upload.
+ * The table is dense (every row holds every column), so one record with many keys among many records without them
+ * multiplies into rows x keys cells: 2,000 inline rows and one row of 47,000 short keys made 94 million cells from a
+ * 500 KB document, and the server ran out of memory.
+ */
+export const INFER_MAX_COLUMNS = 500;
+/** Cells (rows x columns) `inferTable` builds unless told otherwise; a backstop, callers pass their own source limits. */
+export const INFER_MAX_CELLS = 2_000_000;
+
+/** More distinct columns than `maxColumns`; thrown before any row is built. */
+export class TableTooWideError extends Error {
+  readonly columns: number;
+  readonly limit: number;
+  constructor(columns: number, limit: number) {
+    super(
+      `The data has more than ${limit.toLocaleString('en-US')} columns (at least ${columns.toLocaleString('en-US')} different field names); keep the fields you need, or reshape the data into rows`,
+    );
+    this.name = 'TableTooWideError';
+    this.columns = columns;
+    this.limit = limit;
+  }
 }
 
 export interface InferOptions {
   /** Explicit column types that skip detection (connectors know their schema). */
   types?: Record<string, ColumnType>;
   maxRows?: number;
+  /** Distinct columns allowed (default INFER_MAX_COLUMNS); more throw TableTooWideError before rows are built. */
+  maxColumns?: number;
+  /**
+   * Cells allowed (default INFER_MAX_CELLS). Records are taken while rows x columns of what is taken stays within it;
+   * the rest is dropped (`capped`).
+   */
+  maxCells?: number;
 }
 
-/** Builds a typed table from arbitrary JSON-ish records. */
-export function inferTable(records: unknown[], options: InferOptions = {}): DataTable {
+/**
+ * Builds a typed table from arbitrary JSON-ish records, and says whether records were dropped to stay within
+ * `maxRows` or `maxCells`. The width counts only the records taken, and the limits are checked per record before it
+ * is kept, so nothing larger than the limits is ever allocated, whatever the order of wide and narrow records.
+ */
+export function inferTableCapped(
+  records: unknown[],
+  options: InferOptions = {},
+): { table: DataTable; capped: boolean } {
   const limit = options.maxRows ?? Number.POSITIVE_INFINITY;
+  const maxColumns = options.maxColumns ?? INFER_MAX_COLUMNS;
+  const maxCells = options.maxCells ?? INFER_MAX_CELLS;
   const flat: Record<string, unknown>[] = [];
   const names = new Map<string, true>();
+  let capped = false;
+  const added: string[] = [];
   for (const record of records) {
-    if (flat.length >= limit) break;
+    if (flat.length >= limit) {
+      capped = true;
+      break;
+    }
     const obj =
       record && typeof record === 'object' && !Array.isArray(record)
-        ? flatten(record as Record<string, unknown>)
+        ? flatten(record as Record<string, unknown>, maxColumns)
         : { value: record };
-    for (const key of Object.keys(obj)) names.set(key, true);
+    added.length = 0;
+    for (const key of Object.keys(obj)) {
+      if (names.has(key)) continue;
+      added.push(key);
+      if (names.size + added.length > maxColumns)
+        throw new TableTooWideError(names.size + added.length, maxColumns);
+    }
+    if ((flat.length + 1) * Math.max(1, names.size + added.length) > maxCells) {
+      capped = true;
+      break;
+    }
+    for (const key of added) names.set(key, true);
     flat.push(obj);
   }
   const columns: Column[] = [...names.keys()].map((name) => ({
@@ -129,7 +200,12 @@ export function inferTable(records: unknown[], options: InferOptions = {}): Data
     for (const col of columns) row[col.name] = coerce(r[col.name], col.type);
     return row;
   });
-  return { columns, rows };
+  return { table: { columns, rows }, capped };
+}
+
+/** Builds a typed table from arbitrary JSON-ish records, within the limits of `inferTableCapped`. */
+export function inferTable(records: unknown[], options: InferOptions = {}): DataTable {
+  return inferTableCapped(records, options).table;
 }
 
 /** Re-derives column types after a transform produced new values. */

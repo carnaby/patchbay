@@ -114,9 +114,12 @@ const guardedAgent = new Agent({
   },
 });
 
+const sizeLabel = (bytes: number) =>
+  bytes >= 1024 * 1024 ? `${bytes / 1024 / 1024} MB` : `${Math.round(bytes / 1024)} KB`;
+
 async function readCapped(res: Response, limit: number): Promise<string> {
   const declared = Number(res.headers.get('content-length') ?? 0);
-  if (declared > limit) throw new HttpError(502, `Response larger than ${limit / 1024 / 1024} MB`);
+  if (declared > limit) throw new HttpError(502, `Response larger than ${sizeLabel(limit)}`);
   const reader = res.body?.getReader();
   if (!reader) return '';
   const chunks: Uint8Array[] = [];
@@ -127,7 +130,7 @@ async function readCapped(res: Response, limit: number): Promise<string> {
     total += value.byteLength;
     if (total > limit) {
       await reader.cancel();
-      throw new HttpError(502, `Response larger than ${limit / 1024 / 1024} MB`);
+      throw new HttpError(502, `Response larger than ${sizeLabel(limit)}`);
     }
     chunks.push(value);
   }
@@ -172,6 +175,12 @@ export interface SafeFetchOptions {
   /** Sent only on hops whose URL matches every credential's binding. */
   credentials?: Credential[];
   redirects?: number;
+  /** A smaller body limit than the default 5 MB, for documents that are small by nature. */
+  maxBytes?: number;
+  /** A shorter timeout than the default 10 s. */
+  timeoutMs?: number;
+  /** JSON values the response may hold (default: no limit beyond its size); counted before it is parsed. */
+  maxValues?: number;
   /** Test seams, see `UpstreamTestSeam`. */
   test?: UpstreamTestSeam;
 }
@@ -345,10 +354,12 @@ function withoutOwnQuerySecrets(url: URL, credentials: Credential[]): URL {
   return next;
 }
 
-function parseJson(text: string): unknown {
+function parseJson(text: string, maxValues = Number.POSITIVE_INFINITY): unknown {
   // Parsed on this thread, so the one shape whose cost is not bounded by its size in bytes is refused first.
-  if (jsonShapeProblem(text, { maxDepth: MAX_JSON_DEPTH, maxValues: Number.POSITIVE_INFINITY }))
+  const problem = jsonShapeProblem(text, { maxDepth: MAX_JSON_DEPTH, maxValues });
+  if (problem?.kind === 'depth')
     throw new HttpError(502, `The response nests deeper than ${MAX_JSON_DEPTH} levels`);
+  if (problem) throw new HttpError(502, `The response holds more than ${problem.limit} values`);
   try {
     return JSON.parse(text);
   } catch {
@@ -360,11 +371,11 @@ function parseJson(text: string): unknown {
 export async function safeFetchJson(raw: string, options: SafeFetchOptions = {}): Promise<unknown> {
   const credentials = options.credentials ?? [];
   if (credentials.length === 0)
-    return parseJson((await fetchHops(raw, [], options, 'application/json')).text);
+    return parseJson((await fetchHops(raw, [], options, 'application/json')).text, options.maxValues);
   const values = credentials.map((c) => c.value);
   try {
     return redactJson(
-      parseJson((await fetchHops(raw, credentials, options, 'application/json')).text),
+      parseJson((await fetchHops(raw, credentials, options, 'application/json')).text, options.maxValues),
       values,
     );
   } catch (e) {
@@ -417,7 +428,7 @@ async function fetchHops(
       redirect: 'manual',
       dispatcher: options.test?.dispatcher ?? guardedAgent,
       headers,
-      signal: AbortSignal.timeout(options.test?.timeoutMs ?? TIMEOUT_MS),
+      signal: AbortSignal.timeout(options.test?.timeoutMs ?? options.timeoutMs ?? TIMEOUT_MS),
     }).catch((e: unknown) => {
       const cause = (e as { cause?: { code?: string } }).cause;
       if (cause?.code === 'EBLOCKED')
@@ -442,7 +453,7 @@ async function fetchHops(
       await res.body?.cancel().catch(() => {});
       throw new HttpError(502, `Upstream responded ${res.status}`);
     }
-    const text = await readCapped(res as unknown as Response, MAX_BYTES);
+    const text = await readCapped(res as unknown as Response, options.maxBytes ?? MAX_BYTES);
     const contentType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
     return { text, contentType, url: url.href };
   }

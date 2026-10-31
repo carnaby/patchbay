@@ -215,6 +215,83 @@ describe('uploads', () => {
   });
 });
 
+describe('wide inline rows', () => {
+  // One row of 47,000 short keys and 1,999 empty rows: a 500 KB document, and 94 million cells once every row has
+  // every column. Building that table killed the server on the first read.
+  const attack = () => ({
+    kind: 'inline',
+    rows: [
+      Object.fromEntries(Array.from({ length: 47_000 }, (_, i) => [`k${i}`, 1])),
+      ...Array.from({ length: 1999 }, () => ({})),
+    ],
+  });
+
+  it('refuses them on every write path, and says what to do instead', async () => {
+    const anon = await anonymous();
+    const doc = { ...anon.doc, datasets: [{ id: 'd1', name: 'Wide', source: attack() }] };
+    const put = await call(`/api/dashboards/${anon.id}`, {
+      method: 'PUT',
+      body: { doc, baseVersion: 1 },
+      headers: anon.headers,
+    });
+    expect(put.status).toBe(400);
+    expect(put.json.code).toBe('INLINE_TOO_WIDE');
+    expect(put.json.error).toContain('at most 200 different column names');
+    const ops = await call(`/api/dashboards/${anon.id}/ops`, {
+      body: { ops: [{ op: 'addDataset', dataset: { id: 'd1', name: 'Wide', source: attack() } }] },
+      headers: anon.headers,
+    });
+    expect(ops.status).toBe(400);
+    expect(ops.json.code).toBe('INLINE_TOO_WIDE');
+    const ok = await call(`/api/dashboards/${anon.id}/ops`, {
+      body: {
+        ops: [
+          {
+            op: 'addDataset',
+            dataset: {
+              id: 'd2',
+              name: 'Fine',
+              source: {
+                kind: 'inline',
+                rows: [Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`c${i}`, i]))],
+              },
+            },
+          },
+        ],
+      },
+      headers: anon.headers,
+    });
+    expect(ok.status).toBe(200);
+  });
+
+  it('answers a stored one with an error for the dataset, and the server keeps serving', async () => {
+    const anon = await anonymous();
+    const meta = (await deps.store.readMeta(anon.id))!;
+    // As if saved before the write limit existed.
+    await deps.store.writeDoc(
+      { ...meta, version: meta.version + 1 },
+      {
+        ...anon.doc,
+        datasets: [
+          { id: 'd1', name: 'Wide', source: attack(), transforms: [], refreshSec: 0, accumulate: 0 },
+        ],
+      },
+      { kind: 'anonymous', label: 'Anonymous' },
+      ['Stored'],
+    );
+    const data = await call(`/api/dashboards/${anon.id}/data/d1`);
+    expect(data.status).toBe(200);
+    expect(data.json.error).toMatch(/more than 500 columns/);
+    // Editing the stored document is still possible as long as the edit does not add columns.
+    const rename = await call(`/api/dashboards/${anon.id}/ops`, {
+      body: { ops: [{ op: 'updateDataset', id: 'd1', set: { name: 'Renamed' } }] },
+      headers: anon.headers,
+    });
+    expect(rename.status).toBe(200);
+    expect((await call('/healthz')).status).toBe(200);
+  });
+});
+
 describe('refresh floors', () => {
   it('apply to full saves as well as to operations', async () => {
     const mine = await owned();

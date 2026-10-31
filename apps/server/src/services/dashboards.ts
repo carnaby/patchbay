@@ -185,6 +185,37 @@ function inlineTextTooLong(before: DashboardDoc, after: DashboardDoc): HttpError
   return null;
 }
 
+/** Distinct keys across inline rows. Linear in a document already bounded by its size limit. */
+function inlineColumnCount(rows: readonly Record<string, unknown>[]): number {
+  const names = new Set<string>();
+  for (const row of rows) for (const name of Object.keys(row)) names.add(name);
+  return names.size;
+}
+
+/**
+ * An inline dataset that `after` makes wider than LIMITS.inlineColumns. On writes only, like `inlineTextTooLong`: a
+ * stored dataset that is already wider keeps loading (DataService holds its own limits when it reads one) and may be
+ * edited as long as the edit does not add columns.
+ */
+function inlineTooWide(before: DashboardDoc, after: DashboardDoc): HttpError | null {
+  const existing = new Map(before.datasets.map((d) => [d.id, d]));
+  for (const dataset of after.datasets) {
+    if (dataset.source.kind !== 'inline') continue;
+    const old = existing.get(dataset.id)?.source;
+    if (old === dataset.source) continue;
+    const count = inlineColumnCount(dataset.source.rows);
+    if (count <= LIMITS.inlineColumns) continue;
+    if (old?.kind === 'inline' && count <= inlineColumnCount(old.rows)) continue;
+    return badRequest(
+      `Dataset "${dataset.id}": inline rows may use at most ${LIMITS.inlineColumns} different column names (these use ${count.toLocaleString('en-US')}). ` +
+        'Every row of a table has every column, so keep the fields you need, reshape wide data into rows (one row per name and value), ' +
+        'or put it in a CSV or JSON upload (upload_data, or POST /api/dashboards/:id/files) and use a source of kind "upload".',
+      { code: 'INLINE_TOO_WIDE', columns: count, limit: LIMITS.inlineColumns },
+    );
+  }
+  return null;
+}
+
 export class ConflictError extends HttpError {
   readonly current: DashboardEnvelope;
   constructor(current: DashboardEnvelope) {
@@ -253,6 +284,8 @@ export interface DashboardServiceOptions {
   trustedUrls?: ReadonlySet<string>;
   /** Disk space all anonymous dashboards may take together; 0 = no limit. */
   anonymousStorageBytes?: number;
+  /** Disk space one signed-in user's dashboards may take; 0 = no limit. Administrators are exempt. */
+  userStorageBytes?: number;
   /** Tests only: admission of uploads (one at a time by default). */
   uploadGate?: Gate;
 }
@@ -275,6 +308,8 @@ export class DashboardService {
   private readonly users: Users;
   /** Disk space all anonymous dashboards may take together; 0 = no limit. */
   private readonly anonymousStorageBytes: number;
+  /** Disk space one signed-in user's dashboards may take; 0 = no limit. */
+  private readonly userStorageBytes: number;
   /** Secret ids whose decryption failure was already logged; once per secret per process is enough. */
   private readonly undecryptableLogged = new Set<string>();
   private readonly uploads: UploadParser;
@@ -306,6 +341,7 @@ export class DashboardService {
     this.secretMode = secrets.mode;
     this.users = secrets.users;
     this.anonymousStorageBytes = options.anonymousStorageBytes ?? 0;
+    this.userStorageBytes = options.userStorageBytes ?? 0;
   }
 
   /**
@@ -319,16 +355,43 @@ export class DashboardService {
   }
 
   /**
+   * Refuses to let a signed-in user's dashboards take more than USER_STORAGE_LIMIT_MB. Signing in takes a Google
+   * account, not nothing, but one account could still fill the disk with copies and uploads. Administrators and the
+   * showcase owner are not limited. Only growth is refused: a user over the limit can still edit, shrink and delete.
+   */
+  private assertUserRoom(ownerId: string, adding: number) {
+    if (this.userStorageBytes <= 0 || adding <= 0 || ownerId === SHOWCASE_OWNER_ID) return;
+    const used = this.index.ownerBytes(ownerId);
+    if (used + adding <= this.userStorageBytes) return;
+    if (this.users.isAdmin(this.users.byId(ownerId))) return;
+    throw new HttpError(
+      507,
+      `Your dashboards take ${mb(used)} of the ${mb(this.userStorageBytes)} this server allows per account, and this change needs ${mb(adding)} more. Delete dashboards or uploaded files you no longer need.`,
+      { code: 'USER_STORAGE_FULL', usedBytes: used, limitBytes: this.userStorageBytes },
+    );
+  }
+
+  /** Room for `adding` bytes in whatever pool the owner draws from: the anonymous total or the user's own. */
+  private assertRoom(ownerId: string | null, adding: number) {
+    if (ownerId === null) this.assertAnonymousRoom(adding);
+    else this.assertUserRoom(ownerId, adding);
+  }
+
+  /**
    * Size rules for writing `after` over `before` (null when creating). A document stored before the limit existed
    * keeps loading and accepts edits that do not grow it, so it can be shrunk.
    */
   private checkSize(ownerId: string | null, before: DashboardDoc | null, after: DashboardDoc) {
     const bytes = jsonBytes(after);
-    if (bytes > MAX_DOCUMENT_BYTES && (before === null || bytes > jsonBytes(before))) {
+    const beforeBytes = before === null ? null : jsonBytes(before);
+    if (bytes > MAX_DOCUMENT_BYTES && (beforeBytes === null || bytes > beforeBytes)) {
       throw documentTooLarge(after, bytes);
     }
     // The document and its new version.
     if (ownerId === null) this.assertAnonymousRoom(2 * bytes);
+    // A user's write is refused only when it grows the document: what the new version and the larger document add.
+    else if (beforeBytes === null) this.assertUserRoom(ownerId, 2 * bytes);
+    else if (bytes > beforeBytes) this.assertUserRoom(ownerId, bytes + (bytes - beforeBytes));
   }
 
   private async updateSize(id: string) {
@@ -603,7 +666,9 @@ export class DashboardService {
       this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
       this.checkSize(meta.ownerId, doc, next.doc);
       // A restore brings back what was stored before, like the secret checks above allow.
-      const inline = secretOptions.restore ? null : inlineTextTooLong(doc, next.doc);
+      const inline = secretOptions.restore
+        ? null
+        : (inlineTooWide(doc, next.doc) ?? inlineTextTooLong(doc, next.doc));
       if (inline) throw inline;
       const actor = actorOf(p);
       const updated: StoredMeta = {
@@ -677,7 +742,7 @@ export class DashboardService {
       this.checkUrlSources(meta, doc, result.doc);
       this.checkSecretRefs(meta, doc, result.doc, p, options);
       this.checkSize(meta.ownerId, doc, result.doc);
-      const inline = inlineTextTooLong(doc, result.doc);
+      const inline = inlineTooWide(doc, result.doc) ?? inlineTextTooLong(doc, result.doc);
       if (inline) throw inline;
       return { envelope: this.envelope(meta, result.doc, p), changes: result.changes, dryRun: true };
     }
@@ -740,6 +805,8 @@ export class DashboardService {
       // folder was edited by hand, refuse: claiming would let the claimant's secrets resolve in a prepared document.
       if (docSecretIds(doc).length)
         throw forbidden('This dashboard references secrets and cannot be claimed');
+      // Claiming moves the dashboard from the anonymous total into the user's own.
+      this.assertUserRoom(p.user!.id, await this.store.sizeOf(id));
       const updated: StoredMeta = {
         ...meta,
         ownerId: p.user!.id,
@@ -759,6 +826,13 @@ export class DashboardService {
     // anonymous), so they are removed and the copy loads its URLs without credentials.
     const strip = !(p.user && meta.ownerId === p.user.id) && docSecretIds(doc).length > 0;
     const datasets = strip ? doc.datasets.map(withoutSecrets) : doc.datasets;
+    const used = new Set(doc.datasets.flatMap((d) => (d.source.kind === 'upload' ? [d.source.fileId] : [])));
+    // The copy's uploads share the original's bytes on disk, but they count towards the copy's owner in full: the
+    // original may be deleted, and the index measures each dashboard on its own.
+    if (p.user && used.size) {
+      const files = (await this.store.listFiles(id)).filter((f) => used.has(f.id));
+      this.assertUserRoom(p.user.id, 2 * jsonBytes(doc) + storedBytes(files));
+    }
     const created = await this.create(p, {
       doc: { ...doc, datasets, title: `${doc.title} (copy)` },
       ...(strip ? { changes: ['Created', 'Removed secret references (secrets belong to their owner)'] } : {}),
@@ -766,7 +840,6 @@ export class DashboardService {
     // Only files the copied datasets actually use: unreferenced uploads stay private to editors. Viewers may copy
     // a public dashboard, so the copy shares the upload bytes (hard links) instead of duplicating them: copying
     // made every two-byte request worth the dashboard's uploads in disk space.
-    const used = new Set(doc.datasets.flatMap((d) => (d.source.kind === 'upload' ? [d.source.fileId] : [])));
     const copyId = created.envelope.meta.id;
     for (const fileId of used) await this.store.linkFile(id, copyId, fileId);
     if (used.size) {
@@ -830,7 +903,7 @@ export class DashboardService {
       throw uploadsFull(0, storedBytes(existing));
     }
     // Before parsing: the stored file is rarely much smaller than the upload.
-    if (meta.ownerId === null) this.assertAnonymousRoom(Buffer.byteLength(input.content));
+    this.assertRoom(meta.ownerId, Buffer.byteLength(input.content));
     const format =
       input.format ?? (/\.json$/i.test(input.name) || /^\s*[[{]/.test(input.content) ? 'json' : 'csv');
     const maxCells = meta.ownerId === null ? this.uploadMaxCellsAnonymous : this.uploadMaxCells;
@@ -884,7 +957,7 @@ export class DashboardService {
       const used = storedBytes(files);
       const bytes = await this.store.saveFile(id, { ...file, table }, (bytes) => {
         if (files.length >= MAX_FILES || used + bytes > MAX_DASHBOARD_BYTES) throw uploadsFull(bytes, used);
-        if (meta.ownerId === null) this.assertAnonymousRoom(bytes);
+        this.assertRoom(meta.ownerId, bytes);
       });
       await this.updateSize(id);
       return bytes;

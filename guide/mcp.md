@@ -22,6 +22,10 @@ tokens). Users can see and revoke connected clients under _Settings_; tokens, co
 managed only from a signed-in web session, never with a token. Dynamically registered clients that never obtain a
 grant are removed after a day, and clients without a live token after 90 days.
 
+A client metadata document is fetched without redirects, within 5 s, and may be at most 16 KB with 256 JSON values;
+only its `client_id`, `client_name`, `redirect_uris`, `client_uri`, `logo_uri` and `token_endpoint_auth_method` are
+kept, for a day. A document that fails is not fetched again for 5 minutes.
+
 Scopes:
 
 - `dashboards:read`: list and read your dashboards and their data, preview sources, render snapshots.

@@ -5,8 +5,8 @@
  *
  * Hono caches the text read here, so the route's `c.req.json()` parses that same string: no second copy.
  *
- * Large bodies (uploads, MCP uploads) are received in full at a minimum pace first (`LargeBodyReceiver`), then
- * processed one at a time (`newLargeBodyGate`).
+ * Large bodies (uploads, MCP uploads, large dashboard saves) are received in full at a minimum pace first
+ * (`LargeBodyReceiver`), then processed one at a time (`newLargeBodyGate`).
  */
 import type { Context, MiddlewareHandler } from 'hono';
 import { HttpError } from './errors.ts';
@@ -47,8 +47,13 @@ export const jsonBodyGuard: MiddlewareHandler = async (c, next) => {
   await next();
 };
 
-/** Bodies above this (or of unknown length) count as large. Everything but uploads and MCP is capped at 1 MB. */
-export const LARGE_BODY_BYTES = 1024 * 1024;
+/**
+ * Bodies above this (or of unknown length) count as large. Everything but uploads and MCP is capped at 1 MB, and a
+ * body just under that is no small thing either: thirty 1 MB dashboard saves at once were parsed side by side on the
+ * main thread, past the memory guard's soft threshold without a single refusal. Editor saves are a few KB to a few
+ * hundred KB, so most never come near this; the rare large one waits its turn.
+ */
+export const LARGE_BODY_BYTES = 256 * 1024;
 
 /**
  * Whether a request will bring a large body into memory. Decided from the headers alone: on Node, touching
