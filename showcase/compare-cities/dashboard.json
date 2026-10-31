@@ -1,0 +1,473 @@
+{
+  "schemaVersion": 1,
+  "title": "Bratislava vs Vienna this week",
+  "description": "The coming week in both cities side by side: hourly temperature, rain per day and air quality, one colour per city.",
+  "datasets": [
+    {
+      "id": "ba-temp",
+      "name": "Bratislava hourly",
+      "source": {
+        "kind": "connector",
+        "connector": "weather.forecast",
+        "params": {
+          "city": "Bratislava",
+          "days": 7,
+          "pastDays": 0,
+          "variables": "temperature_2m,precipitation"
+        }
+      },
+      "transforms": [
+        {
+          "id": "cols",
+          "type": "select",
+          "fields": ["time", "temperature_2m"]
+        },
+        {
+          "id": "name",
+          "type": "rename",
+          "map": {
+            "temperature_2m": "Bratislava"
+          }
+        }
+      ],
+      "refreshSec": 1800,
+      "accumulate": 0
+    },
+    {
+      "id": "vi-temp",
+      "name": "Vienna hourly",
+      "source": {
+        "kind": "connector",
+        "connector": "weather.forecast",
+        "params": {
+          "city": "Vienna",
+          "days": 7,
+          "pastDays": 0,
+          "variables": "temperature_2m,precipitation"
+        }
+      },
+      "transforms": [
+        {
+          "id": "cols",
+          "type": "select",
+          "fields": ["time", "temperature_2m"]
+        },
+        {
+          "id": "name",
+          "type": "rename",
+          "map": {
+            "temperature_2m": "Vienna"
+          }
+        }
+      ],
+      "refreshSec": 1800,
+      "accumulate": 0
+    },
+    {
+      "id": "ba-rain",
+      "name": "Bratislava rain per day",
+      "source": {
+        "kind": "connector",
+        "connector": "weather.forecast",
+        "params": {
+          "city": "Bratislava",
+          "days": 7,
+          "pastDays": 0,
+          "variables": "temperature_2m,precipitation"
+        }
+      },
+      "transforms": [
+        {
+          "id": "day",
+          "type": "timeBucket",
+          "field": "time",
+          "unit": "day",
+          "as": "day"
+        },
+        {
+          "id": "sum",
+          "type": "aggregate",
+          "groupBy": ["day"],
+          "metrics": [
+            {
+              "op": "sum",
+              "field": "precipitation",
+              "as": "Bratislava"
+            },
+            {
+              "op": "max",
+              "field": "temperature_2m",
+              "as": "high"
+            }
+          ]
+        },
+        {
+          "id": "order",
+          "type": "sort",
+          "by": [
+            {
+              "field": "day",
+              "dir": "asc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 1800,
+      "accumulate": 0
+    },
+    {
+      "id": "vi-rain",
+      "name": "Vienna rain per day",
+      "source": {
+        "kind": "connector",
+        "connector": "weather.forecast",
+        "params": {
+          "city": "Vienna",
+          "days": 7,
+          "pastDays": 0,
+          "variables": "temperature_2m,precipitation"
+        }
+      },
+      "transforms": [
+        {
+          "id": "day",
+          "type": "timeBucket",
+          "field": "time",
+          "unit": "day",
+          "as": "day"
+        },
+        {
+          "id": "sum",
+          "type": "aggregate",
+          "groupBy": ["day"],
+          "metrics": [
+            {
+              "op": "sum",
+              "field": "precipitation",
+              "as": "Vienna"
+            },
+            {
+              "op": "max",
+              "field": "temperature_2m",
+              "as": "high"
+            }
+          ]
+        },
+        {
+          "id": "order",
+          "type": "sort",
+          "by": [
+            {
+              "field": "day",
+              "dir": "asc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 1800,
+      "accumulate": 0
+    },
+    {
+      "id": "ba-aq",
+      "name": "Bratislava air quality",
+      "source": {
+        "kind": "connector",
+        "connector": "weather.air-quality",
+        "params": {
+          "city": "Bratislava",
+          "variables": "european_aqi"
+        }
+      },
+      "transforms": [
+        {
+          "id": "past",
+          "type": "filter",
+          "expr": "time <= now() && !isNull(european_aqi)"
+        },
+        {
+          "id": "order",
+          "type": "sort",
+          "by": [
+            {
+              "field": "time",
+              "dir": "asc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 1800,
+      "accumulate": 0
+    },
+    {
+      "id": "vi-aq",
+      "name": "Vienna air quality",
+      "source": {
+        "kind": "connector",
+        "connector": "weather.air-quality",
+        "params": {
+          "city": "Vienna",
+          "variables": "european_aqi"
+        }
+      },
+      "transforms": [
+        {
+          "id": "past",
+          "type": "filter",
+          "expr": "time <= now() && !isNull(european_aqi)"
+        },
+        {
+          "id": "order",
+          "type": "sort",
+          "by": [
+            {
+              "field": "time",
+              "dir": "asc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 1800,
+      "accumulate": 0
+    }
+  ],
+  "widgets": [
+    {
+      "id": "ba-high",
+      "title": "Bratislava: warmest this week",
+      "datasetId": "ba-rain",
+      "type": "kpi",
+      "config": {
+        "field": "high",
+        "agg": "max",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "number",
+          "decimals": 1,
+          "suffix": " °C"
+        }
+      }
+    },
+    {
+      "id": "ba-aqi",
+      "title": "Bratislava: air quality now (EAQI)",
+      "description": "European Air Quality Index: up to 20 good, 40 fair, 60 moderate, 80 poor, 100 very poor.",
+      "datasetId": "ba-aq",
+      "type": "kpi",
+      "config": {
+        "field": "european_aqi",
+        "agg": "last",
+        "compare": "previous",
+        "goodWhen": "down",
+        "sparkline": true,
+        "bands": [
+          {
+            "upTo": 20,
+            "color": "positive"
+          },
+          {
+            "upTo": 40,
+            "color": "accent-3"
+          },
+          {
+            "upTo": 60,
+            "color": "warning"
+          },
+          {
+            "upTo": 80,
+            "color": "serious"
+          },
+          {
+            "upTo": 1000,
+            "color": "negative"
+          }
+        ]
+      }
+    },
+    {
+      "id": "vi-high",
+      "title": "Vienna: warmest this week",
+      "datasetId": "vi-rain",
+      "type": "kpi",
+      "config": {
+        "field": "high",
+        "agg": "max",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "number",
+          "decimals": 1,
+          "suffix": " °C"
+        }
+      }
+    },
+    {
+      "id": "vi-aqi",
+      "title": "Vienna: air quality now (EAQI)",
+      "description": "European Air Quality Index: up to 20 good, 40 fair, 60 moderate, 80 poor, 100 very poor.",
+      "datasetId": "vi-aq",
+      "type": "kpi",
+      "config": {
+        "field": "european_aqi",
+        "agg": "last",
+        "compare": "previous",
+        "goodWhen": "down",
+        "sparkline": true,
+        "bands": [
+          {
+            "upTo": 20,
+            "color": "positive"
+          },
+          {
+            "upTo": 40,
+            "color": "accent-3"
+          },
+          {
+            "upTo": 60,
+            "color": "warning"
+          },
+          {
+            "upTo": 80,
+            "color": "serious"
+          },
+          {
+            "upTo": 1000,
+            "color": "negative"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ba-temp-chart",
+      "title": "Bratislava: temperature (°C)",
+      "datasetId": "ba-temp",
+      "type": "chart",
+      "config": {
+        "kind": "line",
+        "x": "time",
+        "y": ["Bratislava"],
+        "horizontal": false,
+        "stacked": false,
+        "smooth": true,
+        "showLabels": false,
+        "logScale": false,
+        "maxPoints": 5000
+      }
+    },
+    {
+      "id": "vi-temp-chart",
+      "title": "Vienna: temperature (°C)",
+      "datasetId": "vi-temp",
+      "type": "chart",
+      "config": {
+        "kind": "line",
+        "x": "time",
+        "y": ["Vienna"],
+        "horizontal": false,
+        "stacked": false,
+        "smooth": true,
+        "showLabels": false,
+        "logScale": false,
+        "maxPoints": 5000
+      }
+    },
+    {
+      "id": "ba-rain-chart",
+      "title": "Bratislava: rain per day (mm)",
+      "datasetId": "ba-rain",
+      "type": "chart",
+      "config": {
+        "kind": "bar",
+        "x": "day",
+        "y": ["Bratislava"],
+        "horizontal": false,
+        "stacked": false,
+        "smooth": false,
+        "showLabels": true,
+        "logScale": false,
+        "maxPoints": 5000
+      }
+    },
+    {
+      "id": "vi-rain-chart",
+      "title": "Vienna: rain per day (mm)",
+      "datasetId": "vi-rain",
+      "type": "chart",
+      "config": {
+        "kind": "bar",
+        "x": "day",
+        "y": ["Vienna"],
+        "horizontal": false,
+        "stacked": false,
+        "smooth": false,
+        "showLabels": true,
+        "logScale": false,
+        "maxPoints": 5000
+      }
+    }
+  ],
+  "layout": [
+    {
+      "i": "ba-high",
+      "x": 0,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "ba-aqi",
+      "x": 3,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "vi-high",
+      "x": 6,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "vi-aqi",
+      "x": 9,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "ba-temp-chart",
+      "x": 0,
+      "y": 2,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "vi-temp-chart",
+      "x": 6,
+      "y": 2,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "ba-rain-chart",
+      "x": 0,
+      "y": 6,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "vi-rain-chart",
+      "x": 6,
+      "y": 6,
+      "w": 6,
+      "h": 4
+    }
+  ],
+  "colors": {
+    "Bratislava": "accent-1",
+    "Vienna": "accent-2"
+  }
+}

@@ -1,0 +1,1 @@
+Make me a morning start page I can leave on the TV: a big clock for Bratislava, the weather now and for the next hours, air quality, and the latest headlines from BBC World and Hacker News. Add a search box. Check the render and fix anything unreadable.

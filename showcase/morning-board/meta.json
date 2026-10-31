@@ -1,0 +1,7 @@
+{
+  "id": "morning-board",
+  "order": 1,
+  "title": "Morning board for the TV",
+  "tab": "Morning board",
+  "description": "A start page with a clock, the weather, air quality and headlines from BBC World and Hacker News, built from one prompt."
+}

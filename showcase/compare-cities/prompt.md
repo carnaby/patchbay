@@ -1,0 +1,1 @@
+Compare Bratislava and Vienna for the coming week: temperatures side by side, rain, and air quality. Use the same colour for the same city on every chart. Check the render and fix anything unreadable.

@@ -1,0 +1,328 @@
+{
+  "schemaVersion": 1,
+  "title": "Good morning, Bratislava",
+  "description": "A start page for the TV: the time, the weather now and for the next hours, air quality, and the latest headlines from BBC World and Hacker News.",
+  "datasets": [
+    {
+      "id": "now",
+      "name": "Bratislava now",
+      "source": {
+        "kind": "connector",
+        "connector": "weather.current",
+        "params": {
+          "city": "Bratislava"
+        }
+      },
+      "transforms": [],
+      "refreshSec": 600,
+      "accumulate": 0
+    },
+    {
+      "id": "hours",
+      "name": "Next 12 hours",
+      "source": {
+        "kind": "connector",
+        "connector": "weather.forecast",
+        "params": {
+          "city": "Bratislava",
+          "days": 2,
+          "pastDays": 0,
+          "variables": "temperature_2m,precipitation"
+        }
+      },
+      "transforms": [
+        {
+          "id": "window",
+          "type": "filter",
+          "expr": "time >= now() - 3600000 && time <= now() + 12 * 3600000"
+        },
+        {
+          "id": "cols",
+          "type": "select",
+          "fields": ["time", "temperature_2m"]
+        },
+        {
+          "id": "name",
+          "type": "rename",
+          "map": {
+            "temperature_2m": "temperature"
+          }
+        }
+      ],
+      "refreshSec": 1800,
+      "accumulate": 0
+    },
+    {
+      "id": "air",
+      "name": "Air quality",
+      "source": {
+        "kind": "connector",
+        "connector": "weather.air-quality",
+        "params": {
+          "city": "Bratislava",
+          "variables": "european_aqi"
+        }
+      },
+      "transforms": [
+        {
+          "id": "past",
+          "type": "filter",
+          "expr": "time <= now() && !isNull(european_aqi)"
+        },
+        {
+          "id": "order",
+          "type": "sort",
+          "by": [
+            {
+              "field": "time",
+              "dir": "asc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 1800,
+      "accumulate": 0
+    },
+    {
+      "id": "bbc",
+      "name": "BBC World",
+      "source": {
+        "kind": "feed",
+        "url": "https://feeds.bbci.co.uk/news/world/rss.xml",
+        "limit": 6
+      },
+      "transforms": [],
+      "refreshSec": 900,
+      "accumulate": 0
+    },
+    {
+      "id": "hn",
+      "name": "Hacker News",
+      "source": {
+        "kind": "connector",
+        "connector": "hackernews.stories",
+        "params": {
+          "list": "top",
+          "limit": 6
+        }
+      },
+      "transforms": [],
+      "refreshSec": 900,
+      "accumulate": 0
+    }
+  ],
+  "widgets": [
+    {
+      "id": "search",
+      "type": "search",
+      "config": {
+        "engine": "duckduckgo",
+        "newTab": false,
+        "autofocus": false
+      }
+    },
+    {
+      "id": "clock",
+      "type": "clock",
+      "config": {
+        "style": "digital",
+        "timeZone": "Europe/Bratislava",
+        "label": "Bratislava",
+        "hourCycle": "h23",
+        "showDate": true,
+        "showSeconds": false
+      }
+    },
+    {
+      "id": "temp",
+      "title": "Outside now",
+      "datasetId": "now",
+      "type": "kpi",
+      "config": {
+        "field": "temperature_2m",
+        "agg": "last",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "number",
+          "decimals": 1,
+          "suffix": " °C"
+        }
+      }
+    },
+    {
+      "id": "feels",
+      "title": "Feels like",
+      "datasetId": "now",
+      "type": "kpi",
+      "config": {
+        "field": "apparent_temperature",
+        "agg": "last",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "number",
+          "decimals": 1,
+          "suffix": " °C"
+        }
+      }
+    },
+    {
+      "id": "aqi",
+      "title": "Air quality (EAQI)",
+      "description": "European Air Quality Index: up to 20 good, 40 fair, 60 moderate, 80 poor.",
+      "datasetId": "air",
+      "type": "kpi",
+      "config": {
+        "field": "european_aqi",
+        "agg": "last",
+        "compare": "previous",
+        "goodWhen": "down",
+        "sparkline": false,
+        "bands": [
+          {
+            "upTo": 20,
+            "color": "positive"
+          },
+          {
+            "upTo": 40,
+            "color": "accent-3"
+          },
+          {
+            "upTo": 60,
+            "color": "warning"
+          },
+          {
+            "upTo": 80,
+            "color": "serious"
+          },
+          {
+            "upTo": 1000,
+            "color": "negative"
+          }
+        ]
+      }
+    },
+    {
+      "id": "next",
+      "title": "Next 12 hours (°C)",
+      "datasetId": "hours",
+      "type": "chart",
+      "config": {
+        "kind": "area",
+        "x": "time",
+        "y": ["temperature"],
+        "horizontal": false,
+        "stacked": false,
+        "smooth": true,
+        "showLabels": false,
+        "logScale": false,
+        "maxPoints": 5000
+      }
+    },
+    {
+      "id": "bbc-list",
+      "title": "BBC World",
+      "datasetId": "bbc",
+      "type": "table",
+      "config": {
+        "columns": [
+          {
+            "field": "title",
+            "link": "link",
+            "colorAs": "fill"
+          },
+          "published"
+        ],
+        "pageSize": 6,
+        "style": "list"
+      }
+    },
+    {
+      "id": "hn-list",
+      "title": "Hacker News",
+      "datasetId": "hn",
+      "type": "table",
+      "config": {
+        "columns": [
+          {
+            "field": "title",
+            "link": "url",
+            "colorAs": "fill"
+          },
+          {
+            "field": "score",
+            "format": {
+              "style": "number",
+              "suffix": " points"
+            },
+            "colorAs": "fill"
+          },
+          "time"
+        ],
+        "pageSize": 6,
+        "style": "list"
+      }
+    }
+  ],
+  "layout": [
+    {
+      "i": "search",
+      "x": 0,
+      "y": 0,
+      "w": 12,
+      "h": 1
+    },
+    {
+      "i": "clock",
+      "x": 0,
+      "y": 1,
+      "w": 4,
+      "h": 5
+    },
+    {
+      "i": "temp",
+      "x": 4,
+      "y": 1,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "feels",
+      "x": 7,
+      "y": 1,
+      "w": 2,
+      "h": 2
+    },
+    {
+      "i": "aqi",
+      "x": 9,
+      "y": 1,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "next",
+      "x": 4,
+      "y": 3,
+      "w": 8,
+      "h": 3
+    },
+    {
+      "i": "bbc-list",
+      "x": 0,
+      "y": 6,
+      "w": 6,
+      "h": 4
+    },
+    {
+      "i": "hn-list",
+      "x": 6,
+      "y": 6,
+      "w": 6,
+      "h": 4
+    }
+  ]
+}

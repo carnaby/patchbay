@@ -1,0 +1,7 @@
+{
+  "id": "earthquakes-live",
+  "order": 4,
+  "title": "Earthquakes of the past week",
+  "tab": "Earthquakes",
+  "description": "Every M2.5+ earthquake of the past seven days on a world map, with the strongest ones and the most active regions."
+}

@@ -1,0 +1,2003 @@
+{
+  "schemaVersion": 1,
+  "title": "Coffee shop sales",
+  "description": "The shop's sales export (September to October): revenue per week, best-selling products, revenue by channel and the morning numbers.",
+  "datasets": [
+    {
+      "id": "sales",
+      "name": "Sales export",
+      "source": {
+        "kind": "inline",
+        "rows": [
+          {
+            "date": "2026-09-07",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-09-07",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-09-08",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 2,
+            "revenue": 49.8
+          },
+          {
+            "date": "2026-09-09",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 1,
+            "revenue": 24.9
+          },
+          {
+            "date": "2026-09-10",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 5,
+            "revenue": 44.5
+          },
+          {
+            "date": "2026-09-11",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-09-12",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 3,
+            "revenue": 177
+          },
+          {
+            "date": "2026-09-13",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 11,
+            "revenue": 97.9
+          },
+          {
+            "date": "2026-09-14",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 13,
+            "revenue": 323.7
+          },
+          {
+            "date": "2026-09-15",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 236
+          },
+          {
+            "date": "2026-09-16",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-09-17",
+            "product": "Gift box",
+            "channel": "Web shop",
+            "units": 2,
+            "revenue": 68
+          },
+          {
+            "date": "2026-09-18",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 35.6
+          },
+          {
+            "date": "2026-09-19",
+            "product": "Gift box",
+            "channel": "Cafe",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-09-20",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-09-21",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 2,
+            "revenue": 118
+          },
+          {
+            "date": "2026-09-21",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 6,
+            "revenue": 354
+          },
+          {
+            "date": "2026-09-22",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 7,
+            "revenue": 174.3
+          },
+          {
+            "date": "2026-09-23",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 10,
+            "revenue": 89
+          },
+          {
+            "date": "2026-09-24",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-09-25",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 6,
+            "revenue": 149.4
+          },
+          {
+            "date": "2026-09-26",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-09-27",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-09-28",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-09-29",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 373.5
+          },
+          {
+            "date": "2026-09-30",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-01",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-10-02",
+            "product": "Decaf 250 g",
+            "channel": "Cafe",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-03",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-04",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 4,
+            "revenue": 236
+          },
+          {
+            "date": "2026-10-05",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 7,
+            "revenue": 66.5
+          },
+          {
+            "date": "2026-10-05",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 6,
+            "revenue": 57
+          },
+          {
+            "date": "2026-10-06",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 348.6
+          },
+          {
+            "date": "2026-10-07",
+            "product": "Decaf 250 g",
+            "channel": "Cafe",
+            "units": 17,
+            "revenue": 161.5
+          },
+          {
+            "date": "2026-10-08",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 12,
+            "revenue": 298.8
+          },
+          {
+            "date": "2026-10-09",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-10",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 4,
+            "revenue": 35.6
+          },
+          {
+            "date": "2026-10-11",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 15,
+            "revenue": 373.5
+          },
+          {
+            "date": "2026-10-12",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 99.6
+          },
+          {
+            "date": "2026-10-13",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-10-14",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 7,
+            "revenue": 174.3
+          },
+          {
+            "date": "2026-10-15",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 8,
+            "revenue": 199.2
+          },
+          {
+            "date": "2026-10-16",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-10-17",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-10-18",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-19",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 124.5
+          },
+          {
+            "date": "2026-10-19",
+            "product": "Decaf 250 g",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 142.5
+          },
+          {
+            "date": "2026-10-20",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 6,
+            "revenue": 354
+          },
+          {
+            "date": "2026-10-21",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 12,
+            "revenue": 106.8
+          },
+          {
+            "date": "2026-10-22",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 8,
+            "revenue": 472
+          },
+          {
+            "date": "2026-10-23",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 44.5
+          },
+          {
+            "date": "2026-10-24",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-10-25",
+            "product": "Gift box",
+            "channel": "Cafe",
+            "units": 6,
+            "revenue": 204
+          },
+          {
+            "date": "2026-10-26",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-27",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 8,
+            "revenue": 199.2
+          },
+          {
+            "date": "2026-10-28",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 13,
+            "revenue": 323.7
+          },
+          {
+            "date": "2026-10-29",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 14,
+            "revenue": 348.6
+          },
+          {
+            "date": "2026-10-30",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 9,
+            "revenue": 306
+          },
+          {
+            "date": "2026-10-31",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-11-01",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 373.5
+          }
+        ]
+      },
+      "transforms": [],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "weekly",
+      "name": "Revenue per week",
+      "source": {
+        "kind": "inline",
+        "rows": [
+          {
+            "date": "2026-09-07",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-09-07",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-09-08",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 2,
+            "revenue": 49.8
+          },
+          {
+            "date": "2026-09-09",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 1,
+            "revenue": 24.9
+          },
+          {
+            "date": "2026-09-10",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 5,
+            "revenue": 44.5
+          },
+          {
+            "date": "2026-09-11",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-09-12",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 3,
+            "revenue": 177
+          },
+          {
+            "date": "2026-09-13",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 11,
+            "revenue": 97.9
+          },
+          {
+            "date": "2026-09-14",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 13,
+            "revenue": 323.7
+          },
+          {
+            "date": "2026-09-15",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 236
+          },
+          {
+            "date": "2026-09-16",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-09-17",
+            "product": "Gift box",
+            "channel": "Web shop",
+            "units": 2,
+            "revenue": 68
+          },
+          {
+            "date": "2026-09-18",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 35.6
+          },
+          {
+            "date": "2026-09-19",
+            "product": "Gift box",
+            "channel": "Cafe",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-09-20",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-09-21",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 2,
+            "revenue": 118
+          },
+          {
+            "date": "2026-09-21",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 6,
+            "revenue": 354
+          },
+          {
+            "date": "2026-09-22",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 7,
+            "revenue": 174.3
+          },
+          {
+            "date": "2026-09-23",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 10,
+            "revenue": 89
+          },
+          {
+            "date": "2026-09-24",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-09-25",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 6,
+            "revenue": 149.4
+          },
+          {
+            "date": "2026-09-26",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-09-27",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-09-28",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-09-29",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 373.5
+          },
+          {
+            "date": "2026-09-30",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-01",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-10-02",
+            "product": "Decaf 250 g",
+            "channel": "Cafe",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-03",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-04",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 4,
+            "revenue": 236
+          },
+          {
+            "date": "2026-10-05",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 7,
+            "revenue": 66.5
+          },
+          {
+            "date": "2026-10-05",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 6,
+            "revenue": 57
+          },
+          {
+            "date": "2026-10-06",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 348.6
+          },
+          {
+            "date": "2026-10-07",
+            "product": "Decaf 250 g",
+            "channel": "Cafe",
+            "units": 17,
+            "revenue": 161.5
+          },
+          {
+            "date": "2026-10-08",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 12,
+            "revenue": 298.8
+          },
+          {
+            "date": "2026-10-09",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-10",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 4,
+            "revenue": 35.6
+          },
+          {
+            "date": "2026-10-11",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 15,
+            "revenue": 373.5
+          },
+          {
+            "date": "2026-10-12",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 99.6
+          },
+          {
+            "date": "2026-10-13",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-10-14",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 7,
+            "revenue": 174.3
+          },
+          {
+            "date": "2026-10-15",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 8,
+            "revenue": 199.2
+          },
+          {
+            "date": "2026-10-16",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-10-17",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-10-18",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-19",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 124.5
+          },
+          {
+            "date": "2026-10-19",
+            "product": "Decaf 250 g",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 142.5
+          },
+          {
+            "date": "2026-10-20",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 6,
+            "revenue": 354
+          },
+          {
+            "date": "2026-10-21",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 12,
+            "revenue": 106.8
+          },
+          {
+            "date": "2026-10-22",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 8,
+            "revenue": 472
+          },
+          {
+            "date": "2026-10-23",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 44.5
+          },
+          {
+            "date": "2026-10-24",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-10-25",
+            "product": "Gift box",
+            "channel": "Cafe",
+            "units": 6,
+            "revenue": 204
+          },
+          {
+            "date": "2026-10-26",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-27",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 8,
+            "revenue": 199.2
+          },
+          {
+            "date": "2026-10-28",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 13,
+            "revenue": 323.7
+          },
+          {
+            "date": "2026-10-29",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 14,
+            "revenue": 348.6
+          },
+          {
+            "date": "2026-10-30",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 9,
+            "revenue": 306
+          },
+          {
+            "date": "2026-10-31",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-11-01",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 373.5
+          }
+        ]
+      },
+      "transforms": [
+        {
+          "id": "week",
+          "type": "timeBucket",
+          "field": "date",
+          "unit": "week",
+          "as": "week"
+        },
+        {
+          "id": "sum",
+          "type": "aggregate",
+          "groupBy": ["week"],
+          "metrics": [
+            {
+              "op": "sum",
+              "field": "revenue",
+              "as": "revenue"
+            }
+          ]
+        },
+        {
+          "id": "order",
+          "type": "sort",
+          "by": [
+            {
+              "field": "week",
+              "dir": "asc"
+            }
+          ]
+        },
+        {
+          "id": "label",
+          "type": "derive",
+          "as": "week of",
+          "expr": "concat(if(month(week) == 9, \"Sep\", if(month(week) == 10, \"Oct\", \"Nov\")), \" \", day(week))"
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "products",
+      "name": "Revenue by product",
+      "source": {
+        "kind": "inline",
+        "rows": [
+          {
+            "date": "2026-09-07",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-09-07",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-09-08",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 2,
+            "revenue": 49.8
+          },
+          {
+            "date": "2026-09-09",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 1,
+            "revenue": 24.9
+          },
+          {
+            "date": "2026-09-10",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 5,
+            "revenue": 44.5
+          },
+          {
+            "date": "2026-09-11",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-09-12",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 3,
+            "revenue": 177
+          },
+          {
+            "date": "2026-09-13",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 11,
+            "revenue": 97.9
+          },
+          {
+            "date": "2026-09-14",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 13,
+            "revenue": 323.7
+          },
+          {
+            "date": "2026-09-15",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 236
+          },
+          {
+            "date": "2026-09-16",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-09-17",
+            "product": "Gift box",
+            "channel": "Web shop",
+            "units": 2,
+            "revenue": 68
+          },
+          {
+            "date": "2026-09-18",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 35.6
+          },
+          {
+            "date": "2026-09-19",
+            "product": "Gift box",
+            "channel": "Cafe",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-09-20",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-09-21",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 2,
+            "revenue": 118
+          },
+          {
+            "date": "2026-09-21",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 6,
+            "revenue": 354
+          },
+          {
+            "date": "2026-09-22",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 7,
+            "revenue": 174.3
+          },
+          {
+            "date": "2026-09-23",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 10,
+            "revenue": 89
+          },
+          {
+            "date": "2026-09-24",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-09-25",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 6,
+            "revenue": 149.4
+          },
+          {
+            "date": "2026-09-26",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-09-27",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-09-28",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-09-29",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 373.5
+          },
+          {
+            "date": "2026-09-30",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-01",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-10-02",
+            "product": "Decaf 250 g",
+            "channel": "Cafe",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-03",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-04",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 4,
+            "revenue": 236
+          },
+          {
+            "date": "2026-10-05",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 7,
+            "revenue": 66.5
+          },
+          {
+            "date": "2026-10-05",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 6,
+            "revenue": 57
+          },
+          {
+            "date": "2026-10-06",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 348.6
+          },
+          {
+            "date": "2026-10-07",
+            "product": "Decaf 250 g",
+            "channel": "Cafe",
+            "units": 17,
+            "revenue": 161.5
+          },
+          {
+            "date": "2026-10-08",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 12,
+            "revenue": 298.8
+          },
+          {
+            "date": "2026-10-09",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-10",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 4,
+            "revenue": 35.6
+          },
+          {
+            "date": "2026-10-11",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 15,
+            "revenue": 373.5
+          },
+          {
+            "date": "2026-10-12",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 99.6
+          },
+          {
+            "date": "2026-10-13",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-10-14",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 7,
+            "revenue": 174.3
+          },
+          {
+            "date": "2026-10-15",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 8,
+            "revenue": 199.2
+          },
+          {
+            "date": "2026-10-16",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-10-17",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-10-18",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-19",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 124.5
+          },
+          {
+            "date": "2026-10-19",
+            "product": "Decaf 250 g",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 142.5
+          },
+          {
+            "date": "2026-10-20",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 6,
+            "revenue": 354
+          },
+          {
+            "date": "2026-10-21",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 12,
+            "revenue": 106.8
+          },
+          {
+            "date": "2026-10-22",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 8,
+            "revenue": 472
+          },
+          {
+            "date": "2026-10-23",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 44.5
+          },
+          {
+            "date": "2026-10-24",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-10-25",
+            "product": "Gift box",
+            "channel": "Cafe",
+            "units": 6,
+            "revenue": 204
+          },
+          {
+            "date": "2026-10-26",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-27",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 8,
+            "revenue": 199.2
+          },
+          {
+            "date": "2026-10-28",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 13,
+            "revenue": 323.7
+          },
+          {
+            "date": "2026-10-29",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 14,
+            "revenue": 348.6
+          },
+          {
+            "date": "2026-10-30",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 9,
+            "revenue": 306
+          },
+          {
+            "date": "2026-10-31",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-11-01",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 373.5
+          }
+        ]
+      },
+      "transforms": [
+        {
+          "id": "sum",
+          "type": "aggregate",
+          "groupBy": ["product"],
+          "metrics": [
+            {
+              "op": "sum",
+              "field": "revenue",
+              "as": "revenue"
+            },
+            {
+              "op": "sum",
+              "field": "units",
+              "as": "units"
+            }
+          ]
+        },
+        {
+          "id": "order",
+          "type": "sort",
+          "by": [
+            {
+              "field": "revenue",
+              "dir": "desc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "channels",
+      "name": "Revenue by channel",
+      "source": {
+        "kind": "inline",
+        "rows": [
+          {
+            "date": "2026-09-07",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-09-07",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-09-08",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 2,
+            "revenue": 49.8
+          },
+          {
+            "date": "2026-09-09",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 1,
+            "revenue": 24.9
+          },
+          {
+            "date": "2026-09-10",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 5,
+            "revenue": 44.5
+          },
+          {
+            "date": "2026-09-11",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-09-12",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 3,
+            "revenue": 177
+          },
+          {
+            "date": "2026-09-13",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 11,
+            "revenue": 97.9
+          },
+          {
+            "date": "2026-09-14",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 13,
+            "revenue": 323.7
+          },
+          {
+            "date": "2026-09-15",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 236
+          },
+          {
+            "date": "2026-09-16",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-09-17",
+            "product": "Gift box",
+            "channel": "Web shop",
+            "units": 2,
+            "revenue": 68
+          },
+          {
+            "date": "2026-09-18",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 35.6
+          },
+          {
+            "date": "2026-09-19",
+            "product": "Gift box",
+            "channel": "Cafe",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-09-20",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-09-21",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 2,
+            "revenue": 118
+          },
+          {
+            "date": "2026-09-21",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 6,
+            "revenue": 354
+          },
+          {
+            "date": "2026-09-22",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 7,
+            "revenue": 174.3
+          },
+          {
+            "date": "2026-09-23",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 10,
+            "revenue": 89
+          },
+          {
+            "date": "2026-09-24",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-09-25",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 6,
+            "revenue": 149.4
+          },
+          {
+            "date": "2026-09-26",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-09-27",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-09-28",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-09-29",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 373.5
+          },
+          {
+            "date": "2026-09-30",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-01",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 136
+          },
+          {
+            "date": "2026-10-02",
+            "product": "Decaf 250 g",
+            "channel": "Cafe",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-03",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-04",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 4,
+            "revenue": 236
+          },
+          {
+            "date": "2026-10-05",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 7,
+            "revenue": 66.5
+          },
+          {
+            "date": "2026-10-05",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 6,
+            "revenue": 57
+          },
+          {
+            "date": "2026-10-06",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 348.6
+          },
+          {
+            "date": "2026-10-07",
+            "product": "Decaf 250 g",
+            "channel": "Cafe",
+            "units": 17,
+            "revenue": 161.5
+          },
+          {
+            "date": "2026-10-08",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 12,
+            "revenue": 298.8
+          },
+          {
+            "date": "2026-10-09",
+            "product": "Decaf 250 g",
+            "channel": "Web shop",
+            "units": 16,
+            "revenue": 152
+          },
+          {
+            "date": "2026-10-10",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 4,
+            "revenue": 35.6
+          },
+          {
+            "date": "2026-10-11",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 15,
+            "revenue": 373.5
+          },
+          {
+            "date": "2026-10-12",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 4,
+            "revenue": 99.6
+          },
+          {
+            "date": "2026-10-13",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 9,
+            "revenue": 224.1
+          },
+          {
+            "date": "2026-10-14",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 7,
+            "revenue": 174.3
+          },
+          {
+            "date": "2026-10-15",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 8,
+            "revenue": 199.2
+          },
+          {
+            "date": "2026-10-16",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-10-17",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 13,
+            "revenue": 115.7
+          },
+          {
+            "date": "2026-10-18",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-19",
+            "product": "Espresso blend 1 kg",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 124.5
+          },
+          {
+            "date": "2026-10-19",
+            "product": "Decaf 250 g",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 142.5
+          },
+          {
+            "date": "2026-10-20",
+            "product": "Hand grinder",
+            "channel": "Marketplace",
+            "units": 6,
+            "revenue": 354
+          },
+          {
+            "date": "2026-10-21",
+            "product": "Filter blend 250 g",
+            "channel": "Marketplace",
+            "units": 12,
+            "revenue": 106.8
+          },
+          {
+            "date": "2026-10-22",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 8,
+            "revenue": 472
+          },
+          {
+            "date": "2026-10-23",
+            "product": "Filter blend 250 g",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 44.5
+          },
+          {
+            "date": "2026-10-24",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 10,
+            "revenue": 249
+          },
+          {
+            "date": "2026-10-25",
+            "product": "Gift box",
+            "channel": "Cafe",
+            "units": 6,
+            "revenue": 204
+          },
+          {
+            "date": "2026-10-26",
+            "product": "Hand grinder",
+            "channel": "Web shop",
+            "units": 5,
+            "revenue": 295
+          },
+          {
+            "date": "2026-10-27",
+            "product": "Espresso blend 1 kg",
+            "channel": "Cafe",
+            "units": 8,
+            "revenue": 199.2
+          },
+          {
+            "date": "2026-10-28",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 13,
+            "revenue": 323.7
+          },
+          {
+            "date": "2026-10-29",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 14,
+            "revenue": 348.6
+          },
+          {
+            "date": "2026-10-30",
+            "product": "Gift box",
+            "channel": "Marketplace",
+            "units": 9,
+            "revenue": 306
+          },
+          {
+            "date": "2026-10-31",
+            "product": "Filter blend 250 g",
+            "channel": "Cafe",
+            "units": 14,
+            "revenue": 124.6
+          },
+          {
+            "date": "2026-11-01",
+            "product": "Espresso blend 1 kg",
+            "channel": "Marketplace",
+            "units": 15,
+            "revenue": 373.5
+          }
+        ]
+      },
+      "transforms": [
+        {
+          "id": "sum",
+          "type": "aggregate",
+          "groupBy": ["channel"],
+          "metrics": [
+            {
+              "op": "sum",
+              "field": "revenue",
+              "as": "revenue"
+            }
+          ]
+        },
+        {
+          "id": "order",
+          "type": "sort",
+          "by": [
+            {
+              "field": "revenue",
+              "dir": "desc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    }
+  ],
+  "widgets": [
+    {
+      "id": "revenue",
+      "title": "Revenue",
+      "datasetId": "sales",
+      "type": "kpi",
+      "config": {
+        "field": "revenue",
+        "agg": "sum",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "currency",
+          "decimals": 0,
+          "currency": "EUR"
+        }
+      }
+    },
+    {
+      "id": "orders",
+      "title": "Orders",
+      "datasetId": "sales",
+      "type": "kpi",
+      "config": {
+        "agg": "count",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false
+      }
+    },
+    {
+      "id": "aov",
+      "title": "Average order",
+      "datasetId": "sales",
+      "type": "kpi",
+      "config": {
+        "field": "revenue",
+        "agg": "avg",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "currency",
+          "decimals": 2,
+          "currency": "EUR"
+        }
+      }
+    },
+    {
+      "id": "units",
+      "title": "Units sold",
+      "datasetId": "sales",
+      "type": "kpi",
+      "config": {
+        "field": "units",
+        "agg": "sum",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false
+      }
+    },
+    {
+      "id": "weekly-chart",
+      "title": "Revenue per week (EUR)",
+      "datasetId": "weekly",
+      "type": "chart",
+      "config": {
+        "kind": "bar",
+        "x": "week of",
+        "y": ["revenue"],
+        "horizontal": false,
+        "stacked": false,
+        "smooth": false,
+        "showLabels": true,
+        "logScale": false,
+        "format": {
+          "style": "currency",
+          "decimals": 0,
+          "currency": "EUR"
+        },
+        "maxPoints": 5000,
+        "referenceLines": []
+      }
+    },
+    {
+      "id": "products-chart",
+      "title": "Best-selling products (revenue, EUR)",
+      "datasetId": "products",
+      "type": "chart",
+      "config": {
+        "kind": "bar",
+        "x": "product",
+        "y": ["revenue"],
+        "horizontal": true,
+        "stacked": false,
+        "smooth": false,
+        "showLabels": true,
+        "logScale": false,
+        "format": {
+          "style": "currency",
+          "decimals": 0,
+          "currency": "EUR"
+        },
+        "maxPoints": 5000
+      }
+    },
+    {
+      "id": "channels-chart",
+      "title": "Revenue by channel",
+      "datasetId": "channels",
+      "type": "chart",
+      "config": {
+        "kind": "donut",
+        "x": "channel",
+        "y": ["revenue"],
+        "horizontal": false,
+        "stacked": false,
+        "smooth": false,
+        "showLabels": false,
+        "logScale": false,
+        "format": {
+          "style": "currency",
+          "decimals": 0,
+          "currency": "EUR"
+        },
+        "maxPoints": 5000
+      }
+    }
+  ],
+  "layout": [
+    {
+      "i": "revenue",
+      "x": 0,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "orders",
+      "x": 3,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "aov",
+      "x": 6,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "units",
+      "x": 9,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "weekly-chart",
+      "x": 0,
+      "y": 2,
+      "w": 12,
+      "h": 4
+    },
+    {
+      "i": "products-chart",
+      "x": 0,
+      "y": 6,
+      "w": 7,
+      "h": 4
+    },
+    {
+      "i": "channels-chart",
+      "x": 7,
+      "y": 6,
+      "w": 5,
+      "h": 4
+    }
+  ]
+}
