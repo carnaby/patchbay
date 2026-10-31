@@ -199,12 +199,16 @@ export class DataService {
       });
     this.urlPolicy = options.urlPolicy ?? (() => {});
     this.upstreamTest = options.upstreamTest;
-    this.feeds = new FeedService({ offline: options.offline ?? false, test: options.upstreamTest });
     this.tables = new ByteLru(options.cacheBytes ?? DEFAULT_CACHE_BYTES);
     this.maxSourceCells = options.maxSourceCells ?? DEFAULT_MAX_SOURCE_CELLS;
     this.heavy =
       options.heavy ?? new Gate({ concurrency: 2, maxQueue: 32, maxQueuedPerClient: 8, maxWaitMs: 20_000 });
     this.outbound = options.outbound ?? new OutboundLimiter();
+    this.feeds = new FeedService({
+      offline: options.offline ?? false,
+      test: options.upstreamTest,
+      outbound: this.outbound,
+    });
   }
 
   /**

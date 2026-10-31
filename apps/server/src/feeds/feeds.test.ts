@@ -3,6 +3,7 @@ import { connect } from 'node:net';
 import { Agent } from 'undici';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { HttpError } from '../util/errors.ts';
+import { OutboundLimiter } from '../util/outbound.ts';
 import { discoverFeed } from './discover.ts';
 import { looksLikeHtml, parseFeed, plainText, safeLink } from './parse.ts';
 import { FeedParser } from './parser.ts';
@@ -470,6 +471,23 @@ describe('FeedService', () => {
       /private|local|not allowed/i,
     );
     expect(hits).toEqual(['https://site.example/private']);
+  });
+
+  it("goes through the outbound limiter, and does not remember the limiter's refusal as a failure", async () => {
+    const feeds = new FeedService({
+      offline: false,
+      test: { dispatcher, timeoutMs: 2000 },
+      outbound: new OutboundLimiter({ perHostPerMinute: 2 }),
+    });
+    // Discovery takes two requests to the host: the page and its feed. That is the host's budget.
+    await feeds.load('https://site.example/news');
+    await expect(feeds.load('https://site.example/plain-page')).rejects.toMatchObject({ status: 429 });
+    expect(hits).toEqual(['https://site.example/news', 'https://site.example/feed.xml']);
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    now += 60_000;
+    await expect(feeds.load('https://site.example/plain-page')).rejects.toThrow('No feed found');
+    expect(hits).toHaveLength(3);
   });
 
   it('serves the sample offline without any request', async () => {

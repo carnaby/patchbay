@@ -9,6 +9,8 @@
 
 import { FEED_MIN_REFRESH_SEC } from '@patchbay/core';
 import { HttpError } from '../util/errors.ts';
+import type { OutboundLimiter } from '../util/outbound.ts';
+import { currentClient } from '../util/request-context.ts';
 import { safeFetchText, type UpstreamTestSeam } from '../util/safe-fetch.ts';
 import { discoverFeed } from './discover.ts';
 import { looksLikeHtml, type ParsedFeed } from './parse.ts';
@@ -59,11 +61,24 @@ export class FeedService {
   private readonly offline: boolean;
   private readonly test: UpstreamTestSeam | undefined;
   private readonly parse: ParseFn;
+  private readonly outbound: OutboundLimiter | undefined;
 
-  constructor(options: { offline: boolean; test?: UpstreamTestSeam | undefined; parse?: ParseFn }) {
+  constructor(options: {
+    offline: boolean;
+    test?: UpstreamTestSeam | undefined;
+    parse?: ParseFn;
+    /** The limiter HTTP sources go through: feed addresses are chosen by users just the same. */
+    outbound?: OutboundLimiter | undefined;
+  }) {
     this.offline = options.offline;
     this.test = options.test;
     this.parse = options.parse ?? parseOnWorker;
+    this.outbound = options.outbound;
+  }
+
+  private get(url: string) {
+    const fetchText = () => safeFetchText(url, { accept: ACCEPT, test: this.test });
+    return this.outbound ? this.outbound.run(currentClient(), url, fetchText) : fetchText();
   }
 
   async load(url: string): Promise<LoadedFeed> {
@@ -92,8 +107,8 @@ export class FeedService {
       this.failed.delete(url);
       return feed;
     } catch (e) {
-      // 503 is this server being busy or shutting down, not the address failing.
-      if (!(e instanceof HttpError && e.status === 503))
+      // 503 is this server being busy or shutting down and 429 its own per-host budget, not the address failing.
+      if (!(e instanceof HttpError && (e.status === 503 || e.status === 429)))
         remember(this.failed, url, { error: e, until: Date.now() + FEED_FAILURE_TTL_MS });
       throw e;
     }
@@ -102,7 +117,7 @@ export class FeedService {
   private async fetch(url: string): Promise<LoadedFeed> {
     const known = this.discovered.get(url);
     const start = known && Date.now() - known.at < DISCOVERY_TTL_MS ? known.feedUrl : url;
-    let res = await safeFetchText(start, { accept: ACCEPT, test: this.test });
+    let res = await this.get(start);
     if (looksLikeHtml(res.text, res.contentType)) {
       const feedUrl = discoverFeed(res.text, res.url);
       if (!feedUrl) {
@@ -112,7 +127,7 @@ export class FeedService {
         );
       }
       remember(this.discovered, url, { feedUrl, at: Date.now() });
-      res = await safeFetchText(feedUrl, { accept: ACCEPT, test: this.test });
+      res = await this.get(feedUrl);
       if (looksLikeHtml(res.text, res.contentType))
         throw new HttpError(502, `${feedUrl} is a web page, not a feed`);
     }
