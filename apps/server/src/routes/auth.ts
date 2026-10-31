@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { z } from 'zod';
 import { SESSION_COOKIE } from '../auth/users.ts';
-import { type Ctx, clientIp, type Deps, type Env } from '../context.ts';
+import { type Ctx, clientKey, type Deps, type Env } from '../context.ts';
 import { badRequest, HttpError } from '../util/errors.ts';
 
 /** Only same-site relative paths, so `returnTo` cannot become an open redirect. */
@@ -36,7 +36,7 @@ export function authRoutes(deps: Deps) {
 
   app.get('/google', (c) => {
     if (!google) throw new HttpError(404, 'Google sign-in is not configured');
-    if (!deps.limits.auth.take(`login:${clientIp(c, config.trustProxy)}`))
+    if (!deps.limits.auth.take(`login:${clientKey(c, config.trustProxy)}`))
       throw new HttpError(429, 'Too many attempts');
     const state = generateState();
     const verifier = generateCodeVerifier();

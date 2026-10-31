@@ -12,7 +12,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import { ALL_SCOPES } from '../auth/tokens.ts';
-import { type Ctx, clientIp, type Deps, type Env, requireUser } from '../context.ts';
+import { type Ctx, clientKey, type Deps, type Env, IPV6_CREATE_PREFIX, requireUser } from '../context.ts';
 import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
 import { listTemplates } from '../services/templates.ts';
 import { badRequest, forbidden, HttpError, notFound } from '../util/errors.ts';
@@ -68,7 +68,7 @@ export function apiRoutes(deps: Deps) {
 
   // Per-IP budget for all API traffic, plus a tighter one for writes.
   app.use('*', async (c, next) => {
-    const ip = clientIp(c, config.trustProxy);
+    const ip = clientKey(c, config.trustProxy);
     if (!deps.limits.api.take(ip)) throw new HttpError(429, 'Too many requests, slow down a little');
     if (c.req.method !== 'GET' && !deps.limits.writes.take(ip))
       throw new HttpError(429, 'Too many changes, slow down a little');
@@ -132,7 +132,7 @@ export function apiRoutes(deps: Deps) {
   app.get('/dashboards', (c) => c.json(dashboards.listMine(c.get('principal'))));
 
   app.post('/dashboards', async (c) => {
-    if (!deps.limits.creates.take(clientIp(c, config.trustProxy))) {
+    if (!deps.limits.creates.take(clientKey(c, config.trustProxy, IPV6_CREATE_PREFIX))) {
       throw new HttpError(429, 'Too many new dashboards from your network. Try again later.');
     }
     const body = CreateBody.parse(await c.req.json().catch(() => ({})));
@@ -195,7 +195,7 @@ export function apiRoutes(deps: Deps) {
     c.json(await dashboards.claim(c.req.param('id'), c.get('principal'))),
   );
   app.post('/dashboards/:id/duplicate', async (c) => {
-    if (!deps.limits.creates.take(clientIp(c, config.trustProxy))) {
+    if (!deps.limits.creates.take(clientKey(c, config.trustProxy, IPV6_CREATE_PREFIX))) {
       throw new HttpError(429, 'Too many new dashboards from your network. Try again later.');
     }
     return c.json(await dashboards.duplicate(c.req.param('id'), c.get('principal')), 201);
@@ -288,7 +288,7 @@ export function apiRoutes(deps: Deps) {
     const id = c.req.param('id');
     const principal = c.get('principal');
     const { meta } = await dashboards.loadViewable(id, principal);
-    const ip = clientIp(c, config.trustProxy);
+    const ip = clientKey(c, config.trustProxy);
     if ((openStreams.get(ip) ?? 0) >= 30) throw new HttpError(429, 'Too many open live connections');
     openStreams.set(ip, (openStreams.get(ip) ?? 0) + 1);
     const res = streamSSE(c, async (stream) => {

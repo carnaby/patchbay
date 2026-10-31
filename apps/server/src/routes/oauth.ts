@@ -15,7 +15,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { normalizeScopes, SCOPES } from '../auth/tokens.ts';
-import { clientIp, type Deps, type Env, requireUser } from '../context.ts';
+import { clientKey, type Deps, type Env, IPV6_CREATE_PREFIX, requireUser } from '../context.ts';
 import { now } from '../db.ts';
 import { newId, randomToken, sha256, verifyPkce } from '../util/crypto.ts';
 import { HttpError, notFound } from '../util/errors.ts';
@@ -188,7 +188,7 @@ export function oauthRoutes(deps: Deps) {
   }
 
   app.post('/oauth/register', async (c) => {
-    if (!deps.limits.auth.take(`register:${clientIp(c, config.trustProxy)}`, 5))
+    if (!deps.limits.auth.take(`register:${clientKey(c, config.trustProxy, IPV6_CREATE_PREFIX)}`, 5))
       throw new HttpError(429, 'Too many registrations');
     const body = RegistrationSchema.safeParse(await c.req.json().catch(() => null));
     if (!body.success) throw oauthError(400, 'invalid_client_metadata', 'Invalid registration request');
@@ -221,7 +221,7 @@ export function oauthRoutes(deps: Deps) {
   });
 
   app.get('/oauth/authorize', async (c) => {
-    if (!deps.limits.auth.take(`authorize:${clientIp(c, config.trustProxy)}`)) {
+    if (!deps.limits.auth.take(`authorize:${clientKey(c, config.trustProxy)}`)) {
       return c.redirect('/oauth/error?reason=Too%20many%20requests');
     }
     const q = c.req.query();
@@ -339,7 +339,7 @@ export function oauthRoutes(deps: Deps) {
 
   app.post('/oauth/token', async (c) => {
     c.header('Cache-Control', 'no-store');
-    if (!deps.limits.auth.take(`token:${clientIp(c, config.trustProxy)}`))
+    if (!deps.limits.auth.take(`token:${clientKey(c, config.trustProxy)}`))
       throw new HttpError(429, 'Too many requests');
     const form = await c.req.parseBody().catch(() => ({}) as Record<string, string>);
     const f = (k: string) => (typeof form[k] === 'string' ? (form[k] as string) : undefined);
