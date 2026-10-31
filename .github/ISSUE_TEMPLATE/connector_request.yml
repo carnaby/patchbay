@@ -1,0 +1,55 @@
+name: Connector request
+description: Propose a new built-in data source.
+labels: [connector]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Built-in connectors read free public APIs that need no API key and allow this kind of use. For an API that
+        needs a key, a JSON URL dataset with a secret (Settings → Secrets) may already do what you need.
+  - type: input
+    id: api
+    attributes:
+      label: API
+      description: Name and documentation link.
+      placeholder: https://example.org/api/docs
+    validations:
+      required: true
+  - type: textarea
+    id: data
+    attributes:
+      label: What data, and what for
+      description: Which endpoint(s), the columns a dashboard would show, and the dashboard you have in mind.
+    validations:
+      required: true
+  - type: dropdown
+    id: auth
+    attributes:
+      label: Authentication
+      options:
+        - None
+        - Free API key
+        - Paid key or account
+        - OAuth
+    validations:
+      required: true
+  - type: textarea
+    id: licence
+    attributes:
+      label: Licence and attribution
+      description: The terms of use for the data, and how the provider asks to be credited.
+    validations:
+      required: true
+  - type: textarea
+    id: limits
+    attributes:
+      label: Rate limits
+      description: Requests per minute or day for anonymous use, and how often the data changes upstream.
+    validations:
+      required: true
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to write this connector (one file with info, fetch and an offline sample; see CONTRIBUTING.md).

@@ -3,7 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+
+# Read-only by default; the docker job asks for package writes on its own.
+permissions:
+  contents: read
 
 jobs:
   check:
@@ -14,6 +19,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -25,7 +32,9 @@ jobs:
       - run: pnpm test
       - run: pnpm build
 
-  # Builds the image on every run; publishes it to GHCR only for main, after every check job passed.
+  # Builds the image on every run; publishes it to GHCR for main and for release tags, after every check job passed.
+  # main publishes `latest` (the NAS's Watchtower follows it) and the commit SHA; a tag vX.Y.Z publishes X.Y.Z, X.Y
+  # and the SHA, and leaves `latest` alone.
   docker:
     runs-on: ubuntu-latest
     needs: check
@@ -37,9 +46,17 @@ jobs:
       contents: read
       packages: write
     env:
-      PUBLISH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+      PUBLISH: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # arm64 (Raspberry Pi, ARM NAS models, Apple silicon) is built under QEMU. It is built on pull requests too:
+      # one platform failing fails the whole publish, and `latest` must not stall on main because of arm64.
+      # A cold arm64 build took 82 s under QEMU on a desktop (2026-10-31); expect a few minutes on a hosted runner.
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         if: env.PUBLISH == 'true'
@@ -53,11 +70,13 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
             type=sha,format=long,prefix=
       - uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
+          platforms: linux/amd64,linux/arm64
           push: ${{ env.PUBLISH == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

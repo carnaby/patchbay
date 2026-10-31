@@ -1,7 +1,18 @@
 {
   "name": "@patchbay/web",
+  "description": "Patchbay web app: landing page, dashboard editor and viewer.",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/carnaby/patchbay#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carnaby/patchbay.git",
+    "directory": "apps/web"
+  },
+  "bugs": {
+    "url": "https://github.com/carnaby/patchbay/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -26,7 +26,8 @@ A dashboard is one JSON document:
 
 - **Datasets** describe where data comes from (`source`) and how it is processed (`transforms`), plus live behaviour
   (`refreshSec`, `accumulate`).
-- **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `map`, `text`). Several widgets can share one dataset.
+- **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `map`), or show something that needs no
+  dataset (`text`, `clock`, `search`). Several widgets can share one dataset.
   `text`, `clock` and `search` show no dataset (`isDataWidgetType`): no `datasetId`, no data query, no sound.
 - **Layout** is a single 12-column grid. Small screens stack widgets in reading order; there is deliberately no second,
   hand-maintained mobile layout to drift out of sync. On a phone the editor therefore only reorders (`reorderWidget`
@@ -72,7 +73,7 @@ through hard links, so deleting either folder leaves the other intact.
 **The folder is the source of truth; SQLite is an index.** Listing "my dashboards" or the admin overview needs queries,
 so the index exists, but it can always be rebuilt from the folders (`DashboardIndex.reconcile`). It runs at startup,
 every 15 minutes, and whenever the admin page is opened. Deleting a folder by hand is therefore a supported way to delete
-a dashboard, which is exactly what the brief asked for.
+a dashboard.
 
 Folder names are random ids, not user names. Encoding the owner in the path would leak identities into backups and
 logs, and would force a rename whenever an anonymous dashboard is claimed. The owner's id and email are stored inside

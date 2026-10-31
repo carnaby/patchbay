@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/carnaby/patchbay/security/advisories/new
+    about: Report security problems privately, never in a public issue. See SECURITY.md.
+  - name: Questions and ideas
+    url: https://github.com/carnaby/patchbay/discussions
+    about: Ask how to do something, share a dashboard, or discuss an idea before it becomes an issue.
