@@ -1,11 +1,18 @@
 import { serve } from '@hono/node-server';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
+import { detectMemoryReader, memoryGuard } from './util/memory-pressure.ts';
 
 // `--production` instead of `NODE_ENV=production node ...`, which does not work in Windows shells.
 const config = loadConfig(
   process.argv.includes('--production') ? { ...process.env, NODE_ENV: 'production' } : process.env,
 );
+// Only the server process measures its memory: tests and tools that build the app are never refused by the guard.
+memoryGuard.configure({
+  reader: detectMemoryReader({ limitMb: config.memory.limitMb }),
+  soft: config.memory.soft,
+  hard: config.memory.hard,
+});
 const deps = await createDeps(config);
 const app = createApp(deps);
 
@@ -43,6 +50,7 @@ const server = serve({ fetch: app.fetch, hostname: config.host, port: config.por
   if (config.devLogin)
     console.log('[patchbay] DEV_LOGIN is on: anyone can sign in as any email. Never use this in production.');
   if (config.offline) console.log('[patchbay] OFFLINE mode: connectors serve synthetic data');
+  console.log(`[patchbay] ${memoryGuard.describe()}`);
   if (config.analytics)
     console.log(`[patchbay] Umami analytics on: pages load ${config.analytics.scriptUrl}`);
   // Holding other people's credentials is a deliberate choice; say so where the operator looks.

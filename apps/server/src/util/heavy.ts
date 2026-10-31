@@ -14,6 +14,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Gate } from './gate.ts';
+import { memoryGuard } from './memory-pressure.ts';
 import { currentClient } from './request-context.ts';
 
 /** A pipeline over a table at least this large (rows x columns) is heavy; smaller ones stay well inside the heap. */
@@ -39,10 +40,18 @@ const gate = new Gate({
 });
 
 export const heavyWork = {
-  /** Runs `task` in the process's one heavy turn, or at once when the caller already holds it. */
-  run<T>(task: () => Promise<T>, client = currentClient()): Promise<T> {
+  /**
+   * Runs `task` in the process's one heavy turn, or at once when the caller already holds it. Under memory pressure
+   * (util/memory-pressure.ts) a new job is refused, both on arrival and when its turn comes after a wait; a job inside
+   * a turn is part of work already running and is never refused.
+   */
+  async run<T>(task: () => Promise<T>, client = currentClient()): Promise<T> {
     if (holding.getStore()) return task();
-    return gate.run(client, () => holding.run(true, task));
+    memoryGuard.admitHeavy();
+    return gate.run(client, () => {
+      memoryGuard.admitHeavy();
+      return holding.run(true, task);
+    });
   },
   /** Running and waiting heavy jobs (diagnostics and tests). */
   stats: () => gate.stats(),

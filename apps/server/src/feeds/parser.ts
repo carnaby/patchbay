@@ -206,6 +206,15 @@ export class FeedParser {
     this.idle.unref();
   }
 
+  /**
+   * Stops the worker now if it has nothing to do, instead of after `idleMs`: asked under memory pressure
+   * (util/memory-pressure.ts). The next feed starts a fresh one.
+   */
+  releaseIdle() {
+    if (!this.worker || !this.ready || this.job || this.queue.length) return;
+    this.stop(new HttpError(503, 'Idle'));
+  }
+
   /** Whether a worker thread is running (tests). */
   running(): boolean {
     return this.worker !== null;

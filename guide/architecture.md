@@ -128,6 +128,12 @@ instances.
   of 512 KB or more therefore run one at a time across the process; small jobs never wait. Workers collect their
   garbage after a large job, so the next one starts next to an emptied heap. The budget is in
   [deployment.md](deployment.md#memory-budget).
+- **Admission by real memory use** (`util/memory-pressure.ts`). The gates bound each kind of work; the container's
+  OOM killer sees their sum. The server reads its cgroup's memory use (without page cache the kernel can drop) at
+  most every 250 ms. Above a soft threshold it refuses to start new heavy work, above a hard one also writes and new
+  live streams, with 503 and Retry-After; work already running finishes, and the health check and reads answered
+  from memory keep working. The thresholds keep a fixed room free (128 MB and 64 MB), because a heavy job needs the
+  same memory in any container. Details in [deployment.md](deployment.md#memory-guard).
 - **Accumulate** turns "current value" sources (current weather, a spot price, the ISS position) into rolling time
   series by appending each new reading with a `fetched_at` column. The buffer is in memory by design; it is a live view,
   not a database.
