@@ -109,6 +109,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       mcp: new RateLimiter(60, 120),
       // Creating dashboards (anonymous ones especially) is the main way to fill the disk.
       creates: new RateLimiter(20, 1),
+      // A few images at once (a dashboard and some of its widgets), then one every two seconds.
+      snapshots: new RateLimiter(4, 30),
     },
   };
 }

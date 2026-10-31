@@ -9,9 +9,11 @@ import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
 import { snapshotGate } from './render/gate.ts';
-import { MAX_PIXELS } from './render/snapshot.ts';
+import { drawLimits, MAX_PIXELS } from './render/snapshot.ts';
 import { isAcceptableRedirect, redirectMatches } from './routes/oauth.ts';
 import { buildTemplate, listTemplates } from './services/templates.ts';
+import { RateLimiter } from './util/rate-limit.ts';
+import { runAsClient } from './util/request-context.ts';
 import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
 
 const BASE = 'http://localhost:8787';
@@ -189,6 +191,25 @@ describe('dashboards over REST', () => {
     }
   });
 
+  it('ships templates the snapshot budgets never trim', async () => {
+    // Trimming would make a template's snapshot differ from what the browser draws.
+    for (const t of listTemplates()) {
+      const doc = buildTemplate(t.id);
+      const results = new Map(
+        await Promise.all(
+          doc.datasets.map(
+            async (d) => [d.id, await deps.data.resolve({ id: 'tpl', ownerId: null }, d)] as const,
+          ),
+        ),
+      );
+      const entries = doc.widgets.map((widget) => ({
+        widget,
+        result: 'datasetId' in widget ? results.get(widget.datasetId) : undefined,
+      }));
+      expect(drawLimits(entries), t.id).toEqual(new Map());
+    }
+  });
+
   it('rejects cross-site writes', async () => {
     const res = await call('/api/dashboards', { body: {}, headers: { origin: 'https://evil.example' } });
     expect(res.status).toBe(403);
@@ -258,9 +279,10 @@ describe('dashboards over REST', () => {
     });
     const holders: Promise<unknown>[] = [];
     // Fill every admission slot of the process-wide gate with jobs that wait; admission is decided synchronously.
+    // Each from its own client, as one client may hold only some of the slots.
     for (;;) {
       const before = snapshotGate.pending();
-      const job = snapshotGate.run(() => hold);
+      const job = runAsClient(`ip:filler-${holders.length}`, () => snapshotGate.run(() => hold));
       if (snapshotGate.pending() === before) {
         await job.catch(() => undefined);
         break;
@@ -277,6 +299,35 @@ describe('dashboards over REST', () => {
       await Promise.all(holders);
     }
     expect((await call(`/api/dashboards/${envelope.meta.id}/snapshot.png?theme=dark`)).status).toBe(200);
+  });
+
+  it('limits the snapshots one client has drawn, and lets cache hits through', async () => {
+    const limited = createApp({
+      ...deps,
+      config: { ...deps.config, trustProxy: 'cloudflare' },
+      limits: { ...deps.limits, snapshots: new RateLimiter(2, 30) },
+    });
+    const { envelope } = (await call('/api/dashboards', { body: { template: 'blank' } })).json;
+    const snap = (query: string, ip: string) =>
+      limited.request(`${BASE}/api/dashboards/${envelope.meta.id}/snapshot.png${query}`, {
+        headers: { origin: BASE, 'cf-connecting-ip': ip },
+      });
+    // Two addresses in one /64 are one client.
+    expect((await snap('?theme=light', '2001:db8:1:1::1')).status).toBe(200);
+    expect((await snap('?theme=dark', '2001:db8:1:1::2')).status).toBe(200);
+    const busy = await snap('?theme=dark&widget=nope', '2001:db8:1:1::3');
+    // A widget that does not exist is turned away before anything is drawn.
+    expect(busy.status).toBe(404);
+    const keyed = (await call('/api/dashboards', { body: { template: 'blank' } })).json.envelope.meta.id;
+    const third = await limited.request(`${BASE}/api/dashboards/${keyed}/snapshot.png`, {
+      headers: { origin: BASE, 'cf-connecting-ip': '2001:db8:1:1::4' },
+    });
+    expect(third.status).toBe(429);
+    expect(Number(third.headers.get('retry-after'))).toBeGreaterThan(0);
+    // Already drawn: served from the cache without counting.
+    expect((await snap('?theme=dark', '2001:db8:1:1::5')).status).toBe(200);
+    // Another /64 has its own budget.
+    expect((await snap('?theme=light', '2001:db8:1:2::1')).status).toBe(200);
   });
 
   it('lets a signed-in user claim an anonymous dashboard', async () => {

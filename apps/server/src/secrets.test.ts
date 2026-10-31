@@ -196,7 +196,14 @@ class Env {
     const generous = () => new RateLimiter(100_000, 100_000);
     this.app = createApp({
       ...this.deps,
-      limits: { api: generous(), writes: generous(), auth: generous(), mcp: generous(), creates: generous() },
+      limits: {
+        api: generous(),
+        writes: generous(),
+        auth: generous(),
+        mcp: generous(),
+        creates: generous(),
+        snapshots: generous(),
+      },
     });
     return this;
   }

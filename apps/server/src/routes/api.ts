@@ -21,8 +21,7 @@ import {
   requireSessionUser,
 } from '../context.ts';
 import { SnapshotCache, snapshotCache } from '../render/cache.ts';
-import { RenderBusyError, snapshotGate } from '../render/gate.ts';
-import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
+import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import { listTemplates } from '../services/templates.ts';
 import { badRequest, forbidden, HttpError, notFound } from '../util/errors.ts';
 
@@ -410,21 +409,24 @@ export function apiRoutes(deps: Deps) {
     let png: Buffer;
     try {
       // Permission was checked above, for this request; the cache only saves the drawing.
-      png = await snapshotCache.get(key, () =>
-        snapshotGate.run(async (draw) => {
+      png = await snapshotCache.get(key, async () => {
+        chargeSnapshot(deps.limits.snapshots);
+        return snapshotGate.run(async (draw) => {
           if (widget) {
             const dataset =
               'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
             const result = dataset ? await data.resolve(target, dataset) : undefined;
-            return draw(() => renderWidgetPng(widget, result, { theme, entityColors: doc.colors }));
+            return draw({ kind: 'widget', widget, result, options: { theme, entityColors: doc.colors } });
           }
           const results = await resolveAll(doc.datasets);
-          return draw(() => renderDashboardPng(doc, results, { theme }));
-        }),
-      );
+          return draw({ kind: 'dashboard', doc, results, options: { theme } });
+        });
+      });
     } catch (err) {
-      if (!(err instanceof RenderBusyError)) throw err;
-      return c.json({ error: err.message }, 503, { 'Retry-After': String(err.retryAfterSec) });
+      // Busy, rate limited, out of time: each says when to come back.
+      const retryAfter = (err as { retryAfterSec?: unknown }).retryAfterSec;
+      if (!(err instanceof HttpError) || typeof retryAfter !== 'number') throw err;
+      return c.json({ error: err.message }, err.status as 429 | 503, { 'Retry-After': String(retryAfter) });
     }
     return c.body(new Uint8Array(png), 200, {
       'content-type': 'image/png',
