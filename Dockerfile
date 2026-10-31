@@ -28,15 +28,23 @@ LABEL org.opencontainers.image.source="https://github.com/carnaby/patchbay" \
 RUN apt-get update && apt-get install -y --no-install-recommends tini \
   && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8787 DATA_DIR=/data
+# glibc gives each thread that allocates its own malloc arena; with the worker threads and libuv's pool that is many
+# half-empty arenas. Two keep native memory about 20 MB lower, part of the budget in guide/deployment.md.
+ENV MALLOC_ARENA_MAX=2
 COPY --from=build /app/package.json /app/pnpm-workspace.yaml ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages/core ./packages/core
 COPY --from=build /app/apps/server ./apps/server
 COPY --from=build /app/apps/web/dist ./apps/web/dist
+COPY --from=build /app/showcase ./showcase
 RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]
 EXPOSE 8787
-HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# /healthz answered in up to 4.4 s under a combined attack on a 384 MB container (9.75 s before the memory guard gave
+# memory back; guide/deployment.md, "Memory budget"), and the check first starts a node process in that busy
+# container: with 5 s a container that was coping could be marked unhealthy.
+HEALTHCHECK --interval=30s --timeout=10s CMD node -e "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 ENTRYPOINT ["tini", "--"]
-CMD ["node", "apps/server/src/main.ts"]
+# --expose-gc: the snapshot renderer collects after each render to release resvg's native memory (render/gc.ts).
+CMD ["node", "--expose-gc", "apps/server/src/main.ts"]

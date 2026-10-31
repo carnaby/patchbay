@@ -19,10 +19,24 @@ services:
       TRUST_PROXY: cloudflare
       # One worker keeps large inputs off the main thread on a 2-core CPU without doubling memory.
       PIPELINE_WORKERS: "1"
+      # Anyone can create anonymous dashboards here, so they expire: 60 days without a view, or 24 hours when
+      # still blank. The ceiling caps what they may take on the NAS disk in total (MB).
+      PRUNE_ANONYMOUS_AFTER_DAYS: "60"
+      PRUNE_BLANK_ANONYMOUS_AFTER_HOURS: "24"
+      ANONYMOUS_STORAGE_LIMIT_MB: "1024"
+      # Anyone with a Google account can sign in, so each account's dashboards are capped too (MB; admins exempt).
+      USER_STORAGE_LIMIT_MB: "500"
+      # Served from a home connection: only dashboards with a signed-in owner may make it fetch URLs.
+      URL_SOURCES: signed-in
+      # Optional Umami analytics, from .env (see guide/deployment.md). Empty means off. Set here, these override
+      # patchbay.env, so put them in .env.
+      UMAMI_SCRIPT_URL: ${UMAMI_SCRIPT_URL:-}
+      UMAMI_WEBSITE_ID: ${UMAMI_WEBSITE_ID:-}
     volumes:
       - ./data:/data
-    # Measured: ~120 MiB idle, ~250 MiB peak with a 5 MB upload in the worker. The limit leaves headroom.
-    mem_limit: 384m
+    # Measured (guide/deployment.md, "Memory budget"): ~90 MB idle; the combined attack storm peaks near 410 MB, and
+    # the memory guard refuses new heavy work long before the limit. Agreed with the infra admin on 2026-10-31.
+    mem_limit: 512m
     read_only: true
     tmpfs:
       - /tmp

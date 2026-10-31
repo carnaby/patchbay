@@ -2,10 +2,16 @@ import { createServer, type Server } from 'node:http';
 import { connect } from 'node:net';
 import { Agent } from 'undici';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { HttpError } from '../util/errors.ts';
+import { FakeWorker, settle } from '../util/fake-worker.test-helper.ts';
+import { OutboundLimiter } from '../util/outbound.ts';
+import { measureScaling, scalingProblem } from '../util/scaling.test-helper.ts';
 import { discoverFeed } from './discover.ts';
 import { looksLikeHtml, parseFeed, plainText, safeLink } from './parse.ts';
+import { FeedParser } from './parser.ts';
 import { sampleFeed } from './sample.ts';
-import { FEED_MIN_TTL_MS, FeedService } from './service.ts';
+import { cdataSections, stripMarkup, unclosedTagStarts } from './scan.ts';
+import { FEED_FAILURE_TTL_MS, FEED_MIN_TTL_MS, FeedService } from './service.ts';
 
 const BASE = 'https://news.example.com/feed.xml';
 const rowsOf = (body: string, type = 'application/rss+xml') => parseFeed(body, type, BASE).table.rows;
@@ -191,6 +197,243 @@ describe('discoverFeed', () => {
   });
 });
 
+// The largest body safe-fetch accepts. Before the linear scans, a few hundred kilobytes of these inputs blocked
+// the event loop for seconds to hours. The test compares a quarter-size input with the full one instead of timing
+// against a fixed budget, so a slow CI runner cannot fail it; see test/scaling.ts.
+const MAX_BODY = 5 * 1024 * 1024;
+const fill = (unit: string, length = MAX_BODY) => unit.repeat(Math.ceil(length / unit.length));
+const rssWith = (inner: string) =>
+  `<?xml version="1.0"?><rss version="2.0"><channel><title>t</title><item><title>x</title>${inner}</item></channel></rss>`;
+
+describe('hostile feeds', () => {
+  const parse = (body: string) => () => parseFeed(body, 'application/rss+xml', BASE);
+  // Each case builds its input for a given size `n` (outside the timing) and returns the work to time.
+  const cases: [string, (n: number) => () => unknown][] = [
+    [
+      'unclosed <script in CDATA',
+      (n) => parse(rssWith(`<description><![CDATA[${fill('<script', n)}]]></description>`)),
+    ],
+    [
+      'unclosed <style in CDATA',
+      (n) => parse(rssWith(`<description><![CDATA[${fill('<style', n)}]]></description>`)),
+    ],
+    [
+      'unclosed <!-- in CDATA',
+      (n) => parse(rssWith(`<description><![CDATA[${fill('<!--', n)}]]></description>`)),
+    ],
+    [
+      'unclosed <p in CDATA',
+      (n) => parse(rssWith(`<description><![CDATA[${fill('<p', n)}]]></description>`)),
+    ],
+    [
+      'escaped <![CDATA[ openers',
+      (n) => parse(rssWith(`<description>${fill('&lt;![CDATA[', n)}</description>`)),
+    ],
+    ['unclosed tags in a text element', (n) => parse(rssWith(`<description>${fill('<a', n)}`))],
+    ['unclosed quoted tags in a text element', (n) => parse(rssWith(`<description>${fill(`<x'`, n)}>`))],
+    [
+      'deeply nested elements',
+      (n) => parse(rssWith(`<guid>${fill('<a>', n / 2)}${fill('</a>', n / 2)}</guid>`)),
+    ],
+    [
+      'deeply nested markup in CDATA',
+      (n) => parse(rssWith(`<description><![CDATA[${fill('<div><span>', n)}]]></description>`)),
+    ],
+    ['a DOCTYPE flood', (n) => parse(fill('<!DOCTYPE [', n))],
+    ['an unclosed DOCTYPE subset', (n) => parse(`<!DOCTYPE${fill('[', n)}`)],
+    [
+      '200 items of unclosed tags',
+      (n) =>
+        parse(
+          `<rss><channel>${fill(`<item><description><![CDATA[${'<p'.repeat(12_000)}]]></description></item>`, n)}</channel></rss>`,
+        ),
+    ],
+    [
+      'a JSON Feed summary of unclosed tags',
+      (n) => {
+        const body = JSON.stringify({
+          version: 'https://jsonfeed.org/version/1.1',
+          items: [{ content_html: fill('<style', n) }],
+        });
+        return () => parseFeed(body, 'application/feed+json', BASE);
+      },
+    ],
+    [
+      'plainText over unclosed tags',
+      (n) => {
+        const text = fill('<script<!--<p ', n);
+        return () => plainText(text, 500);
+      },
+    ],
+    // The helpers themselves, past the per-field cut that normally keeps their input small (a fifth of the size).
+    [
+      'CDATA openers without an end',
+      (n) => {
+        const text = fill('<![CDATA[x', n / 5);
+        return () => cdataSections(text);
+      },
+    ],
+    [
+      'markup soup',
+      (n) => {
+        const text = fill('<script><style><!--<p <a href="', n / 5);
+        return () => stripMarkup(text);
+      },
+    ],
+    [
+      'a page of comments',
+      (n) => {
+        const text = fill('<!---->', n);
+        return () => looksLikeHtml(text, 'text/plain');
+      },
+    ],
+    [
+      'a <link flood',
+      (n) => {
+        const html = `<html>${fill('<link', n)}`;
+        return () => discoverFeed(html, 'https://site.example/');
+      },
+    ],
+    [
+      'a <link with endless attributes',
+      (n) => {
+        const html = `<html><link ${fill('a="b" ', n)}`;
+        return () => discoverFeed(html, 'https://site.example/');
+      },
+    ],
+  ];
+  it.each(cases)('reads %s in linear time', (_label, make) => {
+    const times = measureScaling(make, { size: MAX_BODY }, (e) => e instanceof HttpError);
+    expect(scalingProblem(times)).toBeNull();
+  });
+
+  it('refuses documents the XML parser would rescan from every tag', () => {
+    expect(unclosedTagStarts('<a><b x="1">t</b></a>')).toBe(0);
+    expect(unclosedTagStarts('<a><b x=">">t</b></a>')).toBe(0);
+    expect(unclosedTagStarts(`<d>${'<a'.repeat(5)}`)).toBe(5);
+    expect(unclosedTagStarts(`<d>'<a>`)).toBe(0);
+    expect(unclosedTagStarts(`<d><a '>`)).toBe(1);
+    expect(() => parseFeed(rssWith(`<description>${'<a'.repeat(20)}`), 'text/xml', BASE)).toThrow(
+      'did not return an RSS',
+    );
+  });
+
+  it('reads long fields as before, without a tag cut in half', () => {
+    const long = `<p>${'word '.repeat(50_000)}</p>`;
+    expect(plainText(long, 50)).toBe(plainText(long.slice(0, 1000), 50));
+    const cut = plainText(`${'a'.repeat(65_530)}<a href="https://x.example/">b</a>`, 70_000);
+    expect(cut.endsWith('a')).toBe(true);
+    const rows = rowsOf(
+      rssWith(
+        `<description><![CDATA[${'<b>x</b> '.repeat(10_000)}]]></description><guid>${fill('<a>x</a>', 100_000)}</guid>`,
+      ),
+    );
+    expect(rows[0]!.summary).toMatch(/^x x x .*…$/);
+    expect((rows[0]!.id as string).length).toBeLessThanOrEqual(200);
+  });
+});
+
+describe('FeedParser', () => {
+  const parser = new FeedParser({ timeoutMs: 10_000 });
+  afterAll(() => parser.close());
+
+  it('parses on a worker exactly as inline', async () => {
+    expect(await parser.parse(RSS, 'application/rss+xml', BASE)).toEqual(
+      parseFeed(RSS, 'application/rss+xml', BASE),
+    );
+    expect(parser.running()).toBe(true);
+  });
+
+  it('passes parse errors through with their message', async () => {
+    await expect(parser.parse('{"items":[]}', 'application/json', BASE)).rejects.toThrow(
+      'did not return an RSS',
+    );
+    await expect(parser.parse('{"items":[]}', 'application/json', BASE)).rejects.toBeInstanceOf(HttpError);
+  });
+
+  it('stops a document that takes too long and carries on with a fresh worker', async () => {
+    const slow = new FeedParser({ timeoutMs: 20 });
+    try {
+      const big = `<rss version="2.0"><channel>${fill('<item><title>a</title></item>')}</channel></rss>`;
+      await expect(slow.parse(big, 'application/rss+xml', BASE)).rejects.toThrow('took too long');
+      expect(slow.running()).toBe(false);
+      // The short limit was only for the hostile document. Starting a fresh worker and parsing even a tiny feed
+      // can exceed 20 ms on a loaded CI runner, so the follow-up gets a generous one (a private field: the
+      // limit is fixed per parser in production).
+      Object.assign(slow, { timeoutMs: 60_000 });
+      await expect(slow.parse(RSS, 'application/rss+xml', BASE)).resolves.toMatchObject({
+        title: 'Example & News',
+      });
+    } finally {
+      await slow.close();
+    }
+  });
+
+  it('ends the worker, not the server, when a document needs too much memory', async () => {
+    const small = new FeedParser({ maxHeapMb: 24 });
+    try {
+      const flood = `<rss version="2.0"><channel><item><guid>${fill('<a>x</a>')}</guid></item></channel></rss>`;
+      await expect(small.parse(flood, 'application/rss+xml', BASE)).rejects.toThrow('too large');
+      await expect(small.parse(RSS, 'application/rss+xml', BASE)).resolves.toMatchObject({
+        title: 'Example & News',
+      });
+    } finally {
+      await small.close();
+    }
+  });
+
+  it('survives over-limit documents back to back, one worker heap at a time', async () => {
+    const small = new FeedParser({ maxHeapMb: 24 });
+    try {
+      const flood = `<rss version="2.0"><channel><item><guid>${fill('<a>x</a>')}</guid></item></channel></rss>`;
+      const results = await Promise.allSettled([
+        small.parse(flood, 'application/rss+xml', BASE),
+        small.parse(flood, 'application/rss+xml', BASE),
+        small.parse(RSS, 'application/rss+xml', BASE),
+      ]);
+      expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected', 'fulfilled']);
+      expect(small.threads()).toBeLessThanOrEqual(1);
+    } finally {
+      await small.close();
+    }
+  });
+
+  it('starts the next worker only after the failed one has exited', async () => {
+    const workers: FakeWorker[] = [];
+    const fake = new FeedParser({
+      createWorker: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker;
+      },
+    });
+    try {
+      const first = fake.parse(RSS, 'application/rss+xml', BASE);
+      const second = fake.parse(RSS, 'application/rss+xml', BASE);
+      await settle();
+      const sent = workers[0]!.posted[0]!;
+      // The document travels as transferred bytes, not as a cloned string.
+      expect((sent.value as { bytes: Uint8Array }).bytes).toBeInstanceOf(Uint8Array);
+      expect(sent.transfer).toHaveLength(1);
+      workers[0]!.outOfMemory();
+      await expect(first).rejects.toThrow('too large');
+      await settle();
+      expect(workers).toHaveLength(1);
+      expect(fake.threads()).toBe(1);
+      workers[0]!.exit();
+      await settle();
+      expect(workers).toHaveLength(2);
+      const id = (workers[1]!.posted[0]!.value as { id: number }).id;
+      workers[1]!.emit('message', { id, ok: true, feed: { title: 'ok' } });
+      await expect(second).resolves.toMatchObject({ title: 'ok' });
+    } finally {
+      const closing = fake.close();
+      workers.at(-1)!.exit();
+      await closing;
+    }
+  });
+});
+
 describe('sampleFeed', () => {
   it('is deterministic and grows by one item every two minutes', () => {
     const t = Date.UTC(2026, 9, 30, 12, 0, 30);
@@ -227,6 +470,8 @@ beforeAll(async () => {
         return send('application/rss+xml', RSS);
       case '/plain-page':
         return send('text/html', '<html><body>no feed</body></html>');
+      case '/broken.xml':
+        return send('application/rss+xml', `<rss><channel><item><description>${'<a'.repeat(50)}`);
       case '/private':
         return send(
           'text/html',
@@ -293,12 +538,47 @@ describe('FeedService', () => {
     await expect(service().load('https://site.example/plain-page')).rejects.toThrow('No feed found');
   });
 
+  it('remembers a failure for a few minutes instead of fetching and parsing again', async () => {
+    const feeds = service();
+    let now = Date.UTC(2026, 9, 30, 12);
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    for (const url of ['https://site.example/broken.xml', 'https://site.example/plain-page']) {
+      const message = url.endsWith('.xml') ? 'did not return an RSS' : 'No feed found';
+      await expect(feeds.load(url)).rejects.toThrow(message);
+      await expect(Promise.all([feeds.load(url), feeds.load(url)])).rejects.toThrow(message);
+      now += FEED_FAILURE_TTL_MS - 1;
+      await expect(feeds.load(url)).rejects.toThrow(message);
+      expect(hits).toEqual([url]);
+      now += 2;
+      await expect(feeds.load(url)).rejects.toThrow(message);
+      expect(hits).toEqual([url, url]);
+      hits.length = 0;
+    }
+  });
+
   it('keeps the SSRF guard on the page and on the discovered feed', async () => {
     await expect(service().load('https://127.0.0.1/feed.xml')).rejects.toThrow(/private|local|not allowed/i);
     await expect(service().load('https://site.example/private')).rejects.toThrow(
       /private|local|not allowed/i,
     );
     expect(hits).toEqual(['https://site.example/private']);
+  });
+
+  it("goes through the outbound limiter, and does not remember the limiter's refusal as a failure", async () => {
+    const feeds = new FeedService({
+      offline: false,
+      test: { dispatcher, timeoutMs: 2000 },
+      outbound: new OutboundLimiter({ perHostPerMinute: 2 }),
+    });
+    // Discovery takes two requests to the host: the page and its feed. That is the host's budget.
+    await feeds.load('https://site.example/news');
+    await expect(feeds.load('https://site.example/plain-page')).rejects.toMatchObject({ status: 429 });
+    expect(hits).toEqual(['https://site.example/news', 'https://site.example/feed.xml']);
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    now += 60_000;
+    await expect(feeds.load('https://site.example/plain-page')).rejects.toThrow('No feed found');
+    expect(hits).toHaveLength(3);
   });
 
   it('serves the sample offline without any request', async () => {

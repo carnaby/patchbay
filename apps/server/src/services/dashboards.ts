@@ -15,11 +15,15 @@ import {
   type DashboardEnvelope,
   type DashboardMeta,
   type Dataset,
+  type DataTable,
   describePlacement,
   docSecretIds,
   FEED_MIN_REFRESH_SEC,
-  inferTable,
+  HTTP_MIN_REFRESH_SEC,
+  isStaticSource,
+  LIMITS,
   MAX_SECRETS_PER_USER,
+  normalizeLayout,
   OpError,
   parseBinding,
   parseDashboard,
@@ -27,6 +31,7 @@ import {
   type SecretInfo,
   type SecretMode,
   type SecretPlacement,
+  SHOWCASE_OWNER_ID,
   secretParamIssue,
   secretRefChanges,
   secretValueIssue,
@@ -35,19 +40,24 @@ import {
   type VersionInfo,
   type Visibility,
 } from '@patchbay/core';
-import Papa from 'papaparse';
 import type { Secrets } from '../auth/secrets.ts';
 import type { UserRow, Users } from '../auth/users.ts';
 import { unknownConnectorMessage } from '../connectors/registry.ts';
 import { now } from '../db.ts';
 import type { LiveHub } from '../live/hub.ts';
+import type { UseCase } from '../showcase/load.ts';
 import type { DashboardIndex } from '../store/dashboard-index.ts';
 import type { FolderStore, StoredMeta } from '../store/folder-store.ts';
 import { newDashboardId, newId, randomToken, safeEqual, sha256 } from '../util/crypto.ts';
 import { badRequest, forbidden, HttpError, notFound, unauthorized } from '../util/errors.ts';
+import { Gate } from '../util/gate.ts';
+import { heavyWork } from '../util/heavy.ts';
+import { currentClient } from '../util/request-context.ts';
 import type { Credential } from '../util/safe-fetch.ts';
 import type { DashboardTarget } from './data.ts';
+import { PipelineError } from './pipeline-pool.ts';
 import { buildTemplate } from './templates.ts';
+import { jsonUploadProblem, parseUpload, UploadError, type UploadInput } from './upload-parse.ts';
 
 export interface Principal {
   user: UserRow | null;
@@ -88,13 +98,123 @@ export { CONFIRM_PUBLIC_SECRETS, CREDENTIAL_ERRORS } from '@patchbay/core';
 const CLAIM_FIRST = 'Sign in and claim this dashboard to use secrets.';
 const TOKEN_PUBLISH =
   'Make it public in the web app; it would show data fetched with your secrets to anyone. Tokens cannot do this.';
+const URL_SOURCES_SIGNED_IN =
+  'This server loads data from URLs (http and feed sources) only for dashboards with an owner. Sign in and claim this dashboard first.';
 const TOKEN_PUBLIC_EDIT =
   'This dashboard is public and shows data fetched with secrets, so agents and tokens cannot change it: a person has to make this change in the Patchbay web app. Ask the user to do it there, or to make the dashboard private first.';
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
+/**
+ * Upload limits in cells (rows x columns): what a table costs in memory follows its cells, not the bytes of the file.
+ * 500,000 cells take roughly 20-40 MB once parsed; anonymous dashboards, which anyone can create, get less.
+ */
+export const DEFAULT_UPLOAD_MAX_CELLS = 500_000;
+export const DEFAULT_UPLOAD_MAX_CELLS_ANONYMOUS = 200_000;
 export const MAX_FILES = 20;
+/**
+ * Uploaded data per dashboard, counted as stored on disk (parsed), not as uploaded. With the document limit and
+ * the version budget (MAX_VERSION_BYTES) this bounds what one dashboard can take: about 36 MB.
+ */
 export const MAX_DASHBOARD_BYTES = 25 * 1024 * 1024;
+export const MAX_DOCUMENT_BYTES = LIMITS.documentBytes;
 const TOUCH_INTERVAL_MS = 10 * 60_000;
+const ANONYMOUS_FULL =
+  'This server has no room for more anonymous dashboard data right now. Sign in to keep working (claiming this dashboard makes it yours), or try again later.';
+
+const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+const kb = (bytes: number) => `${Math.ceil(bytes / 1024)} KB`;
+const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+
+/** Says what to do about it, because the reader is often an agent that just added inline rows. */
+function documentTooLarge(doc: DashboardDoc, bytes: number): HttpError {
+  const inline = doc.datasets
+    .flatMap((d) => (d.source.kind === 'inline' ? [{ id: d.id, bytes: jsonBytes(d) }] : []))
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 3);
+  return badRequest(
+    `The dashboard would take ${kb(bytes)}; a dashboard document is limited to ${kb(MAX_DOCUMENT_BYTES)}. ` +
+      (inline.length
+        ? `Largest inline datasets: ${inline.map((d) => `"${d.id}" (${kb(d.bytes)})`).join(', ')}. `
+        : '') +
+      `Inline rows are for small tables you write yourself (at most ${LIMITS.inlineRows} rows, text values up to ${LIMITS.inlineText} characters). ` +
+      'Put larger data in a CSV or JSON upload (upload_data, or POST /api/dashboards/:id/files) and use a source of kind "upload", or remove datasets you no longer need.',
+    { code: 'DOCUMENT_TOO_LARGE', bytes, limitBytes: MAX_DOCUMENT_BYTES },
+  );
+}
+
+/**
+ * Long inline text and column names that `after` adds. Checked here on writes rather than in the document schema,
+ * which also reads stored documents: those saved before the limits keep loading and accept other edits, and values
+ * they already hold may stay (editing one row of such a dataset still saves).
+ */
+function inlineTextTooLong(before: DashboardDoc, after: DashboardDoc): HttpError | null {
+  const existing = new Map(before.datasets.map((d) => [d.id, d]));
+  for (const dataset of after.datasets) {
+    if (dataset.source.kind !== 'inline') continue;
+    const old = existing.get(dataset.id)?.source;
+    if (old === dataset.source) continue;
+    const known = new Set<string>();
+    if (old?.kind === 'inline') {
+      for (const row of old.rows) {
+        for (const [name, value] of Object.entries(row)) {
+          if (name.length > LIMITS.inlineColumnName) known.add(name);
+          if (typeof value === 'string' && value.length > LIMITS.inlineText) known.add(value);
+        }
+      }
+    }
+    for (const [index, row] of dataset.source.rows.entries()) {
+      for (const [name, value] of Object.entries(row)) {
+        const where = `Dataset "${dataset.id}", inline row ${index + 1}`;
+        const advice =
+          'Put longer text in a CSV or JSON upload (upload_data, or POST /api/dashboards/:id/files) and use a source of kind "upload", or in a text widget.';
+        if (name.length > LIMITS.inlineColumnName && !known.has(name)) {
+          return badRequest(
+            `${where}: column names in inline rows are limited to ${LIMITS.inlineColumnName} characters ("${name.slice(0, 40)}…" has ${name.length}). Use a shorter name.`,
+            { code: 'INLINE_VALUE_TOO_LONG' },
+          );
+        }
+        if (typeof value === 'string' && value.length > LIMITS.inlineText && !known.has(value)) {
+          return badRequest(
+            `${where}, column "${name.slice(0, 40)}": text values in inline rows are limited to ${LIMITS.inlineText} characters (this one has ${value.length}). ${advice}`,
+            { code: 'INLINE_VALUE_TOO_LONG' },
+          );
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/** Distinct keys across inline rows. Linear in a document already bounded by its size limit. */
+function inlineColumnCount(rows: readonly Record<string, unknown>[]): number {
+  const names = new Set<string>();
+  for (const row of rows) for (const name of Object.keys(row)) names.add(name);
+  return names.size;
+}
+
+/**
+ * An inline dataset that `after` makes wider than LIMITS.inlineColumns. On writes only, like `inlineTextTooLong`: a
+ * stored dataset that is already wider keeps loading (DataService holds its own limits when it reads one) and may be
+ * edited as long as the edit does not add columns.
+ */
+function inlineTooWide(before: DashboardDoc, after: DashboardDoc): HttpError | null {
+  const existing = new Map(before.datasets.map((d) => [d.id, d]));
+  for (const dataset of after.datasets) {
+    if (dataset.source.kind !== 'inline') continue;
+    const old = existing.get(dataset.id)?.source;
+    if (old === dataset.source) continue;
+    const count = inlineColumnCount(dataset.source.rows);
+    if (count <= LIMITS.inlineColumns) continue;
+    if (old?.kind === 'inline' && count <= inlineColumnCount(old.rows)) continue;
+    return badRequest(
+      `Dataset "${dataset.id}": inline rows may use at most ${LIMITS.inlineColumns} different column names (these use ${count.toLocaleString('en-US')}). ` +
+        'Every row of a table has every column, so keep the fields you need, reshape wide data into rows (one row per name and value), ' +
+        'or put it in a CSV or JSON upload (upload_data, or POST /api/dashboards/:id/files) and use a source of kind "upload".',
+      { code: 'INLINE_TOO_WIDE', columns: count, limit: LIMITS.inlineColumns },
+    );
+  }
+  return null;
+}
 
 export class ConflictError extends HttpError {
   readonly current: DashboardEnvelope;
@@ -107,6 +227,15 @@ export class ConflictError extends HttpError {
 interface SecretWriteOptions extends PublicSecretsConfirmation {
   /** Restores skip the existence and binding checks; use time reports dead references instead. */
   restore?: boolean;
+}
+
+const storedBytes = (files: UploadedFile[]) => files.reduce((sum, f) => sum + (f.storedBytes ?? f.size), 0);
+
+function uploadsFull(adding: number, used: number): HttpError {
+  return badRequest(
+    `A dashboard can hold up to ${MAX_FILES} files and ${mb(MAX_DASHBOARD_BYTES)} of uploaded data as stored on the server` +
+      ` (${mb(used)} in use${adding ? `, this file needs ${mb(adding)}` : ''}). Delete unused files first.`,
+  );
 }
 
 function withoutSecrets(d: Dataset): Dataset {
@@ -137,6 +266,38 @@ export interface ConnectorLookup {
   get(id: string): { info: { minRefreshSec: number } } | undefined;
 }
 
+/** Who may make this server fetch URLs: anyone, or only dashboards that a signed-in user owns. */
+export type UrlSourcesMode = 'everyone' | 'signed-in';
+
+/** Where uploads are parsed (the pipeline worker, see DataService) and who hears about a saved one. */
+export interface UploadParser {
+  parse(input: UploadInput): Promise<DataTable>;
+  saved?(dashboardId: string, fileId: string, table: DataTable): Promise<void>;
+}
+
+export interface DashboardServiceOptions {
+  uploads?: UploadParser;
+  uploadMaxCells?: number;
+  uploadMaxCellsAnonymous?: number;
+  urlSources?: UrlSourcesMode;
+  /** Exact source URLs from the repository's showcase; URL_SOURCES=signed-in lets these through. */
+  trustedUrls?: ReadonlySet<string>;
+  /** Disk space all anonymous dashboards may take together; 0 = no limit. */
+  anonymousStorageBytes?: number;
+  /** Disk space one signed-in user's dashboards may take; 0 = no limit. Administrators are exempt. */
+  userStorageBytes?: number;
+  /** Tests only: admission of uploads (one at a time by default). */
+  uploadGate?: Gate;
+}
+
+/**
+ * Uploads parsed and saved at the same time, across the whole server. A 5 MB upload is a few times that in memory
+ * while it is parsed and written; a burst runs one at a time, a short queue waits, and the rest get 503 with
+ * Retry-After rather than the container running out of memory.
+ */
+export const newUploadGate = () =>
+  new Gate({ concurrency: 1, maxQueue: 4, maxQueuedPerClient: 2, maxWaitMs: 15_000, retryAfterSec: 5 });
+
 export class DashboardService {
   private readonly store: FolderStore;
   private readonly index: DashboardIndex;
@@ -145,8 +306,18 @@ export class DashboardService {
   private readonly secrets: Secrets;
   private readonly secretMode: SecretMode;
   private readonly users: Users;
+  /** Disk space all anonymous dashboards may take together; 0 = no limit. */
+  private readonly anonymousStorageBytes: number;
+  /** Disk space one signed-in user's dashboards may take; 0 = no limit. */
+  private readonly userStorageBytes: number;
   /** Secret ids whose decryption failure was already logged; once per secret per process is enough. */
   private readonly undecryptableLogged = new Set<string>();
+  private readonly uploads: UploadParser;
+  private readonly uploadMaxCells: number;
+  private readonly uploadMaxCellsAnonymous: number;
+  private readonly urlSources: UrlSourcesMode;
+  private readonly trustedUrls: ReadonlySet<string>;
+  private readonly uploadGate: Gate;
 
   constructor(
     store: FolderStore,
@@ -154,7 +325,14 @@ export class DashboardService {
     hub: LiveHub,
     connectors: ConnectorLookup,
     secrets: { store: Secrets; mode: SecretMode; users: Users },
+    options: DashboardServiceOptions = {},
   ) {
+    this.uploads = options.uploads ?? { parse: async (input) => parseUpload(input) };
+    this.uploadMaxCells = options.uploadMaxCells ?? DEFAULT_UPLOAD_MAX_CELLS;
+    this.uploadMaxCellsAnonymous = options.uploadMaxCellsAnonymous ?? DEFAULT_UPLOAD_MAX_CELLS_ANONYMOUS;
+    this.urlSources = options.urlSources ?? 'everyone';
+    this.trustedUrls = options.trustedUrls ?? new Set();
+    this.uploadGate = options.uploadGate ?? newUploadGate();
     this.store = store;
     this.index = index;
     this.hub = hub;
@@ -162,6 +340,62 @@ export class DashboardService {
     this.secrets = secrets.store;
     this.secretMode = secrets.mode;
     this.users = secrets.users;
+    this.anonymousStorageBytes = options.anonymousStorageBytes ?? 0;
+    this.userStorageBytes = options.userStorageBytes ?? 0;
+  }
+
+  /**
+   * Refuses anonymous writes once anonymous dashboards together reach the configured ceiling. Anyone can create
+   * them, so without a ceiling a script could fill the disk; signed-in users stay unaffected.
+   */
+  private assertAnonymousRoom(adding: number) {
+    if (this.anonymousStorageBytes <= 0) return;
+    if (this.index.anonymousBytes() + adding <= this.anonymousStorageBytes) return;
+    throw new HttpError(507, ANONYMOUS_FULL, { code: 'ANONYMOUS_STORAGE_FULL' });
+  }
+
+  /**
+   * Refuses to let a signed-in user's dashboards take more than USER_STORAGE_LIMIT_MB. Signing in takes a Google
+   * account, not nothing, but one account could still fill the disk with copies and uploads. Administrators and the
+   * showcase owner are not limited. Only growth is refused: a user over the limit can still edit, shrink and delete.
+   */
+  private assertUserRoom(ownerId: string, adding: number) {
+    if (this.userStorageBytes <= 0 || adding <= 0 || ownerId === SHOWCASE_OWNER_ID) return;
+    const used = this.index.ownerBytes(ownerId);
+    if (used + adding <= this.userStorageBytes) return;
+    if (this.users.isAdmin(this.users.byId(ownerId))) return;
+    throw new HttpError(
+      507,
+      `Your dashboards take ${mb(used)} of the ${mb(this.userStorageBytes)} this server allows per account, and this change needs ${mb(adding)} more. Delete dashboards or uploaded files you no longer need.`,
+      { code: 'USER_STORAGE_FULL', usedBytes: used, limitBytes: this.userStorageBytes },
+    );
+  }
+
+  /** Room for `adding` bytes in whatever pool the owner draws from: the anonymous total or the user's own. */
+  private assertRoom(ownerId: string | null, adding: number) {
+    if (ownerId === null) this.assertAnonymousRoom(adding);
+    else this.assertUserRoom(ownerId, adding);
+  }
+
+  /**
+   * Size rules for writing `after` over `before` (null when creating). A document stored before the limit existed
+   * keeps loading and accepts edits that do not grow it, so it can be shrunk.
+   */
+  private checkSize(ownerId: string | null, before: DashboardDoc | null, after: DashboardDoc) {
+    const bytes = jsonBytes(after);
+    const beforeBytes = before === null ? null : jsonBytes(before);
+    if (bytes > MAX_DOCUMENT_BYTES && (beforeBytes === null || bytes > beforeBytes)) {
+      throw documentTooLarge(after, bytes);
+    }
+    // The document and its new version.
+    if (ownerId === null) this.assertAnonymousRoom(2 * bytes);
+    // A user's write is refused only when it grows the document: what the new version and the larger document add.
+    else if (beforeBytes === null) this.assertUserRoom(ownerId, 2 * bytes);
+    else if (bytes > beforeBytes) this.assertUserRoom(ownerId, bytes + (bytes - beforeBytes));
+  }
+
+  private async updateSize(id: string) {
+    this.index.setSize(id, await this.store.sizeOf(id));
   }
 
   /**
@@ -198,11 +432,13 @@ export class DashboardService {
   }
 
   /**
-   * Raises a new or changed refreshSec that is below its connector's minRefreshSec to that minimum, as one more
-   * operation, and says so in the change log. The connector cache would serve the same reading until then anyway; a
-   * stored "every 5 s" on a source that updates every 15 min only misleads whoever reads the document. Raising beats
-   * rejecting: the batch an agent sent still saves. Datasets the batch did not touch are left alone, so documents
-   * saved before a minimum went up keep loading and accept unrelated edits.
+   * Raises a new or changed refreshSec that is below its source's minimum (a connector's minRefreshSec, the feed and
+   * HTTP cache times) to that minimum, as one more operation, and says so in the change log. The cache would serve
+   * the same reading until then anyway; a stored "every 5 s" on a source that updates every 15 min only misleads
+   * whoever reads the document. Uploads and inline rows change only when edited, so their refresh is turned off.
+   * Raising beats rejecting: the batch an agent sent still saves. Datasets the change did not touch are left alone,
+   * so documents saved before a minimum went up keep loading and accept unrelated edits; the live hub applies the
+   * same floors to them. Every write path (ops and full saves) goes through here.
    */
   private raiseRefreshToMinimum(before: DashboardDoc, result: { doc: DashboardDoc; changes: string[] }) {
     const previous = new Map(before.datasets.map((d) => [d.id, d]));
@@ -210,14 +446,23 @@ export class DashboardService {
       if (d.refreshSec <= 0) return [];
       let min: number;
       let what: string;
-      if (d.source.kind === 'connector') {
+      if (isStaticSource(d.source)) {
+        min = 0;
+        what =
+          d.source.kind === 'upload'
+            ? 'because an uploaded file only changes when it is replaced'
+            : 'because inline rows only change when the dashboard is edited';
+      } else if (d.source.kind === 'http') {
+        min = HTTP_MIN_REFRESH_SEC;
+        what = 'the minimum for HTTP sources (responses are cached that long)';
+      } else if (d.source.kind === 'connector') {
         min = this.connectors.get(d.source.connector)?.info.minRefreshSec ?? 0;
         what = `the minimum of the ${d.source.connector} connector`;
       } else if (d.source.kind === 'feed') {
         min = FEED_MIN_REFRESH_SEC;
         what = 'the minimum for feeds';
       } else return [];
-      if (d.refreshSec >= min) return [];
+      if (min > 0 && d.refreshSec >= min) return [];
       const old = previous.get(d.id);
       const untouched =
         old?.refreshSec === d.refreshSec && JSON.stringify(old.source) === JSON.stringify(d.source);
@@ -232,12 +477,37 @@ export class DashboardService {
       doc: raised.doc,
       changes: [
         ...result.changes,
-        ...raises.map(
-          ({ dataset, what, min }) =>
-            `Raised refreshSec of dataset "${dataset.name}" from ${dataset.refreshSec} s to ${min} s, ${what}`,
+        ...raises.map(({ dataset, what, min }) =>
+          min === 0
+            ? `Turned off live refresh of dataset "${dataset.name}" (was ${dataset.refreshSec} s), ${what}`
+            : `Raised refreshSec of dataset "${dataset.name}" from ${dataset.refreshSec} s to ${min} s, ${what}`,
         ),
       ],
     };
+  }
+
+  /**
+   * With URL_SOURCES=signed-in, a URL is fetched only for a dashboard that a signed-in user owns: a public instance
+   * on its operator's connection must not fetch arbitrary addresses for strangers. Checked at use time (DataService
+   * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
+   * exception is a URL that appears verbatim in the repository's showcase, so anonymous copies of a use case work;
+   * matching is exact (no normalising), so a variant of a trusted URL is still refused.
+   */
+  assertMayFetchUrl(target: DashboardTarget, url: string) {
+    if (this.urlSources === 'signed-in' && target.ownerId === null && !this.trustedUrls.has(url))
+      throw forbidden(URL_SOURCES_SIGNED_IN);
+  }
+
+  private checkUrlSources(meta: StoredMeta, before: DashboardDoc, after: DashboardDoc) {
+    if (this.urlSources !== 'signed-in' || meta.ownerId !== null) return;
+    const previous = new Map(before.datasets.map((d) => [d.id, JSON.stringify(d.source)]));
+    const added = after.datasets.some(
+      (d) =>
+        (d.source.kind === 'http' || d.source.kind === 'feed') &&
+        previous.get(d.id) !== JSON.stringify(d.source) &&
+        !this.trustedUrls.has(d.source.url),
+    );
+    if (added) throw badRequest(URL_SOURCES_SIGNED_IN);
   }
 
   private publicMeta(m: StoredMeta, title: string): DashboardMeta {
@@ -287,17 +557,24 @@ export class DashboardService {
     return { meta, doc };
   }
 
-  /** Loads for viewing. Private dashboards look like 404 to strangers (no existence leak). */
+  /**
+   * Loads for viewing. A private dashboard answers exactly like a missing one to everyone who may not see it,
+   * signed in or not, so ids cannot be probed for existence.
+   */
   async loadViewable(id: string, p: Principal) {
     const loaded = await this.load(id).catch((e) => {
       if (e instanceof HttpError) throw e;
       throw notFound('Dashboard not found');
     });
-    if (!this.canView(loaded.meta, p)) {
-      if (!p.user) throw unauthorized('This dashboard is private. Sign in to view it.');
-      throw notFound('Dashboard not found');
-    }
+    if (!this.canView(loaded.meta, p)) throw notFound('Dashboard not found');
     return loaded;
+  }
+
+  /** Refuses a change; to someone who cannot even see the dashboard the refusal is the same 404 as for a missing one. */
+  private assertCanEdit(meta: StoredMeta, p: Principal, message = 'You cannot edit this dashboard') {
+    if (this.canEdit(meta, p)) return;
+    if (!this.canView(meta, p)) throw notFound('Dashboard not found');
+    throw forbidden(message);
   }
 
   async get(id: string, p: Principal, options: { touch?: boolean } = {}): Promise<DashboardEnvelope> {
@@ -312,6 +589,16 @@ export class DashboardService {
       });
     }
     return this.envelope(meta, doc, p);
+  }
+
+  /**
+   * `get` as response body chunks. The document part is the store's shared buffer, so a crowd of viewers costs one
+   * serialised copy of a large document rather than one per request.
+   */
+  async getJson(id: string, p: Principal, options: { touch?: boolean } = {}): Promise<Uint8Array[]> {
+    const { doc, ...rest } = await this.get(id, p, options);
+    const head = JSON.stringify(rest);
+    return [Buffer.from(`${head.slice(0, -1)},"doc":`), this.store.serializedDoc(doc), Buffer.from('}')];
   }
 
   async create(
@@ -333,6 +620,7 @@ export class DashboardService {
       if (input.visibility === 'public')
         this.assertMayShowSecrets(p, p.user.id, secretIds, input, TOKEN_PUBLISH);
     }
+    this.checkSize(p.user?.id ?? null, null, doc);
     const id = newDashboardId();
     const at = now();
     const editKey = p.user ? undefined : randomToken('pbk_', 24);
@@ -354,7 +642,11 @@ export class DashboardService {
       actorOf(p),
       input.changes ?? [input.template ? `Created from template "${input.template}"` : 'Created'],
     );
-    this.index.upsert(meta, { title: doc.title, widgets: doc.widgets.length });
+    this.index.upsert(meta, {
+      title: doc.title,
+      widgets: doc.widgets.length,
+      sizeBytes: await this.store.sizeOf(id),
+    });
     const principal = editKey ? { ...p, editKey } : p;
     return { envelope: this.envelope(meta, doc, principal), ...(editKey ? { editKey } : {}) };
   }
@@ -368,9 +660,16 @@ export class DashboardService {
   ): Promise<{ envelope: DashboardEnvelope; changes: string[] }> {
     const result = await this.store.withLock(id, async () => {
       const { meta, doc } = await this.load(id);
-      if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
+      this.assertCanEdit(meta, p);
       const next = mutate(doc, meta);
+      this.checkUrlSources(meta, doc, next.doc);
       this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
+      this.checkSize(meta.ownerId, doc, next.doc);
+      // A restore brings back what was stored before, like the secret checks above allow.
+      const inline = secretOptions.restore
+        ? null
+        : (inlineTooWide(doc, next.doc) ?? inlineTextTooLong(doc, next.doc));
+      if (inline) throw inline;
       const actor = actorOf(p);
       const updated: StoredMeta = {
         ...meta,
@@ -380,7 +679,11 @@ export class DashboardService {
         lastActor: actor,
       };
       await this.store.writeDoc(updated, next.doc, actor, next.changes);
-      this.index.upsert(updated, { title: next.doc.title, widgets: next.doc.widgets.length });
+      this.index.upsert(updated, {
+        title: next.doc.title,
+        widgets: next.doc.widgets.length,
+        sizeBytes: await this.store.sizeOf(id),
+      });
       return { meta: updated, doc: next.doc, changes: next.changes, actor };
     });
     await this.hub.docChanged(id, {
@@ -401,7 +704,10 @@ export class DashboardService {
     changes: string[] = ['Edited in the editor'],
     options: PublicSecretsConfirmation = {},
   ) {
-    const doc = parseDashboard(rawDoc);
+    const parsed = parseDashboard(rawDoc);
+    // The same layout clean-up applyOps does: a saved layout is what every viewer and the snapshot renderer read,
+    // so it must not keep a widget parked at row 10 000 just because the schema allows the number.
+    const doc = { ...parsed, layout: normalizeLayout(parsed.layout, parsed.widgets) };
     return this.commit(
       id,
       p,
@@ -411,7 +717,7 @@ export class DashboardService {
         }
         const [bad] = this.unknownConnectors(current, doc);
         if (bad) throw badRequest(`Dataset "${bad.datasetId}": ${unknownConnectorMessage(bad.connector)}`);
-        return { doc, changes };
+        return this.raiseRefreshToMinimum(current, { doc, changes });
       },
       options,
     );
@@ -428,12 +734,16 @@ export class DashboardService {
     if (ops.length > 100) throw badRequest('At most 100 operations per batch');
     if (options.dryRun) {
       const { meta, doc } = await this.load(id);
-      if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
+      this.assertCanEdit(meta, p);
       const applied = applyOps(doc, ops);
       this.checkOpsConnectors(doc, applied.doc, ops);
       const result = this.raiseRefreshToMinimum(doc, applied);
       // A dry run answers exactly like the save would, so agents learn about secret rules before saving.
+      this.checkUrlSources(meta, doc, result.doc);
       this.checkSecretRefs(meta, doc, result.doc, p, options);
+      this.checkSize(meta.ownerId, doc, result.doc);
+      const inline = inlineTooWide(doc, result.doc) ?? inlineTextTooLong(doc, result.doc);
+      if (inline) throw inline;
       return { envelope: this.envelope(meta, result.doc, p), changes: result.changes, dryRun: true };
     }
     return this.commit(
@@ -459,7 +769,10 @@ export class DashboardService {
   ) {
     const result = await this.store.withLock(id, async () => {
       const { meta, doc } = await this.load(id);
-      if (!p.user || meta.ownerId !== p.user.id) throw forbidden('Only the owner can change visibility');
+      if (!p.user || meta.ownerId !== p.user.id) {
+        if (!this.canView(meta, p)) throw notFound('Dashboard not found');
+        throw forbidden('Only the owner can change visibility');
+      }
       const secretIds = docSecretIds(doc);
       if (visibility === 'public' && meta.visibility !== 'public' && secretIds.length) {
         this.assertMayShowSecrets(p, meta.ownerId, secretIds, options, TOKEN_PUBLISH);
@@ -484,6 +797,7 @@ export class DashboardService {
       const { meta, doc } = await this.load(id);
       if (meta.ownerId) {
         if (meta.ownerId === p.user!.id) return this.envelope(meta, doc, p);
+        if (!this.canView(meta, p)) throw notFound('Dashboard not found');
         throw forbidden('This dashboard already has an owner');
       }
       if (!this.canEdit(meta, p)) throw forbidden('A valid edit key is required to claim this dashboard');
@@ -491,6 +805,8 @@ export class DashboardService {
       // folder was edited by hand, refuse: claiming would let the claimant's secrets resolve in a prepared document.
       if (docSecretIds(doc).length)
         throw forbidden('This dashboard references secrets and cannot be claimed');
+      // Claiming moves the dashboard from the anonymous total into the user's own.
+      this.assertUserRoom(p.user!.id, await this.store.sizeOf(id));
       const updated: StoredMeta = {
         ...meta,
         ownerId: p.user!.id,
@@ -510,15 +826,25 @@ export class DashboardService {
     // anonymous), so they are removed and the copy loads its URLs without credentials.
     const strip = !(p.user && meta.ownerId === p.user.id) && docSecretIds(doc).length > 0;
     const datasets = strip ? doc.datasets.map(withoutSecrets) : doc.datasets;
+    const used = new Set(doc.datasets.flatMap((d) => (d.source.kind === 'upload' ? [d.source.fileId] : [])));
+    // The copy's uploads share the original's bytes on disk, but they count towards the copy's owner in full: the
+    // original may be deleted, and the index measures each dashboard on its own.
+    if (p.user && used.size) {
+      const files = (await this.store.listFiles(id)).filter((f) => used.has(f.id));
+      this.assertUserRoom(p.user.id, 2 * jsonBytes(doc) + storedBytes(files));
+    }
     const created = await this.create(p, {
       doc: { ...doc, datasets, title: `${doc.title} (copy)` },
       ...(strip ? { changes: ['Created', 'Removed secret references (secrets belong to their owner)'] } : {}),
     });
-    // Copy only files the copied datasets actually use: unreferenced uploads stay private to editors.
-    const used = new Set(doc.datasets.flatMap((d) => (d.source.kind === 'upload' ? [d.source.fileId] : [])));
-    for (const file of (await this.store.listFiles(id)).filter((f) => used.has(f.id))) {
-      const table = await this.store.readFileTable(id, file.id);
-      if (table) await this.store.saveFile(created.envelope.meta.id, { ...file, table });
+    // Only files the copied datasets actually use: unreferenced uploads stay private to editors. Viewers may copy
+    // a public dashboard, so the copy shares the upload bytes (hard links) instead of duplicating them: copying
+    // made every two-byte request worth the dashboard's uploads in disk space.
+    const copyId = created.envelope.meta.id;
+    for (const fileId of used) await this.store.linkFile(id, copyId, fileId);
+    if (used.size) {
+      await this.updateSize(copyId);
+      await this.updateSize(id);
     }
     return created;
   }
@@ -527,7 +853,10 @@ export class DashboardService {
     const meta = await this.store.readMeta(id);
     if (!meta) throw notFound('Dashboard not found');
     const isOwner = p.user !== null && meta.ownerId === p.user.id;
-    if (!isOwner && !p.isAdmin) throw forbidden('Only the owner or an admin can delete a dashboard');
+    if (!isOwner && !p.isAdmin) {
+      if (!this.canView(meta, p)) throw notFound('Dashboard not found');
+      throw forbidden('Only the owner or an admin can delete a dashboard');
+    }
     await this.store.withLock(id, () => this.store.remove(id));
     this.index.remove(id);
     this.hub.deleted(id);
@@ -539,6 +868,8 @@ export class DashboardService {
   }
 
   async restore(id: string, p: Principal, version: number, options: PublicSecretsConfirmation = {}) {
+    // Before reading the version, so "version not found" never tells a stranger that the dashboard exists.
+    this.assertCanEdit((await this.load(id)).meta, p);
     const stored = await this.store.readVersion(id, version);
     if (!stored) throw notFound(`Version ${version} not found`);
     // A restored reference to a deleted or rebound secret shows "not available" at use time instead of blocking the
@@ -565,38 +896,52 @@ export class DashboardService {
     input: { name: string; content: string; format?: 'csv' | 'json' | undefined },
   ): Promise<UploadedFile> {
     const { meta } = await this.load(id);
-    if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
+    this.assertCanEdit(meta, p);
     if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) throw badRequest('Files are limited to 5 MB');
     const existing = await this.store.listFiles(id);
-    const usedBytes = existing.reduce((sum, f) => sum + f.size, 0);
-    if (existing.length >= MAX_FILES || usedBytes + Buffer.byteLength(input.content) > MAX_DASHBOARD_BYTES) {
-      throw badRequest(
-        `A dashboard can hold up to ${MAX_FILES} files and ${MAX_DASHBOARD_BYTES / 1024 / 1024} MB of uploads. Delete unused files first.`,
-      );
+    if (existing.length >= MAX_FILES || storedBytes(existing) >= MAX_DASHBOARD_BYTES) {
+      throw uploadsFull(0, storedBytes(existing));
     }
+    // Before parsing: the stored file is rarely much smaller than the upload.
+    this.assertRoom(meta.ownerId, Buffer.byteLength(input.content));
     const format =
       input.format ?? (/\.json$/i.test(input.name) || /^\s*[[{]/.test(input.content) ? 'json' : 'csv');
-    let records: unknown[];
+    const maxCells = meta.ownerId === null ? this.uploadMaxCellsAnonymous : this.uploadMaxCells;
+    const refused = (e: UploadError) => {
+      const hint =
+        e.tooLarge && meta.ownerId === null && maxCells < this.uploadMaxCells
+          ? ` Dashboards of signed-in users accept up to ${this.uploadMaxCells.toLocaleString('en-US')} cells.`
+          : '';
+      return badRequest(e.message + hint);
+    };
+    // Here, not only in the worker: a hostile document is refused in milliseconds without taking a queue place.
     if (format === 'json') {
-      let json: unknown;
-      try {
-        json = JSON.parse(input.content);
-      } catch {
-        throw badRequest('The file is not valid JSON');
-      }
-      records = Array.isArray(json) ? json : (Object.values(json as object).find(Array.isArray) ?? [json]);
-    } else {
-      const parsed = Papa.parse<Record<string, string>>(input.content.replace(/^﻿/, ''), {
-        header: true,
-        skipEmptyLines: 'greedy',
-        transformHeader: (h) => h.trim(),
-      });
-      if (parsed.errors.length && parsed.data.length === 0)
-        throw badRequest(`Could not parse CSV: ${parsed.errors[0]!.message}`);
-      records = parsed.data;
+      const problem = jsonUploadProblem(input.content, maxCells);
+      if (problem) throw refused(problem);
     }
-    const table = inferTable(records, { maxRows: 100_000 });
-    if (table.columns.length === 0) throw badRequest('The file contains no columns');
+    // One upload at a time from parse to disk: each holds the file, its parsed table and its serialised form at once.
+    // That is a heavy job for the whole process too (util/heavy.ts): no snapshot or large pipeline runs meanwhile.
+    return this.uploadGate.run(currentClient(), () =>
+      heavyWork.run(() => this.parseAndSave(id, meta, input, format, maxCells, refused)),
+    );
+  }
+
+  private async parseAndSave(
+    id: string,
+    meta: StoredMeta,
+    input: { name: string; content: string },
+    format: 'csv' | 'json',
+    maxCells: number,
+    refused: (e: UploadError) => HttpError,
+  ): Promise<UploadedFile> {
+    let table: DataTable;
+    try {
+      table = await this.uploads.parse({ content: input.content, format, maxCells });
+    } catch (e) {
+      if (e instanceof UploadError) throw refused(e);
+      if (e instanceof PipelineError) throw badRequest(`Could not read the file: ${e.message}`);
+      throw e;
+    }
     const file = {
       id: `f_${newId()}`.slice(0, 20),
       name: input.name.slice(0, 120),
@@ -605,23 +950,36 @@ export class DashboardService {
       size: Buffer.byteLength(input.content),
       uploadedAt: now(),
     };
-    await this.store.saveFile(id, { ...file, table });
-    return file;
+    // The limits count bytes on disk, known only once serialised. Checked under the lock, so that concurrent
+    // uploads cannot both squeeze in.
+    const written = await this.store.withLock(id, async () => {
+      const files = await this.store.listFiles(id);
+      const used = storedBytes(files);
+      const bytes = await this.store.saveFile(id, { ...file, table }, (bytes) => {
+        if (files.length >= MAX_FILES || used + bytes > MAX_DASHBOARD_BYTES) throw uploadsFull(bytes, used);
+        this.assertRoom(meta.ownerId, bytes);
+      });
+      await this.updateSize(id);
+      return bytes;
+    });
+    await this.uploads.saved?.(id, file.id, table);
+    return { ...file, storedBytes: written };
   }
 
   /** Uploaded files are visible to editors only; viewers see data only through datasets. */
   async listFiles(id: string, p: Principal) {
     const { meta } = await this.loadViewable(id, p);
-    if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
+    this.assertCanEdit(meta, p);
     return this.store.listFiles(id);
   }
 
   async deleteFile(id: string, p: Principal, fileId: string) {
     const { meta, doc } = await this.load(id);
-    if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
+    this.assertCanEdit(meta, p);
     const users = doc.datasets.filter((d) => d.source.kind === 'upload' && d.source.fileId === fileId);
     if (users.length) throw badRequest(`File is used by dataset(s): ${users.map((d) => d.name).join(', ')}`);
     await this.store.deleteFile(id, fileId);
+    await this.updateSize(id);
   }
 
   /** The dashboard a stored dataset of `id` resolves against, after checking the caller may view it. */
@@ -911,6 +1269,31 @@ export class DashboardService {
     );
   }
 
+  /**
+   * Deletes anonymous dashboards created more than `olderThanHours` ago and never changed since: still version 1,
+   * no data, no widgets. Viewing does not keep them, unlike `prune`: there is nothing in them to lose.
+   */
+  async pruneUntouched(options: { olderThanHours: number }): Promise<string[]> {
+    const cutoff = new Date(Date.now() - options.olderThanHours * 3_600_000).toISOString();
+    const pruned: string[] = [];
+    for (const id of this.index.untouchedAnonymousBefore(cutoff)) {
+      const removed = await this.store.withLock(id, async () => {
+        // The index may lag behind the folder; decide on the folder.
+        const meta = await this.store.readMeta(id);
+        const doc = meta ? await this.store.readDoc(id).catch(() => null) : null;
+        if (!meta || !doc || meta.ownerId !== null || meta.version !== 1) return false;
+        if (doc.datasets.length > 0 || doc.widgets.length > 0) return false;
+        await this.store.remove(id);
+        return true;
+      });
+      if (!removed) continue;
+      this.index.remove(id);
+      this.hub.deleted(id);
+      pruned.push(id);
+    }
+    return pruned;
+  }
+
   async prune(options: { olderThanDays: number; onlyAnonymous: boolean }): Promise<string[]> {
     const cutoff = new Date(Date.now() - options.olderThanDays * 86_400_000).toISOString();
     const ids = this.index.idsViewedBefore(cutoff, options.onlyAnonymous);
@@ -920,5 +1303,89 @@ export class DashboardService {
       this.hub.deleted(id);
     }
     return ids;
+  }
+
+  /**
+   * Keeps one public dashboard per showcase use case, owned by SHOWCASE_OWNER_ID so that nobody can edit it (canEdit
+   * compares owner ids) and nothing counts it as anonymous (storage ceiling, pruning). A changed dashboard.json
+   * becomes a new version, so the history shows when the repository changed it. An id that exists with another
+   * owner is never touched. An admin can still delete one; the next startup recreates it. One broken use case never
+   * stops the others (or the server): it is skipped with a warning.
+   */
+  async syncShowcase(useCases: readonly UseCase[], warn: (m: string) => void = console.warn) {
+    const result = { created: [] as string[], updated: [] as string[], skipped: [] as string[] };
+    const actor: Actor = { kind: 'system', label: 'Patchbay showcase' };
+    for (const uc of useCases) {
+      const id = uc.dashboardId;
+      try {
+        await this.syncOne(uc, actor, result, warn);
+      } catch (e) {
+        warn(
+          `[patchbay] showcase: "${uc.meta.id}" not synced: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        result.skipped.push(id);
+      }
+    }
+    return result;
+  }
+
+  private async syncOne(
+    uc: UseCase,
+    actor: Actor,
+    result: { created: string[]; updated: string[]; skipped: string[] },
+    warn: (m: string) => void,
+  ) {
+    {
+      const id = uc.dashboardId;
+      await this.store.withLock(id, async () => {
+        const meta = this.store.exists(id) ? await this.store.readMeta(id) : null;
+        if (meta && meta.ownerId !== SHOWCASE_OWNER_ID) {
+          warn(
+            `[patchbay] showcase: dashboard id "${id}" belongs to someone else; "${uc.meta.id}" not synced`,
+          );
+          result.skipped.push(id);
+          return;
+        }
+        const at = now();
+        if (!meta) {
+          const fresh: StoredMeta = {
+            id,
+            ownerId: SHOWCASE_OWNER_ID,
+            ownerEmail: null,
+            visibility: 'public',
+            editKeyHash: null,
+            version: 1,
+            createdAt: at,
+            updatedAt: at,
+            lastViewedAt: at,
+            lastActor: actor,
+          };
+          await this.store.create(fresh, uc.doc, actor, [`Created from showcase "${uc.meta.id}"`]);
+          this.index.upsert(fresh, {
+            title: uc.doc.title,
+            widgets: uc.doc.widgets.length,
+            sizeBytes: await this.store.sizeOf(id),
+          });
+          result.created.push(id);
+          return;
+        }
+        // A stored document that no longer parses is system-owned, so it is replaced by a new version, not skipped.
+        const current = await this.store.readDoc(id).catch((e) => {
+          warn(`[patchbay] showcase: stored "${id}" is unreadable, rewriting it: ${String(e)}`);
+          return null;
+        });
+        if (current && JSON.stringify(current) === JSON.stringify(uc.doc)) return;
+        // Written without commit(): the document was validated when the repository was loaded and the owner is
+        // the system, and nobody can be subscribed to it yet at startup, so there is nothing to check or publish.
+        const updated: StoredMeta = { ...meta, version: meta.version + 1, updatedAt: at, lastActor: actor };
+        await this.store.writeDoc(updated, uc.doc, actor, [`Updated from showcase "${uc.meta.id}"`]);
+        this.index.upsert(updated, {
+          title: uc.doc.title,
+          widgets: uc.doc.widgets.length,
+          sizeBytes: await this.store.sizeOf(id),
+        });
+        result.updated.push(id);
+      });
+    }
   }
 }

@@ -7,6 +7,8 @@ import {
   diffSteps,
   FEED_MIN_REFRESH_SEC,
   formatValue,
+  HTTP_MIN_REFRESH_SEC,
+  isStaticSource,
   type OpInput,
   type ParamSpec,
   type Source,
@@ -51,8 +53,10 @@ import {
 } from '../components/ui.tsx';
 import { api, errorMessage } from '../lib/api.ts';
 import { useConnectors } from '../lib/hooks.ts';
+import { withRetry } from '../lib/retry.ts';
 import { credentialErrorHint, introducedSecretIds, introducedSecretRefs } from '../lib/secrets.ts';
 import { useEditor } from '../state/editor.ts';
+import { fromWire } from '../state/sync.ts';
 import {
   type CredentialContext,
   CredentialsField,
@@ -89,6 +93,14 @@ interface PreviewResponse {
   result: DatasetResult;
   profile: TableProfile;
   suggestions: Suggestion[];
+}
+
+async function previewRequest(dashboardId: string, dataset: unknown): Promise<PreviewResponse> {
+  const res = await api<PreviewResponse>(`/api/dashboards/${dashboardId}/preview?rows=arrays`, {
+    body: { dataset },
+    dashboardId,
+  });
+  return { ...res, result: fromWire(res.result) };
 }
 
 function slug(text: string, taken: Set<string>) {
@@ -303,10 +315,13 @@ function SourceEditor({
     mutationFn: async (file: File) => {
       if (file.size > 5 * 1024 * 1024) throw new Error('Files are limited to 5 MB');
       const content = await file.text();
-      return api<UploadedFile>(`/api/dashboards/${dashboardId}/files`, {
-        body: { name: file.name, content },
-        dashboardId,
-      });
+      // Uploads take turns on the server: a busy answer means "later", not "no".
+      return withRetry(() =>
+        api<UploadedFile>(`/api/dashboards/${dashboardId}/files`, {
+          body: { name: file.name, content },
+          dashboardId,
+        }),
+      );
     },
     onSuccess: (file) => {
       qc.invalidateQueries({ queryKey: ['files', dashboardId] });
@@ -669,14 +684,18 @@ function DatasetEditor({
   // A connector serves the same reading until its minimum interval has passed, so faster choices would only promise
   // a refresh that never shows (agents get theirs raised on save; here they are simply not offered).
   const source = draft.source;
-  // Feeds are fetched at most every 5 minutes on the server, whatever the dataset asks.
+  // Feeds and HTTP responses are cached on the server for a while, whatever the dataset asks. Uploads and inline rows
+  // only change when edited, so the server never refreshes them on a timer.
+  const staticSource = isStaticSource(source);
   const minRefreshSec =
     source.kind === 'connector'
       ? (connectors?.find((c) => c.id === source.connector)?.minRefreshSec ?? 0)
       : source.kind === 'feed'
         ? FEED_MIN_REFRESH_SEC
-        : 0;
-  const refreshTooFast = draft.refreshSec > 0 && draft.refreshSec < minRefreshSec;
+        : source.kind === 'http'
+          ? HTTP_MIN_REFRESH_SEC
+          : 0;
+  const refreshTooFast = draft.refreshSec > 0 && (staticSource || draft.refreshSec < minRefreshSec);
 
   const credentials = useCredentialContext();
   // Credential problems are explained while typing; a request that the server would refuse is not sent at all.
@@ -697,21 +716,13 @@ function DatasetEditor({
   const previewBody = { source: debounced.source, transforms: debounced.transforms };
   const preview = useQuery({
     queryKey: ['preview', dashboardId, JSON.stringify(previewBody)],
-    queryFn: () =>
-      api<PreviewResponse>(`/api/dashboards/${dashboardId}/preview`, {
-        body: { dataset: previewBody },
-        dashboardId,
-      }),
+    queryFn: () => previewRequest(dashboardId, previewBody),
     retry: false,
     enabled: previewable(debounced.source) && !previewBlocked,
   });
   const raw = useQuery({
     queryKey: ['preview', dashboardId, JSON.stringify({ source: debounced.source, transforms: [] })],
-    queryFn: () =>
-      api<PreviewResponse>(`/api/dashboards/${dashboardId}/preview`, {
-        body: { dataset: { source: debounced.source } },
-        dashboardId,
-      }),
+    queryFn: () => previewRequest(dashboardId, { source: debounced.source }),
     retry: false,
     enabled: previewable(debounced.source) && !previewBlocked,
   });
@@ -811,10 +822,16 @@ function DatasetEditor({
       <section className="grid gap-3 sm:grid-cols-2">
         <Field
           label="Live refresh"
-          hint={`While someone is watching, the server refreshes and pushes changes. Public APIs are cached to respect their limits${minRefreshSec > 1 ? `: this one updates at most every ${formatInterval(minRefreshSec)}` : ''}.`}
+          hint={
+            staticSource
+              ? 'Uploaded files and inline rows change only when you edit them, so there is nothing to refresh.'
+              : `While someone is watching, the server refreshes and pushes changes. Public APIs are cached to respect their limits${minRefreshSec > 1 ? `: this one updates at most every ${formatInterval(minRefreshSec)}` : ''}.`
+          }
           error={
             refreshTooFast
-              ? `This source updates at most every ${formatInterval(minRefreshSec)}. Choose a longer interval.`
+              ? staticSource
+                ? 'This source never changes on its own. Choose Off.'
+                : `This source updates at most every ${formatInterval(minRefreshSec)}. Choose a longer interval.`
               : null
           }
         >
@@ -829,7 +846,11 @@ function DatasetEditor({
                 <option value={draft.refreshSec}>Every {formatInterval(draft.refreshSec)}</option>
               )}
               {REFRESH_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value} disabled={o.value > 0 && o.value < minRefreshSec}>
+                <option
+                  key={o.value}
+                  value={o.value}
+                  disabled={o.value > 0 && (staticSource || o.value < minRefreshSec)}
+                >
                   {o.label}
                 </option>
               ))}

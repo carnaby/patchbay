@@ -13,8 +13,16 @@ const ERRORS: Record<string, string> = {
   google: 'Google sign-in failed. Please try again.',
 };
 
+/** Mirrors the server's check (routes/auth.ts), which is the one that counts: it guards the actual redirect. */
 function safeReturnTo(raw: string | null): string {
-  return raw?.startsWith('/') && !raw.startsWith('//') ? raw : '/me';
+  if (!raw?.startsWith('/') || /[\s\\\p{Cc}\p{Cf}]/u.test(raw)) return '/me';
+  try {
+    const url = new URL(raw, window.location.origin);
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    return url.origin === window.location.origin && !path.startsWith('//') ? path : '/me';
+  } catch {
+    return '/me';
+  }
 }
 
 function GoogleIcon() {

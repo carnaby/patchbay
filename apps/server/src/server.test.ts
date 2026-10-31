@@ -8,8 +8,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
+import { snapshotGate } from './render/gate.ts';
+import { drawLimits, MAX_PIXELS } from './render/snapshot.ts';
 import { isAcceptableRedirect, redirectMatches } from './routes/oauth.ts';
 import { buildTemplate, listTemplates } from './services/templates.ts';
+import { RateLimiter } from './util/rate-limit.ts';
+import { runAsClient } from './util/request-context.ts';
 import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
 
 const BASE = 'http://localhost:8787';
@@ -187,6 +191,25 @@ describe('dashboards over REST', () => {
     }
   });
 
+  it('ships templates the snapshot budgets never trim', async () => {
+    // Trimming would make a template's snapshot differ from what the browser draws.
+    for (const t of listTemplates()) {
+      const doc = buildTemplate(t.id);
+      const results = new Map(
+        await Promise.all(
+          doc.datasets.map(
+            async (d) => [d.id, await deps.data.resolve({ id: 'tpl', ownerId: null }, d)] as const,
+          ),
+        ),
+      );
+      const entries = doc.widgets.map((widget) => ({
+        widget,
+        result: 'datasetId' in widget ? results.get(widget.datasetId) : undefined,
+      }));
+      expect(drawLimits(entries), t.id).toEqual(new Map());
+    }
+  });
+
   it('rejects cross-site writes', async () => {
     const res = await call('/api/dashboards', { body: {}, headers: { origin: 'https://evil.example' } });
     expect(res.status).toBe(403);
@@ -201,7 +224,7 @@ describe('dashboards over REST', () => {
     });
     const id = created.json.envelope.meta.id;
     expect((await call(`/api/dashboards/${id}`, { cookie: alice })).status).toBe(200);
-    expect((await call(`/api/dashboards/${id}`)).status).toBe(401);
+    expect((await call(`/api/dashboards/${id}`)).status).toBe(404);
     expect((await call(`/api/dashboards/${id}`, { cookie: bob })).status).toBe(404);
     expect((await call(`/api/dashboards/${id}/snapshot.png`, { cookie: bob })).status).toBe(404);
     const admin = await login('admin@example.com');
@@ -225,6 +248,86 @@ describe('dashboards over REST', () => {
     const conflict = await save('Second');
     expect(conflict.status).toBe(409);
     expect(conflict.json.current.doc.title).toBe('First');
+  });
+
+  it('compacts a saved layout and keeps snapshots of it small', async () => {
+    const created = (await call('/api/dashboards', { body: {} })).json;
+    const id = created.envelope.meta.id;
+    const doc = {
+      ...created.envelope.doc,
+      widgets: [{ id: 'w1', type: 'text', title: 'x', config: { markdown: 'hi' } }],
+      layout: [{ i: 'w1', x: 0, y: 1500, w: 1, h: 40 }],
+    };
+    const saved = await call(`/api/dashboards/${id}`, {
+      method: 'PUT',
+      body: { doc, baseVersion: 1 },
+      headers: { 'x-edit-key': created.editKey },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.json.envelope.doc.layout).toEqual([{ i: 'w1', x: 0, y: 0, w: 1, h: 40 }]);
+    const res = await app.request(`${BASE}/api/dashboards/${id}/snapshot.png`, { headers: { origin: BASE } });
+    expect(res.status).toBe(200);
+    const png = Buffer.from(await res.arrayBuffer());
+    expect(png.readUInt32BE(16) * png.readUInt32BE(20)).toBeLessThanOrEqual(MAX_PIXELS);
+  });
+
+  it('answers 503 with Retry-After while the renderer is saturated', async () => {
+    const { envelope } = (await call('/api/dashboards', { body: { template: 'blank' } })).json;
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holders: Promise<unknown>[] = [];
+    // Fill every admission slot of the process-wide gate with jobs that wait; admission is decided synchronously.
+    // Each from its own client, as one client may hold only some of the slots.
+    for (;;) {
+      const before = snapshotGate.pending();
+      const job = runAsClient(`ip:filler-${holders.length}`, () => snapshotGate.run(() => hold));
+      if (snapshotGate.pending() === before) {
+        await job.catch(() => undefined);
+        break;
+      }
+      holders.push(job);
+    }
+    try {
+      const busy = await call(`/api/dashboards/${envelope.meta.id}/snapshot.png?theme=dark`);
+      expect(busy.status).toBe(503);
+      expect(Number(busy.headers.get('retry-after'))).toBeGreaterThan(0);
+      expect(busy.json.error).toMatch(/busy/);
+    } finally {
+      release();
+      await Promise.all(holders);
+    }
+    expect((await call(`/api/dashboards/${envelope.meta.id}/snapshot.png?theme=dark`)).status).toBe(200);
+  });
+
+  it('limits the snapshots one client has drawn, and lets cache hits through', async () => {
+    const limited = createApp({
+      ...deps,
+      config: { ...deps.config, trustProxy: 'cloudflare' },
+      limits: { ...deps.limits, snapshots: new RateLimiter(2, 30) },
+    });
+    const { envelope } = (await call('/api/dashboards', { body: { template: 'blank' } })).json;
+    const snap = (query: string, ip: string) =>
+      limited.request(`${BASE}/api/dashboards/${envelope.meta.id}/snapshot.png${query}`, {
+        headers: { origin: BASE, 'cf-connecting-ip': ip },
+      });
+    // Two addresses in one /64 are one client.
+    expect((await snap('?theme=light', '2001:db8:1:1::1')).status).toBe(200);
+    expect((await snap('?theme=dark', '2001:db8:1:1::2')).status).toBe(200);
+    const busy = await snap('?theme=dark&widget=nope', '2001:db8:1:1::3');
+    // A widget that does not exist is turned away before anything is drawn.
+    expect(busy.status).toBe(404);
+    const keyed = (await call('/api/dashboards', { body: { template: 'blank' } })).json.envelope.meta.id;
+    const third = await limited.request(`${BASE}/api/dashboards/${keyed}/snapshot.png`, {
+      headers: { origin: BASE, 'cf-connecting-ip': '2001:db8:1:1::4' },
+    });
+    expect(third.status).toBe(429);
+    expect(Number(third.headers.get('retry-after'))).toBeGreaterThan(0);
+    // Already drawn: served from the cache without counting.
+    expect((await snap('?theme=dark', '2001:db8:1:1::5')).status).toBe(200);
+    // Another /64 has its own budget.
+    expect((await snap('?theme=light', '2001:db8:1:2::1')).status).toBe(200);
   });
 
   it('lets a signed-in user claim an anonymous dashboard', async () => {
@@ -401,8 +504,12 @@ describe('OAuth 2.1 for MCP', () => {
     expect(tokenRes.status).toBe(200);
     const tokens = (await tokenRes.json()) as { access_token: string; refresh_token: string; scope: string };
     expect(tokens.scope).toBe('dashboards:read dashboards:write');
-    const me = await call('/api/me', { headers: { authorization: `Bearer ${tokens.access_token}` } });
-    expect(me.json.user.email).toBe('oauth-user@example.com');
+    // Access tokens are bound to /mcp, so they are checked against the token store rather than the REST API.
+    const holder = (raw: string) => {
+      const verified = deps.tokens.verify(raw);
+      return verified ? deps.users.byId(verified.userId)?.email : null;
+    };
+    expect(holder(tokens.access_token)).toBe('oauth-user@example.com');
 
     const rotated = (await (
       await form({ grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: clientId })
@@ -420,17 +527,13 @@ describe('OAuth 2.1 for MCP', () => {
       redirect_uri: redirectUri,
     });
     expect(replay.status).toBe(400);
-    expect(
-      (await call('/api/me', { headers: { authorization: `Bearer ${rotated.access_token}` } })).status,
-    ).toBe(401);
+    expect(holder(rotated.access_token)).toBeNull();
     // Replaying the old refresh token revokes the whole grant.
     expect(
       (await form({ grant_type: 'refresh_token', refresh_token: tokens.refresh_token, client_id: clientId }))
         .status,
     ).toBe(400);
-    expect(
-      (await call('/api/me', { headers: { authorization: `Bearer ${rotated.access_token}` } })).status,
-    ).toBe(401);
+    expect(holder(rotated.access_token)).toBeNull();
   });
 
   it('never redirects to an unregistered redirect_uri', async () => {
@@ -475,6 +578,22 @@ describe('MCP tools', () => {
 
   beforeAll(async () => {
     client = await connectAgent('agent-owner@example.com');
+  });
+
+  it('refuses a nested request body before the MCP SDK parses it', async () => {
+    const cookie = await login('mcp-bomb@example.com');
+    const pat = await call('/api/tokens', { body: { name: 'bomb', scopes: ['dashboards:write'] }, cookie });
+    const res = await app.request(`${BASE}/mcp`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${pat.json.token}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: '['.repeat(1_000_000) + ']'.repeat(1_000_000),
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain('nests deeper than 64 levels');
   });
 
   afterAll(async () => {
@@ -878,6 +997,39 @@ describe('MCP tools', () => {
     const end = await read({ from: 'end' });
     expect(end.rowCount).toBe(10);
     expect(end.rows.map((r: { v: number }) => r.v)).toEqual([7, 8, 9]);
+  });
+
+  it('keeps get_data answers small when every row repeats long column names', async () => {
+    const id = JSON.parse(
+      text(await client.callTool({ name: 'create_dashboard', arguments: { title: 'Wide' } })),
+    ).dashboardId;
+    const names = Array.from({ length: 20 }, (_, i) => `${i}_${'n'.repeat(58)}`);
+    const csv = `${names.join(',')}\n${`${names.map((_, i) => i).join(',')}\n`.repeat(2_000)}`;
+    const uploaded = JSON.parse(
+      text(
+        await client.callTool({
+          name: 'upload_data',
+          arguments: { dashboardId: id, name: 'wide.csv', format: 'csv', content: csv },
+        }),
+      ),
+    );
+    await client.callTool({
+      name: 'apply_operations',
+      arguments: { dashboardId: id, operations: [uploaded.addDatasetOp] },
+    });
+    const answer = text(
+      await client.callTool({
+        name: 'get_data',
+        arguments: { dashboardId: id, datasetId: uploaded.addDatasetOp.dataset.id, limit: 500 },
+      }),
+    );
+    // 500 such rows are about 1.4 MB; the answer stops at what fits and says why.
+    expect(answer.length).toBeLessThan(400_000);
+    const read = JSON.parse(answer);
+    expect(read.rowCount).toBe(2_000);
+    expect(read.rows.length).toBeGreaterThan(50);
+    expect(read.rows.length).toBeLessThan(500);
+    expect(read.note).toMatch(/select fewer columns/);
   });
 
   it('grows accumulate history without viewers only when the data is requested, and says so', async () => {

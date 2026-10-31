@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { redact, redactJson } from './safe-fetch.ts';
+import { createServer, type Server } from 'node:http';
+import { connect } from 'node:net';
+import { Agent } from 'undici';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { redact, redactJson, safeFetchJson } from './safe-fetch.ts';
 
 /** A value with characters that encoders treat differently: "/", "+", "=", a space and "~". */
 const VALUE = 'Ab/c+D=e f~g_12345';
@@ -72,5 +75,49 @@ describe('echo redaction', () => {
   it('redacts messages the same way', () => {
     expect(redact(`failed for ${encodeURIComponent(VALUE).toLowerCase()}`, [VALUE])).not.toMatch(/ab%2fc/i);
     expect(redact(`plain ${VALUE} text`, [VALUE])).toBe(`plain ${R} text`);
+  });
+});
+
+describe('small documents', () => {
+  let server: Server;
+  let dispatcher: Agent;
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (req.url === '/large') return res.end(JSON.stringify({ pad: 'x'.repeat(20_000) }));
+      if (req.url === '/many') return res.end(JSON.stringify(Array.from({ length: 1000 }, (_, i) => i)));
+      res.end(JSON.stringify({ ok: true }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    dispatcher = new Agent({
+      connect: (_options, callback) => {
+        const socket = connect(port, '127.0.0.1');
+        socket.once('connect', () => callback(null, socket));
+        socket.once('error', (e) => callback(e, null));
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await dispatcher.close();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  it('holds a response to the byte and value limits the caller sets', async () => {
+    const options = { maxBytes: 16 * 1024, maxValues: 256, test: { dispatcher } };
+    await expect(safeFetchJson('https://small.example/ok', options)).resolves.toEqual({ ok: true });
+    await expect(safeFetchJson('https://small.example/large', options)).rejects.toThrow(
+      'Response larger than 16 KB',
+    );
+    await expect(safeFetchJson('https://small.example/many', options)).rejects.toThrow(
+      'The response holds more than 256 values',
+    );
+    // Without them, the defaults apply.
+    await expect(safeFetchJson('https://small.example/many', { test: { dispatcher } })).resolves.toHaveLength(
+      1000,
+    );
   });
 });

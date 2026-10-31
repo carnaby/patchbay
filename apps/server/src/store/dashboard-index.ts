@@ -1,4 +1,9 @@
-import type { AdminDashboardRow, DashboardMeta, Visibility } from '@patchbay/core';
+import {
+  type AdminDashboardRow,
+  type DashboardMeta,
+  SHOWCASE_OWNER_ID,
+  type Visibility,
+} from '@patchbay/core';
 import type { DB } from '../db.ts';
 import type { FolderStore, StoredMeta } from './folder-store.ts';
 
@@ -87,9 +92,44 @@ export class DashboardIndex {
     }));
   }
 
-  idsViewedBefore(cutoff: string, onlyAnonymous: boolean): string[] {
-    const sql = `SELECT id FROM dashboards WHERE last_viewed_at < ?${onlyAnonymous ? ' AND owner_id IS NULL' : ''}`;
+  /** What anonymous dashboards take on disk, as of their last write or reconcile. */
+  anonymousBytes(): number {
+    const row = this.db
+      .prepare('SELECT COALESCE(SUM(size_bytes), 0) AS total FROM dashboards WHERE owner_id IS NULL')
+      .get() as { total: number };
+    return Number(row.total);
+  }
+
+  /** What one owner's dashboards take on disk, as of their last write or reconcile. */
+  ownerBytes(ownerId: string): number {
+    const row = this.db
+      .prepare('SELECT COALESCE(SUM(size_bytes), 0) AS total FROM dashboards WHERE owner_id = ?')
+      .get(ownerId) as { total: number };
+    return Number(row.total);
+  }
+
+  /** One dashboard's size on disk as last recorded, or 0 when it is not indexed. */
+  sizeOf(id: string): number {
+    const row = this.db.prepare('SELECT size_bytes FROM dashboards WHERE id = ?').get(id) as
+      | { size_bytes: number }
+      | undefined;
+    return Number(row?.size_bytes ?? 0);
+  }
+
+  setSize(id: string, sizeBytes: number) {
+    this.db.prepare('UPDATE dashboards SET size_bytes = ? WHERE id = ?').run(sizeBytes, id);
+  }
+
+  /** Anonymous dashboards still at their first version with no widgets, created before `cutoff`. */
+  untouchedAnonymousBefore(cutoff: string): string[] {
+    const sql = `SELECT id FROM dashboards WHERE owner_id IS NULL AND version = 1 AND widgets = 0 AND created_at < ?`;
     return (this.db.prepare(sql).all(cutoff) as { id: string }[]).map((r) => r.id);
+  }
+
+  idsViewedBefore(cutoff: string, onlyAnonymous: boolean): string[] {
+    // The showcase belongs to the repository, not to a user: pruning must never take it.
+    const sql = `SELECT id FROM dashboards WHERE last_viewed_at < ? AND owner_id IS NOT ?${onlyAnonymous ? ' AND owner_id IS NULL' : ''}`;
+    return (this.db.prepare(sql).all(cutoff, SHOWCASE_OWNER_ID) as { id: string }[]).map((r) => r.id);
   }
 
   allIds(): string[] {
@@ -110,15 +150,22 @@ export class DashboardIndex {
         removed++;
       }
     }
-    const indexed = new Set(this.allIds());
+    const indexed = new Map(
+      (this.db.prepare('SELECT id, version, title, widgets FROM dashboards').all() as unknown as Row[]).map(
+        (r) => [r.id, r],
+      ),
+    );
     for (const id of onDisk) {
       const meta = await store.readMeta(id).catch(() => null);
       if (!meta) continue;
-      const doc = await store.readDoc(id).catch(() => null);
-      if (!indexed.has(id)) added++;
+      const known = indexed.get(id);
+      if (!known) added++;
+      // Title and widget count only change with the version: reading every document on every pass would parse
+      // each dashboard on the disk every few minutes.
+      const doc = known?.version === meta.version ? null : await store.readDoc(id).catch(() => null);
       this.upsert(meta, {
-        title: doc?.title ?? '(unreadable)',
-        widgets: doc?.widgets.length ?? 0,
+        title: doc?.title ?? known?.title ?? '(unreadable)',
+        widgets: doc?.widgets.length ?? known?.widgets ?? 0,
         sizeBytes: await store.sizeOf(id),
       });
     }

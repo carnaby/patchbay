@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Deps, Env } from '../context.ts';
 import { forbidden } from '../util/errors.ts';
+import { memoryGuard } from '../util/memory-pressure.ts';
 
 /** The single admin surface, available to emails listed in ADMIN_EMAILS. */
 export function adminRoutes(deps: Deps) {
@@ -24,9 +25,14 @@ export function adminRoutes(deps: Deps) {
         anonymous: rows.filter((r) => r.ownerId === null).length,
         users: users.n,
         totalBytes: rows.reduce((s, r) => s + r.sizeBytes, 0),
+        // Null while the guard is off (no memory limit known).
+        memory: memoryGuard.state(),
       },
     });
   });
+
+  /** Polled by the admin page; the guard samples on its own timer too, so the figure is current on an idle server. */
+  app.get('/memory', (c) => c.json({ memory: memoryGuard.state() }));
 
   /**
    * How many secrets each user stored: never values or names. If the key and a copy of the database leak together,

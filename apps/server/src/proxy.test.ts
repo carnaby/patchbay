@@ -9,7 +9,7 @@ import { Hono } from 'hono';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig, type TrustProxy } from './config.ts';
-import { clientIp, type Deps } from './context.ts';
+import { clientIp, type Deps, rateKey } from './context.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 
 const BASE = 'http://localhost:8787';
@@ -106,6 +106,87 @@ describe('TRUST_PROXY', () => {
     expect((await create('203.0.113.7')).status).toBe(429);
     // Same socket peer (the cloudflared container), different visitor.
     expect((await create('203.0.113.8')).status).toBe(201);
+  });
+
+  it('puts every address of one IPv6 /56 into the bucket for creates', async () => {
+    const app = appWith('cloudflare');
+    const create = (ip: string) =>
+      app.request(
+        `${BASE}/api/dashboards`,
+        { method: 'POST', headers: { origin: BASE, 'cf-connecting-ip': ip } },
+        SOCKET,
+      );
+    expect((await create('2001:db8:1:2::1')).status).toBe(201);
+    expect((await create('2001:db8:1:2:dead:beef:0:1')).status).toBe(201);
+    // Rotating the interface id, or the /64 inside the same /56, does not buy new attempts.
+    expect((await create('2001:db8:1:2::ffff')).status).toBe(429);
+    expect((await create('2001:db8:1:7f::1')).status).toBe(429);
+    expect((await create('2001:db8:1:100::1')).status).toBe(201);
+  });
+});
+
+describe('rate limit keys', () => {
+  it('keeps IPv4 addresses whole and reduces IPv6 to the prefix', () => {
+    expect(rateKey('203.0.113.7')).toBe('203.0.113.7');
+    expect(rateKey('2001:db8:1:2:3:4:5:6')).toBe('2001:db8:1:2:0:0:0:0/64');
+    expect(rateKey('2001:DB8:1:2::9')).toBe('2001:db8:1:2:0:0:0:0/64');
+    expect(rateKey('2001:db8:1:2ff::1', 56)).toBe('2001:db8:1:200:0:0:0:0/56');
+    expect(rateKey('2001:db8:1:2:3:4:5:6', 48)).toBe('2001:db8:1:0:0:0:0:0/48');
+    expect(rateKey('::1')).toBe('0:0:0:0:0:0:0:0/64');
+    expect(rateKey('fe80::1%eth0')).toBe('fe80:0:0:0:0:0:0:0/64');
+    expect(rateKey('2001:db8:1:2::1.2.3.4')).toBe('2001:db8:1:2:0:0:0:0/64');
+  });
+
+  it('treats IPv4-mapped socket addresses as the IPv4 client they are', () => {
+    expect(rateKey('::ffff:203.0.113.7')).toBe('203.0.113.7');
+    expect(rateKey('::ffff:cb00:7107')).toBe('203.0.113.7');
+  });
+
+  it('passes anything that is not an IP through unchanged', () => {
+    expect(rateKey('unknown')).toBe('unknown');
+  });
+});
+
+describe('rate limiter memory', () => {
+  it('forgets idle buckets on a regular sweep, not only when the map is huge', () => {
+    vi.useFakeTimers();
+    try {
+      const limiter = new RateLimiter(5, 60, { sweepEveryMs: 60_000 });
+      for (let i = 0; i < 1000; i++) limiter.take(`2001:db8:${i.toString(16)}::/64`);
+      expect(limiter.size).toBe(1000);
+      // Five tokens refill in five seconds, so a minute later every bucket is full again and can go.
+      vi.advanceTimersByTime(60_000);
+      limiter.take('fresh');
+      expect(limiter.size).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps buckets that are still draining, so a sweep never resets a limit', () => {
+    vi.useFakeTimers();
+    try {
+      const limiter = new RateLimiter(3, 1, { sweepEveryMs: 1000 });
+      for (let i = 0; i < 3; i++) expect(limiter.take('busy')).toBe(true);
+      expect(limiter.take('busy')).toBe(false);
+      vi.advanceTimersByTime(2000);
+      limiter.take('other');
+      expect(limiter.take('busy')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never grows past its hard cap, dropping the least recently used keys', () => {
+    const limiter = new RateLimiter(5, 1, { maxEntries: 100 });
+    for (let i = 0; i < 5; i++) limiter.take('keep');
+    for (let i = 0; i < 1000; i++) {
+      limiter.take(`k${i}`);
+      if (i % 10 === 0) limiter.take('keep');
+    }
+    expect(limiter.size).toBe(100);
+    // The key used recently survived the evictions and still remembers that it is spent.
+    expect(limiter.take('keep')).toBe(false);
   });
 });
 

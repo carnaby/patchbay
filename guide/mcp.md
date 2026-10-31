@@ -17,7 +17,14 @@ Discovery documents:
 Supported: authorization code + PKCE (S256 only), public clients, Client ID Metadata Documents
 (`client_id_metadata_document_supported: true`), dynamic client registration (`/oauth/register`), resource indicators
 (tokens are bound to `PUBLIC_URL/mcp`), refresh token rotation with reuse detection, revocation (`/oauth/revoke`).
-Access tokens live 1 hour, refresh tokens 30 days. Users can see and revoke connected clients under _Settings_.
+Access tokens live 1 hour, refresh tokens 30 days, and work only on `/mcp` (the REST API takes personal access
+tokens). Users can see and revoke connected clients under _Settings_; tokens, connections and the consent screen are
+managed only from a signed-in web session, never with a token. Dynamically registered clients that never obtain a
+grant are removed after a day, and clients without a live token after 90 days.
+
+A client metadata document is fetched without redirects, within 5 s, and may be at most 16 KB with 256 JSON values;
+only its `client_id`, `client_name`, `redirect_uris`, `client_uri`, `logo_uri` and `token_endpoint_auth_method` are
+kept, for a day. A document that fails is not fetched again for 5 minutes.
 
 Scopes:
 
@@ -94,6 +101,9 @@ The answer of `apply_operations`:
 - `dataChecks`: one entry per dataset the batch added or changed, loaded right away so a broken source surfaces at
   once: `rowCount` (rows after the whole pipeline), `columns` (`name:type`), `sampleRows` (the first 3 rows, a sample,
   not a count) and `error`. `truncated: true` means the result has more rows than the 10,000 that widgets receive.
+  A result larger than 4 MB as JSON comes back as an `error` with its columns and no rows, for every reader alike:
+  add `limit`, `select` or `aggregate` steps. Sample rows (here and in `get_data`, `preview_data`) stop at about
+  200,000 characters, with a `note` when fewer rows than asked for fit.
 - `warnings`, when there is something to fix that did not fail the batch (see "Secrets" and "Colour and formatting").
 
 Sound cues are spelled out in `changes` whenever an operation adds, changes or removes one (trigger, sound, volume and

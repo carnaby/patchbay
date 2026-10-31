@@ -4,14 +4,21 @@
  * - live events over SSE (document changes by other clients, refreshed data),
  * - dataset results, kept in the TanStack Query cache.
  */
-import type { DashboardEnvelope, Dataset, DatasetResult, LiveEvent } from '@patchbay/core';
+import {
+  type DashboardEnvelope,
+  type Dataset,
+  type DatasetResult,
+  decodeTable,
+  type LiveEvent,
+} from '@patchbay/core';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from '../components/ui.tsx';
-import { ApiError, api, errorMessage } from '../lib/api.ts';
-import { publicSecretsRequest } from '../lib/secrets.ts';
+import { ApiError, api } from '../lib/api.ts';
 import { useEditor } from './editor.ts';
+import { openLiveChannel } from './live-channel.ts';
+import { performSave } from './save.ts';
 
 const SAVE_DEBOUNCE_MS = 600;
 
@@ -30,34 +37,9 @@ export function useAutosave() {
     if (!id || !doc || saving || conflict) return;
     if (doc === useEditor.getState().saved) return;
     if (secretsPrompt?.doc === doc) return;
-    const timer = setTimeout(async () => {
+    const timer = setTimeout(() => {
       const job = useEditor.getState().beginSave();
-      if (!job) return;
-      try {
-        const res = await api<{ envelope: DashboardEnvelope }>(`/api/dashboards/${id}`, {
-          method: 'PUT',
-          body: {
-            doc: job.doc,
-            baseVersion: job.baseVersion,
-            changes: job.labels,
-            ...(job.confirmPublicSecrets ? { confirmPublicSecrets: true } : {}),
-          },
-          dashboardId: id,
-        });
-        useEditor.getState().saveSucceeded(job.doc, res.envelope);
-      } catch (e) {
-        const secrets = publicSecretsRequest(e);
-        if (secrets) {
-          // Not a failure and not retried on its own: the user decides in the dialog (PublicSecretsPrompt).
-          useEditor.getState().saveNeedsConfirmation(job.doc, secrets);
-        } else if (e instanceof ApiError && e.status === 409 && e.body.current) {
-          const outcome = useEditor.getState().rebaseOnto(e.body.current as DashboardEnvelope);
-          if (outcome === 'rebased') toast('The dashboard changed elsewhere. Your edits were merged on top.');
-        } else {
-          useEditor.getState().saveFailed(errorMessage(e));
-          toast(`Could not save: ${errorMessage(e)}`, 'bad');
-        }
-      }
+      if (job) void performSave(id, job, (message, tone) => toast(message, tone));
     }, SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [id, doc, saving, conflict, secretsPrompt]);
@@ -72,6 +54,12 @@ export function useAutosave() {
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, []);
 }
+
+/** A result as the server sends it with `rows=arrays`, back to rows keyed by column name. */
+export const fromWire = (result: DatasetResult): DatasetResult => ({
+  ...result,
+  table: decodeTable(result.table),
+});
 
 export const datasetKey = (dashboardId: string, dataset: Dataset) =>
   ['data', dashboardId, dataset.id, JSON.stringify(dataset)] as const;
@@ -89,8 +77,6 @@ export function useLiveEvents(id: string | undefined) {
 
   useEffect(() => {
     if (!id) return;
-    const source = new EventSource(`/api/dashboards/${id}/events`, { withCredentials: true });
-    let stopped = false;
     let greeted = false;
 
     const pullRemote = async (event: Extract<LiveEvent, { type: 'doc' }>) => {
@@ -128,15 +114,12 @@ export function useLiveEvents(id: string | undefined) {
       }
     };
 
-    source.onopen = () => setConnected(true);
-    source.onerror = () => setConnected(false);
-    source.onmessage = (msg) => {
-      if (stopped) return;
+    const onMessage = (msg: MessageEvent<string>) => {
       const event = JSON.parse(msg.data) as LiveEvent;
       if (event.type === 'data') {
         const doc = useEditor.getState().saved;
         const dataset = doc?.datasets.find((d) => d.id === event.result.datasetId);
-        if (dataset) qc.setQueryData(datasetKey(id, dataset), event.result);
+        if (dataset) qc.setQueryData(datasetKey(id, dataset), fromWire(event.result));
       } else if (event.type === 'doc') {
         void pullRemote(event);
       } else if (event.type === 'hello') {
@@ -157,6 +140,12 @@ export function useLiveEvents(id: string | undefined) {
       }
     };
 
+    // Rows as arrays: column names once per result instead of once per row (see core wire.ts).
+    const close = openLiveChannel(`/api/dashboards/${id}/events?rows=arrays`, {
+      onMessage,
+      onConnected: setConnected,
+    });
+
     // After our own save finishes, process a remote version that arrived meanwhile.
     const unsubscribe = useEditor.subscribe((s, prev) => {
       if (prev.saving && !s.saving && pendingVersion.current > s.version) {
@@ -172,8 +161,7 @@ export function useLiveEvents(id: string | undefined) {
     });
 
     return () => {
-      stopped = true;
-      source.close();
+      close();
       unsubscribe();
     };
   }, [id, qc, navigate]);
@@ -191,7 +179,12 @@ export function useDatasetResult(dashboardId: string, dataset: Dataset | undefin
   const inSync = Boolean(dataset && savedDataset && JSON.stringify(savedDataset) === JSON.stringify(dataset));
   return useQuery({
     queryKey: dataset ? datasetKey(dashboardId, dataset) : ['data', dashboardId, 'none'],
-    queryFn: () => api<DatasetResult>(`/api/dashboards/${dashboardId}/data/${dataset!.id}`, { dashboardId }),
+    queryFn: async () =>
+      fromWire(
+        await api<DatasetResult>(`/api/dashboards/${dashboardId}/data/${dataset!.id}?rows=arrays`, {
+          dashboardId,
+        }),
+      ),
     enabled: Boolean(dataset) && inSync,
     placeholderData: keepPreviousData,
     staleTime: dataset && dataset.refreshSec > 0 ? dataset.refreshSec * 1000 : 5 * 60_000,

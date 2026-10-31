@@ -9,6 +9,8 @@
 import type { DashboardDoc, LiveEvent } from '@patchbay/core';
 import type { Principal } from '../services/dashboards.ts';
 import type { DataService } from '../services/data.ts';
+import { BusyError } from '../util/gate.ts';
+import { runAsClient } from '../util/request-context.ts';
 
 /** A dashboard as the hub needs it: the document, and the owner its secrets are resolved against. */
 export type LoadDashboard = (id: string) => Promise<{ doc: DashboardDoc; ownerId: string | null } | null>;
@@ -28,8 +30,6 @@ interface Room {
   /** Bumped on every (re)schedule; stale async schedules notice and bail out. */
   generation: number;
 }
-
-const MIN_INTERVAL_SEC = 1;
 
 export class LiveHub {
   private readonly rooms = new Map<string, Room>();
@@ -80,11 +80,12 @@ export class LiveHub {
   publish(dashboardId: string, event: LiveEvent) {
     const room = this.rooms.get(dashboardId);
     if (!room) return;
-    for (const sub of room.subscribers) {
+    for (const sub of [...room.subscribers]) {
       try {
         sub.send(event);
       } catch {
-        room.subscribers.delete(sub);
+        // Through unsubscribe, so the room and its refresh loops close with the last subscriber.
+        this.unsubscribe(dashboardId, sub);
       }
     }
   }
@@ -127,19 +128,27 @@ export class LiveHub {
     // include the credentials in its key, as DataService's caches do.
     const target = { id: dashboardId, ownerId: loaded.ownerId };
     for (const dataset of loaded.doc.datasets) {
-      if (dataset.refreshSec <= 0) continue;
-      const interval = Math.max(dataset.refreshSec, MIN_INTERVAL_SEC) * 1000;
+      // The same floors as on save, applied again here so a document saved before a floor existed (or written by
+      // any other path) cannot schedule faster; uploads and inline rows are never refreshed on a timer.
+      const seconds = this.data.refreshIntervalSec(dataset);
+      if (seconds === null) continue;
+      const interval = seconds * 1000;
       let running = false;
       const tick = async () => {
         if (running) return; // never overlap slow upstream calls
         running = true;
         try {
-          const result = await this.data.resolve(target, dataset);
+          // One client per dashboard for the fair queues: many viewers share one loop, and so one share.
+          const result = await runAsClient(`live:${dashboardId}`, () => this.data.resolve(target, dataset));
           if (room.generation !== generation) return;
           if (room.lastHash.get(dataset.id) !== result.hash) {
             room.lastHash.set(dataset.id, result.hash);
             this.publish(dashboardId, { type: 'data', result });
           }
+        } catch (e) {
+          // A saturated server skips this refresh; viewers keep the data they have. Anything else is a bug, and a
+          // timer callback must not take the process down with it.
+          if (!(e instanceof BusyError)) console.error('[patchbay] live refresh failed', e);
         } finally {
           running = false;
         }

@@ -114,6 +114,9 @@ class Upstream {
         case '/v1/invalid':
           res.writeHead(200, { 'content-type': 'text/plain' });
           return res.end(`not json: ${auth} ${apiKey} ${req.url}`);
+        case '/v1/nested':
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end('['.repeat(1_000_000) + ']'.repeat(1_000_000));
         case '/v1/big':
           res.writeHead(200, {
             'content-type': 'application/json',
@@ -196,7 +199,14 @@ class Env {
     const generous = () => new RateLimiter(100_000, 100_000);
     this.app = createApp({
       ...this.deps,
-      limits: { api: generous(), writes: generous(), auth: generous(), mcp: generous(), creates: generous() },
+      limits: {
+        api: generous(),
+        writes: generous(),
+        auth: generous(),
+        mcp: generous(),
+        creates: generous(),
+        snapshots: generous(),
+      },
     });
     return this;
   }
@@ -447,7 +457,12 @@ describe('managing secrets over REST', () => {
       ['dashboards:read', 'dashboards:write'],
       `${BASE}/mcp`,
     );
-    for (const token of [pat, oauth.accessToken]) {
+    // OAuth access tokens do not reach the REST API at all (they are bound to /mcp).
+    for (const path of ['/api/secrets', `/api/secrets/${existing.id}`]) {
+      const headers = { authorization: `Bearer ${oauth.accessToken}` };
+      expect((await env.call(path, { method: 'DELETE', headers })).status).toBe(401);
+    }
+    for (const token of [pat]) {
       const headers = { authorization: `Bearer ${token}` };
       const body = { name: 'T', sendTo: `${API}/`, placement: 'bearer', value: value() };
       const attempts = [
@@ -614,9 +629,11 @@ describe('fetching with secrets', () => {
       addDataset(http('invalid', '/v1/invalid', [s.id])),
       addDataset(http('big', '/v1/big', [s.id])),
       addDataset(http('slow', '/v1/slow', [s.id])),
+      addDataset(http('nested', '/v1/nested', [s.id])),
     ]);
     expect((await env.data(dash, 'unauth', cookie)).error).toBe('Upstream responded 401');
     expect((await env.data(dash, 'invalid', cookie)).error).toBe('Response is not valid JSON');
+    expect((await env.data(dash, 'nested', cookie)).error).toBe('The response nests deeper than 64 levels');
     expect((await env.data(dash, 'big', cookie)).error).toBe('Response larger than 5 MB');
     expect((await env.data(dash, 'slow', cookie)).error).toBe('Request timed out');
   });
@@ -1453,22 +1470,27 @@ describe('canary', () => {
         cookie: owner,
       });
 
-      // The live stream of the public dashboard, as an anonymous viewer.
+      // The live stream of the public dashboard, as an anonymous viewer. HTTP sources refresh at most every 30 s:
+      // only the refresh loop's interval is faked, the fetch it starts is real.
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
       const stream = await c.app.request(`${BASE}/api/dashboards/${dash}/events`);
       const reader = stream.body!.getReader();
       const decoder = new TextDecoder();
       let events = '';
       const until = Date.now() + 4000;
+      // A read that lost the race is still pending and receives the next chunk, so it is kept, not abandoned.
+      let pending: ReturnType<typeof reader.read> | null = null;
       while (Date.now() < until && !events.includes('"type":"data"')) {
-        const chunk = await Promise.race([
-          reader.read(),
-          new Promise<{ done: true; value: undefined }>((r) =>
-            setTimeout(() => r({ done: true, value: undefined }), 1500),
-          ),
-        ]);
+        vi.advanceTimersByTime(30_000);
+        pending ??= reader.read();
+        const chunk = await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), 250))]);
+        if (chunk === null) continue;
+        pending = null;
         if (chunk.value) events += decoder.decode(chunk.value);
+        if (chunk.done) break;
       }
       await reader.cancel();
+      vi.useRealTimers();
       expect(events).toContain('"type":"data"');
       c.seen.push(events);
 

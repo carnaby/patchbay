@@ -43,6 +43,15 @@ export function paramsSchema(specs: ParamSpec[]) {
   return z.strictObject(shape);
 }
 
+/**
+ * A numeric param within its documented range, or `fallback` when it is missing or not a number. fetch() and sample()
+ * share it: OFFLINE=1 serves sample() to everyone, so an unclamped "days: 1e9" there built a billion rows.
+ */
+export function clampParam(value: unknown, fallback: number, min: number, max: number): number {
+  const n = value === undefined || value === null || value === '' ? fallback : Number(value);
+  return Math.min(Math.max(Number.isFinite(n) ? n : fallback, min), max);
+}
+
 /** Small seeded PRNG so synthetic data is stable for a given seed. */
 export function rng(seed: number) {
   let a = seed >>> 0;

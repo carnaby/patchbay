@@ -6,9 +6,12 @@ import {
   FEED_MIN_REFRESH_SEC,
   FUNCTIONS,
   GRID_COLUMNS,
+  HTTP_MIN_REFRESH_SEC,
   KPI_AGGS,
   LIMITS,
   MAX_SECRETS_PER_SOURCE,
+  MAX_STRING,
+  PIPELINE_LIMITS,
   REFERENCE_LINE_KINDS,
   REFERENCE_STATS,
   SEARCH_ENGINES,
@@ -16,6 +19,9 @@ import {
   TIME_UNITS,
   WINDOW_OPS,
 } from '@patchbay/core';
+import { MAX_RESULT_BYTES } from '../services/result-wire.ts';
+import { UPLOAD_MAX_COLUMN_NAME, UPLOAD_MAX_COLUMNS } from '../services/upload-parse.ts';
+import { MAX_JSON_DEPTH } from '../util/json-shape.ts';
 
 export const SERVER_INSTRUCTIONS = `Patchbay builds live data dashboards. You edit them with small, validated operations.
 
@@ -40,7 +46,10 @@ export function referenceText(publicUrl = '<PUBLIC_URL>'): string {
 ## Document
 A dashboard has \`datasets\` (where data comes from + how it is processed) and \`widgets\` (how it is shown),
 laid out on a ${GRID_COLUMNS}-column grid. Ids are lowercase slugs ("weather", "temp-chart"). Limits: ${LIMITS.datasets} datasets,
-${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows.
+${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows per dataset (text values up to ${LIMITS.inlineText} characters,
+at most ${LIMITS.inlineColumns} different column names of up to ${LIMITS.inlineColumnName} characters), and ${Math.floor(LIMITS.documentBytes / 1000)} KB for the whole document as JSON. Data larger than a
+small table belongs in upload_data, not inline rows; uploads do not count toward the document. An upload has at most
+${UPLOAD_MAX_COLUMNS} columns with names of up to ${UPLOAD_MAX_COLUMN_NAME} characters, and JSON uploads nest at most ${MAX_JSON_DEPTH} levels.
 
 ## Dataset
 { id, name, source, transforms: Transform[], refreshSec, accumulate }
@@ -55,15 +64,17 @@ ${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows.
   Show it as a table with style "list" and columns [{ "field": "title", "link": "link" }, "source", "published"].
   For a sound per new item: sound.trigger { kind: "newRows", key: "id" }.
 - refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers. Below the
-  connector's minRefreshSec (list_connectors) it is raised to that minimum when saved, and \`changes\` says so.
+  source's minimum (a connector's minRefreshSec from list_connectors, ${HTTP_MIN_REFRESH_SEC} s for http, ${FEED_MIN_REFRESH_SEC} s for feeds) it is
+  raised to that minimum when saved, and \`changes\` says so. Upload and inline sources only change when edited:
+  their refreshSec is set to 0 when saved, and widgets update on the edit itself.
 - accumulate N keeps a rolling history of the last N rows across refreshes and adds a "fetched_at" time column.
   Use it to chart sources that only return the current value (weather.current, crypto.price, iss.position).
   The history lives in server memory and gains a reading only when the dataset is loaded and the source has a new
   one. While a browser has the dashboard open, the server loads it every refreshSec. With nobody watching nothing
   refreshes: readings are added only when the data is requested (get_data, render_snapshot, the data check of
   apply_operations, a page load), so the history follows those requests and has gaps. A connector has a new reading
-  at most every minRefreshSec, an http source every 30 s. A server restart or a new source starts it afresh. Inline
-  and upload sources count as new on every load: do not accumulate them.
+  at most every minRefreshSec, an http source every ${HTTP_MIN_REFRESH_SEC} s. A server restart or a new source starts it afresh. Inline
+  and upload sources add a reading only when their content changes: do not accumulate them.
 
 ## Secrets (http sources)
 Some APIs need a key. The user saves keys under Settings → Secrets; you can list them (list_secrets) but never read,
@@ -96,11 +107,16 @@ operations below instead of resending the whole pipeline.
   inside it.
 - window { op, field, as?, size?, partitionBy? }   ops: ${WINDOW_OPS.join(', ')} (sort first)
 - fillNull { fields, value }
+Limits per run: ${PIPELINE_LIMITS.maxMillis / 1000} s, and every table (the source and each step's result) at most
+${(PIPELINE_LIMITS.maxSize / 1_000_000).toLocaleString('en')} million characters as JSON: on large data filter, aggregate, limit or
+select early. A dataset's result (what its widgets receive, at most 10,000 rows) may be at most ${MAX_RESULT_BYTES / 1024 / 1024} MB
+as JSON; a larger one comes back as an error with its columns and no rows: add limit, select or aggregate steps.
 
 ## Expressions
 Operators: + - * / % ^, == != < <= > >=, && || ! (or: and, or, not), cond ? a : b. Strings in "double" or 'single'
 quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Trigonometry works in radians (convert
-with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed point. Functions:
+with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed point. Text built with concat or +
+is at most ${MAX_STRING.toLocaleString('en')} characters (use substr to shorten). Functions:
 ${fns}
 
 ## Widgets

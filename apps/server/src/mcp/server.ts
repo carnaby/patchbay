@@ -16,6 +16,8 @@ import {
   formattingWarnings,
   OpSchema,
   profileTable,
+  type Row,
+  rowSize,
   SourceSchema,
   type Suggestion,
   suggestWidgets,
@@ -24,7 +26,7 @@ import {
 import { z } from 'zod';
 import { SCOPES } from '../auth/tokens.ts';
 import type { Deps } from '../context.ts';
-import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
+import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import type { Principal } from '../services/dashboards.ts';
 import { listTemplates } from '../services/templates.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
@@ -51,10 +53,39 @@ const DATA_CHECK_SAMPLE = 3;
 const ACCUMULATE_NOTE =
   'The accumulate history is kept in server memory. It gains a reading every refreshSec only while someone has the dashboard open; with nobody watching, only when the data is requested (get_data, render_snapshot, this check), so it has gaps. Never faster than the source updates (a connector minRefreshSec, http 30 s). A restart clears it.';
 
+/**
+ * Characters of sample rows in one tool result. Hundreds of rows of short values fit; rows repeat every column name,
+ * so with long names or long text fewer do, and the result says so instead of growing to megabytes.
+ */
+const SAMPLE_CHARS = 200_000;
+
+/** As many of `rows` as fit in `budget` characters (rows as objects, as tools return them). */
+function fitRows(table: DataTable, rows: Row[], budget: number, from: 'start' | 'end' = 'start') {
+  const ordered = from === 'end' ? [...rows].reverse() : rows;
+  let used = 0;
+  let n = 0;
+  for (const row of ordered) {
+    used += rowSize(table.columns, row, 'objects');
+    if (used > budget) break;
+    n++;
+  }
+  return n === rows.length ? rows : from === 'end' ? rows.slice(rows.length - n) : rows.slice(0, n);
+}
+
 /** A compact, model-friendly view of a table: columns + the first (or last) rows. */
 function sampleTable(table: DataTable, limit: number, from: 'start' | 'end' = 'start') {
-  const rows = from === 'end' ? table.rows.slice(-limit) : table.rows.slice(0, limit);
-  return { columns: table.columns, rowCount: table.rows.length, rows };
+  const wanted = from === 'end' ? table.rows.slice(-limit) : table.rows.slice(0, limit);
+  const rows = fitRows(table, wanted, SAMPLE_CHARS, from);
+  return {
+    columns: table.columns,
+    rowCount: table.rows.length,
+    rows,
+    ...(rows.length < wanted.length
+      ? {
+          note: `Only ${rows.length} of the ${wanted.length} rows asked for fit in one answer; select fewer columns or shorten long text to see more.`,
+        }
+      : {}),
+  };
 }
 
 let idCounter = 0;
@@ -348,7 +379,7 @@ export function createMcp(deps: Deps) {
                 rowCount: r.table.rows.length,
                 ...(r.truncated ? { truncated: true } : {}),
                 columns: r.table.columns.map((c) => `${c.name}:${c.type}`),
-                sampleRows: r.table.rows.slice(0, DATA_CHECK_SAMPLE),
+                sampleRows: fitRows(r.table, r.table.rows.slice(0, DATA_CHECK_SAMPLE), SAMPLE_CHARS / 30),
                 error: r.error,
                 ...(d.accumulate > 0 ? { note: ACCUMULATE_NOTE } : {}),
               };
@@ -483,7 +514,7 @@ export function createMcp(deps: Deps) {
       {
         title: 'Upload data',
         description:
-          'Stores CSV or JSON content as a file inside a dashboard and returns its fileId, a profile and suggested operations (including the addDataset op). Max 5 MB.',
+          'Stores CSV or JSON content as a file inside a dashboard and returns its fileId, a profile and suggested operations (including the addDataset op). Max 5 MB, 500 columns and a cell limit (rows × columns), lower when anonymous.',
         inputSchema: z.object({
           dashboardId,
           name: z.string().min(1).max(200).describe('File name, e.g. "sales-2026.csv"'),
@@ -508,7 +539,7 @@ export function createMcp(deps: Deps) {
             file,
             addDatasetOp: { op: 'addDataset', dataset },
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
-            sample: result.table.rows.slice(0, 5),
+            sample: fitRows(result.table, result.table.rows.slice(0, 5), SAMPLE_CHARS / 4),
             suggestions: suggestionOps(
               dataset,
               suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
@@ -541,19 +572,26 @@ export function createMcp(deps: Deps) {
           const needed = args.widgetId ? doc.widgets.filter((w) => w.id === args.widgetId) : doc.widgets;
           if (args.widgetId && needed.length === 0) return fail(`No widget "${args.widgetId}"`);
           const ids = new Set(needed.flatMap((w) => ('datasetId' in w ? [w.datasetId] : [])));
-          await Promise.all(
-            doc.datasets
-              .filter((d) => ids.has(d.id))
-              .map(async (d) => results.set(d.id, await data.resolve(target, d))),
-          );
           const widget = needed[0];
-          const png =
-            args.widgetId && widget
-              ? renderWidgetPng(widget, 'datasetId' in widget ? results.get(widget.datasetId) : undefined, {
-                  theme: args.theme,
-                  entityColors: doc.colors,
-                })
-              : renderDashboardPng(doc, results, { theme: args.theme });
+          // Shares the REST endpoint's gate and per-client budget: snapshots from either side count against both.
+          chargeSnapshot(deps.limits.snapshots, `user:${userId}`);
+          const png = await snapshotGate.run(async (draw) => {
+            await Promise.all(
+              doc.datasets
+                .filter((d) => ids.has(d.id))
+                .map(async (d) => results.set(d.id, await data.resolve(target, d))),
+            );
+            return draw(
+              args.widgetId && widget
+                ? {
+                    kind: 'widget',
+                    widget,
+                    result: 'datasetId' in widget ? results.get(widget.datasetId) : undefined,
+                    options: { theme: args.theme, entityColors: doc.colors },
+                  }
+                : { kind: 'dashboard', doc, results, options: { theme: args.theme } },
+            );
+          });
           const problems = [...results.values()]
             .filter((r) => r.error)
             .map((r) => `${r.datasetId}: ${r.error}`);

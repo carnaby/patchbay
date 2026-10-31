@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./map": "./src/map.ts",
+    "./zod-jitless": "./src/zod-jitless.ts",
     "./geo/world-110m.json": "./geo/world-110m.json"
   },
   "scripts": {

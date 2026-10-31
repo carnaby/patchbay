@@ -10,6 +10,7 @@ import { BlockList, isIP } from 'node:net';
 import { bindingLabel, bindingMatches, type SecretPlacement } from '@patchbay/core';
 import { Agent, type Dispatcher, fetch as undiciFetch } from 'undici';
 import { HttpError } from './errors.ts';
+import { jsonShapeProblem, MAX_JSON_DEPTH } from './json-shape.ts';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const TIMEOUT_MS = 10_000;
@@ -30,6 +31,7 @@ for (const [net, prefix] of [
   ['172.16.0.0', 12],
   ['192.0.0.0', 24],
   ['192.0.2.0', 24],
+  ['192.88.99.0', 24], // 6to4 relay anycast (deprecated, RFC 7526)
   ['192.168.0.0', 16],
   ['198.18.0.0', 15],
   ['198.51.100.0', 24],
@@ -40,23 +42,38 @@ for (const [net, prefix] of [
 }
 for (const [net, prefix] of [
   ['::', 96], // unspecified, loopback and IPv4-compatible (IPv4-mapped is matched against the IPv4 rules by Node)
+  ['::ffff:0:0:0', 96], // IPv4-translated (SIIT), e.g. ::ffff:0:127.0.0.1
   ['64:ff9b::', 96], // NAT64
   ['64:ff9b:1::', 48],
   ['100::', 64], // discard
+  ['100:0:0:1::', 64], // dummy prefix (RFC 9780)
+  ['2001::', 23], // IETF protocol assignments: Teredo (embeds IPv4), benchmarking, ORCHID, ...
   ['2001:db8::', 32], // documentation
   ['2002::', 16], // 6to4
+  ['3fff::', 20], // documentation (RFC 9637)
+  ['5f00::', 16], // SRv6 SIDs (RFC 9602)
   ['fc00::', 7], // unique local
   ['fe80::', 10], // link local
+  ['fec0::', 10], // site local (deprecated, still routed by some stacks)
   ['ff00::', 8], // multicast
 ] as const) {
   BLOCKED.addSubnet(net, prefix, 'ipv6');
 }
 
+const IPV4_MAPPED = new BlockList();
+IPV4_MAPPED.addSubnet('::ffff:0:0', 96, 'ipv6');
+/** Everything else outside 2000::/3 is unallocated or special-purpose, so it is refused rather than listed. */
+const GLOBAL_UNICAST = new BlockList();
+GLOBAL_UNICAST.addSubnet('2000::', 3, 'ipv6');
+
 export function isPrivateAddress(raw: string): boolean {
   const ip = raw.replace(/^\[|\]$/g, '').split('%')[0]!;
   const family = isIP(ip);
   if (family === 0) return true; // not an IP at all: refuse rather than guess
-  return BLOCKED.check(ip, family === 4 ? 'ipv4' : 'ipv6');
+  if (family === 4) return BLOCKED.check(ip, 'ipv4');
+  // An IPv4-mapped address is the IPv4 address it carries; Node checks it against the IPv4 rules.
+  if (IPV4_MAPPED.check(ip, 'ipv6')) return BLOCKED.check(ip, 'ipv6');
+  return !GLOBAL_UNICAST.check(ip, 'ipv6') || BLOCKED.check(ip, 'ipv6');
 }
 
 async function assertPublicUrl(raw: string): Promise<URL> {
@@ -97,9 +114,12 @@ const guardedAgent = new Agent({
   },
 });
 
+const sizeLabel = (bytes: number) =>
+  bytes >= 1024 * 1024 ? `${bytes / 1024 / 1024} MB` : `${Math.round(bytes / 1024)} KB`;
+
 async function readCapped(res: Response, limit: number): Promise<string> {
   const declared = Number(res.headers.get('content-length') ?? 0);
-  if (declared > limit) throw new HttpError(502, `Response larger than ${limit / 1024 / 1024} MB`);
+  if (declared > limit) throw new HttpError(502, `Response larger than ${sizeLabel(limit)}`);
   const reader = res.body?.getReader();
   if (!reader) return '';
   const chunks: Uint8Array[] = [];
@@ -110,7 +130,7 @@ async function readCapped(res: Response, limit: number): Promise<string> {
     total += value.byteLength;
     if (total > limit) {
       await reader.cancel();
-      throw new HttpError(502, `Response larger than ${limit / 1024 / 1024} MB`);
+      throw new HttpError(502, `Response larger than ${sizeLabel(limit)}`);
     }
     chunks.push(value);
   }
@@ -155,6 +175,12 @@ export interface SafeFetchOptions {
   /** Sent only on hops whose URL matches every credential's binding. */
   credentials?: Credential[];
   redirects?: number;
+  /** A smaller body limit than the default 5 MB, for documents that are small by nature. */
+  maxBytes?: number;
+  /** A shorter timeout than the default 10 s. */
+  timeoutMs?: number;
+  /** JSON values the response may hold (default: no limit beyond its size); counted before it is parsed. */
+  maxValues?: number;
   /** Test seams, see `UpstreamTestSeam`. */
   test?: UpstreamTestSeam;
 }
@@ -328,7 +354,12 @@ function withoutOwnQuerySecrets(url: URL, credentials: Credential[]): URL {
   return next;
 }
 
-function parseJson(text: string): unknown {
+function parseJson(text: string, maxValues = Number.POSITIVE_INFINITY): unknown {
+  // Parsed on this thread, so the one shape whose cost is not bounded by its size in bytes is refused first.
+  const problem = jsonShapeProblem(text, { maxDepth: MAX_JSON_DEPTH, maxValues });
+  if (problem?.kind === 'depth')
+    throw new HttpError(502, `The response nests deeper than ${MAX_JSON_DEPTH} levels`);
+  if (problem) throw new HttpError(502, `The response holds more than ${problem.limit} values`);
   try {
     return JSON.parse(text);
   } catch {
@@ -340,11 +371,11 @@ function parseJson(text: string): unknown {
 export async function safeFetchJson(raw: string, options: SafeFetchOptions = {}): Promise<unknown> {
   const credentials = options.credentials ?? [];
   if (credentials.length === 0)
-    return parseJson((await fetchHops(raw, [], options, 'application/json')).text);
+    return parseJson((await fetchHops(raw, [], options, 'application/json')).text, options.maxValues);
   const values = credentials.map((c) => c.value);
   try {
     return redactJson(
-      parseJson((await fetchHops(raw, credentials, options, 'application/json')).text),
+      parseJson((await fetchHops(raw, credentials, options, 'application/json')).text, options.maxValues),
       values,
     );
   } catch (e) {
@@ -397,7 +428,7 @@ async function fetchHops(
       redirect: 'manual',
       dispatcher: options.test?.dispatcher ?? guardedAgent,
       headers,
-      signal: AbortSignal.timeout(options.test?.timeoutMs ?? TIMEOUT_MS),
+      signal: AbortSignal.timeout(options.test?.timeoutMs ?? options.timeoutMs ?? TIMEOUT_MS),
     }).catch((e: unknown) => {
       const cause = (e as { cause?: { code?: string } }).cause;
       if (cause?.code === 'EBLOCKED')
@@ -422,7 +453,7 @@ async function fetchHops(
       await res.body?.cancel().catch(() => {});
       throw new HttpError(502, `Upstream responded ${res.status}`);
     }
-    const text = await readCapped(res as unknown as Response, MAX_BYTES);
+    const text = await readCapped(res as unknown as Response, options.maxBytes ?? MAX_BYTES);
     const contentType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
     return { text, contentType, url: url.href };
   }

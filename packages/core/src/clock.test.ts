@@ -11,6 +11,7 @@ import {
   SearchConfigSchema,
   SIZE_HINTS,
   searchPlaceholder,
+  searchTargetHost,
   searchUrl,
   THEMES,
   WidgetSchema,
@@ -189,6 +190,20 @@ describe('search widget', () => {
     const wiki = search({ engine: 'custom', template: 'https://en.wikipedia.org/w/index.php?search={q}' });
     expect(searchUrl(wiki, 'a/b?c')).toBe('https://en.wikipedia.org/w/index.php?search=a%2Fb%3Fc');
     expect(searchPlaceholder(wiki)).toBe('Search en.wikipedia.org');
+  });
+
+  it('names the host a custom engine really sends the query to', () => {
+    const fake = search({ engine: 'custom', template: 'https://www.google.com.evil.example/search?q={q}' });
+    expect(searchTargetHost(fake, 'hello')).toBe('www.google.com.evil.example');
+    expect(searchTargetHost(fake, '  ')).toBeNull();
+    // A query can change the host when the template puts {q} there, so the hint follows the query.
+    const inHost = search({ engine: 'custom', template: 'https://{q}.example.com/?q={q}' });
+    expect(searchTargetHost(inHost, 'abc')).toBe('abc.example.com');
+    expect(
+      searchTargetHost(search({ engine: 'custom', template: 'https://xn--ggle-0nda.example/?q={q}' }), 'x'),
+    ).toBe('xn--ggle-0nda.example');
+    // Built-in engines are named in the placeholder already.
+    expect(searchTargetHost(search(), 'hello')).toBeNull();
   });
 
   it('cannot move the query out of its slot', () => {

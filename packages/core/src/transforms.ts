@@ -282,43 +282,126 @@ function compareScalars(a: Scalar, b: Scalar): number {
   return String(a).localeCompare(String(b), 'en', { numeric: true });
 }
 
-function applyStep(table: DataTable, t: Transform, step: number): DataTable {
+/**
+ * Approximate size of a cell in the table's JSON: the key with its quotes, colon and comma, then the value (text with
+ * its quotes, or a typical number). JSON is what every result becomes, and it tracks memory closely enough: V8 keeps
+ * text at one or two bytes per character, a number or a reference at eight to sixteen bytes.
+ */
+function cellSize(name: string, value: Scalar | undefined): number {
+  return name.length + 4 + (typeof value === 'string' ? value.length + 2 : 6);
+}
+
+/** Approximate size of a table as JSON, in characters; see `PIPELINE_LIMITS.maxSize`. */
+export function tableSize(table: DataTable): number {
+  let size = 0;
+  for (const row of table.rows) for (const c of table.columns) size += cellSize(c.name, row[c.name]);
+  return size;
+}
+
+const millionChars = (n: number) => `${(n / 1_000_000).toLocaleString('en')} million characters`;
+
+const tooSlow = (step: number) =>
+  new TransformError(
+    `Processing took longer than ${PIPELINE_LIMITS.maxMillis / 1000} s; simplify the rules or filter earlier`,
+    step,
+  );
+
+/**
+ * Size and time of the table a run is building. Heavy steps charge every value as they produce it, so one step
+ * cannot allocate far past the limit (or run far past the deadline) before anyone checks.
+ */
+class RunBudget {
+  /** Size of the table the current step starts from, then of the one it is building. */
+  size = 0;
+  step = 0;
+  private readonly deadline: number;
+
+  constructor(deadline: number) {
+    this.deadline = deadline;
+  }
+
+  add(n: number) {
+    this.size += n;
+    if (this.size > PIPELINE_LIMITS.maxSize) {
+      throw new TransformError(
+        `The data grew past ${millionChars(PIPELINE_LIMITS.maxSize)} (about its size as JSON); filter, aggregate ` +
+          'or limit rows earlier, keep fewer columns (select or drop), or shorten text with substr()',
+        this.step,
+      );
+    }
+    this.tick();
+  }
+
+  /** Date.now() costs tens of nanoseconds, far less than the row copy or expression it accompanies. */
+  tick() {
+    if (Date.now() > this.deadline) throw tooSlow(this.step);
+  }
+
+  /** Fails before a step adds `extra` characters, without allocating them first. */
+  ensure(extra: number) {
+    this.add(extra);
+    this.size -= extra;
+  }
+
+  /** Re-measures after a step that cannot grow its input by more than a bounded amount. */
+  measure(table: DataTable): DataTable {
+    this.size = 0;
+    this.add(tableSize(table));
+    return table;
+  }
+}
+
+function applyStep(table: DataTable, t: Transform, step: number, budget: RunBudget): DataTable {
   const known = typesOf(table);
   const order = table.columns.map((c) => c.name);
   switch (t.type) {
     case 'filter': {
       requireFields(table, [...referencedFields(parse(t.expr))], step);
       const fn = compile(t.expr);
-      return { columns: table.columns, rows: table.rows.filter((r) => isTruthy(fn(r))) };
+      return budget.measure({
+        columns: table.columns,
+        rows: table.rows.filter((r) => {
+          budget.tick();
+          return isTruthy(fn(r));
+        }),
+      });
     }
     case 'select': {
       requireFields(table, t.fields, step);
-      return {
+      return budget.measure({
         columns: t.fields.map((f) => table.columns.find((c) => c.name === f)!),
         rows: table.rows.map((r) => Object.fromEntries(t.fields.map((f) => [f, r[f] ?? null]))),
-      };
+      });
     }
     case 'drop': {
       const dropped = new Set(t.fields);
       const keep = table.columns.filter((c) => !dropped.has(c.name));
-      return {
+      return budget.measure({
         columns: keep,
         rows: table.rows.map((r) => Object.fromEntries(keep.map((c) => [c.name, r[c.name] ?? null]))),
-      };
+      });
     }
     case 'rename': {
       requireFields(table, Object.keys(t.map), step);
       const to = (n: string) => t.map[n] ?? n;
-      return {
+      // Longer names lengthen every row of the JSON, but the rows themselves share the same values.
+      return budget.measure({
         columns: table.columns.map((c) => ({ ...c, name: to(c.name) })),
         rows: table.rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [to(k), v]))),
-      };
+      });
     }
     case 'derive': {
       requireFields(table, [...referencedFields(parse(t.expr))], step);
       const fn = compile(t.expr);
-      const rows = table.rows.map((r) => ({ ...r, [t.as]: fn(r) }));
-      const nextOrder = order.includes(t.as) ? order : [...order, t.as];
+      const replaces = order.includes(t.as);
+      // Charged row by row: text built by an expression is new memory, and 40 derive steps of long text over a
+      // few thousand rows would otherwise pass the cell limit and still reach gigabytes.
+      const rows = table.rows.map((r) => {
+        const value = fn(r);
+        budget.add(cellSize(t.as, value) - (replaces ? cellSize(t.as, r[t.as]) : 0));
+        return { ...r, [t.as]: value };
+      });
+      const nextOrder = replaces ? order : [...order, t.as];
       const { [t.as]: _replaced, ...rest } = known;
       return retype(rows, nextOrder, rest);
     }
@@ -328,7 +411,10 @@ function applyStep(table: DataTable, t: Transform, step: number): DataTable {
         t.by.map((b) => b.field),
         step,
       );
+      let compares = 0;
+      // Text compares with localeCompare, about a microsecond each; a large sort can take seconds on its own.
       const rows = [...table.rows].sort((a, b) => {
+        if ((++compares & 1023) === 0) budget.tick();
         for (const { field: f, dir } of t.by) {
           const c = compareScalars(a[f] ?? null, b[f] ?? null);
           if (c !== 0) return dir === 'desc' ? -c : c;
@@ -338,10 +424,10 @@ function applyStep(table: DataTable, t: Transform, step: number): DataTable {
       return { columns: table.columns, rows };
     }
     case 'limit':
-      return {
+      return budget.measure({
         columns: table.columns,
         rows: t.from === 'end' ? table.rows.slice(-t.n) : table.rows.slice(0, t.n),
-      };
+      });
     case 'aggregate': {
       requireFields(table, [...t.groupBy, ...t.metrics.map((m) => m.field)], step);
       for (const m of t.metrics) {
@@ -359,14 +445,18 @@ function applyStep(table: DataTable, t: Transform, step: number): DataTable {
       }
       if (groups.size === 0 && t.groupBy.length === 0) groups.set('[]', []);
       const metricName = (m: (typeof t.metrics)[number]) => m.as ?? (m.field ? `${m.op}_${m.field}` : m.op);
+      // The output is groups x metrics cells, and the number of metrics has no fixed cap: charge each one.
+      budget.size = 0;
       const rows: Row[] = [...groups.values()].map((bucket) => {
         const out: Row = {};
-        for (const g of t.groupBy) out[g] = bucket[0]?.[g] ?? null;
+        for (const g of t.groupBy) {
+          out[g] = bucket[0]?.[g] ?? null;
+          budget.add(cellSize(g, out[g]));
+        }
         for (const m of t.metrics) {
-          out[metricName(m)] = aggregate(
-            m.op,
-            m.field ? bucket.map((r) => r[m.field!] ?? null) : bucket.map(() => 1),
-          );
+          const name = metricName(m);
+          out[name] = aggregate(m.op, m.field ? bucket.map((r) => r[m.field!] ?? null) : bucket.map(() => 1));
+          budget.add(cellSize(name, out[name]));
         }
         return out;
       });
@@ -389,17 +479,22 @@ function applyStep(table: DataTable, t: Transform, step: number): DataTable {
         throw new TransformError(`Column "${t.field}" is not a time column`, step);
       }
       const as = t.as ?? t.field;
+      // One number per row at most: check the worst case up front, then measure what is left.
+      if (!order.includes(as)) budget.ensure(table.rows.length * cellSize(as, 0));
       const partial = t.dropPartial ? partialEdgeBuckets(table.rows, t.field, t.unit) : new Set<number>();
       const rows = table.rows.flatMap((r) => {
         const v = r[t.field];
         const bucket = typeof v === 'number' ? bucketStart(v, t.unit) : null;
         return bucket !== null && partial.has(bucket) ? [] : [{ ...r, [as]: bucket }];
       });
-      return retype(rows, order.includes(as) ? order : [...order, as], { ...known, [as]: 'time' });
+      return budget.measure(
+        retype(rows, order.includes(as) ? order : [...order, as], { ...known, [as]: 'time' }),
+      );
     }
     case 'window': {
       requireFields(table, [t.field, ...(t.partitionBy ?? [])], step);
       const as = t.as ?? `${t.op}_${t.field}`;
+      if (!order.includes(as)) budget.ensure(table.rows.length * cellSize(as, 0));
       const size = t.size ?? 7;
       const partitions = new Map<string, number[]>();
       table.rows.forEach((r, i) => {
@@ -462,13 +557,22 @@ function applyStep(table: DataTable, t: Transform, step: number): DataTable {
         });
       }
       const rows = table.rows.map((r, i) => ({ ...r, [as]: result[i] ?? null }));
-      return retype(rows, order.includes(as) ? order : [...order, as], known);
+      return budget.measure(retype(rows, order.includes(as) ? order : [...order, as], known));
     }
     case 'fillNull': {
       requireFields(table, t.fields, step);
+      // The value is one shared string in memory but is repeated in every row of the JSON.
+      const grows = cellSize('', t.value) - cellSize('', null);
       const rows = table.rows.map((r) => {
         const out = { ...r };
-        for (const f of t.fields) if (out[f] === null || out[f] === undefined) out[f] = t.value;
+        let filled = 0;
+        for (const f of t.fields) {
+          if (out[f] === null || out[f] === undefined) {
+            out[f] = t.value;
+            filled++;
+          }
+        }
+        budget.add(filled * grows);
         return out;
       });
       return retype(rows, order, known);
@@ -482,25 +586,41 @@ export interface PipelineResult {
   trace: { step: number; type: Transform['type']; rows: number }[];
 }
 
-/** Hard limits per pipeline run, so a hostile or careless pipeline cannot stall the server. */
-export const PIPELINE_LIMITS = { maxCells: 5_000_000, maxMillis: 3_000 };
+/**
+ * Hard limits per pipeline run, so a hostile or careless pipeline cannot stall the server or exhaust its memory.
+ *
+ * Cells alone do not bound memory: 2,000 rows with 40 columns of long text are only 80,000 cells but close to a
+ * gigabyte. `maxSize` caps every table of a run (the input and the result of each step) at about 20 million
+ * characters of JSON: 20-40 MB of strings plus the row objects, and as much again when the result is serialised.
+ * The input, the previous step and the one being built are alive together, so even a run at the limit stays well
+ * inside the 256 MB heap of a small instance. Real sources are far below it: fetches and uploads are capped at 5 MB
+ * and 100,000 rows, and 100,000 rows of ten numbers come to about 16 million.
+ */
+export const PIPELINE_LIMITS = { maxCells: 5_000_000, maxMillis: 3_000, maxSize: 20_000_000 };
 
 export function runPipeline(input: DataTable, transforms: Transform[]): PipelineResult {
   let table = input;
   const trace: PipelineResult['trace'] = [];
-  const started = Date.now();
-  transforms.forEach((t, i) => {
-    if (Date.now() - started > PIPELINE_LIMITS.maxMillis) {
+  const budget = new RunBudget(Date.now() + PIPELINE_LIMITS.maxMillis);
+  // Only a run with steps is measured, matching the pool, which hands a table without steps back untouched.
+  if (transforms.length > 0) {
+    budget.size = tableSize(input);
+    if (budget.size > PIPELINE_LIMITS.maxSize) {
       throw new TransformError(
-        `Processing took longer than ${PIPELINE_LIMITS.maxMillis / 1000} s; simplify the rules or filter earlier`,
-        i,
+        `The source data is larger than ${millionChars(PIPELINE_LIMITS.maxSize)} (about its size as JSON), too ` +
+          'large to process; ask the source for fewer rows or columns, or use a smaller file',
+        0,
       );
     }
+  }
+  transforms.forEach((t, i) => {
+    budget.step = i;
+    budget.tick();
     if (table.rows.length * Math.max(table.columns.length, 1) > PIPELINE_LIMITS.maxCells) {
       throw new TransformError('Too much data to process; filter or aggregate earlier', i);
     }
     try {
-      table = applyStep(table, t, i);
+      table = applyStep(table, t, i, budget);
     } catch (e) {
       if (e instanceof TransformError) throw e;
       throw new TransformError(e instanceof Error ? e.message : String(e), i);

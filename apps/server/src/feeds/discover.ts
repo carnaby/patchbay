@@ -3,6 +3,8 @@
  * `<link rel="alternate" type="application/rss+xml" href="…">` in the page's head.
  */
 
+import { linkTags } from './scan.ts';
+
 const FEED_TYPES = new Set([
   'application/rss+xml',
   'application/atom+xml',
@@ -28,7 +30,7 @@ function attributes(tag: string): Map<string, string> {
  * sources are https only, and sites that announce http feeds almost always serve them over https too.
  */
 export function discoverFeed(html: string, pageUrl: string): string | null {
-  for (const [tag] of html.slice(0, SCAN_BYTES).matchAll(/<link\b[^>]*>/gi)) {
+  for (const tag of linkTags(html.slice(0, SCAN_BYTES))) {
     const attrs = attributes(tag);
     const rel = (attrs.get('rel') ?? '').toLowerCase().split(/\s+/);
     const type = (attrs.get('type') ?? '').toLowerCase().trim();

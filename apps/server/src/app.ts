@@ -10,7 +10,7 @@ import { SCOPES, Tokens } from './auth/tokens.ts';
 import { Users } from './auth/users.ts';
 import type { Config } from './config.ts';
 import { ConnectorService } from './connectors/registry.ts';
-import { type Deps, type Env, identify, sameOrigin } from './context.ts';
+import { clientKey, type Deps, type Env, identify, sameOrigin } from './context.ts';
 import { openDatabase } from './db.ts';
 import { LiveHub } from './live/hub.ts';
 import { createMcp } from './mcp/server.ts';
@@ -18,13 +18,32 @@ import { adminRoutes } from './routes/admin.ts';
 import { apiRoutes } from './routes/api.ts';
 import { authRoutes } from './routes/auth.ts';
 import { oauthRoutes } from './routes/oauth.ts';
+import { showcaseRoutes } from './routes/showcase.ts';
 import { DashboardService } from './services/dashboards.ts';
 import { DataService } from './services/data.ts';
 import { defaultPoolSize, InlineRunner, type PipelineRunner, WorkerPool } from './services/pipeline-pool.ts';
+import { ResultWire } from './services/result-wire.ts';
+import { loadUseCases, trustedSourceUrls } from './showcase/load.ts';
 import { DashboardIndex } from './store/dashboard-index.ts';
 import { FolderStore } from './store/folder-store.ts';
-import { HttpError, toHttpError } from './util/errors.ts';
+import { HttpError, RetryLaterError, toHttpError } from './util/errors.ts';
+import { prepareIndexHtml } from './util/index-html.ts';
+import {
+  BodyTimeoutError,
+  BodyTooLargeError,
+  checkedBody,
+  isLargeBody,
+  jsonBodyGuard,
+  LargeBodyReceiver,
+  newLargeBodyGate,
+  type ReceivedBody,
+  type ReceiveOptions,
+  withReceivedBody,
+} from './util/json-body.ts';
+import { memoryGuard } from './util/memory-pressure.ts';
+import { OutboundLimiter } from './util/outbound.ts';
 import { RateLimiter } from './util/rate-limit.ts';
+import { runAsClient } from './util/request-context.ts';
 import type { UpstreamTestSeam } from './util/safe-fetch.ts';
 
 /** Test seams that cannot be set from the environment. */
@@ -45,7 +64,10 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       : new WorkerPool({
           size: config.pipelineWorkers ?? defaultPoolSize(),
           timeoutMs: config.pipelineTimeoutMs,
+          workerMemoryMb: config.pipelineWorkerMemoryMb,
         });
+  // Replaces the previous pool's registration (tests build several).
+  memoryGuard.setRelief('pipeline', (deep) => (deep ? pipeline.recycleIdle?.() : pipeline.collectIdle?.()));
   const users = new Users(db, config.adminEmails);
   const secrets = new Secrets(db, config.secrets.keyring);
   const rotated = secrets.rotate();
@@ -56,9 +78,14 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   }
   // DataService is built before DashboardService, which decides about credentials, so the resolver is bound late.
   let dashboards: DashboardService | undefined;
+  const outbound = new OutboundLimiter();
   const data = new DataService(connectors, store, pipeline, {
+    outbound,
     credentials: (target, dataset) => dashboards!.credentialsFor(target, dataset),
+    urlPolicy: (target, url) => dashboards!.assertMayFetchUrl(target, url),
     offline: config.offline,
+    cacheBytes: config.dataCacheBytes,
+    maxSourceCells: config.uploadMaxCells,
     ...(overrides.upstreamTest ? { upstreamTest: overrides.upstreamTest } : {}),
   });
   const hub = new LiveHub(data, async (id) => {
@@ -66,13 +93,36 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     const doc = meta ? await store.readDoc(id) : null;
     return meta && doc ? { doc, ownerId: meta.ownerId } : null;
   });
-  dashboards = new DashboardService(store, index, hub, connectors, {
-    store: secrets,
-    mode: config.secrets.mode,
-    users,
+  const useCases = loadUseCases(config.showcaseDir);
+  dashboards = new DashboardService(
+    store,
+    index,
+    hub,
+    connectors,
+    { store: secrets, mode: config.secrets.mode, users },
+    {
+      uploads: {
+        parse: (input) => data.parseUpload(input),
+        saved: (dashboardId, fileId, table) => data.uploaded(dashboardId, fileId, table),
+      },
+      uploadMaxCells: config.uploadMaxCells,
+      uploadMaxCellsAnonymous: config.uploadMaxCellsAnonymous,
+      urlSources: config.urlSources,
+      anonymousStorageBytes: config.anonymousStorageBytes,
+      userStorageBytes: config.userStorageBytes,
+      trustedUrls: trustedSourceUrls(useCases),
+    },
+  );
+  const wire = new ResultWire();
+  // Replaces the previous registration, like the pipeline's.
+  memoryGuard.setRelief('caches', (deep) => {
+    if (!deep) return;
+    data.dropCaches();
+    wire.dropCaches();
   });
   return {
     config,
+    useCases,
     db,
     users,
     tokens: new Tokens(db),
@@ -82,6 +132,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     connectors,
     pipeline,
     data,
+    outbound,
+    wire,
     hub,
     dashboards,
     limits: {
@@ -91,14 +143,43 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       mcp: new RateLimiter(60, 120),
       // Creating dashboards (anonymous ones especially) is the main way to fill the disk.
       creates: new RateLimiter(20, 1),
+      // A few images at once (a dashboard and some of its widgets), then one every two seconds.
+      snapshots: new RateLimiter(4, 30),
     },
   };
 }
 
-export function createApp(deps: Deps) {
+/**
+ * Syncs the use cases into dashboards and drops from deps.useCases every one that failed or that clashes with
+ * someone else's dashboard, so the landing page never offers a link to a dashboard that is not the showcase's own.
+ * Never throws: the showcase is decoration and must not keep the server from starting. Call it before createApp.
+ */
+export async function syncShowcaseUseCases(deps: Deps, warn: (m: string) => void = console.warn) {
+  let skipped: string[];
+  let result = { created: [] as string[], updated: [] as string[], skipped: [] as string[] };
+  try {
+    result = await deps.dashboards.syncShowcase(deps.useCases, warn);
+    skipped = result.skipped;
+  } catch (e) {
+    warn(`[patchbay] showcase: sync failed: ${e instanceof Error ? e.message : String(e)}`);
+    skipped = deps.useCases.map((u) => u.dashboardId);
+  }
+  for (let i = deps.useCases.length - 1; i >= 0; i--)
+    if (skipped.includes(deps.useCases[i]!.dashboardId)) deps.useCases.splice(i, 1);
+  return result;
+}
+
+export interface AppOptions {
+  /** Tests: the pace large request bodies are held to (util/json-body.ts). */
+  bodies?: ReceiveOptions;
+}
+
+export function createApp(deps: Deps, options: AppOptions = {}) {
   const { config } = deps;
   const app = new Hono<Env>();
   const mcp = createMcp(deps);
+  // Optional Umami analytics: its script and its event endpoint share one origin. Nothing else is loosened.
+  const analyticsOrigin = config.analytics ? [config.analytics.origin] : [];
 
   app.use(
     '*',
@@ -107,11 +188,15 @@ export function createApp(deps: Deps) {
         defaultSrc: ["'self'"],
         imgSrc: ["'self'", 'data:', 'https://lh3.googleusercontent.com'],
         styleSrc: ["'self'", "'unsafe-inline'"],
-        scriptSrc: ["'self'"],
-        connectSrc: ["'self'"],
+        scriptSrc: ["'self'", ...analyticsOrigin],
+        connectSrc: ["'self'", ...analyticsOrigin],
         fontSrc: ["'self'", 'data:'],
         frameAncestors: ["'none'"],
         formAction: ["'self'"],
+        // base-uri has no default-src fallback, and an injected <base> could re-point relative script URLs.
+        // object-src is spelled out so plugins stay off even if default-src is ever widened.
+        baseUri: ["'none'"],
+        objectSrc: ["'none'"],
       },
       crossOriginEmbedderPolicy: false,
     }),
@@ -127,19 +212,77 @@ export function createApp(deps: Deps) {
   app.onError((err, c) => {
     const httpErr = toHttpError(err);
     if (httpErr.status === 500) console.error(err);
+    // Busy gates, byte budgets, the renderer and per-client snapshot limits all say when to come back.
+    if (httpErr instanceof RetryLaterError) c.header('Retry-After', String(httpErr.retryAfterSec));
     const details = httpErr.details as Record<string, unknown> | undefined;
     // OAuth endpoints answer with the RFC 6749 error shape.
     if (details && typeof details.error === 'string') return c.json(details, httpErr.status);
     return c.json({ error: httpErr.message, ...(details ?? {}) }, httpErr.status);
   });
 
+  // Under hard memory pressure (util/memory-pressure.ts) only reads that answer from memory go on: the health check,
+  // static files, documents and cached results. Writes, MCP calls and new live streams wait; their bodies are not even
+  // read. Heavy reads (snapshots, large results) are refused by their own admission further down.
+  app.use('*', async (c, next) => {
+    const read = c.req.method === 'GET' || c.req.method === 'HEAD';
+    const stream = c.req.path.endsWith('/events') || c.req.path === '/mcp';
+    if (c.req.path !== '/healthz' && (!read || stream)) memoryGuard.admitRequest();
+    await next();
+  });
+
   // Request size limits: uploads get room for a 5 MB file (JSON-escaped), everything else 1 MB.
   const tooLarge = (c: Context) => c.json({ error: 'Request body too large' }, 413);
+  const maxBodyBytes = (c: Context) =>
+    c.req.path.endsWith('/files') || c.req.path === '/mcp' ? 8 * 1024 * 1024 : 1024 * 1024;
   const uploadLimit = bodyLimit({ maxSize: 8 * 1024 * 1024, onError: tooLarge });
   const defaultLimit = bodyLimit({ maxSize: 1024 * 1024, onError: tooLarge });
+
+  // Large bodies are received in full, at a minimum pace, before they queue for their turn: one at a time is processed
+  // across the server, and a slow sender never holds that turn (util/json-body.ts). Before the size limit below,
+  // which would otherwise read a chunked body without any pace.
+  const receiver = new LargeBodyReceiver(options.bodies);
+  const largeBodies = newLargeBodyGate();
+  app.use('*', async (c, next) => {
+    if (!isLargeBody(c.req.raw)) return next();
+    const max = maxBodyBytes(c);
+    const declared = c.req.header('content-length');
+    if (declared !== undefined && !c.req.raw.headers.has('transfer-encoding') && Number(declared) > max)
+      return tooLarge(c);
+    // Admitted, and counted as heavy work, before a byte is read: a large body costs two to three times its size
+    // until it is answered, and bodies still arriving must not all pass the check a resting server allows once.
+    const reservation = memoryGuard.reserveHeavy();
+    try {
+      const client = clientKey(c, config.trustProxy);
+      let body: ReceivedBody;
+      try {
+        body = await receiver.receive(c.req.raw, client, max);
+      } catch (e) {
+        if (e instanceof BodyTooLargeError) return tooLarge(c);
+        // The rest of a slow body is not waited for: the connection closes after the answer.
+        if (e instanceof BodyTimeoutError) return c.json({ error: e.message }, 408, { Connection: 'close' });
+        throw e;
+      }
+      try {
+        c.req.raw = withReceivedBody(c.req.raw, body.chunks);
+        return await largeBodies.run(client, () => {
+          // From here the turn bounds what the body costs.
+          body.release();
+          // Memory may have run short while it waited: writes stop at the hard threshold, like everywhere else.
+          memoryGuard.admitRequest();
+          return reservation.run(next);
+        });
+      } finally {
+        body.release();
+      }
+    } finally {
+      reservation.release();
+    }
+  });
   app.use('*', (c, next) =>
     c.req.path.endsWith('/files') || c.req.path === '/mcp' ? uploadLimit(c, next) : defaultLimit(c, next),
   );
+  // After the size limit, before any route parses a body. /mcp checks its body itself, once the caller is known.
+  app.use('*', (c, next) => (c.req.path === '/mcp' ? next() : jsonBodyGuard(c, next)));
 
   app.get('/healthz', (c) => c.json({ ok: true }));
 
@@ -164,25 +307,40 @@ export function createApp(deps: Deps) {
               | { name: string }
               | undefined
           )?.name ?? 'MCP client');
-    return mcp.fetch(c.req.raw, {
-      authInfo: {
-        token: raw,
-        clientId: token.clientId ?? token.tokenId,
-        scopes: token.scopes,
-        expiresAt: Math.floor(token.expiresAt / 1000),
-        resource: new URL(config.mcpResource),
-        extra: { userId: token.userId, clientName },
-      },
-    });
+    // The SDK parses the body with JSON.parse on this thread; reading it here consumes the original request.
+    let request = c.req.raw;
+    const checked = await checkedBody(c);
+    if (checked && 'problem' in checked)
+      return c.json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: checked.problem } }, 400);
+    if (checked) request = new Request(request, { body: checked.text });
+    return runAsClient(`user:${token.userId}`, () =>
+      mcp.fetch(request, {
+        authInfo: {
+          token: raw,
+          clientId: token.clientId ?? token.tokenId,
+          scopes: token.scopes,
+          expiresAt: Math.floor(token.expiresAt / 1000),
+          resource: new URL(config.mcpResource),
+          extra: { userId: token.userId, clientName },
+        },
+      }),
+    );
   });
 
   // Middleware must be registered before the routes it guards.
   app.use('/api/*', identify(deps), sameOrigin(deps));
+  // Fair queues (pipeline worker, heavy loads, outbound fetches) need to know whose work they hold.
+  app.use('/api/*', async (c, next) => {
+    const user = c.get('user');
+    // The same key as the rate limits: an IPv6 client owns a whole /64, so per-address fairness would be no fairness.
+    await runAsClient(user ? `user:${user.id}` : `ip:${clientKey(c, config.trustProxy)}`, next);
+  });
   app.use('/auth/*', identify(deps), sameOrigin(deps));
   app.route('/', oauthRoutes(deps));
   app.route('/auth', authRoutes(deps));
   app.route('/api/admin', adminRoutes(deps));
   app.route('/api', apiRoutes(deps));
+  app.route('/', showcaseRoutes(deps));
   app.all('/api/*', () => {
     throw new HttpError(404, 'Not found');
   });
@@ -191,11 +349,14 @@ export function createApp(deps: Deps) {
   const dist = resolve(config.webDist ?? join(import.meta.dirname, '../../web/dist'));
   if (existsSync(join(dist, 'index.html'))) {
     // Re-read index.html when it changes on disk (a rebuild), so it never points at stale asset hashes.
-    let cached = { mtime: 0, html: '' };
-    const indexHtml = () => {
+    let cached = { mtime: 0, render: (_path: string) => '' };
+    const indexHtml = (c: Context) => {
       const mtime = statSync(join(dist, 'index.html')).mtimeMs;
-      if (mtime !== cached.mtime) cached = { mtime, html: readFileSync(join(dist, 'index.html'), 'utf8') };
-      return cached.html;
+      if (mtime !== cached.mtime) {
+        cached = { mtime, render: prepareIndexHtml(readFileSync(join(dist, 'index.html'), 'utf8'), config) };
+      }
+      const path = new URL(c.req.url).pathname;
+      return c.html(cached.render(path === '/index.html' ? '/' : path));
     };
     // serveStatic calls onFound after it has built the response, so a header set there never arrives.
     // Setting it once the response exists is the reliable way.
@@ -209,8 +370,12 @@ export function createApp(deps: Deps) {
     app.get('/assets/*', (c) => c.text('Not found', 404));
     // Unhashed files keep their name across deploys, so they must be revalidated: a stale sw.js or
     // manifest keeps an old app version alive, and a CDN would otherwise cache .js/.png by extension.
-    app.use('*', cacheControl('no-cache'), serveStatic({ root: dist }));
-    app.get('*', (c) => c.html(indexHtml()));
+    // index.html itself is rendered for this deployment below, never served as the raw file.
+    const staticFiles = serveStatic({ root: dist });
+    app.use('*', cacheControl('no-cache'), (c, next) =>
+      c.req.path.endsWith('/') || c.req.path.endsWith('/index.html') ? next() : staticFiles(c, next),
+    );
+    app.get('*', indexHtml);
   } else {
     app.get('/', (c) =>
       c.text('Patchbay API is running. Build the web app with `pnpm build`, or run `pnpm dev`.'),

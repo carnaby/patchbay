@@ -19,10 +19,26 @@ export const LIMITS = {
   datasets: 30,
   widgets: 60,
   inlineRows: 2000,
+  /**
+   * Characters per inline text value and per inline column name. Checked on writes only (DashboardService), not in
+   * this schema, which also reads stored documents: those saved before the limits must keep loading.
+   */
+  inlineText: 1000,
+  inlineColumnName: 200,
+  /**
+   * Different column names in one inline dataset. Checked on writes only, like the two above. Every row of a table
+   * holds every column, so a single row with many keys among many rows without them is a very large table.
+   */
+  inlineColumns: 200,
   transforms: 40,
   markdown: 20_000,
   title: 120,
   description: 1000,
+  /**
+   * Serialised size of a whole document in bytes. Below the 1 MiB request body limit, so every document the server
+   * accepts can still be saved whole from the editor; larger data belongs in uploads, which are stored on their own.
+   */
+  documentBytes: 1_000_000,
 } as const;
 
 export const IdSchema = z
@@ -42,6 +58,8 @@ const field = z.string().min(1).max(200);
 
 /** Feeds are fetched at most this often per address, whatever a dataset's refreshSec says. */
 export const FEED_MIN_REFRESH_SEC = 300;
+/** HTTP sources are cached this long per address, so a faster refresh would only re-read the cache. */
+export const HTTP_MIN_REFRESH_SEC = 30;
 
 export const SourceSchema = z.discriminatedUnion('kind', [
   z
@@ -89,6 +107,14 @@ export const SourceSchema = z.discriminatedUnion('kind', [
     .describe('An RSS, Atom or JSON Feed, or a web page that announces one'),
 ]);
 export type Source = z.infer<typeof SourceSchema>;
+
+/**
+ * Uploaded files and inline rows change only when someone edits the dashboard, never on a timer, so a live refresh
+ * of them would only repeat the same work.
+ */
+export function isStaticSource(source: Source): boolean {
+  return source.kind === 'upload' || source.kind === 'inline';
+}
 
 export const DatasetSchema = z.strictObject({
   id: IdSchema,

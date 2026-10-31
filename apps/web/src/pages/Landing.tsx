@@ -24,6 +24,7 @@ import { api } from '../lib/api.ts';
 import { useDocumentTitle, useMe } from '../lib/hooks.ts';
 import { WidgetBody } from '../widgets/WidgetBody.tsx';
 import { CopyField } from './_shared.tsx';
+import { UseCases } from './UseCases.tsx';
 
 type Showcase = Record<'signal' | 'revenue' | 'products', DatasetResult>;
 
@@ -323,17 +324,10 @@ const TRANSCRIPT: Line[] = [
   },
   {
     kind: 'tool',
-    name: 'preview_data',
-    args: '{ connector: "earthquakes", period: "week" }',
-    result: '1,412 rows · time, magnitude, place, latitude, longitude…',
-  },
-  {
-    kind: 'tool',
     name: 'apply_operations',
     args: '[addDataset, addWidget ×5]',
     result: 'version 2 · 6 changes · data checks ok',
   },
-  { kind: 'tool', name: 'render_snapshot', args: '{ dashboardId: "k3m8…" }', result: '🖼 PNG 1280×860' },
   {
     kind: 'ai',
     text: 'Done. I checked the render: the region chart was crowded, so I made it horizontal. Here is the link.',
@@ -414,7 +408,16 @@ function McpSection() {
             </p>
           </div>
         </div>
-        <Transcript />
+        <div>
+          <Transcript />
+          <p className="mt-3 text-center text-xs text-muted">
+            A shortened session.{' '}
+            <a href="#use-cases" className="underline hover:text-ink">
+              See real ones above
+            </a>
+            .
+          </p>
+        </div>
       </div>
     </section>
   );
@@ -552,6 +555,7 @@ export default function Landing() {
   return (
     <>
       <Hero />
+      <UseCases />
       <HowItWorks />
       <McpSection />
       <Features />

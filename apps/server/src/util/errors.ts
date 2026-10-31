@@ -12,6 +12,18 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * A refusal that passes: the client may repeat the request after `retryAfterSec`. The app's error handler turns it
+ * into a Retry-After header, so every busy or rate-limited answer says when to come back the same way.
+ */
+export class RetryLaterError extends HttpError {
+  readonly retryAfterSec: number;
+  constructor(status: 429 | 503, message: string, retryAfterSec: number) {
+    super(status, message);
+    this.retryAfterSec = Math.max(1, Math.ceil(retryAfterSec));
+  }
+}
+
 export const notFound = (what = 'Not found') => new HttpError(404, what);
 export const forbidden = (why = 'Forbidden') => new HttpError(403, why);
 export const unauthorized = (why = 'Sign in required') => new HttpError(401, why);

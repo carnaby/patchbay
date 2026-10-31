@@ -10,7 +10,9 @@ import {
   ExprError,
   emptyDashboard,
   GaugeConfigSchema,
+  INFER_MAX_COLUMNS,
   inferTable,
+  inferTableCapped,
   KpiConfigSchema,
   normalizeLayout,
   OpError,
@@ -19,11 +21,13 @@ import {
   profileTable,
   runPipeline,
   suggestWidgets,
+  TableTooWideError,
   THEMES,
   TransformError,
   TransformSchema,
   WidgetSchema,
 } from './index.ts';
+import { measureScaling, scalingProblem } from './scaling.test-helper.ts';
 
 describe('expressions', () => {
   const row = { price: 12.5, qty: 4, region: 'EU', 'wind speed': 7, empty: null };
@@ -75,6 +79,57 @@ describe('table inference', () => {
     ]);
     expect(t.rows[0]!.date).toBe(Date.UTC(2026, 0, 1));
     expect(t.rows[0]!.v).toBe(3.5);
+  });
+
+  it('detects numbers in linear time, even in a huge run of digits that is not one', () => {
+    const rows = (n: number) => [{ v: `${'1'.repeat(n)}x` }, { v: '1.' }, { v: '-2.5e3' }];
+    expect(scalingProblem(measureScaling((n) => () => inferTable(rows(n)), { size: 200_000 }))).toBeNull();
+    const t = inferTable(rows(200_000));
+    expect(t.columns[0]!.type).toBe('string');
+    expect(inferTable([{ v: '1.' }, { v: '.5' }, { v: '-2.E3' }]).columns[0]!.type).toBe('number');
+  });
+
+  const wideRow = (keys: number) => Object.fromEntries(Array.from({ length: keys }, (_, i) => [`k${i}`, 1]));
+
+  it('refuses a wide record among empty ones before building the dense table', () => {
+    // The attack: one row of 47,000 short keys and 1,999 empty rows is a 500 KB document and 94 million cells.
+    const records = [wideRow(47_000), ...Array.from({ length: 1999 }, () => ({}))];
+    const startedAt = Date.now();
+    expect(() => inferTable(records)).toThrow(TableTooWideError);
+    expect(() => inferTable(records)).toThrow(`more than ${INFER_MAX_COLUMNS} columns`);
+    // Building the dense table would take minutes and gigabytes; this bound is only a safety net for that.
+    expect(Date.now() - startedAt).toBeLessThan(15_000);
+    expect(() => inferTable([...records].reverse(), { maxColumns: 100 })).toThrow(TableTooWideError);
+  });
+
+  it('holds the cell limit with the width of the records it takes, wherever the wide one is', () => {
+    // 200 empty records first used to set the width, and every record after the wide one became that wide.
+    const records = [
+      ...Array.from({ length: 200 }, () => ({})),
+      wideRow(400),
+      ...Array.from({ length: 99_799 }, () => ({})),
+    ];
+    const { table, capped } = inferTableCapped(records, { maxCells: 500_000 });
+    expect(capped).toBe(true);
+    expect(table.columns).toHaveLength(400);
+    expect(table.rows.length * table.columns.length).toBeLessThanOrEqual(500_000);
+    // A record whose columns would pass the limit is not taken, so the wide one ends the table here.
+    const tight = inferTableCapped(records, { maxCells: 50_000 });
+    expect(tight.capped).toBe(true);
+    expect(tight.table.rows).toHaveLength(200);
+    expect(tight.table.columns).toEqual([]);
+  });
+
+  it('leaves tables within the limits as they were', () => {
+    const records = Array.from({ length: 1000 }, (_, i) => ({ id: i, name: `n${i}`, at: '2026-01-01' }));
+    const { table, capped } = inferTableCapped(records, { maxCells: 3000, maxColumns: 3 });
+    expect(capped).toBe(false);
+    expect(table).toEqual(inferTable(records));
+    expect(table.rows).toHaveLength(1000);
+    expect(inferTableCapped(records, { maxRows: 10 })).toMatchObject({
+      capped: true,
+      table: { rows: { length: 10 } },
+    });
   });
 });
 
@@ -182,10 +237,22 @@ describe('pipeline', () => {
     const doubling = Array.from({ length: 30 }, () => t({ type: 'derive', as: 's', expr: 'concat(s, s)' }));
     const seed = inferTable([{ s: 'xxxxxxxxxx' }]);
     expect(() => runPipeline(seed, doubling)).toThrow(/limited to/);
-    const big = inferTable(Array.from({ length: 50_000 }, (_, i) => ({ v: (i * 7919) % 1000 })));
-    const startedAt = Date.now();
-    const { table } = runPipeline(big, [t({ type: 'window', op: 'rank', field: 'v', as: 'r' })]);
-    expect(Date.now() - startedAt).toBeLessThan(1500);
+    const rank = [t({ type: 'window', op: 'rank', field: 'v', as: 'r' })];
+    const tableOf = (n: number) =>
+      inferTable(Array.from({ length: n }, (_, i) => ({ v: (i * 7919) % 1000 })));
+    expect(
+      scalingProblem(
+        measureScaling(
+          (n) => {
+            const input = tableOf(n);
+            return () => runPipeline(input, rank);
+          },
+          { size: 50_000 },
+        ),
+      ),
+    ).toBeNull();
+    const big = tableOf(50_000);
+    const { table } = runPipeline(big, rank);
     const max = table.rows.find((r) => r.v === 999)!;
     expect(max.r).toBe(1);
   });

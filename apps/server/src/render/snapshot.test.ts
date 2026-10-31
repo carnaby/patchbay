@@ -11,8 +11,18 @@ import {
   WidgetSchema,
 } from '@patchbay/core';
 import { Resvg } from '@resvg/resvg-js';
-import { describe, expect, it } from 'vitest';
-import { renderDashboardPng, renderWidgetPng } from './snapshot.ts';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { buildTemplate, listTemplates } from '../services/templates.ts';
+import {
+  DRAW_TIME_MS,
+  drawLimits,
+  MARK_BUDGET,
+  MAX_PIXELS,
+  POINT_BUDGET,
+  renderDashboardPng,
+  renderWidgetPng,
+  shareMarks,
+} from './snapshot.ts';
 
 // Widget snapshots are 640x360 rendered at 1.5x; boxes below are in SVG coordinates.
 const SCALE = 1.5;
@@ -378,6 +388,12 @@ describe('snapshot colours', () => {
 
 describe('start page widget snapshots', () => {
   it('draws a digital and an analog clock filling the card', () => {
+    // A fixed time: how wide the digits are depends on which they are, and 11:11 is a lot narrower than 08:48.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-01-15T07:48:00Z'));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const digital = render({ id: 'c', type: 'clock', config: { timeZone: 'Europe/Bratislava' } });
     // The time is the widest text: it spans most of the card's width in the middle band.
     expect(inkColumns(digital, { x: 14, y: 90, w: 612, h: 120 }).length).toBeGreaterThan(400);
@@ -438,5 +454,230 @@ describe('list-style table snapshots', () => {
     expect(inkColumns(img, { x: 14, y: 42 + 56, w: 200, h: 14 }).length).toBeGreaterThan(30);
     // No header row as in table style: the strip right under the title row is empty.
     expect(inkColumns(img, { x: 300, y: 36, w: 300, h: 16 }).length).toBe(0);
+  });
+});
+
+describe('snapshot budgets', () => {
+  /** Width and height from the PNG header, without decoding a possibly large image. */
+  const size = (png: Buffer) => ({ width: png.readUInt32BE(16), height: png.readUInt32BE(20) });
+  const textDoc = (layout: { x: number; y: number; w: number; h: number }[]) =>
+    parseDashboard({
+      ...emptyDashboard('Tall'),
+      widgets: layout.map((_, n) => ({
+        id: `t${n}`,
+        type: 'text',
+        title: `Note ${n}`,
+        config: { markdown: 'hi' },
+      })),
+      layout: layout.map((it, n) => ({ i: `t${n}`, ...it })),
+    });
+
+  it('keeps every template at the size it always had', () => {
+    for (const { id } of listTemplates()) {
+      const doc = buildTemplate(id);
+      const bottom = doc.layout.reduce((m, it) => Math.max(m, it.y + it.h), 0);
+      expect(size(renderDashboardPng(doc, new Map()))).toEqual({
+        width: 1280,
+        height: 64 + bottom * 80 + 24,
+      });
+    }
+  });
+
+  it('draws a widget stored far down where the browser shows it, at the top', () => {
+    const started = Date.now();
+    const far = renderDashboardPng(textDoc([{ x: 0, y: 10_000, w: 1, h: 2 }]), new Map());
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(size(far)).toEqual({ width: 1280, height: 64 + 2 * 80 + 24 });
+    expect(far.equals(renderDashboardPng(textDoc([{ x: 0, y: 0, w: 1, h: 2 }]), new Map()))).toBe(true);
+  });
+
+  it('cuts a dashboard taller than the pixel budget off and says so', () => {
+    // The largest layout the schema allows: 60 full-width widgets of 40 rows, 2 400 rows after compaction.
+    const tall = Array.from({ length: 60 }, (_, n) => ({ x: 0, y: n * 40, w: 12, h: 40 }));
+    const started = Date.now();
+    const png = renderDashboardPng(textDoc(tall), new Map());
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(size(png)).toEqual({ width: 1280, height: Math.floor(MAX_PIXELS / 1280) });
+    const img = decodePng(png);
+    // The note sits centred in the bottom 40 px.
+    expect(inkColumns(img, { x: 440, y: img.height - 30, w: 400, h: 20 }, 1).length).toBeGreaterThan(100);
+  });
+
+  it('keeps a wider snapshot within the same number of pixels', () => {
+    const tall = Array.from({ length: 10 }, (_, n) => ({ x: 0, y: n * 40, w: 12, h: 40 }));
+    for (const width of [2560, 100_000]) {
+      const got = size(renderDashboardPng(textDoc(tall), new Map(), { width }));
+      expect(got.width).toBe(2560);
+      expect(got.width * got.height).toBeLessThanOrEqual(MAX_PIXELS);
+    }
+  });
+
+  it('scales a large widget down instead of exceeding the budget', () => {
+    const big = size(
+      renderWidgetPng(widget({ id: 't', type: 'text', config: { markdown: 'hi' } }), undefined, {
+        width: 50_000,
+        height: 50_000,
+      }),
+    );
+    expect(big.width * big.height).toBeLessThanOrEqual(MAX_PIXELS);
+    // The default size is untouched: 640x360 at 1.5x.
+    const normal = render({ id: 't', type: 'text', config: { markdown: 'hi' } });
+    expect({ width: normal.width, height: normal.height }).toEqual({ width: 960, height: 540 });
+  });
+
+  it('shares the mark budget fairly and leaves small widgets alone', () => {
+    expect(
+      shareMarks(
+        new Map([
+          ['a', 5000],
+          ['b', 5000],
+          ['c', 0],
+        ]),
+      ),
+    ).toEqual(new Map());
+    const limits = shareMarks(
+      new Map([
+        ['small', 100],
+        ['big', 20_000],
+        ['huge', 20_000],
+      ]),
+      10_000,
+    );
+    expect(limits.get('small')).toBeUndefined();
+    expect(limits.get('big')! + limits.get('huge')!).toBeLessThanOrEqual(9_900);
+    const many = shareMarks(
+      new Map(Array.from({ length: 60 }, (_, n) => [`w${n}`, 10_000] as [string, number])),
+    );
+    expect([...many.values()].reduce((s, v) => s + v, 0)).toBeLessThanOrEqual(MARK_BUDGET);
+  });
+
+  it('renders sixty scatter charts of ten thousand rows in bounded time', () => {
+    const rows = Array.from({ length: 10_000 }, (_, i) => ({ x: (i * 37) % 1000, y: (i * 91) % 1000 }));
+    const results = new Map([
+      [
+        'd',
+        {
+          datasetId: 'd',
+          table: inferTable(rows),
+          fetchedAt: new Date(0).toISOString(),
+          hash: 'd',
+          truncated: false,
+        },
+      ],
+    ]);
+    const doc = parseDashboard({
+      ...emptyDashboard('Dots'),
+      datasets: [{ id: 'd', name: 'd', source: { kind: 'inline', rows: [] } }],
+      widgets: Array.from({ length: 60 }, (_, n) => ({
+        id: `c${n}`,
+        type: 'chart',
+        datasetId: 'd',
+        config: { kind: 'scatter', x: 'x', y: ['y'], maxPoints: 20_000 },
+      })),
+      layout: Array.from({ length: 60 }, (_, n) => ({ i: `c${n}`, x: (n * 2) % 12, y: 0, w: 2, h: 2 })),
+    });
+    const started = Date.now();
+    renderDashboardPng(doc, results);
+    // Without the mark budget this took about 15 s and 1.9 GB.
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 20_000);
+
+  describe('across chart kinds', () => {
+    const rows = Array.from({ length: 10_000 }, (_, i) => ({
+      x: i,
+      y: (i * 37) % 1000,
+      z: (i * 7919) % 1000,
+      s: `s${i % 12}`,
+      two: i % 2 ? 'odd' : 'even',
+    }));
+    const data: DatasetResult = {
+      datasetId: 'u',
+      table: inferTable(rows),
+      fetchedAt: new Date(0).toISOString(),
+      hash: 'u',
+      truncated: false,
+    };
+    const chart = (id: string, config: Record<string, unknown>) =>
+      WidgetSchema.parse({
+        id,
+        type: 'chart',
+        datasetId: 'u',
+        config: { x: 'x', y: ['y'], maxPoints: 20_000, ...config },
+      });
+    const KINDS = ['scatter', 'line', 'bar', 'heatmap', 'area', 'scatter'];
+    /** The dashboard that stalled production for 7 s a render: one upload, sixty charts asking for every row. */
+    const heavy = () => {
+      const widgets = Array.from({ length: 60 }, (_, i) =>
+        chart(`w${i}`, {
+          kind: KINDS[i % KINDS.length],
+          y: ['y', 'z'],
+          ...(i % 3 === 0 ? { series: 's' } : {}),
+        }),
+      );
+      return parseDashboard({
+        ...emptyDashboard('Heavy'),
+        datasets: [{ id: 'u', name: 'u', source: { kind: 'inline', rows: [] } }],
+        widgets,
+        layout: widgets.map((w, i) => ({ i: w.id, x: (i % 4) * 3, y: Math.floor(i / 4) * 3, w: 3, h: 3 })),
+      });
+    };
+
+    it('counts a mark per y field and a line point per series', () => {
+      const limits = drawLimits(
+        [
+          chart('dots', { kind: 'scatter', y: ['y', 'z'] }),
+          chart('split', { kind: 'scatter', series: 's' }),
+          chart('line', { kind: 'line', y: ['y', 'z'] }),
+          chart('lines', { kind: 'line', series: 'two' }),
+        ].map((w) => ({ widget: w, result: data })),
+        { marks: 6_000, points: 8_000 },
+      );
+      // Marks: 20 000 for two y fields and 10 000 split by series share 6 000 evenly.
+      expect(limits.get('dots')).toBe(1_500);
+      expect(limits.get('split')).toBe(3_000);
+      // Points: each line chart has two series, so 4 000 points are 2 000 rows.
+      expect(limits.get('line')).toBe(2_000);
+      expect(limits.get('lines')).toBe(2_000);
+    });
+
+    it('leaves charts alone that draw a few aggregates, and small ones', () => {
+      const limits = drawLimits(
+        [
+          chart('pie', { kind: 'pie' }),
+          chart('radar', { kind: 'radar' }),
+          chart('small', { kind: 'scatter', maxPoints: 100 }),
+        ].map((w) => ({ widget: w, result: data })),
+      );
+      expect(limits).toEqual(new Map());
+    });
+
+    it('trims a single widget snapshot to the same budgets', () => {
+      const many = chart('many', { kind: 'line', series: 's', maxPoints: 20_000 });
+      // Ten thousand rows of nine series (eight and the folded rest) are 90 000 points: within the budget.
+      expect(drawLimits([{ widget: many, result: data }])).toEqual(new Map());
+      const dots = chart('dots', { kind: 'scatter', y: ['y', 'z'] });
+      expect(drawLimits([{ widget: dots, result: data }]).get('dots')).toBe(MARK_BUDGET / 2);
+      expect(POINT_BUDGET).toBeGreaterThanOrEqual(90_000);
+    });
+
+    it('draws the heaviest dashboard well within the render time limit', () => {
+      const started = Date.now();
+      renderDashboardPng(heavy(), new Map([['u', data]]));
+      // It took 5 s on a desktop and 7 s on the production NAS before the line budget and the lower mark budget.
+      expect(Date.now() - started).toBeLessThan(DRAW_TIME_MS);
+    }, 20_000);
+
+    it('leaves out the charts left once the time or SVG size is spent, and says so', () => {
+      const results = new Map([['u', data]]);
+      const started = Date.now();
+      const outOfTime = renderDashboardPng(heavy(), results, { drawTimeMs: -1 });
+      expect(Date.now() - started).toBeLessThan(5_000);
+      // Either backstop leaves the same cards: every chart replaced by its note.
+      expect(outOfTime.equals(renderDashboardPng(heavy(), results, { svgBytes: 0 }))).toBe(true);
+      const img = decodePng(outOfTime);
+      // The first card's body holds the note's text, not a chart: ink in its first line, none further down.
+      expect(inkColumns(img, { x: 26, y: 100, w: 250, h: 14 }, 1).length).toBeGreaterThan(100);
+      expect(inkColumns(img, { x: 26, y: 140, w: 250, h: 80 }, 1).length).toBe(0);
+    });
   });
 });

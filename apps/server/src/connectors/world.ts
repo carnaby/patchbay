@@ -1,5 +1,5 @@
 import { inferTable } from '@patchbay/core';
-import { type Connector, DAY, floorTo, HOUR, rng, round, seedOf } from './types.ts';
+import { type Connector, clampParam, DAY, floorTo, HOUR, type Params, rng, round, seedOf } from './types.ts';
 
 interface UsgsFeature {
   id: string;
@@ -234,6 +234,15 @@ export const earthquakes: Connector = {
   },
 };
 
+/** World Bank series start in 1960; a few years ahead leaves room for projections. */
+function yearRange(params: Params) {
+  const last = new Date().getUTCFullYear() + 5;
+  return {
+    from: Math.trunc(clampParam(params.from, 2000, 1960, last)),
+    to: Math.trunc(clampParam(params.to, 2025, 1960, last)),
+  };
+}
+
 export const worldBank: Connector = {
   info: {
     id: 'worldbank.indicator',
@@ -273,7 +282,7 @@ export const worldBank: Connector = {
         { country: { value: string }; countryiso3code: string; date: string; value: number | null }[] | null,
       ]
     >(
-      `https://api.worldbank.org/v2/country/${encodeURIComponent(String(params.countries ?? 'SK'))}/indicator/${encodeURIComponent(String(params.indicator ?? 'SP.POP.TOTL'))}?format=json&per_page=5000&date=${params.from ?? 2000}:${params.to ?? 2025}`,
+      `https://api.worldbank.org/v2/country/${encodeURIComponent(String(params.countries ?? 'SK'))}/indicator/${encodeURIComponent(String(params.indicator ?? 'SP.POP.TOTL'))}?format=json&per_page=5000&date=${yearRange(params).from}:${yearRange(params).to}`,
     );
     const rows = (json[1] ?? [])
       .filter((r) => r.value !== null)
@@ -296,12 +305,11 @@ export const worldBank: Connector = {
       PL: 'Poland',
       DE: 'Germany',
     };
-    const from = Number(params.from ?? 2000);
-    const to = Number(params.to ?? 2025);
+    const { from, to } = yearRange(params);
     const rows = countries.flatMap((c) => {
       const r = rng(seedOf('wb', c, params.indicator));
       let v = 8000 + r() * 30_000;
-      return Array.from({ length: to - from }, (_, i) => {
+      return Array.from({ length: Math.max(0, to - from) }, (_, i) => {
         v *= 1 + 0.01 + (r() - 0.4) * 0.06;
         return { year: from + i, country: names[c] ?? c, iso3: c, value: Math.round(v) };
       });
@@ -389,7 +397,7 @@ export const wikipediaViews: Connector = {
     attribution: 'Wikimedia Foundation (CC0)',
   },
   async fetch(params, ctx) {
-    const days = Math.min(Math.max(Number(params.days ?? 60), 1), 365);
+    const days = clampParam(params.days, 60, 1, 365);
     const end = Date.now() - DAY;
     const articles = String(params.articles)
       .split(',')
@@ -414,7 +422,7 @@ export const wikipediaViews: Connector = {
     return inferTable(results.flat());
   },
   sample(params) {
-    const days = Number(params.days ?? 60);
+    const days = clampParam(params.days, 60, 1, 365);
     const end = floorTo(Date.now(), DAY) - DAY;
     const articles = String(params.articles ?? 'Example')
       .split(',')

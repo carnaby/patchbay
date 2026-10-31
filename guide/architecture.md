@@ -60,9 +60,14 @@ data/
   dashboards/<id>/
     meta.json                  owner, visibility, edit-key hash, version, timestamps
     dashboard.json             the document
-    versions/<n>.json          last 50 versions, each with actor and change log
-    files/<fileId>.json        uploaded datasets, parsed once into typed tables
+    versions/<n>.json          last 50 versions (at most 10 MB), each with actor and change log
+    versions/index.json        actor, change log and size of each version, so listing never reads a document
+    files/<fileId>.json        uploaded datasets, parsed once into typed tables (rows as arrays)
 ```
+
+Files are compact JSON; folders from earlier releases are pretty-printed and read as they are (a missing
+`versions/index.json` is rebuilt from the header of each version file). A copy of a dashboard shares its upload files
+through hard links, so deleting either folder leaves the other intact.
 
 **The folder is the source of truth; SQLite is an index.** Listing "my dashboards" or the admin overview needs queries,
 so the index exists, but it can always be rebuilt from the folders (`DashboardIndex.reconcile`). It runs at startup,
@@ -98,13 +103,39 @@ instances.
   downstream renders feed markup. A feed is fetched at most every 5 minutes per address, shared by all dashboards
   (publishers block faster polling); `OFFLINE=1` serves a deterministic sample.
 - **Pipelines run on the server.** The browser, the MCP agent and the PNG renderer therefore always agree on the numbers,
-  and the browser never downloads more than it displays (10,000 rows max).
+  and the browser never downloads more than it displays (10,000 rows max, at most 4 MB as JSON).
+- **Results are serialised once and shared** (`services/result-wire.ts`). The web app asks for rows as arrays
+  (`?rows=arrays`, column names once instead of in every row; `decodeTable` in core turns them back); other clients
+  get rows as objects. Concurrent readers of a result and every subscriber of a live push send the same bytes, and the
+  bodies still being read stay within a byte budget (12 MB, and 4 MB of bodies waiting); beyond it requests wait
+  briefly, then get 503.
 - **Large pipelines run in worker threads** (`services/pipeline-pool.ts`). Inputs under 20,000 cells run inline,
   because copying them to a worker costs more than processing them; larger ones go to a pool of `worker_threads`
   (CPUs − 1, at most 4), so one heavy dashboard never blocks the API for everyone else. Each job has a hard time limit:
   a runaway job's worker is terminated and replaced, the only reliable way to stop a computation in JavaScript.
   Workers report readiness before receiving jobs, so start-up never counts against the limit, and a bounded queue
   turns overload into a clear "busy" error instead of unbounded memory. `PIPELINE_WORKERS=0` disables the pool.
+- **Snapshots render in a worker thread of their own** (`render/worker-host.ts`), one at a time, with a heap limit and
+  a 15 s hard limit; a render over either has its worker terminated, and the next starts a fresh one once the old one
+  is gone. The worker starts on the first snapshot and stops after a minute without one. The main thread only resolves
+  the data and copies the tables over, so a heavy render never delays the API or the health check. What one snapshot
+  draws is bounded: 10,000 marks (dots, bars, cells) and 100,000 line points across all its charts, shared fairly and
+  trimmed to each widget's newest rows, plus backstops on draw time and SVG size after which the remaining charts
+  are left out with a note on their cards.
+- **Heavy jobs take turns** (`util/heavy.ts`). Each worker has its own heap limit, but a small container cannot hold
+  all of them at their peak at once, next to an upload being parsed and saved on the main thread. Drawing a snapshot,
+  an upload from parse to disk, loading a large stored upload, a pipeline over 100,000 cells or more and parsing a feed
+  of 512 KB or more therefore run one at a time across the process; small jobs never wait. Workers collect their
+  garbage after a large job, so the next one starts next to an emptied heap. The budget is in
+  [deployment.md](deployment.md#memory-budget).
+- **Admission by real memory use** (`util/memory-pressure.ts`). The gates bound each kind of work; the container's
+  OOM killer sees their sum. The server reads its cgroup's memory use (without page cache the kernel can drop) at
+  most every 250 ms and on a 10 s timer. Above a soft threshold it refuses to start new heavy work (except one job
+  on a server that has rested for 30 s with room for it), above a hard one also writes and new live streams, with 503
+  and Retry-After; work already running finishes, and the health check and reads answered from memory keep working.
+  Under pressure it also gives memory back: collections, idle workers stopped, and once idle for 30 s, empty caches,
+  fresh pipeline workers and a compacted heap. The thresholds keep a fixed room free (128 MB and 64 MB), because a
+  heavy job needs the same memory in any container. Details in [deployment.md](deployment.md#memory-guard).
 - **Accumulate** turns "current value" sources (current weather, a spot price, the ISS position) into rolling time
   series by appending each new reading with a `fetched_at` column. The buffer is in memory by design; it is a live view,
   not a database.
@@ -223,6 +254,35 @@ _Rejected:_ tile maps (every viewer's browser would call a third party, the CSP 
 would need server-side tile fetching), ECharts' old bundled world map (unclear provenance), TopoJSON (40 % smaller on
 the wire but a runtime dependency on both sides for a file that is cached anyway).
 
+## 8b. Showcase use cases
+
+The landing page can present ready-made use cases. Each one is a folder `showcase/<id>/` with `meta.json` (strict:
+`id` equal to the folder name, lowercase words joined by single hyphens and at least 4 letters or digits, `order`,
+`title` up to 60 characters, `tab` up to 24, `description` up to 200), `prompt.md` (1-4000 characters), `dashboard.json`
+(a `DashboardDoc`) and optionally `video.mp4` (16:9 H.264, at most 5 MB) and `poster.jpg` (at most 150 KB).
+`budget.test.ts` fails when committed media exceed those sizes. A broken folder is skipped with a warning; when two
+folders carry the same dashboard id, the one that sorts first wins. The slug is at most 40 characters and the
+dashboard id is cut to 32, so two long slugs that differ only after that point collide.
+
+A use case's data must work for the owner `system` and in anonymous copies, so `dashboard.json` may not use `upload`
+sources or reference stored secrets: such a folder is skipped with a warning. Use `inline` rows (at most
+`LIMITS.inlineRows`), built-in connectors or public URLs.
+
+At startup the server reads `SHOWCASE_DIR` and syncs one public dashboard per use case, with the stable id
+`sc<slug without hyphens>`, owned by `system`. These dashboards are read-only for everyone, admins included, never
+pruned and not counted in the anonymous storage limit. A changed `dashboard.json` becomes a new version; an id owned
+by anyone else is never touched. Anyone can make an editable copy. With `URL_SOURCES=signed-in`, the exact http and
+feed URLs used by showcase dashboards are trusted (exact match, no prefixes), so anonymous copies keep working. A use case whose sync fails (a corrupt stored dashboard, an id owned by someone else)
+is left out of the list and the routes; a failed sync never keeps the server from starting. An admin can delete a
+showcase dashboard, but it comes back at the next restart.
+
+`GET /api/use-cases` lists them (`public, max-age=300`). `GET /showcase/<id>` redirects to the dashboard, and
+`/showcase/<id>/video.mp4` and `/poster.jpg` support single byte ranges, an ETag (content hash) and
+`public, max-age=86400`. The service worker does not cache them. The videos are produced outside this repository; only
+the final MP4 and poster are committed. Size and ETag are read at startup, so restart after changing media files.
+The media routes sit outside the API rate limiter; that is fine behind a CDN, and self-hosters who expose the
+server directly may want a limit in their reverse proxy.
+
 ## 9. Known limits and next steps
 
 - Live updates send the whole processed table on every change. For rolling windows that is mostly redundant;
@@ -236,8 +296,8 @@ the wire but a runtime dependency on both sides for a file that is cached anyway
 - `packages/core`: unit tests for the expression language (including injection attempts), every transform, op atomicity,
   colour tokens and contrast in both themes, series colours, table cell styling, reference lines,
   layout normalisation, profiling and suggestions.
-- `apps/server`: worker pool tests (identical results to inline, main thread stays responsive, timeouts replace the
-  worker, queue limit), and integration tests through `app.request()` against a real temporary data directory: permissions,
+- `apps/server`: worker pool and render worker tests (identical results to inline, main thread stays responsive,
+  timeouts and running out of heap replace the worker, queue limit), and integration tests through `app.request()` against a real temporary data directory: permissions,
   conflicts, claims, uploads, versioning, folder deletion, admin access, the complete OAuth flow, and MCP tools driven by
   the official MCP client.
 - The web app was verified end to end with Playwright during development (editing, undo, live agent edits arriving in an

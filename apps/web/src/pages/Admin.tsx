@@ -21,10 +21,28 @@ import { ApiError, api } from '../lib/api.ts';
 import { relativeTime, useDocumentTitle } from '../lib/hooks.ts';
 import { formatBytes, PageHeader } from './_shared.tsx';
 
+/** The server's memory guard; null when it knows no memory limit. */
+type MemoryStats = { level: 'normal' | 'soft' | 'hard'; usedBytes: number; limitBytes: number } | null;
+
 interface AdminData {
   dashboards: AdminDashboardRow[];
-  stats: { dashboards: number; anonymous: number; users: number; totalBytes: number };
+  stats: {
+    dashboards: number;
+    anonymous: number;
+    users: number;
+    totalBytes: number;
+    memory: MemoryStats;
+  };
 }
+
+const PRESSURE: Record<'normal' | 'soft' | 'hard', string> = {
+  normal: '',
+  soft: ' · heavy work one at a time',
+  hard: ' · refusing writes',
+};
+
+/** How often the memory figure is refreshed while the page is open: it is the one number that moves on its own. */
+const MEMORY_REFRESH_MS = 10_000;
 
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
@@ -173,6 +191,13 @@ export default function Admin() {
   const [filter, setFilter] = useState('');
   const [toDelete, setToDelete] = useState<AdminDashboardRow | null>(null);
   const query = useQuery({ queryKey: ['admin'], queryFn: () => api<AdminData>('/api/admin/dashboards') });
+  // A light endpoint of its own: the dashboard list re-syncs the index from disk, too much to repeat every 10 s.
+  const memory = useQuery({
+    queryKey: ['admin', 'memory'],
+    queryFn: async () => (await api<{ memory: MemoryStats }>('/api/admin/memory')).memory,
+    enabled: query.isSuccess,
+    refetchInterval: MEMORY_REFRESH_MS,
+  });
   const remove = useMutation({
     mutationFn: (id: string) => api(`/api/admin/dashboards/${id}`, { method: 'DELETE' }),
     onSuccess: () => {
@@ -206,17 +231,24 @@ export default function Admin() {
     );
   }
   const { stats } = query.data;
+  const mem = memory.data !== undefined ? memory.data : stats.memory;
   return (
     <PageContainer>
       <PageHeader
         title="Admin"
         subtitle="Every dashboard on this server. Folders on disk are the source of truth; this list is re-synced on every visit."
       />
-      <div className="mb-8 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="mb-8 grid grid-cols-2 gap-3 lg:grid-cols-5">
         <Stat label="Dashboards" value={stats.dashboards} />
         <Stat label="Anonymous" value={stats.anonymous} />
         <Stat label="Users" value={stats.users} />
         <Stat label="Disk used" value={formatBytes(stats.totalBytes)} />
+        {mem && (
+          <Stat
+            label={`Memory of ${formatBytes(mem.limitBytes)}${PRESSURE[mem.level]}`}
+            value={formatBytes(mem.usedBytes)}
+          />
+        )}
       </div>
 
       <div className="mb-3 flex items-center gap-2">

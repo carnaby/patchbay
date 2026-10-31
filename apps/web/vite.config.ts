@@ -13,6 +13,7 @@ const proxied = [
   '/.well-known',
   '/mcp',
   '/healthz',
+  '/showcase',
 ];
 
 interface ModuleInfo {
