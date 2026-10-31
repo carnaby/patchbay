@@ -19,6 +19,7 @@ const Admin = lazy(() => import('./pages/Admin.tsx'));
 const Login = lazy(() => import('./pages/Login.tsx'));
 const OAuthConsent = lazy(() => import('./pages/OAuthConsent.tsx'));
 const OAuthError = lazy(() => import('./pages/OAuthError.tsx'));
+const Privacy = lazy(() => import('./pages/Privacy.tsx'));
 const NotFound = lazy(() => import('./pages/NotFound.tsx'));
 
 const queryClient = new QueryClient({
@@ -51,6 +52,7 @@ const router = createBrowserRouter([
       { path: '/settings', element: page(<Settings />) },
       { path: '/admin', element: page(<Admin />) },
       { path: '/login', element: page(<Login />) },
+      { path: '/privacy', element: page(<Privacy />) },
       { path: '/oauth/consent', element: page(<OAuthConsent />) },
       { path: '/oauth/error', element: page(<OAuthError />) },
       { path: '*', element: page(<NotFound />) },

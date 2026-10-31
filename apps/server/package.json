@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node --watch --env-file-if-exists=../../.env src/main.ts",
-    "start": "node --expose-gc src/main.ts",
+    "start": "node --expose-gc --env-file-if-exists=../../.env src/main.ts",
     "typecheck": "tsc -p ."
   },
   "dependencies": {

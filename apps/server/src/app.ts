@@ -46,6 +46,18 @@ import { RateLimiter } from './util/rate-limit.ts';
 import { runAsClient } from './util/request-context.ts';
 import type { UpstreamTestSeam } from './util/safe-fetch.ts';
 
+export const ROBOTS_TXT = [
+  'User-agent: *',
+  'Allow: /showcase/',
+  'Disallow: /api/',
+  'Disallow: /auth/',
+  'Disallow: /oauth/',
+  'Disallow: /mcp',
+  'Disallow: /admin',
+  'Disallow: /d/',
+  '',
+].join('\n');
+
 /** Test seams that cannot be set from the environment. */
 export interface DepsOverrides {
   /** Routes HTTP data sources to a local test server; see `UpstreamTestSeam`. */
@@ -285,6 +297,15 @@ export function createApp(deps: Deps, options: AppOptions = {}) {
   app.use('*', (c, next) => (c.req.path === '/mcp' ? next() : jsonBodyGuard(c, next)));
 
   app.get('/healthz', (c) => c.json({ ok: true }));
+
+  // Public dashboards are reachable by link, not meant to be searched for, so /d/ stays out of indexes. Without
+  // this, crawlers would get the SPA shell for /robots.txt and read it as "everything is allowed".
+  app.get('/robots.txt', (c) =>
+    c.text(ROBOTS_TXT, 200, {
+      'Cache-Control': 'public, max-age=3600',
+      'Content-Type': 'text/plain; charset=utf-8',
+    }),
+  );
 
   // MCP: bearer-only (OAuth access token bound to this resource, or a personal access token).
   const resourceMetadataUrl = `${config.publicUrl}/.well-known/oauth-protected-resource/mcp`;

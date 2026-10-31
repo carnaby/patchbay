@@ -862,6 +862,50 @@ export class DashboardService {
     this.hub.deleted(id);
   }
 
+  /**
+   * Self-service erasure (GDPR art. 17): deletes the signed-in user's dashboards, then every database row that
+   * belongs to them. Dashboards go first and the user row last, so a failure midway leaves a user who can still
+   * sign in and repeat the request, which then only finds what is left. Showcase, other users' and anonymous
+   * dashboards are never owned by this user and stay. Hard-linked uploads are safe: removing a folder only drops
+   * its own name for a file that copies still link to.
+   */
+  async deleteAccount(p: Principal, confirm: string) {
+    if (!p.user) throw unauthorized();
+    if (p.viaToken)
+      throw forbidden('Deleting the account needs a signed-in session in the web app, not a token');
+    const user = p.user;
+    if (confirm.trim().toLowerCase() !== user.email.toLowerCase())
+      throw badRequest('The confirmation does not match the email of this account');
+    // Ownership is re-checked by delete() itself, and the admin flag is dropped so this can never reach a
+    // dashboard that is not the user's.
+    const asOwner: Principal = { ...p, isAdmin: false };
+    const removeOwned = async () => {
+      const ids = new Set(this.index.listByOwner(user.id).map((m) => m.id));
+      // The index is only a cache that can lag behind the folders, and erasure must not depend on it.
+      for (const id of await this.store.listIds()) {
+        if (!ids.has(id) && (await this.store.readMeta(id).catch(() => null))?.ownerId === user.id)
+          ids.add(id);
+      }
+      let removed = 0;
+      for (const id of ids) {
+        try {
+          await this.delete(id, asOwner);
+          removed++;
+        } catch (e) {
+          // Gone already (an earlier attempt, or removed by hand): only the index row may be left.
+          if (!(e instanceof HttpError && e.status === 404)) throw e;
+          this.index.remove(id);
+        }
+      }
+      return removed;
+    };
+    const dashboards = await removeOwned();
+    const rows = this.users.eraseUser(user.id);
+    // A request that was already running when the user row went could still have created a dashboard.
+    const late = await removeOwned();
+    return { dashboards: dashboards + late, ...rows };
+  }
+
   async versions(id: string, p: Principal): Promise<VersionInfo[]> {
     await this.loadViewable(id, p);
     return this.store.listVersions(id);

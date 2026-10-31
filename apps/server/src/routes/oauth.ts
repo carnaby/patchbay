@@ -158,7 +158,7 @@ export function oauthRoutes(deps: Deps) {
     scopes_supported: [SCOPES.read, SCOPES.write],
     bearer_methods_supported: ['header'],
     resource_name: 'Patchbay',
-    resource_documentation: 'https://github.com/carnaby/patchbay#mcp',
+    resource_documentation: 'https://github.com/carnaby/patchbay/blob/main/guide/mcp.md',
   };
 
   app.get('/.well-known/oauth-protected-resource', (c) => c.json(resourceMetadata));

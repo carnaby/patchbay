@@ -49,8 +49,16 @@ export function authRoutes(deps: Deps) {
     setCookie(c, SESSION_COOKIE, session.token, { ...cookieBase, expires: session.expires });
   };
 
+  // Public and read-only: the sign-in page and the privacy page describe this instance with it. Settings only, no secrets.
   app.get('/config', (c) =>
-    c.json({ google: Boolean(google), devLogin: config.devLogin, offline: config.offline }),
+    c.json({
+      google: Boolean(google),
+      devLogin: config.devLogin,
+      offline: config.offline,
+      pruneAnonymousAfterDays: config.pruneAnonymousAfterDays,
+      pruneBlankAnonymousAfterHours: config.pruneBlankAnonymousAfterHours,
+      analytics: Boolean(config.analytics),
+    }),
   );
 
   app.get('/google', (c) => {
