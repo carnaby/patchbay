@@ -16,6 +16,7 @@ import {
   cellStyle,
   clockModel,
   clockSvg,
+  compact,
   compileTableRules,
   computeGauge,
   computeKpi,
@@ -36,6 +37,7 @@ import world from '@patchbay/core/geo/world-110m.json' with { type: 'json' };
 import { buildMapOption, mapTime, WORLD_MAP } from '@patchbay/core/map';
 import { Resvg, type ResvgRenderOptions } from '@resvg/resvg-js';
 import * as echarts from 'echarts';
+import { collectGarbage } from './gc.ts';
 
 // The same Natural Earth countries the browser's map chunk registers: no tiles, so snapshots work offline too.
 echarts.registerMap(WORLD_MAP, world as Parameters<typeof echarts.registerMap>[1]);
@@ -60,6 +62,30 @@ const FONT_OPTIONS: ResvgRenderOptions['font'] = {
 const ROW_HEIGHT = 80;
 const GAP = 12;
 const HEADER = 36;
+
+/**
+ * The most pixels any snapshot may have, device scale included. resvg holds the whole RGBA pixmap plus the PNG
+ * encoder's buffers, about 4 to 9 bytes per pixel at peak, so this keeps one render to a few tens of MB. Without a
+ * cap the raster followed the lowest widget: one widget stored at row 1 500 asked for 158 million pixels and took
+ * 1.4 GB. 4 MP is a 1280 px wide dashboard about 37 grid rows tall; every template is under 16.
+ */
+export const MAX_PIXELS = 4_000_000;
+const DASHBOARD_WIDTH = { default: 1280, min: 480, max: 2560 };
+const WIDGET_SIZE = { width: 640, height: 360, min: 80, max: 1600, scale: 1.5 };
+/** Room kept at the bottom of a cropped dashboard for the line saying what was left out. */
+const CROP_NOTE = 40;
+/**
+ * Marks (dots, bars, cells) one dashboard snapshot may draw in charts and maps together. Each mark is an SVG element
+ * that ECharts builds and resvg parses: 60 scatter charts of 10 000 rows took 15 s and 1.9 GB. Line and area charts
+ * do not count, they draw one sampled path per series however many rows they have. Four charts at the default
+ * maxPoints (5 000) fit; beyond that every widget keeps its newest rows, the way maxPoints itself trims.
+ */
+export const MARK_BUDGET = 20_000;
+
+const ECHARTS_TYPES = new Set<Widget['type']>(['chart', 'map', 'gauge']);
+
+const clamp = (value: number | undefined, fallback: number, min: number, max: number) =>
+  value === undefined || !Number.isFinite(value) ? fallback : Math.min(max, Math.max(min, Math.round(value)));
 
 const esc = (s: string) =>
   s.replace(
@@ -320,7 +346,11 @@ function card(
   ].join('');
 }
 
-function toPng(svg: string, scale = 1): Buffer {
+/** The only way to a raster, so no caller can ask for more than MAX_PIXELS. */
+function toPng(svg: string, width: number, height: number, scale = 1): Buffer {
+  if (width * height * scale * scale > MAX_PIXELS + 1) {
+    throw new Error(`Snapshot of ${width}x${height} at ${scale}x exceeds the pixel budget`);
+  }
   return new Resvg(svg, {
     font: FONT_OPTIONS,
     fitTo: scale === 1 ? { mode: 'original' } : { mode: 'zoom', value: scale },
@@ -329,46 +359,109 @@ function toPng(svg: string, scale = 1): Buffer {
     .asPng();
 }
 
+/**
+ * Draws one widget. Synchronous and memory-hungry: request handlers call it only inside `snapshotGate`'s draw
+ * (render/gate.ts), which serialises renders and releases resvg's native memory after each one.
+ */
 export function renderWidgetPng(
   widget: Widget,
   result: DatasetResult | undefined,
   options: { theme?: ThemeMode; width?: number; height?: number; entityColors?: ColorMap | undefined } = {},
 ): Buffer {
   const theme = THEMES[options.theme ?? 'light'];
-  return toPng(
-    card(widget, result, theme, options.width ?? 640, options.height ?? 360, options.entityColors),
-    1.5,
-  );
+  const { min, max } = WIDGET_SIZE;
+  const width = clamp(options.width, WIDGET_SIZE.width, min, max);
+  const height = clamp(options.height, WIDGET_SIZE.height, min, max);
+  // Large cards trade sharpness for pixels instead of growing past the budget.
+  const scale = Math.min(WIDGET_SIZE.scale, Math.sqrt(MAX_PIXELS / (width * height)));
+  return toPng(card(widget, result, theme, width, height, options.entityColors), width, height, scale);
 }
 
+type Marked = Extract<Widget, { type: 'chart' | 'map' }>;
+
+/** How many marks a widget would draw unless the budget trims it. */
+function markDemand(widget: Widget, result: DatasetResult | undefined): number {
+  if (!result || (widget.type !== 'chart' && widget.type !== 'map')) return 0;
+  if (widget.type === 'chart' && (widget.config.kind === 'line' || widget.config.kind === 'area')) return 0;
+  return Math.min(result.table.rows.length, widget.config.maxPoints);
+}
+
+/**
+ * Splits `budget` fairly: widgets asking for less than an equal share keep all of theirs, the rest share what is left.
+ * Returns the limit per widget id, only for widgets that have to give something up.
+ */
+export function shareMarks(demands: Map<string, number>, budget = MARK_BUDGET): Map<string, number> {
+  const limits = new Map<string, number>();
+  const asking = [...demands].filter(([, d]) => d > 0).sort((a, b) => a[1] - b[1]);
+  let left = budget;
+  asking.forEach(([id, demand], n) => {
+    const share = Math.max(1, Math.floor(left / (asking.length - n)));
+    if (demand > share) limits.set(id, share);
+    left -= Math.min(demand, share);
+  });
+  return limits;
+}
+
+/** Draws a whole dashboard, at most MAX_PIXELS. Like renderWidgetPng, request handlers go through `snapshotGate`. */
 export function renderDashboardPng(
   doc: DashboardDoc,
   results: Map<string, DatasetResult>,
   options: { theme?: ThemeMode; width?: number } = {},
 ): Buffer {
   const theme = THEMES[options.theme ?? 'light'];
-  const width = options.width ?? 1280;
+  const width = clamp(options.width, DASHBOARD_WIDTH.default, DASHBOARD_WIDTH.min, DASHBOARD_WIDTH.max);
   const col = (width - GAP * (GRID_COLUMNS + 1)) / GRID_COLUMNS;
   const top = 64;
-  const bottom = doc.layout.reduce((m, it) => Math.max(m, it.y + it.h), 0);
-  const height = top + bottom * ROW_HEIGHT + GAP * 2;
+  // The browser grid compacts vertically, so empty rows a stored layout may have (the schema allows y up to
+  // 10 000) are never on screen. Compacting here keeps the image faithful and keeps those rows out of the budget.
+  const layout = compact(doc.layout.filter((it) => doc.widgets.some((w) => w.id === it.i)));
+  const bottom = layout.reduce((m, it) => Math.max(m, it.y + it.h), 0);
+  const fullHeight = top + bottom * ROW_HEIGHT + GAP * 2;
+  const maxHeight = Math.floor(MAX_PIXELS / width);
+  const cropped = fullHeight > maxHeight;
+  const height = cropped ? maxHeight : fullHeight;
+  // Cards starting below this line are left out; one crossing it is cut off by the note.
+  const visibleTo = cropped ? height - CROP_NOTE : height;
   const page = theme.mode === 'light' ? '#f9f9f7' : '#0d0d0d';
   const parts = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
     `<rect width="${width}" height="${height}" fill="${page}"/>`,
     text(GAP + 4, 40, truncate(doc.title, 80), { size: 22, weight: 700, color: theme.textPrimary }),
   ];
-  for (const item of doc.layout) {
-    const widget = doc.widgets.find((w) => w.id === item.i);
-    if (!widget) continue;
-    const x = GAP + item.x * (col + GAP);
+  const visible = layout.flatMap((item) => {
     const y = top + item.y * ROW_HEIGHT;
+    if (y >= visibleTo) return [];
+    const widget = doc.widgets.find((w) => w.id === item.i)!;
+    const result = 'datasetId' in widget ? results.get(widget.datasetId) : undefined;
+    return [{ item, y, widget, result }];
+  });
+  const hidden = layout.length - visible.length;
+  const limits = shareMarks(new Map(visible.map((v) => [v.widget.id, markDemand(v.widget, v.result)])));
+  for (const { item, y, widget, result } of visible) {
+    const x = GAP + item.x * (col + GAP);
     const w = item.w * col + (item.w - 1) * GAP;
     const h = item.h * ROW_HEIGHT - GAP;
-    const result = 'datasetId' in widget ? results.get(widget.datasetId) : undefined;
+    const limit = limits.get(widget.id);
+    const drawn =
+      limit === undefined
+        ? widget
+        : ({ ...widget, config: { ...widget.config, maxPoints: limit } } as Marked);
     // A map card is bounded by construction (title, then the map, which clips itself), so it may stay unclipped.
-    parts.push(nest(card(widget, result, theme, w, h, doc.colors), x, y, w, h, widget.type !== 'map'));
+    parts.push(nest(card(drawn, result, theme, w, h, doc.colors), x, y, w, h, widget.type !== 'map'));
+    // ECharts leaves megabytes of short-lived objects per chart; without this a dashboard of many maps peaked at the
+    // sum of all of them before V8 got round to collecting.
+    if (ECHARTS_TYPES.has(widget.type) && result) collectGarbage();
+  }
+  if (cropped) {
+    const note = hidden
+      ? `Cut off at ${height} px: ${hidden} more widget${hidden === 1 ? '' : 's'} below not shown`
+      : `Cut off at ${height} px: the rest of the dashboard is not shown`;
+    parts.push(
+      `<rect x="0" y="${visibleTo}" width="${width}" height="${CROP_NOTE}" fill="${page}"/>`,
+      `<line x1="0" y1="${visibleTo + 0.5}" x2="${width}" y2="${visibleTo + 0.5}" stroke="${theme.grid}"/>`,
+      text(width / 2, visibleTo + 25, note, { size: 13, color: theme.muted, anchor: 'middle' }),
+    );
   }
   parts.push('</svg>');
-  return toPng(parts.join(''));
+  return toPng(parts.join(''), width, height);
 }

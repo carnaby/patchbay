@@ -13,6 +13,8 @@ import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import { ALL_SCOPES } from '../auth/tokens.ts';
 import { type Ctx, clientIp, type Deps, type Env, requireUser } from '../context.ts';
+import { SnapshotCache, snapshotCache } from '../render/cache.ts';
+import { RenderBusyError, snapshotGate } from '../render/gate.ts';
 import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
 import { listTemplates } from '../services/templates.ts';
 import { badRequest, forbidden, HttpError, notFound } from '../util/errors.ts';
@@ -362,17 +364,27 @@ export function apiRoutes(deps: Deps) {
       await Promise.all(datasets.map(async (d) => map.set(d.id, await data.resolve(target, d))));
       return map;
     };
+    const widget = widgetId ? doc.widgets.find((w) => w.id === widgetId) : undefined;
+    if (widgetId && !widget) throw notFound('Widget not found');
+    const key = SnapshotCache.key({ id, version: meta.version, theme, widget: widgetId });
     let png: Buffer;
-    if (widgetId) {
-      const widget = doc.widgets.find((w) => w.id === widgetId);
-      if (!widget) throw notFound('Widget not found');
-      const dataset = 'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
-      png = renderWidgetPng(widget, dataset ? await data.resolve(target, dataset) : undefined, {
-        theme,
-        entityColors: doc.colors,
-      });
-    } else {
-      png = renderDashboardPng(doc, await resolveAll(doc.datasets), { theme });
+    try {
+      // Permission was checked above, for this request; the cache only saves the drawing.
+      png = await snapshotCache.get(key, () =>
+        snapshotGate.run(async (draw) => {
+          if (widget) {
+            const dataset =
+              'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
+            const result = dataset ? await data.resolve(target, dataset) : undefined;
+            return draw(() => renderWidgetPng(widget, result, { theme, entityColors: doc.colors }));
+          }
+          const results = await resolveAll(doc.datasets);
+          return draw(() => renderDashboardPng(doc, results, { theme }));
+        }),
+      );
+    } catch (err) {
+      if (!(err instanceof RenderBusyError)) throw err;
+      return c.json({ error: err.message }, 503, { 'Retry-After': String(err.retryAfterSec) });
     }
     return c.body(new Uint8Array(png), 200, {
       'content-type': 'image/png',

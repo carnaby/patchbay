@@ -20,6 +20,7 @@ import {
   FEED_MIN_REFRESH_SEC,
   inferTable,
   MAX_SECRETS_PER_USER,
+  normalizeLayout,
   OpError,
   parseBinding,
   parseDashboard,
@@ -401,7 +402,10 @@ export class DashboardService {
     changes: string[] = ['Edited in the editor'],
     options: PublicSecretsConfirmation = {},
   ) {
-    const doc = parseDashboard(rawDoc);
+    const parsed = parseDashboard(rawDoc);
+    // The same layout clean-up applyOps does: a saved layout is what every viewer and the snapshot renderer read,
+    // so it must not keep a widget parked at row 10 000 just because the schema allows the number.
+    const doc = { ...parsed, layout: normalizeLayout(parsed.layout, parsed.widgets) };
     return this.commit(
       id,
       p,

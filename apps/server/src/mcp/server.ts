@@ -24,6 +24,7 @@ import {
 import { z } from 'zod';
 import { SCOPES } from '../auth/tokens.ts';
 import type { Deps } from '../context.ts';
+import { snapshotGate } from '../render/gate.ts';
 import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
 import type { Principal } from '../services/dashboards.ts';
 import { listTemplates } from '../services/templates.ts';
@@ -541,19 +542,23 @@ export function createMcp(deps: Deps) {
           const needed = args.widgetId ? doc.widgets.filter((w) => w.id === args.widgetId) : doc.widgets;
           if (args.widgetId && needed.length === 0) return fail(`No widget "${args.widgetId}"`);
           const ids = new Set(needed.flatMap((w) => ('datasetId' in w ? [w.datasetId] : [])));
-          await Promise.all(
-            doc.datasets
-              .filter((d) => ids.has(d.id))
-              .map(async (d) => results.set(d.id, await data.resolve(target, d))),
-          );
           const widget = needed[0];
-          const png =
-            args.widgetId && widget
-              ? renderWidgetPng(widget, 'datasetId' in widget ? results.get(widget.datasetId) : undefined, {
-                  theme: args.theme,
-                  entityColors: doc.colors,
-                })
-              : renderDashboardPng(doc, results, { theme: args.theme });
+          // Shares the REST endpoint's gate: concurrent snapshots from either side count against the same limit.
+          const png = await snapshotGate.run(async (draw) => {
+            await Promise.all(
+              doc.datasets
+                .filter((d) => ids.has(d.id))
+                .map(async (d) => results.set(d.id, await data.resolve(target, d))),
+            );
+            return draw(() =>
+              args.widgetId && widget
+                ? renderWidgetPng(widget, 'datasetId' in widget ? results.get(widget.datasetId) : undefined, {
+                    theme: args.theme,
+                    entityColors: doc.colors,
+                  })
+                : renderDashboardPng(doc, results, { theme: args.theme }),
+            );
+          });
           const problems = [...results.values()]
             .filter((r) => r.error)
             .map((r) => `${r.datasetId}: ${r.error}`);
