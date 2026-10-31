@@ -43,7 +43,7 @@ The first public release.
   editable copy.
 - Installable PWA whose service worker never caches live data.
 - Optional, cookieless Umami page-view analytics that never sends dashboard IDs or titles.
-- Deployment: one container image on GHCR, a Docker Compose setup with Caddy, and a home server or NAS setup behind a
+- Deployment: one container image on GHCR for `linux/amd64` and `linux/arm64`, a Docker Compose setup with Caddy, and a home server or NAS setup behind a
   Cloudflare Tunnel with Watchtower updates.
 
 ### Security

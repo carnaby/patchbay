@@ -104,7 +104,9 @@ It is free, needs no API keys, and runs as a single process you can host anywher
 ## Quick start
 
 **Hosted:** open [patchbay.me.uk](https://patchbay.me.uk), click **Build a dashboard** and pick a template. Dashboards
-made without an account are public; sign in with Google to keep private ones and to connect an agent.
+made without an account are public; sign in with Google to keep private ones and to connect an agent. The hosted
+instance counts page views with cookieless analytics and never sends dashboard IDs or titles; see its
+[privacy page](https://patchbay.me.uk/privacy).
 
 **Docker, on your machine:**
 
@@ -352,8 +354,9 @@ described in [guide/deployment.md](guide/deployment.md#limits-for-a-small-public
 
 ## Deployment
 
-One container with a volume. Images are published to GHCR: `ghcr.io/carnaby/patchbay:latest` follows `main`,
-release tags (`0.1.0`, `0.1`) stay fixed, and every commit is also tagged with its full SHA.
+One container with a volume. Images for `linux/amd64` and `linux/arm64` are published to GHCR:
+`ghcr.io/carnaby/patchbay:latest` follows `main`, release tags (`0.1.0`, `0.1`) stay fixed, and every commit is
+also tagged with its full SHA.
 
 A production-style `docker-compose.yml` with Caddy (automatic HTTPS) is included. Point a DNS record at the server,
 then:

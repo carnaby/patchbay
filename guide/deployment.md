@@ -48,8 +48,8 @@ Google OAuth client (Google Cloud Console → APIs & Services → Credentials �
 Runs Patchbay on a machine at home (a NAS, a mini PC) without opening a port on the router. A `cloudflared`
 container dials out to Cloudflare; Cloudflare terminates TLS for your hostname and forwards requests through the
 tunnel to `http://patchbay:8787` on the compose project's private network. Images come prebuilt from GHCR
-(`ghcr.io/carnaby/patchbay`: `latest` follows `main`, releases are tagged `0.1.0` and `0.1`, and every commit
-is also tagged with its full SHA), so the
+(`ghcr.io/carnaby/patchbay` for `linux/amd64` and `linux/arm64`: `latest` follows `main`, releases are tagged
+`0.1.0` and `0.1`, and every commit is also tagged with its full SHA), so the
 machine needs no checkout and no build. Everything is in [`deploy/nas/`](../deploy/nas/).
 
 You need a domain whose DNS is on Cloudflare (any plan, including Free).
