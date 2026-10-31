@@ -37,6 +37,8 @@ const server = serve({ fetch: app.fetch, hostname: config.host, port: config.por
   if (config.devLogin)
     console.log('[patchbay] DEV_LOGIN is on: anyone can sign in as any email. Never use this in production.');
   if (config.offline) console.log('[patchbay] OFFLINE mode: connectors serve synthetic data');
+  if (config.analytics)
+    console.log(`[patchbay] Umami analytics on: pages load ${config.analytics.scriptUrl}`);
   // Holding other people's credentials is a deliberate choice; say so where the operator looks.
   if (config.secrets.mode !== 'off')
     console.log(`[patchbay] SECRETS=${config.secrets.mode}: credentials for HTTP sources can be stored`);

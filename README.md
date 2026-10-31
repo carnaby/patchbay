@@ -263,6 +263,10 @@ after every step.
   are capped, so no step can blow up memory).
 - Tokens are bound by their scopes on every interface, and admin rights are never granted to tokens.
 - Live streams are re-authorised when access changes: making a dashboard private disconnects everyone else.
+- Analytics are opt-in per instance. The hosted instance counts page views with cookieless
+  [Umami](https://umami.is) analytics that never sends query strings, fragments, dashboard IDs or dashboard titles and
+  respects Do Not Track; a self-hosted instance has no analytics unless its operator sets `UMAMI_SCRIPT_URL` and
+  `UMAMI_WEBSITE_ID`.
 - The server was reviewed adversarially before release; every finding has a regression test
   (`apps/server/src/server.test.ts`, "hardening").
 
@@ -284,6 +288,7 @@ after every step.
 | `SECRETS`                                  | `off`                   | Who may store credentials for HTTP sources: `off`, `admins`, `users`. |
 | `SECRETS_KEY`                              | –                       | 32 random bytes, base64. Required unless `SECRETS=off`.               |
 | `SECRETS_KEY_PREVIOUS`                     | –                       | Old key(s) during rotation, comma-separated.                          |
+| `UMAMI_SCRIPT_URL`, `UMAMI_WEBSITE_ID`     | –                       | Optional Umami page-view analytics; both or neither.                  |
 
 ## Deployment
 

@@ -29,7 +29,12 @@ Monorepo (pnpm): `packages/core` (pure domain logic, shared), `apps/server` (Hon
 - Public documentation lives in `guide/` (deployment, MCP reference, architecture) and `guide/ideas/` (specified
   ideas open to contributors). `docs/` is the maintainer's private, gitignored folder: design proposals, plans,
   handoffs. Never commit it, never link to it from public files, and keep it out of the Docker build context.
-- README images live in `.github/assets/`.
+- README images live in `.github/assets/`. `.github/assets/social-preview.png` (1280×640) is uploaded by hand in the
+  GitHub repository settings; `apps/web/public/og.png` (1200×630) is the link preview image.
+- Nothing owner-specific in the code: the served `index.html` gets its absolute URLs from `PUBLIC_URL` and, only when
+  `UMAMI_SCRIPT_URL` and `UMAMI_WEBSITE_ID` are set, the Umami tracker (apps/server/src/util/index-html.ts). Without
+  them no tracker is loaded. Routes whose path carries an ID must be normalized in
+  apps/web/public/umami-hook.js.
 - The service worker (apps/web/public/sw.js) must never cache `/api`, `/auth`, `/oauth`, `/mcp` or live streams:
   dashboards show live data and must not go stale. It only caches hashed `/assets/*` and the offline page. Bump
   `VERSION` in sw.js when its caching logic changes. The server serves sw.js and the manifest with `no-cache`.

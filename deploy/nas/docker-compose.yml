@@ -24,6 +24,10 @@ services:
       TRUST_PROXY: cloudflare
       # One worker keeps large inputs off the main thread on a 2-core CPU without doubling memory.
       PIPELINE_WORKERS: "1"
+      # Optional Umami analytics, from .env (see guide/deployment.md). Empty means off. Set here, these override
+      # patchbay.env, so put them in .env.
+      UMAMI_SCRIPT_URL: ${UMAMI_SCRIPT_URL:-}
+      UMAMI_WEBSITE_ID: ${UMAMI_WEBSITE_ID:-}
     volumes:
       - ./data:/data
     # Measured: ~120 MiB idle, ~250 MiB peak with a 5 MB upload in the worker. The limit leaves headroom.
