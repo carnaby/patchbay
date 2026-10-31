@@ -65,6 +65,13 @@ interface EditorState {
   expanded: string | null;
   saving: boolean;
   saveError: string | null;
+  /** A document the server refused for good (a 4xx); autosave leaves it alone until the next edit. */
+  refusedDoc: DashboardDoc | null;
+  /**
+   * Identifies the save in flight. A save that waits to retry can outlive the dashboard it belongs to (the user
+   * opened another one): `load` moves this on, and the old save stops instead of writing into the new state.
+   */
+  saveSeq: number;
   conflict: DashboardEnvelope | null;
   /** widget id -> timestamp, for the "changed elsewhere" and "this widget rang" highlight */
   flash: Record<string, number>;
@@ -86,9 +93,11 @@ interface EditorState {
     baseVersion: number;
     labels: string[];
     confirmPublicSecrets: boolean;
+    seq: number;
   } | null;
   saveSucceeded(sent: DashboardDoc, envelope: DashboardEnvelope): void;
-  saveFailed(error: string): void;
+  /** `refused`: the document the server refused for good; it is not sent again until it changes. */
+  saveFailed(error: string, refused?: DashboardDoc): void;
   /** The server answered 428: hold this document until the user decides. */
   saveNeedsConfirmation(sent: DashboardDoc, secrets: PublicSecretRef[]): void;
   /** Records that the user agreed to show these references publicly; the next save carries the flag. */
@@ -137,6 +146,8 @@ export const useEditor = create<EditorState>((set, get) => ({
   expanded: null,
   saving: false,
   saveError: null,
+  refusedDoc: null,
+  saveSeq: 0,
   conflict: null,
   flash: {},
   lastRemote: null,
@@ -158,6 +169,8 @@ export const useEditor = create<EditorState>((set, get) => ({
       lastCoalesce: null,
       saving: false,
       saveError: null,
+      refusedDoc: null,
+      saveSeq: get().saveSeq + 1,
       conflict: null,
       flash: {},
       lastRemote: null,
@@ -232,17 +245,28 @@ export const useEditor = create<EditorState>((set, get) => ({
   },
 
   beginSave() {
-    const { doc, saved, saving, conflict, version, pendingLabels, secretsPrompt, confirmedSecretRefs } =
-      get();
+    const {
+      doc,
+      saved,
+      saving,
+      conflict,
+      version,
+      pendingLabels,
+      secretsPrompt,
+      confirmedSecretRefs,
+      refusedDoc,
+    } = get();
     if (!doc || doc === saved || saving || conflict) return null;
     // The refused document waits for the user's answer; any further edit makes a new document and tries again.
-    if (secretsPrompt?.doc === doc) return null;
-    set({ saving: true });
+    if (secretsPrompt?.doc === doc || refusedDoc === doc) return null;
+    const seq = get().saveSeq + 1;
+    set({ saving: true, saveSeq: seq });
     return {
       doc,
       baseVersion: version,
       labels: pendingLabels.length ? pendingLabels.slice(-10) : ['Edited'],
       confirmPublicSecrets: saved ? confirmedForSave(saved, doc, confirmedSecretRefs) : false,
+      seq,
     };
   },
 
@@ -290,6 +314,7 @@ export const useEditor = create<EditorState>((set, get) => ({
     set({
       saving: false,
       saveError: null,
+      refusedDoc: null,
       // A refused document is never the one saved here (beginSave skips it), so a newer one replaced it.
       secretsPrompt: null,
       saved: sent,
@@ -301,8 +326,8 @@ export const useEditor = create<EditorState>((set, get) => ({
     });
   },
 
-  saveFailed(error) {
-    set({ saving: false, saveError: error });
+  saveFailed(error, refused) {
+    set({ saving: false, saveError: error, refusedDoc: refused ?? null });
   },
 
   rebaseOnto(current) {

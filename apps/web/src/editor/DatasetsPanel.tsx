@@ -53,6 +53,7 @@ import {
 } from '../components/ui.tsx';
 import { api, errorMessage } from '../lib/api.ts';
 import { useConnectors } from '../lib/hooks.ts';
+import { withRetry } from '../lib/retry.ts';
 import { credentialErrorHint, introducedSecretIds, introducedSecretRefs } from '../lib/secrets.ts';
 import { useEditor } from '../state/editor.ts';
 import { fromWire } from '../state/sync.ts';
@@ -314,10 +315,13 @@ function SourceEditor({
     mutationFn: async (file: File) => {
       if (file.size > 5 * 1024 * 1024) throw new Error('Files are limited to 5 MB');
       const content = await file.text();
-      return api<UploadedFile>(`/api/dashboards/${dashboardId}/files`, {
-        body: { name: file.name, content },
-        dashboardId,
-      });
+      // Uploads take turns on the server: a busy answer means "later", not "no".
+      return withRetry(() =>
+        api<UploadedFile>(`/api/dashboards/${dashboardId}/files`, {
+          body: { name: file.name, content },
+          dashboardId,
+        }),
+      );
     },
     onSuccess: (file) => {
       qc.invalidateQueries({ queryKey: ['files', dashboardId] });

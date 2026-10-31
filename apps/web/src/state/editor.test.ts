@@ -133,3 +133,33 @@ describe('autosave and the public-secrets confirmation', () => {
     expect(s.beginSave()?.baseVersion).toBe(2);
   });
 });
+
+describe('failed saves', () => {
+  beforeEach(() => useEditor.getState().load(envelope(1)));
+  const rename = (title: string) => useEditor.getState().apply([{ op: 'setMeta', title }], 'Renamed');
+
+  it('does not send a document the server refused for good again, until it is edited', () => {
+    rename('Bad');
+    const job = useEditor.getState().beginSave()!;
+    useEditor.getState().saveFailed('Invalid document', job.doc);
+    expect(useEditor.getState().beginSave()).toBeNull();
+    expect(useEditor.getState().doc).not.toBe(useEditor.getState().saved);
+    rename('Fixed');
+    expect(useEditor.getState().beginSave()?.doc.title).toBe('Fixed');
+  });
+
+  it('tries again after a failure that was only a busy server', () => {
+    rename('Busy');
+    useEditor.getState().beginSave();
+    useEditor.getState().saveFailed('The server is busy');
+    expect(useEditor.getState().beginSave()?.doc.title).toBe('Busy');
+  });
+
+  it('gives each save its own number, and loading a dashboard moves past a save still waiting', () => {
+    rename('One');
+    const job = useEditor.getState().beginSave()!;
+    expect(useEditor.getState().saveSeq).toBe(job.seq);
+    useEditor.getState().load(envelope(5));
+    expect(useEditor.getState().saveSeq).not.toBe(job.seq);
+  });
+});
