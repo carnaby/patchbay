@@ -216,6 +216,15 @@ export class DataService {
   }
 
   /**
+   * Forgets parsed tables and recent results; they are built again on the next request. For an idle server under
+   * memory pressure (util/memory-pressure.ts). The accumulate buffers stay: they are history, not a cache.
+   */
+  dropCaches() {
+    this.tables.clear();
+    this.results.clear();
+  }
+
+  /**
    * How often the live hub may refresh a dataset, in seconds, or null when it must not refresh it on a timer at all
    * (no refresh asked for, or a source that only changes when the dashboard is edited).
    */

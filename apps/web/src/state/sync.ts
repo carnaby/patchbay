@@ -18,6 +18,7 @@ import { toast } from '../components/ui.tsx';
 import { ApiError, api, errorMessage } from '../lib/api.ts';
 import { publicSecretsRequest } from '../lib/secrets.ts';
 import { useEditor } from './editor.ts';
+import { openLiveChannel } from './live-channel.ts';
 
 const SAVE_DEBOUNCE_MS = 600;
 
@@ -89,9 +90,6 @@ export const datasetKey = (dashboardId: string, dataset: Dataset) =>
   ['data', dashboardId, dataset.id, JSON.stringify(dataset)] as const;
 
 let reconnects = 0;
-/** First wait before opening a live channel the server refused again; doubled up to the maximum. */
-const RECONNECT_MIN_MS = 5000;
-const RECONNECT_MAX_MS = 60_000;
 /** How often the live channel reconnected; results after a reconnect only set a new sound baseline. */
 export const liveReconnects = () => reconnects;
 
@@ -104,10 +102,6 @@ export function useLiveEvents(id: string | undefined) {
 
   useEffect(() => {
     if (!id) return;
-    let source: EventSource;
-    let stopped = false;
-    let retry: ReturnType<typeof setTimeout> | undefined;
-    let retryMs = RECONNECT_MIN_MS;
     let greeted = false;
 
     const pullRemote = async (event: Extract<LiveEvent, { type: 'doc' }>) => {
@@ -146,7 +140,6 @@ export function useLiveEvents(id: string | undefined) {
     };
 
     const onMessage = (msg: MessageEvent<string>) => {
-      if (stopped) return;
       const event = JSON.parse(msg.data) as LiveEvent;
       if (event.type === 'data') {
         const doc = useEditor.getState().saved;
@@ -172,24 +165,11 @@ export function useLiveEvents(id: string | undefined) {
       }
     };
 
-    const connect = () => {
-      // Rows as arrays: column names once per result instead of once per row (see core wire.ts).
-      source = new EventSource(`/api/dashboards/${id}/events?rows=arrays`, { withCredentials: true });
-      source.onopen = () => {
-        retryMs = RECONNECT_MIN_MS;
-        setConnected(true);
-      };
-      source.onmessage = onMessage;
-      source.onerror = () => {
-        setConnected(false);
-        // EventSource reconnects by itself after a dropped connection, but gives up for good after an error answer
-        // (a busy server's 503, a 429). Unattended screens must come back without anyone reloading them.
-        if (source.readyState !== EventSource.CLOSED || stopped) return;
-        retry = setTimeout(connect, retryMs);
-        retryMs = Math.min(retryMs * 2, RECONNECT_MAX_MS);
-      };
-    };
-    connect();
+    // Rows as arrays: column names once per result instead of once per row (see core wire.ts).
+    const close = openLiveChannel(`/api/dashboards/${id}/events?rows=arrays`, {
+      onMessage,
+      onConnected: setConnected,
+    });
 
     // After our own save finishes, process a remote version that arrived meanwhile.
     const unsubscribe = useEditor.subscribe((s, prev) => {
@@ -206,9 +186,7 @@ export function useLiveEvents(id: string | undefined) {
     });
 
     return () => {
-      stopped = true;
-      clearTimeout(retry);
-      source.close();
+      close();
       unsubscribe();
     };
   }, [id, qc, navigate]);

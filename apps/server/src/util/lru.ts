@@ -64,6 +64,11 @@ export class ByteLru<V> {
   deleteWhere(test: (key: string) => boolean) {
     for (const key of [...this.map.keys()]) if (test(key)) this.delete(key);
   }
+
+  clear() {
+    this.map.clear();
+    this.total = 0;
+  }
 }
 
 /**

@@ -34,6 +34,8 @@ export interface PipelineRunner {
   parseUpload(input: UploadInput): Promise<DataTable>;
   /** Asks idle workers to collect their garbage (under memory pressure, util/memory-pressure.ts). */
   collectIdle?(): void;
+  /** Replaces idle workers by fresh ones, which gives back what a collection cannot (util/memory-pressure.ts). */
+  recycleIdle?(): void;
   close(): Promise<void>;
 }
 
@@ -302,10 +304,11 @@ export class WorkerPool implements PipelineRunner {
       }
     }
     // A large table is copied to the worker and grows its heap: no such job starts while memory is short. Small
-    // tables go to a worker only for their expressions, and refusing them would break ordinary dashboards.
+    // tables go to a worker only for their expressions, and refusing them would break ordinary dashboards. Tables
+    // over HEAVY_PIPELINE_CELLS run inside a heavy turn (services/data.ts) and pass here as part of it.
     if (table.rows.length * Math.max(table.columns.length, 1) >= this.inlineBelowCells) {
       try {
-        memoryGuard.admitHeavy();
+        memoryGuard.admitHeavy({ oneShot: true });
       } catch (e) {
         return Promise.reject(e);
       }
@@ -330,6 +333,17 @@ export class WorkerPool implements PipelineRunner {
    */
   collectIdle() {
     for (const slot of this.slots) if (slot.ready && !slot.job) slot.worker.postMessage({ kind: 'collect' });
+  }
+
+  /**
+   * Idle workers are replaced by fresh ones. A collection empties a worker's heap but keeps the isolate it grew to
+   * and the native memory its thread allocated; only an exit gives those back. Used once the server has been idle
+   * under memory pressure for a while (util/memory-pressure.ts), when the restart costs nobody a wait.
+   */
+  recycleIdle() {
+    for (const slot of [...this.slots]) {
+      if (slot.ready && !slot.job) this.replace(slot, new PipelineError('Worker recycled'));
+    }
   }
 
   /** Workers currently processing a job (diagnostics and tests). */

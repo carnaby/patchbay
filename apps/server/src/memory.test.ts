@@ -24,6 +24,10 @@ beforeAll(async () => {
   deps = await createDeps(
     loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, OFFLINE: '1', PUBLIC_URL: BASE, PIPELINE_WORKERS: '1' }),
   );
+  // The pressure here is simulated, with no memory to give back: reliefs that empty caches and replace workers would
+  // only race the reads the tests check. Registered under the same names, these replace the real ones.
+  memoryGuard.setRelief('caches', () => {});
+  memoryGuard.setRelief('pipeline', () => {});
   const generous = () => new RateLimiter(100_000, 100_000);
   app = createApp({
     ...deps,
@@ -47,7 +51,10 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/** Simulates the container at `fraction` of its limit, sampled on every check. */
+/**
+ * Simulates the container at `fraction` of its limit, sampled on every check. At 384 MB: soft from 0.67 (one heavy job
+ * on a resting server up to 0.71), hard from 0.83.
+ */
 function pressure(fraction: number) {
   memoryGuard.configure({
     reader: () => ({ usedBytes: fraction * LIMIT, limitBytes: LIMIT, source: 'cgroup v2' }),
@@ -129,12 +136,19 @@ describe('memory guard', () => {
     expect((await call(`/api/dashboards/${d.id}/snapshot.png?widget=w`)).status).toBe(200);
   });
 
-  it('above soft refuses new heavy work and keeps light reads, cached results and the health check', async () => {
+  it('above soft refuses new heavy work but one job on a resting server, and keeps light reads, cached results and the health check', async () => {
     const d = await dashboard(12_000);
     // Served once before the pressure: its serialised bytes are cached.
     expect((await call(`/api/dashboards/${d.id}/data/u?rows=arrays`)).status).toBe(200);
-    pressure(0.75);
+    pressure(0.7);
 
+    // The guard starts from rest: one job may run, so a visitor is never refused for good...
+    const first = await call(`/api/dashboards/${d.id}/files`, {
+      body: { name: 'a.csv', content: csv(10) },
+      headers: d.headers,
+    });
+    expect(first.status).toBe(201);
+    // ...and then the cool-down starts again: the next ones are refused.
     expectRefused(
       await call(`/api/dashboards/${d.id}/files`, {
         body: { name: 'b.csv', content: csv(10) },
@@ -157,6 +171,10 @@ describe('memory guard', () => {
     });
     expect(write.status).toBe(200);
     expect(memoryGuard.state()).toMatchObject({ level: 'soft', refused: { soft: 3, hard: 0 } });
+
+    // Higher up, where one more job might not fit, nothing heavy starts even from rest.
+    pressure(0.75);
+    expectRefused(await call(`/api/dashboards/${d.id}/snapshot.png?widget=w&theme=dark`), '5');
   });
 
   it('refuses pipelines over large tables above soft; small ones still run, in the worker too', async () => {
@@ -205,8 +223,8 @@ describe('memory guard', () => {
 
   it('admits again once memory is back below the threshold', async () => {
     const d = await dashboard();
-    pressure(0.75);
-    expectRefused(await call(`/api/dashboards/${d.id}/snapshot.png?widget=w`), '5');
+    pressure(0.95);
+    expectRefused(await call(`/api/dashboards/${d.id}/snapshot.png?widget=w`), '10');
     pressure(0.5);
     expect((await call(`/api/dashboards/${d.id}/snapshot.png?widget=w`)).status).toBe(200);
   });
@@ -221,7 +239,7 @@ describe('memory guard', () => {
     );
     const second = heavyWork.run(async () => 'second');
     await new Promise((resolve) => setTimeout(resolve, 5));
-    pressure(0.75);
+    pressure(0.8);
     const nested = heavyWork.run(async () => 'never');
     await expect(nested).rejects.toBeInstanceOf(MemoryPressureError);
     release();
@@ -234,5 +252,42 @@ describe('memory guard', () => {
       return heavyWork.run(async () => 'inside');
     });
     expect(inside).toBe('inside');
+  });
+});
+
+describe('large request bodies', () => {
+  it('are received at a minimum pace first, so a slow sender never holds the turn of the others', async () => {
+    const paced = createApp(deps, { bodies: { graceMs: 300, checkMs: 50, minBytesPerSec: 64 * 1024 } });
+    const { envelope, editKey } = (await call('/api/dashboards', { body: {} })).json;
+    const url = `${BASE}/api/dashboards/${envelope.meta.id}/files`;
+    const headers = (length: number) => ({
+      origin: BASE,
+      'content-type': 'application/json',
+      'content-length': String(length),
+      'x-edit-key': editKey as string,
+    });
+    // Declares 3 MB, then sends 2 KB every 100 ms.
+    const trickle = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        controller.enqueue(new TextEncoder().encode('1\n'.repeat(1024)));
+      },
+    });
+    const slow = paced.request(url, {
+      method: 'POST',
+      headers: headers(3_000_000),
+      body: trickle,
+      duplex: 'half',
+    } as RequestInit);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const body = JSON.stringify({ name: 'v.csv', content: csv(20_000) });
+    expect(body.length).toBeGreaterThan(1024 * 1024);
+    const started = performance.now();
+    const visitor = await paced.request(url, { method: 'POST', headers: headers(body.length), body });
+    expect(visitor.status).toBe(201);
+    expect(performance.now() - started).toBeLessThan(5000);
+    const refused = await slow;
+    expect(refused.status).toBe(408);
+    expect(refused.headers.get('connection')).toBe('close');
   });
 });

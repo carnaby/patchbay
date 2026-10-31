@@ -172,14 +172,20 @@ export class ResultWire {
   }
 
   /**
-   * Under memory pressure a large result is sent only when its bytes exist already: serialising it anew would add a
-   * copy of the table to a heap the container cannot spare. Live pushes are not refused here: their event is built
-   * once for every subscriber, and a stream that is open is work already running.
+   * Under memory pressure a large result is sent only when its bytes exist already, or on a resting server
+   * (util/memory-pressure.ts): serialising it anew adds a copy of the table, and a burst of reads of different results
+   * adds one copy each before the response budget turns most of them away. Live pushes are not refused here: their event is
+   * built once for every subscriber, and a stream that is open is work already running.
    */
   private admitSerialisation(table: DataTable, format: RowsFormat) {
     if (memoryGuard.level() === 'normal') return;
     if (this.serialised.get(this.keyOf(table, format)) !== undefined) return;
-    if (wireSize(table, format) >= LARGE_RESULT_BYTES) memoryGuard.admitHeavy();
+    if (wireSize(table, format) >= LARGE_RESULT_BYTES) memoryGuard.admitHeavy({ oneShot: true });
+  }
+
+  /** Forgets serialised results (an idle server under memory pressure); bodies still being sent keep their bytes. */
+  dropCaches() {
+    this.serialised.clear();
   }
 
   /**

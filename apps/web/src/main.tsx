@@ -1,3 +1,5 @@
+// First: before any schema is built (see the module).
+import '@patchbay/core/zod-jitless';
 import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { lazy, StrictMode, Suspense } from 'react';
 import { createRoot } from 'react-dom/client';
