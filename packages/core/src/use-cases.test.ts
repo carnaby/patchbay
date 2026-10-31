@@ -21,6 +21,17 @@ describe('use cases', () => {
     }
   });
 
+  it('needs at least four letters or digits, so the dashboard id has six characters', () => {
+    const base = { order: 1, title: 'T', tab: 'T', description: 'D' };
+    for (const id of ['abc', 'a-b-c']) {
+      expect(() => UseCaseMetaSchema.parse({ ...base, id })).toThrow();
+    }
+    for (const id of ['abcd', 'a-b-c-d']) {
+      const parsed = UseCaseMetaSchema.parse({ ...base, id });
+      expect(useCaseDashboardId(parsed.id)).toMatch(/^[a-z0-9]{6,32}$/);
+    }
+  });
+
   it('derives a stable dashboard id the folder store accepts', () => {
     expect(useCaseDashboardId('morning-board')).toBe('scmorningboard');
     expect(useCaseDashboardId('own-data-csv')).toMatch(/^[a-z0-9]{6,32}$/);

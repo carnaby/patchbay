@@ -4,7 +4,14 @@ import { z } from 'zod';
 export const USE_CASE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 export const UseCaseMetaSchema = z.strictObject({
-  id: z.string().max(40).regex(USE_CASE_SLUG),
+  // The dashboard id is `sc` plus the slug without hyphens and must be at least six characters (folder store rule).
+  id: z
+    .string()
+    .max(40)
+    .regex(USE_CASE_SLUG)
+    .refine((slug) => slug.replace(/-/g, '').length >= 4, {
+      message: 'id needs at least 4 letters or digits',
+    }),
   order: z.number().int().min(0).max(1000),
   title: z.string().min(1).max(60),
   tab: z.string().min(1).max(24),
