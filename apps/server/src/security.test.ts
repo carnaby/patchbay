@@ -11,7 +11,8 @@ import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
 import { safeReturnTo } from './routes/auth.ts';
-import { describeRedirect } from './routes/oauth.ts';
+import { CIMD_MAX_BYTES, CIMD_MAX_VALUES, CIMD_TIMEOUT_MS, describeRedirect } from './routes/oauth.ts';
+import { HttpError } from './util/errors.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
 
@@ -365,7 +366,12 @@ describe('OAuth consent screen data', () => {
       redirect_uris: ['https://client.example/cb'],
     });
     const consent = await startAuthorization(clientId, 'https://client.example/cb');
-    expect(vi.mocked(safeFetchJson)).toHaveBeenLastCalledWith(clientId, { redirects: 0 });
+    expect(vi.mocked(safeFetchJson)).toHaveBeenLastCalledWith(clientId, {
+      redirects: 0,
+      maxBytes: CIMD_MAX_BYTES,
+      maxValues: CIMD_MAX_VALUES,
+      timeoutMs: CIMD_TIMEOUT_MS,
+    });
     const cookie = await login('consent@example.com');
     const details = await call(`/api/oauth/requests/${consent.searchParams.get('request')}`, { cookie });
     // The name is the client's claim; the host is what the user can check.
@@ -376,6 +382,47 @@ describe('OAuth consent screen data', () => {
       redirectHost: 'client.example',
       redirectKind: 'web',
     });
+  });
+
+  it('stores only the known fields of a metadata document, and fetches it through the outbound limiter', async () => {
+    const clientId = 'https://extras.example/oauth/meta.json';
+    vi.mocked(safeFetchJson).mockResolvedValueOnce({
+      client_id: clientId,
+      client_name: 'Extras',
+      redirect_uris: ['https://extras.example/cb'],
+      contacts: ['someone@example.com'],
+      padding: 'x'.repeat(5000),
+    });
+    const run = vi.spyOn(deps.outbound, 'run');
+    const consent = await startAuthorization(clientId, 'https://extras.example/cb');
+    expect(consent.pathname).toBe('/oauth/consent');
+    expect(run).toHaveBeenCalledWith(expect.stringMatching(/^ip:/), clientId, expect.any(Function));
+    run.mockRestore();
+    const row = deps.db.prepare('SELECT metadata FROM oauth_clients WHERE client_id = ?').get(clientId) as {
+      metadata: string;
+    };
+    expect(JSON.parse(row.metadata)).toEqual({
+      client_id: clientId,
+      client_name: 'Extras',
+      redirect_uris: ['https://extras.example/cb'],
+    });
+  });
+
+  it('does not remember its own refusal as a broken metadata document', async () => {
+    const clientId = 'https://busy.example/oauth/meta.json';
+    const run = vi
+      .spyOn(deps.outbound, 'run')
+      .mockRejectedValueOnce(new HttpError(429, 'This server is already loading a lot from busy.example'));
+    const refused = await startAuthorization(clientId, 'https://busy.example/cb');
+    expect(refused.pathname).toBe('/oauth/error');
+    expect(refused.searchParams.get('reason')).toContain('busy');
+    run.mockRestore();
+    vi.mocked(safeFetchJson).mockResolvedValueOnce({
+      client_id: clientId,
+      client_name: 'Busy',
+      redirect_uris: ['https://busy.example/cb'],
+    });
+    expect((await startAuthorization(clientId, 'https://busy.example/cb')).pathname).toBe('/oauth/consent');
   });
 
   it('marks self-registered clients as having no verified identity', async () => {

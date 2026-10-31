@@ -17,6 +17,7 @@ import type { UseCase } from './showcase/load.ts';
 import type { DashboardIndex } from './store/dashboard-index.ts';
 import type { FolderStore } from './store/folder-store.ts';
 import { forbidden, unauthorized } from './util/errors.ts';
+import type { OutboundLimiter } from './util/outbound.ts';
 import type { RateLimiter } from './util/rate-limit.ts';
 
 export interface Deps {
@@ -30,6 +31,11 @@ export interface Deps {
   index: DashboardIndex;
   connectors: ConnectorService;
   data: DataService;
+  /**
+   * Requests to addresses that users (or OAuth clients) chose: http and feed sources and client metadata documents
+   * share one limiter, so none of them can be used to turn the server into a crawler.
+   */
+  outbound: OutboundLimiter;
   /** Data results on their way to clients: serialised once, shared, within a byte budget. */
   wire: ResultWire;
   pipeline: PipelineRunner;

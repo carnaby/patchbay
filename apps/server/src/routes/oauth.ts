@@ -104,6 +104,15 @@ const RegistrationSchema = z.object({
   software_version: z.string().max(100).optional(),
 });
 
+/**
+ * A client metadata document is a few hundred bytes; anyone can make /oauth/authorize fetch one, before signing in,
+ * so the fetch is held far below the limits of data sources: a small body, few JSON values, a short timeout, and
+ * the outbound limiter that data sources use (a few at a time across the server, fewer per host).
+ */
+export const CIMD_MAX_BYTES = 16 * 1024;
+export const CIMD_MAX_VALUES = 256;
+export const CIMD_TIMEOUT_MS = 5000;
+
 const CimdSchema = z.object({
   client_id: z.string().max(1000),
   client_name: z.string().max(120),
@@ -112,6 +121,20 @@ const CimdSchema = z.object({
   logo_uri: z.string().max(1000).optional(),
   token_endpoint_auth_method: z.string().max(64).optional(),
 });
+
+/** The fields kept from a metadata document; anything else it holds is never stored. */
+function storedCimd(doc: z.infer<typeof CimdSchema>) {
+  return {
+    client_id: doc.client_id,
+    client_name: doc.client_name,
+    redirect_uris: doc.redirect_uris,
+    ...(doc.client_uri !== undefined ? { client_uri: doc.client_uri } : {}),
+    ...(doc.logo_uri !== undefined ? { logo_uri: doc.logo_uri } : {}),
+    ...(doc.token_endpoint_auth_method !== undefined
+      ? { token_endpoint_auth_method: doc.token_endpoint_auth_method }
+      : {}),
+  };
+}
 
 /** Where approving sends the user, in the form the consent screen shows it. */
 export function describeRedirect(raw: string): { kind: 'web' | 'loopback' | 'app'; target: string } {
@@ -166,9 +189,19 @@ export function oauthRoutes(deps: Deps) {
     (db.prepare('SELECT * FROM oauth_clients WHERE client_id = ?').get(clientId) as ClientRow | undefined) ??
     null;
 
-  /** Resolves a client id: a registered (DCR) id, or an https URL pointing to its metadata document. */
+  /**
+   * Resolves a client id: a registered (DCR) id, or an https URL pointing to its metadata document. `client` is who
+   * asks, for the outbound limiter's fairness.
+   *
+   * An unknown document is fetched before the user signs in, as MCP clients expect: they open this URL in a browser
+   * that often has no Patchbay session yet, and the redirect URI has to be known before any error may be sent back
+   * to it. Sending the user to sign in first would need this request to survive the Google round trip, for a gain
+   * the limits already give: the fetch is small and bounded (CIMD_*), shares the outbound limiter, /authorize is
+   * rate limited per client, and failures are remembered (`cimdFailures`).
+   */
   async function resolveClient(
     clientId: string,
+    client: string,
   ): Promise<{ id: string; name: string; redirectUris: string[] }> {
     const existing = getClient(clientId);
     const fresh =
@@ -188,7 +221,24 @@ export function oauthRoutes(deps: Deps) {
       throw oauthError(400, 'invalid_client', 'Client metadata document is unavailable');
     }
     // No redirects: the document must live at the URL that is the client's identity, not wherever that URL points.
-    const doc = CimdSchema.safeParse(await safeFetchJson(clientId, { redirects: 0 }).catch(() => null));
+    const fetched = await deps.outbound
+      .run(client, clientId, () =>
+        safeFetchJson(clientId, {
+          redirects: 0,
+          maxBytes: CIMD_MAX_BYTES,
+          maxValues: CIMD_MAX_VALUES,
+          timeoutMs: CIMD_TIMEOUT_MS,
+        }),
+      )
+      .then(
+        (json) => ({ json }),
+        (e: unknown) => ({ error: e }),
+      );
+    // Our own refusals (the limiter is full, the host's budget is spent) say nothing about the document: they are not
+    // remembered as a failure.
+    if ('error' in fetched && fetched.error instanceof HttpError && [429, 503].includes(fetched.error.status))
+      throw oauthError(400, 'invalid_client', 'The server is busy; try again in a minute');
+    const doc = CimdSchema.safeParse('json' in fetched ? fetched.json : null);
     if (!doc.success) {
       cimdFailures.set(clientId, Date.now());
       if (cimdFailures.size > 1000) cimdFailures.delete(cimdFailures.keys().next().value!);
@@ -204,7 +254,14 @@ export function oauthRoutes(deps: Deps) {
        VALUES (?, 'cimd', ?, ?, ?, ?, ?)
        ON CONFLICT(client_id) DO UPDATE SET name = excluded.name, redirect_uris = excluded.redirect_uris,
          metadata = excluded.metadata, fetched_at = excluded.fetched_at`,
-    ).run(clientId, doc.data.client_name, JSON.stringify(uris), JSON.stringify(doc.data), now(), now());
+    ).run(
+      clientId,
+      doc.data.client_name,
+      JSON.stringify(uris),
+      JSON.stringify(storedCimd(doc.data)),
+      now(),
+      now(),
+    );
     return { id: clientId, name: doc.data.client_name, redirectUris: uris };
   }
 
@@ -251,7 +308,7 @@ export function oauthRoutes(deps: Deps) {
     // Errors before the client and redirect are validated must NOT redirect (open redirect guard).
     let client: Awaited<ReturnType<typeof resolveClient>>;
     try {
-      client = await resolveClient(clientId);
+      client = await resolveClient(clientId, `ip:${clientKey(c, config.trustProxy)}`);
     } catch (e) {
       return c.redirect(
         `/oauth/error?reason=${encodeURIComponent(e instanceof Error ? e.message : 'invalid_client')}`,

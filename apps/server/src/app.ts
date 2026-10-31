@@ -41,6 +41,7 @@ import {
   withReceivedBody,
 } from './util/json-body.ts';
 import { memoryGuard } from './util/memory-pressure.ts';
+import { OutboundLimiter } from './util/outbound.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { runAsClient } from './util/request-context.ts';
 import type { UpstreamTestSeam } from './util/safe-fetch.ts';
@@ -77,7 +78,9 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   }
   // DataService is built before DashboardService, which decides about credentials, so the resolver is bound late.
   let dashboards: DashboardService | undefined;
+  const outbound = new OutboundLimiter();
   const data = new DataService(connectors, store, pipeline, {
+    outbound,
     credentials: (target, dataset) => dashboards!.credentialsFor(target, dataset),
     urlPolicy: (target, url) => dashboards!.assertMayFetchUrl(target, url),
     offline: config.offline,
@@ -128,6 +131,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     connectors,
     pipeline,
     data,
+    outbound,
     wire,
     hub,
     dashboards,
