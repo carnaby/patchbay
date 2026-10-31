@@ -42,16 +42,14 @@ const gate = new Gate({
 export const heavyWork = {
   /**
    * Runs `task` in the process's one heavy turn, or at once when the caller already holds it. Under memory pressure
-   * (util/memory-pressure.ts) a new job is refused, both on arrival and when its turn comes after a wait; a job inside
-   * a turn is part of work already running and is never refused.
+   * (util/memory-pressure.ts) a new job may be refused, both on arrival and when its turn comes after a wait; a job
+   * inside a turn, or inside other heavy work the guard counts (a large request body), is part of work already
+   * running and is never refused.
    */
   async run<T>(task: () => Promise<T>, client = currentClient()): Promise<T> {
     if (holding.getStore()) return task();
     memoryGuard.admitHeavy();
-    return gate.run(client, () => {
-      memoryGuard.admitHeavy();
-      return holding.run(true, task);
-    });
+    return gate.run(client, () => memoryGuard.runHeavy(() => holding.run(true, task)));
   },
   /** Running and waiting heavy jobs (diagnostics and tests). */
   stats: () => gate.stats(),

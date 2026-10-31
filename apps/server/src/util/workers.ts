@@ -55,10 +55,15 @@ export function collectAfterLargeJob(usedHeapBytes: number) {
   if (usedHeapBytes > COLLECT_ABOVE_BYTES) collectNow();
 }
 
-/** A full collection of this thread's heap; a no-op without `--expose-gc`. */
-export function collectNow() {
+/**
+ * A full collection of this thread's heap; a no-op without `--expose-gc`. `compact`: V8's last-resort collection,
+ * which also compacts the heap and releases the pages it emptied. It runs several passes, so only for an idle server.
+ */
+export function collectNow(compact = false) {
   const gc = (globalThis as { gc?: unknown }).gc;
-  if (typeof gc === 'function') (gc as () => void)();
+  if (typeof gc !== 'function') return;
+  if (compact) (gc as (options: object) => void)({ type: 'major', execution: 'sync', flavor: 'last-resort' });
+  else (gc as () => void)();
 }
 
 /** The part of `Worker` the pool and the feed parser use, so tests can stand in a fake. */

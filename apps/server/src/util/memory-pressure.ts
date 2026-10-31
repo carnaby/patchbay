@@ -9,11 +9,21 @@
  * Retry-After, which costs a client one retry instead of costing everyone the server.
  *
  * Levels, as fractions of the limit (MEMORY_SOFT_FRACTION, MEMORY_HARD_FRACTION):
- * - soft: no new heavy work (heavy.ts turns, uploads and large bodies, snapshot renders, pipelines that need a
- *   worker, new serialisations of large results);
- * - hard: also no new live streams and no writes; reads that answer from memory (documents, cached results, the
- *   health check, static files) keep working.
- * A level is left only once use is a margin below its threshold, so one sample near a threshold cannot make it flap.
+ * - soft: new heavy work (heavy.ts turns, uploads and large bodies, snapshot renders, pipelines that need a worker,
+ *   new serialisations of large results) is refused, except one job at a time on a server that has run no heavy work
+ *   for the cool-down and still has room for one job's growth (`ONE_JOB_BYTES`). Memory that glibc and V8 keep after
+ *   a burst can hold the resting level above the threshold with nobody using the server; refusing everything then
+ *   refused every visitor until a restart. A burst gets at most one job per cool-down through it.
+ * - hard: no new heavy work, no new live streams and no writes; reads that answer from memory (documents, cached
+ *   results, the health check, static files) keep working.
+ * A level is left once use is a margin below its threshold, so one sample near a threshold cannot make it flap. Soft
+ * is also left below its threshold itself once no heavy work has run for a cool-down: a reading taken with nothing
+ * running is the resting level, and no job's peak can swing it back.
+ *
+ * Under pressure memory is given back, not only kept from growing: the main thread collects, idle workers collect or
+ * stop, and once nothing heavy has run for the cool-down the caches are emptied, the pipeline workers are replaced by
+ * fresh ones and the main thread's heap is compacted. The level is also sampled on a slow timer, so this happens on
+ * an idle server too, where no request would take a sample.
  *
  * What is measured, with cgroup v2: `memory.current` minus the page cache the kernel can drop (`active_file` and
  * `inactive_file` in `memory.stat`). The OOM killer acts on the cgroup's charge once reclaim has failed, and reclaim
@@ -21,6 +31,7 @@
  * without bringing a kill any closer. What remains (anonymous memory of every thread, tmpfs, kernel memory for
  * sockets and page tables) is what a kill is decided on.
  */
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { readFileSync } from 'node:fs';
 import { BusyError } from './gate.ts';
 import { collectNow } from './workers.ts';
@@ -157,11 +168,26 @@ export interface MemoryGuardOptions {
   sampleMs?: number;
   /** Under pressure, garbage is collected at most this often: a full collection stalls the main thread. */
   reliefMs?: number;
+  /** No heavy work for this long: the reading is the resting level (leaving soft, reclaiming memory). */
+  coolDownMs?: number;
+  /** A deep relief (caches, fresh workers, a compacting collection) at most this often. */
+  reclaimMs?: number;
+  /** A sample is taken on its own this often, so an idle server changes level and gives memory back; 0: never. */
+  pollMs?: number;
   now?: () => number;
   log?: (message: string) => void;
-  /** Collects the main thread's garbage; by default `gc` when the process runs with --expose-gc. */
-  collect?: () => void;
+  /**
+   * Collects the main thread's garbage; by default `gc` when the process runs with --expose-gc. `compact`: also
+   * compact the heap so its emptied pages go back to the system, which takes longer.
+   */
+  collect?: (compact: boolean) => void;
 }
+
+/**
+ * Asked under pressure. `deep` once nothing heavy has run for the cool-down: then it may also drop what is costly to
+ * rebuild (caches, a worker's isolate), because the server is idle and the memory is better back with the kernel.
+ */
+export type Relief = (deep: boolean) => void;
 
 export interface MemoryState {
   level: PressureLevel;
@@ -174,13 +200,27 @@ export interface MemoryState {
   refused: { soft: number; hard: number };
 }
 
-const DEFAULTS = { margin: 0.05, sampleMs: 250, reliefMs: 5000 };
+const DEFAULTS = {
+  margin: 0.05,
+  sampleMs: 250,
+  reliefMs: 5000,
+  coolDownMs: 30_000,
+  reclaimMs: 60_000,
+  pollMs: 0,
+};
 
 const MB = 1024 * 1024;
 /** What one heavy job can add within a second: a worker heap filled to its limit (96 MB) plus the copy sent to it. */
 const SOFT_RESERVE_BYTES = 128 * MB;
 /** What work already running can still add once heavy work is refused: bodies being read, socket buffers, results. */
 const HARD_RESERVE_BYTES = 64 * MB;
+/**
+ * What one heavy job may add to a resting server: measured up to 85–95 MB for a full render of a 60-chart dashboard
+ * in a render worker started afresh (its heap from 40 to 90 MB, plus resvg's pixmap), less for an upload or a
+ * pipeline. Under soft pressure a lone job is admitted only while this much is free below the limit, with room
+ * to spare: 272 MB at 384 MB.
+ */
+const ONE_JOB_BYTES = 112 * MB;
 
 /**
  * The thresholds for a limit when none are configured. The room needed above each is a fixed amount, not a share:
@@ -202,9 +242,17 @@ export class MemoryGuard {
   private reading: MemoryReading | null = null;
   private sampledAt = Number.NEGATIVE_INFINITY;
   private relievedAt = Number.NEGATIVE_INFINITY;
+  private reclaimedAt = Number.NEGATIVE_INFINITY;
   private current: PressureLevel = 'normal';
   private readonly refused = { soft: 0, hard: 0 };
-  private readonly reliefs = new Map<string, () => void>();
+  private readonly reliefs = new Map<string, Relief>();
+  /** Heavy jobs running (`runHeavy`). Not reset by `configure`: jobs outlive it. */
+  private running = 0;
+  /** When the last heavy job ended. */
+  private heavyEndedAt = Number.NEGATIVE_INFINITY;
+  /** Set inside a running heavy job: what it starts is part of work already running. */
+  private readonly inside = new AsyncLocalStorage<true>();
+  private poll: NodeJS.Timeout | null = null;
 
   constructor(options: MemoryGuardOptions = { reader: null }) {
     this.options = this.resolve(options);
@@ -226,9 +274,17 @@ export class MemoryGuard {
     this.reading = null;
     this.sampledAt = Number.NEGATIVE_INFINITY;
     this.relievedAt = Number.NEGATIVE_INFINITY;
+    this.reclaimedAt = Number.NEGATIVE_INFINITY;
+    this.heavyEndedAt = Number.NEGATIVE_INFINITY;
     this.current = 'normal';
     this.refused.soft = 0;
     this.refused.hard = 0;
+    if (this.poll) clearInterval(this.poll);
+    this.poll = null;
+    if (this.options.reader && this.options.pollMs > 0) {
+      this.poll = setInterval(() => this.sample(), this.options.pollMs);
+      this.poll.unref();
+    }
   }
 
   get enabled(): boolean {
@@ -247,7 +303,7 @@ export class MemoryGuard {
    * Something that gives memory back when asked: idle workers collecting or stopping. Named, so a part that is
    * created again (a pool in tests) replaces its earlier registration instead of adding to it.
    */
-  setRelief(name: string, relieve: () => void) {
+  setRelief(name: string, relieve: Relief) {
     this.reliefs.set(name, relieve);
   }
 
@@ -257,12 +313,57 @@ export class MemoryGuard {
     return this.current;
   }
 
-  /** For work that takes a lot of memory while it runs; throws MemoryPressureError above the soft threshold. */
-  admitHeavy() {
+  /**
+   * For work that takes a lot of memory while it runs; throws MemoryPressureError when it may not start now: above
+   * the hard threshold, and above soft unless the server is resting (no heavy job has run for the cool-down) and has
+   * room for one job (`ONE_JOB_BYTES`). Work started inside a running heavy job (`runHeavy`) is part of it and always
+   * admitted.
+   *
+   * Only a check: work that runs for a while goes through `runHeavy`, which counts it, so that no second job starts
+   * beside it and the cool-down starts again when it ends. `oneShot` is for work done right after the check and not
+   * counted (serialising a large result, queueing a pipeline): admitted on a resting server, it counts as a job that
+   * has just ended, so a burst of such requests gets one through, not all of them.
+   */
+  admitHeavy(options: { oneShot?: boolean } = {}) {
     const level = this.level();
-    if (level === 'normal') return;
+    if (level === 'normal' || this.inside.getStore()) return;
+    if (level === 'soft' && this.idleFor(this.options.coolDownMs) && this.roomForOneJob()) {
+      if (options.oneShot) this.heavyEndedAt = this.options.now();
+      return;
+    }
     this.refused[level]++;
     throw new MemoryPressureError(level === 'hard' ? 10 : 5);
+  }
+
+  /**
+   * Runs a heavy job if `admitHeavy` lets it start, and counts it while it runs: under soft pressure no other heavy
+   * job starts meanwhile. A job inside a running one is part of it and runs at once.
+   */
+  async runHeavy<T>(task: () => Promise<T>): Promise<T> {
+    if (this.inside.getStore()) return task();
+    this.admitHeavy();
+    this.running++;
+    try {
+      return await this.inside.run(true, task);
+    } finally {
+      this.running--;
+      this.heavyEndedAt = this.options.now();
+    }
+  }
+
+  /** Heavy jobs running now (diagnostics and tests). */
+  heavyRunning(): number {
+    return this.running;
+  }
+
+  private roomForOneJob(): boolean {
+    const r = this.reading;
+    return r !== null && r.usedBytes + ONE_JOB_BYTES <= r.limitBytes;
+  }
+
+  /** Nothing heavy runs, and nothing has for `ms`. */
+  private idleFor(ms: number, t = this.options.now()): boolean {
+    return this.running === 0 && t - this.heavyEndedAt >= ms;
   }
 
   /** For new live streams, writes and other work that is not a plain read; throws above the hard threshold. */
@@ -294,7 +395,7 @@ export class MemoryGuard {
     const r = this.sample() ?? this.reading;
     if (!r) return 'memory guard on, but memory use cannot be read yet';
     const { soft, hard } = this.thresholds(r.limitBytes);
-    return `memory guard on: ${mb(r.usedBytes)} MB of ${mb(r.limitBytes)} MB in use (${r.source}); new heavy work waits above ${mb(soft * r.limitBytes)} MB, writes and live streams above ${mb(hard * r.limitBytes)} MB`;
+    return `memory guard on: ${mb(r.usedBytes)} MB of ${mb(r.limitBytes)} MB in use (${r.source}); new heavy work waits above ${mb(soft * r.limitBytes)} MB (one job on a resting server up to ${mb(Math.max(soft * r.limitBytes, Math.min(hard * r.limitBytes, r.limitBytes - ONE_JOB_BYTES)))} MB), writes and live streams wait above ${mb(hard * r.limitBytes)} MB`;
   }
 
   private sample(): MemoryReading | null {
@@ -328,7 +429,8 @@ export class MemoryGuard {
     if (fraction >= hard) return 'hard';
     if (this.current === 'hard' && fraction >= hard - margin) return 'hard';
     if (fraction >= soft) return 'soft';
-    if (this.current !== 'normal' && fraction >= soft - margin) return 'soft';
+    if (this.current !== 'normal' && fraction >= soft - margin && !this.idleFor(this.options.coolDownMs))
+      return 'soft';
     return 'normal';
   }
 
@@ -336,18 +438,30 @@ export class MemoryGuard {
    * V8 collects when its heap needs room, not when the container does: a main thread that has handled a burst keeps
    * its garbage until its own heap limit, far above what the container can spare. Collecting here gives it back, and
    * idle workers do the same. After the current request, so the refusal itself is not delayed by the collection.
+   *
+   * Once nothing heavy has run for the cool-down, the relief goes deeper, at most every `reclaimMs`: a collection
+   * frees garbage, but a worker's grown isolate, full caches and a fragmented heap stay. A fresh worker and empty
+   * caches cost the next requests some time, which an idle server under pressure can spare.
    */
   private relieve(t: number) {
     if (t - this.relievedAt < this.options.reliefMs) return;
     this.relievedAt = t;
+    const deep = this.idleFor(this.options.coolDownMs, t) && t - this.reclaimedAt >= this.options.reclaimMs;
+    if (deep) this.reclaimedAt = t;
     setImmediate(() => {
-      this.options.collect();
       for (const [name, relieve] of this.reliefs) {
         try {
-          relieve();
+          relieve(deep);
         } catch (e) {
           console.warn(`[memory] relief "${name}" failed`, e);
         }
+      }
+      // After the reliefs, so what they let go of is collected in the same pass.
+      this.options.collect(deep);
+      if (deep && this.reading) {
+        this.options.log(
+          `[memory] idle under ${this.current} pressure at ${mb(this.reading.usedBytes)} MB: emptied caches, replaced idle workers, compacted the heap`,
+        );
       }
     });
   }

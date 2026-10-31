@@ -55,10 +55,14 @@ describe('MemoryGuard', () => {
     expect(() => guard.admitRequest()).not.toThrow();
   });
 
-  it('refuses heavy work above soft and everything but reads above hard, with 503 and Retry-After', () => {
-    const { guard, at } = setup();
+  it('above soft refuses new heavy work with 503, except one job at a time on a resting server', async () => {
+    const { guard, at, tick } = setup({ coolDownMs: 30_000 });
     expect(at(0.82)).toBe('soft');
     expect(() => guard.admitRequest()).not.toThrow();
+    // Nothing heavy has run: one job may start.
+    let release!: () => void;
+    const job = guard.runHeavy(() => new Promise<void>((resolve) => (release = resolve)));
+    expect(guard.heavyRunning()).toBe(1);
     let error: unknown;
     try {
       guard.admitHeavy();
@@ -68,15 +72,59 @@ describe('MemoryGuard', () => {
     expect(error).toBeInstanceOf(MemoryPressureError);
     expect((error as MemoryPressureError).status).toBe(503);
     expect((error as MemoryPressureError).retryAfterSec).toBe(5);
+    await expect(guard.runHeavy(async () => 'second')).rejects.toBeInstanceOf(MemoryPressureError);
+    release();
+    await job;
+    // A burst keeps the server busy and never gets past this: the cool-down starts again after each job.
+    expect(() => guard.admitHeavy()).toThrow(MemoryPressureError);
+    tick(30_000);
+    expect(() => guard.admitHeavy()).not.toThrow();
+    // Work that is not counted while it runs uses the rest up at once.
+    guard.admitHeavy({ oneShot: true });
+    expect(() => guard.admitHeavy()).toThrow(MemoryPressureError);
+    expect(guard.state()?.refused).toEqual({ soft: 4, hard: 0 });
+  });
 
+  it('above soft admits the lone job only while one job’s growth still fits under the limit', () => {
+    let used = 270 * MB;
+    const guard = new MemoryGuard({
+      reader: () => ({ usedBytes: used, limitBytes: 384 * MB, source: 'cgroup v2' }),
+      sampleMs: 0,
+      log: () => {},
+      collect: () => {},
+    });
+    expect(guard.level()).toBe('soft');
+    expect(() => guard.admitHeavy()).not.toThrow();
+    used = 272 * MB;
+    expect(() => guard.admitHeavy()).not.toThrow();
+    used = 273 * MB;
+    expect(() => guard.admitHeavy()).toThrow(MemoryPressureError);
+    expect(guard.describe()).toContain(
+      'new heavy work waits above 256 MB (one job on a resting server up to 272 MB), writes and live streams wait above 320 MB',
+    );
+  });
+
+  it('above hard refuses all new heavy work, writes and live streams, never work inside a running job', async () => {
+    const { guard, at } = setup();
     expect(at(0.93)).toBe('hard');
     expect(() => guard.admitHeavy()).toThrow(MemoryPressureError);
     expect(() => guard.admitRequest()).toThrow(MemoryPressureError);
-    expect(guard.state()?.refused).toEqual({ soft: 1, hard: 2 });
+    expect(guard.state()?.refused).toEqual({ soft: 0, hard: 2 });
+
+    at(0.5);
+    const inner = await guard.runHeavy(async () => {
+      expect(at(0.95)).toBe('hard');
+      expect(() => guard.admitHeavy()).not.toThrow();
+      return guard.runHeavy(async () => 'inner');
+    });
+    expect(inner).toBe('inner');
+    expect(guard.heavyRunning()).toBe(0);
   });
 
-  it('leaves a level only a margin below its threshold, so it does not flap', () => {
-    const { at } = setup();
+  it('leaves a level only a margin below its threshold while heavy work runs, so it does not flap', async () => {
+    const { guard, at } = setup();
+    let release!: () => void;
+    const job = guard.runHeavy(() => new Promise<void>((resolve) => (release = resolve)));
     expect(at(0.81)).toBe('soft');
     expect(at(0.79)).toBe('soft');
     expect(at(0.76)).toBe('soft');
@@ -90,6 +138,23 @@ describe('MemoryGuard', () => {
     expect(at(0.84)).toBe('soft');
     expect(at(0.76)).toBe('soft');
     expect(at(0.7)).toBe('normal');
+    release();
+    await job;
+  });
+
+  it('leaves soft below its threshold once no heavy work has run for the cool-down', async () => {
+    const { guard, at, tick } = setup({ coolDownMs: 30_000 });
+    await guard.runHeavy(async () => {});
+    expect(at(0.82)).toBe('soft');
+    // Right after a job the reading may be its peak on the way down: the margin holds.
+    expect(at(0.78)).toBe('soft');
+    tick(30_000);
+    // Nothing ran since: this is the resting level.
+    expect(at(0.78)).toBe('normal');
+    // Above the threshold it stays soft, however long nothing ran.
+    expect(at(0.81)).toBe('soft');
+    tick(120_000);
+    expect(at(0.81)).toBe('soft');
   });
 
   it('goes straight from hard to normal when use drops that far', () => {
@@ -155,6 +220,71 @@ describe('MemoryGuard', () => {
     await flush();
     expect(collect).toHaveBeenCalledTimes(2);
     expect(relief).toHaveBeenCalledTimes(2);
+  });
+
+  it('goes deep once idle under pressure: reliefs drop what is costly to rebuild and the heap is compacted', async () => {
+    const { guard, at, tick, collect, logs } = setup({
+      reliefMs: 5000,
+      coolDownMs: 30_000,
+      reclaimMs: 60_000,
+    });
+    const relief = vi.fn();
+    guard.setRelief('caches', relief);
+    await guard.runHeavy(async () => {});
+    at(0.85);
+    await flush();
+    expect(relief).toHaveBeenLastCalledWith(false);
+    expect(collect).toHaveBeenLastCalledWith(false);
+    tick(30_000);
+    at(0.85);
+    await flush();
+    expect(relief).toHaveBeenLastCalledWith(true);
+    expect(collect).toHaveBeenLastCalledWith(true);
+    expect(logs.at(-1)).toContain('idle under soft pressure at 850 MB');
+    // At most once per reclaim interval; light reliefs in between.
+    tick(10_000);
+    at(0.85);
+    await flush();
+    expect(relief).toHaveBeenLastCalledWith(false);
+    tick(60_000);
+    at(0.85);
+    await flush();
+    expect(relief).toHaveBeenLastCalledWith(true);
+    // Not while heavy work runs.
+    let release!: () => void;
+    const job = guard.runHeavy(() => new Promise<void>((resolve) => (release = resolve)));
+    tick(120_000);
+    at(0.85);
+    await flush();
+    expect(relief).toHaveBeenLastCalledWith(false);
+    release();
+    await job;
+  });
+
+  it('samples on its own timer when asked to, so an idle server changes level', () => {
+    vi.useFakeTimers();
+    try {
+      let used = 100 * MB;
+      const logs: string[] = [];
+      const guard = new MemoryGuard({ reader: null });
+      guard.configure({
+        reader: () => ({ usedBytes: used, limitBytes: 1000 * MB, source: 'cgroup v2' }),
+        pollMs: 10_000,
+        sampleMs: 0,
+        log: (m) => logs.push(m),
+        collect: () => {},
+      });
+      used = 850 * MB;
+      vi.advanceTimersByTime(10_000);
+      expect(logs[0]).toBe('[memory] soft pressure: 850 MB of 1000 MB (85%), refusing new heavy work');
+      const logged = logs.length;
+      guard.configure({ reader: null });
+      used = 100 * MB;
+      vi.advanceTimersByTime(60_000);
+      expect(logs).toHaveLength(logged);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('replaces a relief registered again under the same name', async () => {

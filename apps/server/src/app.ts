@@ -26,7 +26,18 @@ import { DashboardIndex } from './store/dashboard-index.ts';
 import { FolderStore } from './store/folder-store.ts';
 import { HttpError, RetryLaterError, toHttpError } from './util/errors.ts';
 import { prepareIndexHtml } from './util/index-html.ts';
-import { checkedBody, isLargeBody, jsonBodyGuard, newLargeBodyGate } from './util/json-body.ts';
+import {
+  BodyTimeoutError,
+  BodyTooLargeError,
+  checkedBody,
+  isLargeBody,
+  jsonBodyGuard,
+  LargeBodyReceiver,
+  newLargeBodyGate,
+  type ReceivedBody,
+  type ReceiveOptions,
+  withReceivedBody,
+} from './util/json-body.ts';
 import { memoryGuard } from './util/memory-pressure.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { runAsClient } from './util/request-context.ts';
@@ -53,7 +64,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
           workerMemoryMb: config.pipelineWorkerMemoryMb,
         });
   // Replaces the previous pool's registration (tests build several).
-  memoryGuard.setRelief('pipeline', () => pipeline.collectIdle?.());
+  memoryGuard.setRelief('pipeline', (deep) => (deep ? pipeline.recycleIdle?.() : pipeline.collectIdle?.()));
   const users = new Users(db, config.adminEmails);
   const secrets = new Secrets(db, config.secrets.keyring);
   const rotated = secrets.rotate();
@@ -94,6 +105,13 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       anonymousStorageBytes: config.anonymousStorageBytes,
     },
   );
+  const wire = new ResultWire();
+  // Replaces the previous registration, like the pipeline's.
+  memoryGuard.setRelief('caches', (deep) => {
+    if (!deep) return;
+    data.dropCaches();
+    wire.dropCaches();
+  });
   return {
     config,
     db,
@@ -105,7 +123,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     connectors,
     pipeline,
     data,
-    wire: new ResultWire(),
+    wire,
     hub,
     dashboards,
     limits: {
@@ -121,7 +139,12 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   };
 }
 
-export function createApp(deps: Deps) {
+export interface AppOptions {
+  /** Tests: the pace large request bodies are held to (util/json-body.ts). */
+  bodies?: ReceiveOptions;
+}
+
+export function createApp(deps: Deps, options: AppOptions = {}) {
   const { config } = deps;
   const app = new Hono<Env>();
   const mcp = createMcp(deps);
@@ -179,23 +202,51 @@ export function createApp(deps: Deps) {
 
   // Request size limits: uploads get room for a 5 MB file (JSON-escaped), everything else 1 MB.
   const tooLarge = (c: Context) => c.json({ error: 'Request body too large' }, 413);
+  const maxBodyBytes = (c: Context) =>
+    c.req.path.endsWith('/files') || c.req.path === '/mcp' ? 8 * 1024 * 1024 : 1024 * 1024;
   const uploadLimit = bodyLimit({ maxSize: 8 * 1024 * 1024, onError: tooLarge });
   const defaultLimit = bodyLimit({ maxSize: 1024 * 1024, onError: tooLarge });
+
+  // Large bodies are received in full, at a minimum pace, before they queue for their turn: one at a time is processed
+  // across the server, and a slow sender never holds that turn (util/json-body.ts). Before the size limit below,
+  // which would otherwise read a chunked body without any pace.
+  const receiver = new LargeBodyReceiver(options.bodies);
+  const largeBodies = newLargeBodyGate();
+  app.use('*', async (c, next) => {
+    if (!isLargeBody(c.req.raw)) return next();
+    const max = maxBodyBytes(c);
+    const declared = c.req.header('content-length');
+    if (declared !== undefined && !c.req.raw.headers.has('transfer-encoding') && Number(declared) > max)
+      return tooLarge(c);
+    // Refused before a byte is read, and again when its turn comes: a large body costs two to three times its size
+    // until it is answered.
+    memoryGuard.admitHeavy();
+    const client = clientKey(c, config.trustProxy);
+    let body: ReceivedBody;
+    try {
+      body = await receiver.receive(c.req.raw, client, max);
+    } catch (e) {
+      if (e instanceof BodyTooLargeError) return tooLarge(c);
+      // The rest of a slow body is not waited for: the connection closes after the answer.
+      if (e instanceof BodyTimeoutError) return c.json({ error: e.message }, 408, { Connection: 'close' });
+      throw e;
+    }
+    try {
+      c.req.raw = withReceivedBody(c.req.raw, body.chunks);
+      return await largeBodies.run(client, () =>
+        memoryGuard.runHeavy(() => {
+          // From here the turn bounds what the body costs.
+          body.release();
+          return next();
+        }),
+      );
+    } finally {
+      body.release();
+    }
+  });
   app.use('*', (c, next) =>
     c.req.path.endsWith('/files') || c.req.path === '/mcp' ? uploadLimit(c, next) : defaultLimit(c, next),
   );
-  // A few large bodies in memory at a time, across the server; the rest wait unread or get 503.
-  const largeBodies = newLargeBodyGate();
-  app.use('*', (c, next) => {
-    if (!isLargeBody(c.req.raw)) return next();
-    // Refused before it is read, on arrival and again when its turn comes after a wait: a large body costs two to
-    // three times its size until it is answered.
-    memoryGuard.admitHeavy();
-    return largeBodies.run(clientKey(c, config.trustProxy), () => {
-      memoryGuard.admitHeavy();
-      return next();
-    });
-  });
   // After the size limit, before any route parses a body. /mcp checks its body itself, once the caller is known.
   app.use('*', (c, next) => (c.req.path === '/mcp' ? next() : jsonBodyGuard(c, next)));
 

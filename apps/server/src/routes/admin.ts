@@ -31,6 +31,9 @@ export function adminRoutes(deps: Deps) {
     });
   });
 
+  /** Polled by the admin page; the guard samples on its own timer too, so the figure is current on an idle server. */
+  app.get('/memory', (c) => c.json({ memory: memoryGuard.state() }));
+
   /**
    * How many secrets each user stored: never values or names. If the key and a copy of the database leak together,
    * rotation cannot help and the operator has to know whom to tell to revoke their credentials.

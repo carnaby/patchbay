@@ -5,10 +5,12 @@
  *
  * Hono caches the text read here, so the route's `c.req.json()` parses that same string: no second copy.
  *
- * Large bodies (uploads, MCP uploads) are also admitted only a few at a time (`newLargeBodyGate`).
+ * Large bodies (uploads, MCP uploads) are received in full at a minimum pace first (`LargeBodyReceiver`), then
+ * processed one at a time (`newLargeBodyGate`).
  */
 import type { Context, MiddlewareHandler } from 'hono';
-import { Gate } from './gate.ts';
+import { HttpError } from './errors.ts';
+import { BusyError, Gate } from './gate.ts';
 import { type JsonShapeProblem, jsonShapeProblem, MAX_JSON_DEPTH } from './json-shape.ts';
 
 /** Far above any request the API takes (a 1 MB dashboard, an upload is a few values around one string). */
@@ -60,11 +62,145 @@ export function isLargeBody(request: Request): boolean {
 }
 
 /**
- * Requests with large bodies admitted at the same time. Each one holds its body as bytes, as text and as parsed
+ * Requests with large bodies processed at the same time. Each one holds its body as bytes, as text and as parsed
  * values until it is answered, two to three times its size; ten 7 MB requests at once took 120 MB of the main
- * thread's memory. Waiting requests have not been read yet, so they cost only their socket. One at a time: uploads are
- * parsed and saved one at a time anyway (DashboardService), and the main thread's share of the memory budget
- * (guide/deployment.md) has room for one large body next to its caches, not two.
+ * thread's memory. One at a time: uploads are parsed and saved one at a time anyway (DashboardService), and the main
+ * thread's share of the memory budget (guide/deployment.md) has room for one large body next to its caches, not two.
+ * A body is received in full (`LargeBodyReceiver`) before it queues here, so the turn is never held by a slow sender.
  */
 export const newLargeBodyGate = () =>
   new Gate({ concurrency: 1, maxQueue: 8, maxQueuedPerClient: 2, maxWaitMs: 15_000, retryAfterSec: 5 });
+
+/** A large body that arrived too slowly; answered with 408 and the connection closed. */
+export class BodyTimeoutError extends HttpError {
+  constructor() {
+    super(408, 'The request body arrived too slowly; try again on a faster connection');
+  }
+}
+
+export class BodyTooLargeError extends HttpError {
+  constructor() {
+    super(413, 'Request body too large');
+  }
+}
+
+export interface ReceiveOptions {
+  /** Bytes of large bodies held at once, received or arriving, until they are handed to their route. */
+  maxHeldBytes?: number;
+  /** Large bodies one client may be sending, or have waiting for their turn, at the same time. */
+  maxPerClient?: number;
+  /** A body's pace is checked only after this: the first moments of a connection are often its slowest. */
+  graceMs?: number;
+  /** Slower than this on average after the grace, a body is refused with 408. */
+  minBytesPerSec?: number;
+  /** A body still arriving after this is refused with 408, whatever its pace. */
+  maxMs?: number;
+  /** How often the pace is checked. */
+  checkMs?: number;
+  now?: () => number;
+}
+
+const RECEIVE_DEFAULTS = {
+  maxHeldBytes: 16 * 1024 * 1024,
+  maxPerClient: 2,
+  graceMs: 5000,
+  minBytesPerSec: 32 * 1024,
+  maxMs: 60_000,
+  checkMs: 1000,
+};
+
+/** A received body: its bytes as they arrived, and the call that stops counting them. */
+export interface ReceivedBody {
+  chunks: Uint8Array[];
+  bytes: number;
+  release: () => void;
+}
+
+/**
+ * Reads large request bodies in full before they take their turn (`newLargeBodyGate`).
+ *
+ * Reading a body inside the turn let one client hold it for everyone: a 3 MB body sent at 2 KB/s kept every other
+ * upload waiting until Node's request timeout, and two such clients reconnecting blocked uploads for good. Here a
+ * sender is held to a pace instead (`minBytesPerSec` after `graceMs`, all of it within `maxMs`), and a slow one costs
+ * only the few bytes it managed to send. What arrived is bounded in bytes across the server (`maxHeldBytes`), so
+ * bodies that are fast and many get 503 instead of filling the memory the turn was there to protect.
+ */
+export class LargeBodyReceiver {
+  private readonly options: Required<ReceiveOptions>;
+  private held = 0;
+  private readonly perClient = new Map<string, number>();
+
+  constructor(options: ReceiveOptions = {}) {
+    this.options = { ...RECEIVE_DEFAULTS, now: () => performance.now(), ...options };
+  }
+
+  /** Bytes held and bodies in progress (diagnostics and tests). */
+  stats() {
+    return { bytes: this.held, bodies: [...this.perClient.values()].reduce((a, b) => a + b, 0) };
+  }
+
+  /**
+   * The whole body of `request`, at most `maxBytes`. Throws BodyTooLargeError, BodyTimeoutError, or BusyError when
+   * the client already sends its share or the server holds too many bytes of bodies. The bytes count until
+   * `release`, which the caller calls once the body is handed on, or at the latest when the request is answered.
+   */
+  async receive(request: Request, client: string, maxBytes: number): Promise<ReceivedBody> {
+    const { maxPerClient, maxHeldBytes, graceMs, minBytesPerSec, maxMs, checkMs, now } = this.options;
+    const mine = this.perClient.get(client) ?? 0;
+    if (mine >= maxPerClient) throw new BusyError(undefined, 5);
+    this.perClient.set(client, mine + 1);
+    let bytes = 0;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      this.held -= bytes;
+      const left = (this.perClient.get(client) ?? 1) - 1;
+      if (left > 0) this.perClient.set(client, left);
+      else this.perClient.delete(client);
+    };
+    const chunks: Uint8Array[] = [];
+    if (!request.body) return { chunks, bytes, release };
+    // Not cancelled on a refusal: cancelling destroys the socket before the answer is sent. The server drains and
+    // closes the connection once it has answered (@hono/node-server, and `Connection: close`).
+    const reader = request.body.getReader();
+    const start = now();
+    let timer: NodeJS.Timeout | undefined;
+    const tooSlow = new Promise<never>((_, reject) => {
+      timer = setInterval(() => {
+        const elapsed = now() - start;
+        if (elapsed > maxMs || (elapsed > graceMs && bytes / (elapsed / 1000) < minBytesPerSec))
+          reject(new BodyTimeoutError());
+      }, checkMs);
+    });
+    tooSlow.catch(() => {});
+    try {
+      for (;;) {
+        const { done, value } = await Promise.race([reader.read(), tooSlow]);
+        if (done) break;
+        if (bytes + value.byteLength > maxBytes) throw new BodyTooLargeError();
+        if (this.held + value.byteLength > maxHeldBytes) throw new BusyError(undefined, 5);
+        bytes += value.byteLength;
+        this.held += value.byteLength;
+        chunks.push(value);
+      }
+    } catch (e) {
+      release();
+      throw e;
+    } finally {
+      clearInterval(timer);
+    }
+    return { chunks, bytes, release };
+  }
+}
+
+/** `request` with a body read earlier; the chunks are handed on as they are, without a copy. */
+export function withReceivedBody(request: Request, chunks: Uint8Array[]): Request {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  return new Request(request, { body, duplex: 'half' } as RequestInit);
+}
