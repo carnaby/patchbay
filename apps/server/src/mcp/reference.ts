@@ -10,6 +10,7 @@ import {
   MAX_SECRETS_PER_SOURCE,
   REFERENCE_LINE_KINDS,
   REFERENCE_STATS,
+  SEARCH_ENGINES,
   SOUND_IDS,
   TIME_UNITS,
   WINDOW_OPS,
@@ -113,6 +114,14 @@ ${fns}
   color = numeric value on a sequential ramp, series = one colour per entity (not both color and series).
   terminator shades the night side for the time of the data. The base map is built in: no keys, no tiles.
   view fit frames the data (at least 30° x 15°), world shows 60°S to 84°N. basemap land hides country borders.
+- clock { style: digital|analog, timeZone?, label?, hourCycle: h23|h12, showDate, showSeconds }   no dataset.
+  Omit timeZone for each viewer's local time; an IANA zone ("America/New_York") shows that city's time, labelled
+  with the city unless label says otherwise. One clock per zone: several clocks side by side make world clocks.
+  Prefer digital (default): many people read analog clocks slowly. Use hourCycle h12 for US/UK audiences.
+- search { engine: ${SEARCH_ENGINES.join('|')}, template?, newTab, autofocus }   no dataset.
+  A search box that opens the engine's results; the query never reaches this server. engine custom needs template,
+  an https address with {q} where the query goes. autofocus puts the cursor in it on load (start pages only: it
+  catches the keyboard shortcuts).
 format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }
 
 ## Colours
@@ -165,7 +174,8 @@ reorderWidget { id, before: widgetId | null } (reading order, i.e. the order wid
 addStep { datasetId, step, before? }, updateStep { datasetId, stepId, set } (merged; type cannot change),
 removeStep { datasetId, stepId }, moveStep { datasetId, stepId, before: stepId | null }.
 Prefer step operations over updateDataset { set: { transforms } }: they do not overwrite steps the user changed meanwhile.
-Omit positions to auto-place. Typical sizes: kpi 3x2, gauge 3x3, chart 6x4, table 6x5, map 6x5, text 4x2 (w x h, row = 80 px).
+Omit positions to auto-place. Typical sizes: kpi 3x2, gauge 3x3, chart 6x4, table 6x5, map 6x5, text 4x2, clock 3x2,
+search 6x1 (w x h, row = 80 px).
 
 ## Design guidance
 - One headline per KPI. Use compare + sparkline for live values.

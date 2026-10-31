@@ -191,13 +191,8 @@ function Editor({ id }: { id: string }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [undo, redo]);
 
-  const addWidget = () => {
-    if (doc.datasets.length === 0) {
-      setPanel('data');
-      return;
-    }
-    setWidgetId('__new__');
-  };
+  // Opens even without datasets: text, clock and search widgets need none, and the drawer points to Data.
+  const addWidget = () => setWidgetId('__new__');
 
   const status = saving ? 'Saving…' : dirty ? 'Unsaved' : `Saved ${relativeTime(meta.updatedAt)}`;
 

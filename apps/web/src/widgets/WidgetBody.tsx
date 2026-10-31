@@ -18,7 +18,9 @@ import { lazy, Suspense, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import { cx, Spinner } from '../components/ui.tsx';
 import { useTheme } from '../lib/hooks.ts';
+import { ClockBody } from './ClockBody.tsx';
 import { EChart } from './EChart.tsx';
+import { SearchBody } from './SearchBody.tsx';
 
 // Its own chunk: the base map and the map-only ECharts modules are downloaded only when a dashboard has a map.
 const MapBody = lazy(() => import('./MapBody.tsx'));
@@ -43,6 +45,8 @@ export function WidgetBody({
   entityColors?: ColorMap | undefined;
 }) {
   if (widget.type === 'text') return <TextBody markdown={widget.config.markdown} />;
+  if (widget.type === 'clock') return <ClockBody config={widget.config} />;
+  if (widget.type === 'search') return <SearchBody config={widget.config} />;
   if (!result) {
     return (
       <div className="flex h-full items-center justify-center">

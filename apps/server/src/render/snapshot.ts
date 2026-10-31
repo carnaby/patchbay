@@ -14,6 +14,8 @@ import {
   type ChartTheme,
   type ColorMap,
   cellStyle,
+  clockModel,
+  clockSvg,
   compileTableRules,
   computeGauge,
   computeKpi,
@@ -21,7 +23,9 @@ import {
   type DatasetResult,
   formatNumber,
   GRID_COLUMNS,
+  isDataWidgetType,
   resolveColor,
+  searchPlaceholder,
   THEMES,
   type ThemeMode,
   tableColumns,
@@ -132,6 +136,23 @@ function widgetBody(
       .slice(0, Math.floor(h / 18))
       .map((l, i) => text(0, 14 + i * 18, l, { size: 13, color: theme.textSecondary }))
       .join('');
+  }
+  if (widget.type === 'clock') {
+    // The server has no viewer: a clock without a zone is drawn in UTC and says so, rather than guessing.
+    const model = clockModel(widget.config, Date.now(), { locale: 'en-GB', zone: 'UTC' });
+    return nest(clockSvg(model, widget.config, theme, FONT), 0, 0, w, h);
+  }
+  if (widget.type === 'search') {
+    const boxH = Math.min(40, h);
+    return [
+      `<rect x="0" y="0" width="${w}" height="${boxH}" rx="8" fill="${theme.mode === 'light' ? '#f1f0ec' : '#242423'}" stroke="${theme.grid}"/>`,
+      `<circle cx="17" cy="${boxH / 2 - 1}" r="5.5" fill="none" stroke="${theme.muted}" stroke-width="1.6"/>`,
+      `<line x1="21" y1="${boxH / 2 + 3}" x2="25" y2="${boxH / 2 + 7}" stroke="${theme.muted}" stroke-width="1.6" stroke-linecap="round"/>`,
+      text(34, boxH / 2 + 4.5, truncate(searchPlaceholder(widget.config), Math.floor((w - 40) / 7)), {
+        size: 13,
+        color: theme.muted,
+      }),
+    ].join('');
   }
   if (!result) return text(0, 16, 'Loading…', { color: theme.muted });
   if (result.error && result.table.rows.length === 0) {
@@ -249,9 +270,11 @@ function card(
   entityColors?: ColorMap,
 ): string {
   const pad = 14;
-  const title = widget.title ?? widget.id;
+  const title = widget.title ?? (isDataWidgetType(widget.type) ? widget.id : '');
+  // As in the browser: an untitled search box is one line, without an empty title row above it.
+  const top = widget.type === 'search' && !widget.title ? pad : HEADER;
   const bodyW = width - pad * 2;
-  const bodyH = height - HEADER - pad;
+  const bodyH = height - top - pad;
   const border = theme.mode === 'light' ? 'rgba(11,11,11,0.10)' : 'rgba(255,255,255,0.10)';
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
@@ -261,7 +284,7 @@ function card(
       weight: 600,
       color: theme.textPrimary,
     }),
-    `<g transform="translate(${pad}, ${HEADER})">${widgetBody(widget, result, theme, bodyW, bodyH, entityColors)}</g>`,
+    `<g transform="translate(${pad}, ${top})">${widgetBody(widget, result, theme, bodyW, bodyH, entityColors)}</g>`,
     '</svg>',
   ].join('');
 }

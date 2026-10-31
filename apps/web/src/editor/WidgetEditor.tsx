@@ -1,12 +1,18 @@
 import {
   CHART_KINDS,
   type ChartKind,
+  type ClockConfig,
   type Column,
   coordinateRole,
   type Format,
+  isDataWidgetType,
+  isValidTimeZone,
   KPI_AGGS,
   parse,
   REFERENCE_LINE_KINDS,
+  SEARCH_ENGINE_LABELS,
+  SEARCH_ENGINES,
+  type SearchConfig,
   SOUND_IDS,
   type SoundRule,
   type Suggestion,
@@ -20,6 +26,7 @@ import {
   AreaChart,
   BarChart3,
   CircleDot,
+  Clock,
   Filter,
   Gauge,
   Grid3x3,
@@ -29,6 +36,7 @@ import {
   PieChart,
   Play,
   Radar,
+  Search,
   Sparkles,
   Table2,
   Type,
@@ -68,7 +76,15 @@ const TYPE_OPTIONS: { value: WidgetType; label: string; icon: ReactNode }[] = [
   { value: 'table', label: 'Table', icon: <Table2 className="size-3.5" /> },
   { value: 'map', label: 'Map', icon: <MapIcon className="size-3.5" /> },
   { value: 'text', label: 'Text', icon: <Type className="size-3.5" /> },
+  { value: 'clock', label: 'Clock', icon: <Clock className="size-3.5" /> },
+  { value: 'search', label: 'Search', icon: <Search className="size-3.5" /> },
 ];
+
+/** The viewer's own habit, as a starting point: the saved value is explicit so every screen shows the same. */
+function localHourCycle(): 'h12' | 'h23' {
+  const cycle = new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hourCycle;
+  return cycle === 'h12' || cycle === 'h11' ? 'h12' : 'h23';
+}
 
 const KIND_ICONS: Record<ChartKind, ReactNode> = {
   line: <LineChart className="size-4" />,
@@ -127,6 +143,10 @@ export function defaultsFor(type: WidgetType, columns: Column[], previous?: Widg
     }
     case 'text':
       return { markdown: 'Write **markdown** here.' };
+    case 'clock':
+      return { style: 'digital', hourCycle: localHourCycle(), showDate: true, showSeconds: false };
+    case 'search':
+      return { engine: 'google' };
   }
 }
 
@@ -204,7 +224,7 @@ function NewWidget({ onCreated }: { onCreated: (id: string) => void }) {
       widget: {
         ...widget,
         id,
-        ...(widget.type === 'text' ? {} : { datasetId: targetDataset }),
+        ...(isDataWidgetType(widget.type) ? { datasetId: targetDataset } : {}),
       } as WidgetInput,
     });
     const err = apply(ops, `Added "${widget.title ?? widget.type}"`);
@@ -214,56 +234,65 @@ function NewWidget({ onCreated }: { onCreated: (id: string) => void }) {
 
   return (
     <div className="space-y-6">
-      <Field label="Dataset">
-        {(fid) => (
-          <Select id={fid} value={datasetId} onChange={(e) => setDatasetId(e.target.value)}>
-            {datasets.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name}
-              </option>
-            ))}
-          </Select>
-        )}
-      </Field>
+      {datasets.length === 0 ? (
+        <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">
+          Text, clock and search widgets need no data. For charts, tables and the rest, add a dataset under
+          Data first.
+        </p>
+      ) : (
+        <Field label="Dataset">
+          {(fid) => (
+            <Select id={fid} value={datasetId} onChange={(e) => setDatasetId(e.target.value)}>
+              {datasets.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+      )}
 
-      <section className="space-y-2">
-        <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-ink-2">
-          <Sparkles className="size-3.5 text-accent" /> Suggested for this data
-        </h3>
-        {suggestions.isLoading ? (
-          <Spinner />
-        ) : suggestions.data?.suggestions.length ? (
-          <div className="grid gap-2">
-            {suggestions.data.suggestions.map((s) => (
-              <button
-                key={s.title}
-                type="button"
-                onClick={() => create(s.widget as Omit<WidgetInput, 'id'>, s.transforms)}
-                className="rounded-xl border border-line bg-surface p-3 text-left transition hover:border-ink-2"
-              >
-                <div className="flex items-center gap-2 text-sm font-medium">
-                  {s.widget.type === 'chart'
-                    ? KIND_ICONS[(s.widget.config as { kind: ChartKind }).kind]
-                    : TYPE_OPTIONS.find((t) => t.value === s.widget.type)?.icon}
-                  {s.title}
-                </div>
-                <p className="mt-1 text-xs text-muted">{s.rationale}</p>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-muted">No suggestions (the dataset may be empty or still loading).</p>
-        )}
-      </section>
+      {datasets.length === 0 ? null : (
+        <section className="space-y-2">
+          <h3 className="flex items-center gap-1.5 text-[13px] font-semibold text-ink-2">
+            <Sparkles className="size-3.5 text-accent" /> Suggested for this data
+          </h3>
+          {suggestions.isLoading ? (
+            <Spinner />
+          ) : suggestions.data?.suggestions.length ? (
+            <div className="grid gap-2">
+              {suggestions.data.suggestions.map((s) => (
+                <button
+                  key={s.title}
+                  type="button"
+                  onClick={() => create(s.widget as Omit<WidgetInput, 'id'>, s.transforms)}
+                  className="rounded-xl border border-line bg-surface p-3 text-left transition hover:border-ink-2"
+                >
+                  <div className="flex items-center gap-2 text-sm font-medium">
+                    {s.widget.type === 'chart'
+                      ? KIND_ICONS[(s.widget.config as { kind: ChartKind }).kind]
+                      : TYPE_OPTIONS.find((t) => t.value === s.widget.type)?.icon}
+                    {s.title}
+                  </div>
+                  <p className="mt-1 text-xs text-muted">{s.rationale}</p>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted">No suggestions (the dataset may be empty or still loading).</p>
+          )}
+        </section>
+      )}
 
       <section className="space-y-2">
         <h3 className="text-[13px] font-semibold text-ink-2">Or start from a blank widget</h3>
-        <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+        <div className="grid grid-cols-4 gap-2">
           {TYPE_OPTIONS.map((t) => (
             <button
               key={t.value}
               type="button"
-              disabled={t.value !== 'text' && columns.length === 0}
+              disabled={isDataWidgetType(t.value) && columns.length === 0}
               onClick={() =>
                 create({ type: t.value, title: t.label, config: defaultsFor(t.value, columns) } as Omit<
                   WidgetInput,
@@ -305,8 +334,8 @@ function EditWidget({ widget }: { widget: Widget }) {
       id: widget.id,
       type,
       title: widget.title,
-      ...(type === 'text' ? {} : { datasetId: datasetId ?? datasets[0]?.id }),
-      ...(type !== 'text' && 'sound' in widget && widget.sound ? { sound: widget.sound } : {}),
+      ...(isDataWidgetType(type) ? { datasetId: datasetId ?? datasets[0]?.id } : {}),
+      ...(isDataWidgetType(type) && 'sound' in widget && widget.sound ? { sound: widget.sound } : {}),
       config: defaultsFor(type, columns, widget),
     } as WidgetInput;
     const err = apply([{ op: 'replaceWidget', widget: next }], `Changed widget to ${type}`);
@@ -341,7 +370,7 @@ function EditWidget({ widget }: { widget: Widget }) {
           }))}
         />
       </div>
-      {widget.type !== 'text' ? (
+      {isDataWidgetType(widget.type) ? (
         <Field label="Dataset" hint={loading ? 'Loading columns…' : `${columns.length} columns`}>
           {(fid) => (
             <Select
@@ -370,6 +399,8 @@ function EditWidget({ widget }: { widget: Widget }) {
           <TableFields widget={widget} columns={columns} setConfig={setConfig} />
         ) : null}
         {widget.type === 'map' ? <MapFields widget={widget} columns={columns} setConfig={setConfig} /> : null}
+        {widget.type === 'clock' ? <ClockFields config={widget.config} setConfig={setConfig} /> : null}
+        {widget.type === 'search' ? <SearchFields config={widget.config} setConfig={setConfig} /> : null}
         {widget.type === 'text' ? (
           <Field label="Markdown" hint="Headings, lists, links and emphasis. Raw HTML is not rendered.">
             {(fid) => (
@@ -398,7 +429,7 @@ function EditWidget({ widget }: { widget: Widget }) {
         <TableRulesFields widget={widget} columns={columns} setConfig={setConfig} />
       ) : null}
 
-      {widget.type !== 'text' ? (
+      {isDataWidgetType(widget.type) ? (
         <FormatFields
           format={'format' in widget.config ? widget.config.format : undefined}
           setConfig={setConfig}
@@ -1216,5 +1247,174 @@ export function ConditionInput({ expr, onChange }: { expr: string; onChange: (ex
         />
       )}
     </Field>
+  );
+}
+
+let zoneList: string[] | null = null;
+function timeZones(): string[] {
+  if (!zoneList) {
+    try {
+      zoneList = Intl.supportedValuesOf('timeZone');
+    } catch {
+      zoneList = [];
+    }
+  }
+  return zoneList;
+}
+
+function ClockFields({ config, setConfig }: { config: ClockConfig; setConfig: SetConfig }) {
+  // Typed text stays local until it names a real zone, so typing never fails an operation.
+  const [zone, setZone] = useState(config.timeZone ?? '');
+  useEffect(() => setZone(config.timeZone ?? ''), [config.timeZone]);
+  const zoneError =
+    zone.trim() && !isValidTimeZone(zone.trim()) ? 'Pick a zone from the list, e.g. Europe/Bratislava' : null;
+  return (
+    <>
+      <div className="space-y-1.5">
+        <div className="text-[13px] font-medium text-ink-2">Style</div>
+        <Segmented
+          value={config.style}
+          onChange={(style) => setConfig({ style }, 'Changed clock style')}
+          options={[
+            { value: 'digital', label: 'Digital' },
+            { value: 'analog', label: 'Analog' },
+          ]}
+        />
+      </div>
+      <Field label="Time zone" error={zoneError} hint="Empty: each viewer's own local time.">
+        {(fid) => (
+          <>
+            <Input
+              id={fid}
+              list={`${fid}-zones`}
+              value={zone}
+              placeholder="My local time"
+              spellCheck={false}
+              onChange={(e) => {
+                const next = e.target.value;
+                setZone(next);
+                const trimmed = next.trim();
+                if (!trimmed) setConfig({ timeZone: undefined }, 'Changed clock time zone', 'clock-zone');
+                else if (isValidTimeZone(trimmed))
+                  setConfig({ timeZone: trimmed }, 'Changed clock time zone', 'clock-zone');
+              }}
+            />
+            <datalist id={`${fid}-zones`}>
+              {timeZones().map((z) => (
+                <option key={z} value={z} />
+              ))}
+            </datalist>
+          </>
+        )}
+      </Field>
+      <Field label="Label" hint="Shown under the time. Empty: the city of the time zone.">
+        {(fid) => (
+          <Input
+            id={fid}
+            value={config.label ?? ''}
+            maxLength={60}
+            onChange={(e) =>
+              setConfig({ label: e.target.value || undefined }, 'Changed clock label', 'clock-label')
+            }
+          />
+        )}
+      </Field>
+      <div className="space-y-1.5">
+        <div className="text-[13px] font-medium text-ink-2">Hours</div>
+        <Segmented
+          value={config.hourCycle}
+          onChange={(hourCycle) => setConfig({ hourCycle }, 'Changed clock hours')}
+          options={[
+            { value: 'h23', label: '24-hour' },
+            { value: 'h12', label: '12-hour' },
+          ]}
+        />
+      </div>
+      <Toggle
+        label="Show the date"
+        checked={config.showDate}
+        onChange={(showDate) => setConfig({ showDate }, 'Changed clock date')}
+      />
+      <Toggle
+        label="Show seconds"
+        checked={config.showSeconds}
+        onChange={(showSeconds) => setConfig({ showSeconds }, 'Changed clock seconds')}
+      />
+    </>
+  );
+}
+
+function SearchFields({ config, setConfig }: { config: SearchConfig; setConfig: SetConfig }) {
+  const [template, setTemplate] = useState(config.template ?? 'https://');
+  useEffect(() => setTemplate(config.template ?? 'https://'), [config.template]);
+  const templateOk = (t: string) => {
+    try {
+      return new URL(t).protocol === 'https:' && t.includes('{q}');
+    } catch {
+      return false;
+    }
+  };
+  return (
+    <>
+      <Field label="Search engine">
+        {(fid) => (
+          <Select
+            id={fid}
+            value={config.engine}
+            onChange={(e) => {
+              const engine = e.target.value as SearchConfig['engine'];
+              if (engine === 'custom') {
+                // The schema needs a valid address with the engine, so start from an example to edit.
+                const next = templateOk(template) ? template : 'https://example.com/search?q={q}';
+                setTemplate(next);
+                setConfig({ engine, template: next }, 'Changed search engine');
+              } else setConfig({ engine, template: undefined }, 'Changed search engine');
+            }}
+          >
+            {SEARCH_ENGINES.map((e) => (
+              <option key={e} value={e}>
+                {SEARCH_ENGINE_LABELS[e]}
+              </option>
+            ))}
+          </Select>
+        )}
+      </Field>
+      {config.engine === 'custom' ? (
+        <Field
+          label="Address"
+          error={templateOk(template) ? null : 'An https address with {q} where the query goes'}
+          hint="e.g. https://en.wikipedia.org/w/index.php?search={q}"
+        >
+          {(fid) => (
+            <Input
+              id={fid}
+              value={template}
+              maxLength={500}
+              spellCheck={false}
+              className="font-mono text-[13px]"
+              onChange={(e) => {
+                setTemplate(e.target.value);
+                if (templateOk(e.target.value))
+                  setConfig({ template: e.target.value }, 'Changed search address', 'search-template');
+              }}
+            />
+          )}
+        </Field>
+      ) : null}
+      <Toggle
+        label="Open results in a new tab"
+        checked={config.newTab}
+        onChange={(newTab) => setConfig({ newTab }, 'Changed search')}
+      />
+      <Toggle
+        label="Put the cursor in the field when the page opens"
+        checked={config.autofocus}
+        onChange={(autofocus) => setConfig({ autofocus }, 'Changed search')}
+      />
+      <p className="text-xs text-muted">
+        Queries go straight from the browser to the search engine; this server never sees them. With the
+        cursor in the field, keyboard shortcuts such as F (present) wait until you click elsewhere.
+      </p>
+    </>
   );
 }

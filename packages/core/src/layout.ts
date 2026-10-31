@@ -12,6 +12,8 @@ export const SIZE_HINTS: Record<WidgetType, { w: number; h: number }> = {
   table: { w: 6, h: 5 },
   map: { w: 6, h: 5 },
   text: { w: 4, h: 2 },
+  clock: { w: 3, h: 2 },
+  search: { w: 6, h: 1 },
 };
 
 const overlaps = (a: Omit<LayoutItem, 'i'>, b: Omit<LayoutItem, 'i'>) =>

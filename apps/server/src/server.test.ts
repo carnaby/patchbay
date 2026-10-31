@@ -519,8 +519,9 @@ describe('MCP tools', () => {
     // (proposal 0007): the shared Color and Bands definitions, colour maps, reference lines, KPI bands, table
     // column objects and rules, setMeta `colors`; their descriptions live in get_reference instead; -> 37,300: the
     // map widget (proposal 0006), one more branch of the widget union with its shared fields and its colour map,
-    // descriptions cut to a few words).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(37_300);
+    // descriptions cut to a few words; -> 38,500: the clock and search widgets (proposal 0009), two more branches of
+    // the widget union, without field descriptions).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(38_500);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(
