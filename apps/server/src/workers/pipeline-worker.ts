@@ -1,20 +1,27 @@
 /**
  * Runs transform pipelines and parses uploaded files off the main thread. Receives
- * { id, kind: 'pipeline', table, transforms } or { id, kind: 'upload', input } and
- * answers { id, ok, result } or { id, ok: false, message }.
+ * { id, kind: 'pipeline', table, transforms } or { id, kind: 'upload', input } (the file as transferred UTF-8
+ * bytes, see util/workers.ts) and answers { id, ok, result } or { id, ok: false, message }.
  */
+import { getHeapStatistics } from 'node:v8';
 import { parentPort } from 'node:worker_threads';
 import { type DataTable, runPipeline, type Transform } from '@patchbay/core';
 import { parseUpload, UploadError, type UploadInput } from '../services/upload-parse.ts';
+import { textFromWorkerBytes } from '../util/workers.ts';
 
 type Job =
   | { id: number; kind: 'pipeline'; table: DataTable; transforms: Transform[] }
-  | { id: number; kind: 'upload'; input: UploadInput };
+  | { id: number; kind: 'upload'; input: Omit<UploadInput, 'content'> & { bytes: Uint8Array } };
+
+function run(job: Job) {
+  if (job.kind === 'pipeline') return runPipeline(job.table, job.transforms);
+  const { bytes, ...rest } = job.input;
+  return parseUpload({ ...rest, content: textFromWorkerBytes(bytes) });
+}
 
 parentPort!.on('message', (job: Job) => {
   try {
-    const result = job.kind === 'upload' ? parseUpload(job.input) : runPipeline(job.table, job.transforms);
-    parentPort!.postMessage({ id: job.id, ok: true, result });
+    parentPort!.postMessage({ id: job.id, ok: true, result: run(job) });
   } catch (e) {
     parentPort!.postMessage({
       id: job.id,
@@ -26,5 +33,5 @@ parentPort!.on('message', (job: Job) => {
 });
 
 // Signal readiness only after the imports above loaded, so job time limits
-// never include worker start-up.
-parentPort!.postMessage({ ready: true });
+// never include worker start-up. The heap limit lets the pool notice when it was overridden.
+parentPort!.postMessage({ ready: true, heapLimitMb: getHeapStatistics().heap_size_limit / (1024 * 1024) });

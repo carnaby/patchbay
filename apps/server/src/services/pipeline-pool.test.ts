@@ -1,5 +1,7 @@
+import type { ResourceLimits } from 'node:worker_threads';
 import { inferTable, runPipeline, type Transform, TransformSchema } from '@patchbay/core';
 import { afterAll, describe, expect, it } from 'vitest';
+import { FakeWorker, settle } from '../util/fake-worker.test-helper.ts';
 import { runAsClient } from '../util/request-context.ts';
 import { runsInline, WorkerPool } from './pipeline-pool.ts';
 import { UploadError } from './upload-parse.ts';
@@ -143,6 +145,116 @@ describe('worker pool guards', () => {
       expect(err).toBeInstanceOf(UploadError);
       expect((err as UploadError).tooLarge).toBe(true);
     } finally {
+      await pool.close();
+    }
+  });
+});
+
+describe('worker pool lifecycle', () => {
+  const fakePool = (options: { retireGraceMs?: number; timeoutMs?: number } = {}) => {
+    const workers: FakeWorker[] = [];
+    const limits: ResourceLimits[] = [];
+    const pool = new WorkerPool({
+      size: 1,
+      inlineBelowCells: 1,
+      workerMemoryMb: 64,
+      ...options,
+      createWorker: (resourceLimits) => {
+        limits.push(resourceLimits);
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker;
+      },
+    });
+    return { pool, workers, limits };
+  };
+  const lastJobId = (worker: FakeWorker) => (worker.posted.at(-1)!.value as { id: number }).id;
+  const csvUpload = { content: 'a\n1\n', format: 'csv', maxCells: 10 } as const;
+
+  it('starts the replacement of a failed worker only after the old one has exited', async () => {
+    const { pool, workers } = fakePool();
+    try {
+      await settle();
+      const first = pool.run(medium, heavy);
+      await settle();
+      expect(workers[0]!.posted).toHaveLength(1);
+      workers[0]!.outOfMemory();
+      await expect(first).rejects.toThrow(/more memory than this server allows/);
+      expect(workers[0]!.terminated).toBe(true);
+      // The next job waits instead of going to a second worker while the first one's heap still exists.
+      const second = pool.run(medium, heavy);
+      await settle();
+      expect(workers).toHaveLength(1);
+      expect(pool.threads()).toBe(1);
+      expect(pool.waiting()).toBe(1);
+      workers[0]!.exit();
+      await settle();
+      expect(workers).toHaveLength(2);
+      expect(pool.threads()).toBe(1);
+      expect(workers[1]!.posted).toHaveLength(1);
+      workers[1]!.emit('message', {
+        id: lastJobId(workers[1]!),
+        ok: true,
+        result: { table: medium, trace: [] },
+      });
+      await expect(second).resolves.toMatchObject({ table: medium });
+    } finally {
+      workers.at(-1)!.exit();
+      await pool.close();
+    }
+  });
+
+  it('waits for a timed-out worker to exit too, but not forever', async () => {
+    const { pool, workers } = fakePool({ timeoutMs: 20, retireGraceMs: 200 });
+    try {
+      await settle();
+      await expect(pool.run(medium, heavy)).rejects.toThrow(/longer than/);
+      await settle();
+      expect(workers).toHaveLength(1);
+      // This worker never exits (as if stuck in native code): after the grace period the pool goes on without it.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(workers).toHaveLength(2);
+    } finally {
+      workers.at(-1)!.exit();
+      await pool.close();
+    }
+  });
+
+  it('runs nothing on the calling thread while its only worker is replaced', async () => {
+    const { pool, workers } = fakePool();
+    try {
+      await settle();
+      const first = pool.parseUpload(csvUpload);
+      await settle();
+      workers[0]!.outOfMemory();
+      await expect(first).rejects.toThrow();
+      // With no live worker the upload must queue, not fall back to parsing inline.
+      void pool.parseUpload(csvUpload).catch(() => {});
+      await settle();
+      expect(pool.waiting()).toBe(1);
+    } finally {
+      workers[0]!.exit();
+      await settle();
+      workers.at(-1)!.exit();
+      await pool.close();
+    }
+  });
+
+  it('bounds every heap of a worker and moves upload bytes instead of cloning the text', async () => {
+    const { pool, workers, limits } = fakePool();
+    try {
+      expect(limits[0]).toEqual({ maxOldGenerationSizeMb: 64, maxYoungGenerationSizeMb: 8, stackSizeMb: 4 });
+      await settle();
+      void pool.parseUpload({ ...csvUpload, content: 'a,b\n1,é\n' }).catch(() => {});
+      await settle();
+      const { value, transfer } = workers[0]!.posted[0]!;
+      const input = (value as { input: { content?: string; bytes: Uint8Array } }).input;
+      expect(input.content).toBeUndefined();
+      expect(input.bytes).toBeInstanceOf(Uint8Array);
+      expect(transfer).toEqual([input.bytes.buffer]);
+      expect(new TextDecoder().decode(input.bytes)).toBe('a,b\n1,é\n');
+    } finally {
+      workers[0]!.exit();
       await pool.close();
     }
   });
