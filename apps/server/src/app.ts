@@ -301,7 +301,10 @@ export function createApp(deps: Deps, options: AppOptions = {}) {
   // Public dashboards are reachable by link, not meant to be searched for, so /d/ stays out of indexes. Without
   // this, crawlers would get the SPA shell for /robots.txt and read it as "everything is allowed".
   app.get('/robots.txt', (c) =>
-    c.text(ROBOTS_TXT, 200, { 'Cache-Control': 'public, max-age=3600', 'Content-Type': 'text/plain; charset=utf-8' }),
+    c.text(ROBOTS_TXT, 200, {
+      'Cache-Control': 'public, max-age=3600',
+      'Content-Type': 'text/plain; charset=utf-8',
+    }),
   );
 
   // MCP: bearer-only (OAuth access token bound to this resource, or a personal access token).

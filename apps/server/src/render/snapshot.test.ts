@@ -498,9 +498,9 @@ describe('snapshot budgets', () => {
     expect(size(withCredit).height).toBe(size(without).height + 26);
     expect(withCredit.equals(without)).toBe(false);
     // No credit for a source that is not on the dashboard, or when nothing says what to credit.
-    expect(renderDashboardPng(doc, new Map(), { attributions: { crypto: 'CoinGecko' } }).equals(without)).toBe(
-      true,
-    );
+    expect(
+      renderDashboardPng(doc, new Map(), { attributions: { crypto: 'CoinGecko' } }).equals(without),
+    ).toBe(true);
     expect(renderDashboardPng(textDoc([{ x: 0, y: 0, w: 6, h: 2 }]), new Map(), credits).length).toBe(
       renderDashboardPng(textDoc([{ x: 0, y: 0, w: 6, h: 2 }]), new Map()).length,
     );

@@ -459,7 +459,12 @@ export function apiRoutes(deps: Deps) {
           return draw({ kind: 'widget', widget, result, options: { theme, entityColors: doc.colors } });
         }
         const results = await resolveAll(doc.datasets);
-        return draw({ kind: 'dashboard', doc, results, options: { theme, attributions: connectors.attributions() } });
+        return draw({
+          kind: 'dashboard',
+          doc,
+          results,
+          options: { theme, attributions: connectors.attributions() },
+        });
       });
     });
     return c.body(new Uint8Array(png), 200, {
