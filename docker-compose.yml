@@ -1,13 +1,22 @@
 # Production-style setup: Patchbay behind Caddy (automatic HTTPS).
-# 1. Point a DNS record at your server.  2. cp .env.example .env and fill it in.
-# 3. PATCHBAY_DOMAIN=dash.example.com docker compose up -d
+# 1. Point a DNS record at your server.
+# 2. cp .env.example .env, set PATCHBAY_DOMAIN and fill in the rest (Google sign-in, ADMIN_EMAILS, ...).
+# 3. docker compose up -d
 services:
   patchbay:
-    build: .
+    # Prebuilt image: `latest` follows main, release tags (e.g. 0.1.0) are fixed. Set PATCHBAY_TAG in .env to pin one.
+    image: ghcr.io/carnaby/patchbay:${PATCHBAY_TAG:-latest}
+    # To build from this checkout instead, replace the line above with:
+    # build: .
     restart: unless-stopped
     env_file: .env
+    # These win over .env, which is written for local development (DATA_DIR=./data, DEV_LOGIN=1): the image keeps
+    # its data in the /data volume, and the server refuses to start with the dev login on a public address.
     environment:
-      PUBLIC_URL: https://${PATCHBAY_DOMAIN:?set PATCHBAY_DOMAIN}
+      PUBLIC_URL: https://${PATCHBAY_DOMAIN:?set PATCHBAY_DOMAIN in .env}
+      DATA_DIR: /data
+      PORT: "8787"
+      DEV_LOGIN: "0"
       TRUST_PROXY: "1"
     volumes:
       - patchbay-data:/data
