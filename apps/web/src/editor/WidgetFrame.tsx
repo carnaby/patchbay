@@ -1,9 +1,11 @@
 import {
+  creditLine,
   isDataWidgetType,
   type SoundRule,
   soundRuleMissingColumns,
   sourceSecretIds,
   type Widget,
+  widgetAttributions,
 } from '@patchbay/core';
 import {
   ArrowDown,
@@ -23,9 +25,9 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { cx, IconButton, Menu, MenuItem, MenuSeparator, toast } from '../components/ui.tsx';
-import { relativeTime, useSecretsStatus } from '../lib/hooks.ts';
+import { relativeTime, useAttributions, useSecretsStatus } from '../lib/hooks.ts';
 import { credentialErrorHint } from '../lib/secrets.ts';
 import { SOUND_LABELS, useSoundSettings } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
@@ -74,6 +76,11 @@ export const WidgetFrame = memo(function WidgetFrame({
   const { data: secretsStatus } = useSecretsStatus();
   const apply = useEditor((s) => s.apply);
   const query = useDatasetResult(dashboardId, dataset, live);
+  const attributions = useAttributions();
+  const credit = useMemo(
+    () => (dataset ? creditLine(widgetAttributions([dataset], [widget], attributions)) : ''),
+    [dataset, widget, attributions],
+  );
   const [flashing, setFlashing] = useState(false);
   // Per screen and not saved: the table is a way to read this map, not a setting of the dashboard.
   const [asTable, setAsTable] = useState(false);
@@ -279,7 +286,7 @@ export const WidgetFrame = memo(function WidgetFrame({
           </div>
         )}
       </header>
-      <div className={cx('pb-no-drag min-h-0 flex-1 px-3 pb-3', headless && 'pt-3')}>
+      <div className={cx('pb-no-drag min-h-0 flex-1 px-3', credit ? 'pb-1.5' : 'pb-3', headless && 'pt-3')}>
         <WidgetBody
           widget={widget}
           result={result}
@@ -296,6 +303,12 @@ export const WidgetFrame = memo(function WidgetFrame({
           }
         />
       </div>
+      {credit ? (
+        // Some providers require a visible credit; keep it quiet, and let the title attribute carry what is cut off.
+        <p className="shrink-0 truncate px-3 pb-2 text-[10.5px] leading-none text-muted" title={credit}>
+          {credit}
+        </p>
+      ) : null}
     </section>
   );
 });

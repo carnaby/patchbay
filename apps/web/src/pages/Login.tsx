@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query';
 import { AlertTriangle, Wrench } from 'lucide-react';
 import { useState } from 'react';
-import { Navigate, useSearchParams } from 'react-router';
+import { Link, Navigate, useSearchParams } from 'react-router';
 import { Logo } from '../components/AppShell.tsx';
 import { Button, Card, Field, Input, Spinner } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
@@ -133,6 +133,13 @@ export default function Login() {
             ) : null}
           </div>
         </Card>
+        <p className="mt-4 text-center text-xs text-muted">
+          See how your data is handled in the{' '}
+          <Link to="/privacy" className="underline hover:text-ink">
+            privacy notice
+          </Link>
+          .
+        </p>
       </div>
     </div>
   );

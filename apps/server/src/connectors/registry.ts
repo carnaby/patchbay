@@ -65,6 +65,11 @@ export class ConnectorService {
     return CONNECTORS.map((c) => c.info);
   }
 
+  /** Connector id to credit text, for the snapshots' attribution line. */
+  attributions(): Record<string, string> {
+    return Object.fromEntries(CONNECTORS.map((c) => [c.info.id, c.info.attribution]));
+  }
+
   get(id: string): Connector | undefined {
     return byId.get(id);
   }

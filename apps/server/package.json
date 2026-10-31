@@ -1,11 +1,22 @@
 {
   "name": "@patchbay/server",
+  "description": "Patchbay server: REST, SSE, MCP, OAuth, connectors, storage and the PNG renderer.",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/carnaby/patchbay#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carnaby/patchbay.git",
+    "directory": "apps/server"
+  },
+  "bugs": {
+    "url": "https://github.com/carnaby/patchbay/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "node --watch --env-file-if-exists=../../.env src/main.ts",
-    "start": "node --expose-gc src/main.ts",
+    "start": "node --expose-gc --env-file-if-exists=../../.env src/main.ts",
     "typecheck": "tsc -p ."
   },
   "dependencies": {

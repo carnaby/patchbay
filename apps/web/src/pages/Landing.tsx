@@ -17,7 +17,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { type ReactNode, useMemo } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { Logo } from '../components/AppShell.tsx';
 import { Button, cx } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
@@ -262,7 +262,7 @@ const STEPS: { icon: LucideIcon; title: string; body: string; example: string }[
   {
     icon: Database,
     title: 'Plug in a source',
-    body: 'Pick one of 16 free public APIs, upload a CSV or JSON file, or point at any public HTTPS endpoint.',
+    body: 'Pick one of 14 free public APIs, upload a CSV or JSON file, or point at any public HTTPS endpoint.',
     example: 'weather.forecast · city: "Bratislava"',
   },
   {
@@ -436,7 +436,7 @@ const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
   },
   {
     icon: Database,
-    title: '16 public sources',
+    title: '14 public sources',
     body: 'Open-Meteo, CoinGecko, ECB rates, USGS earthquakes, World Bank, Wikipedia, Hacker News, GitHub, npm and more. No API keys.',
   },
   {
@@ -543,6 +543,9 @@ function Footer() {
           >
             GitHub
           </a>
+          <Link to="/privacy" className="hover:text-ink">
+            Privacy
+          </Link>
           <span>MIT licensed</span>
         </div>
       </div>
@@ -552,8 +555,14 @@ function Footer() {
 
 export default function Landing() {
   useDocumentTitle('Live dashboards your AI can build');
+  const [params] = useSearchParams();
   return (
     <>
+      {params.get('account') === 'deleted' ? (
+        <div role="status" className="border-b border-line bg-surface-2 px-4 py-3 text-center text-sm">
+          Your account and everything it owned have been deleted, and you are signed out.
+        </div>
+      ) : null}
       <Hero />
       <UseCases />
       <HowItWorks />

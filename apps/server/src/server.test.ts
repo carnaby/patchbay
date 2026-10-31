@@ -74,6 +74,30 @@ async function login(email: string): Promise<string> {
   return cookie;
 }
 
+describe('public instance information', () => {
+  it('exposes the retention and analytics settings the privacy page describes, and nothing secret', async () => {
+    const { json } = await call('/auth/config');
+    expect(json).toEqual({
+      google: false,
+      devLogin: true,
+      offline: true,
+      pruneAnonymousAfterDays: 0,
+      pruneBlankAnonymousAfterHours: 0,
+      analytics: false,
+    });
+  });
+
+  it('serves robots.txt as text, keeping dashboards and the API out of indexes', async () => {
+    const res = await app.request(`${BASE}/robots.txt`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/plain');
+    const body = await res.text();
+    for (const path of ['/api/', '/auth/', '/oauth/', '/mcp', '/admin', '/d/'])
+      expect(body).toContain(`Disallow: ${path}`);
+    expect(body).toContain('Allow: /showcase/');
+  });
+});
+
 describe('dashboards over REST', () => {
   it('lets anyone create a public dashboard, editable only with its edit key', async () => {
     const created = await call('/api/dashboards', { body: { template: 'live-signal' } });
@@ -423,6 +447,7 @@ describe('OAuth 2.1 for MCP', () => {
     const prm = (await call('/.well-known/oauth-protected-resource/mcp')).json;
     expect(prm).toMatchObject({ resource: `${BASE}/mcp`, authorization_servers: [BASE] });
     const asm = (await call('/.well-known/oauth-authorization-server')).json;
+    expect(prm.resource_documentation).toBe('https://github.com/carnaby/patchbay/blob/main/guide/mcp.md');
     expect(asm.code_challenge_methods_supported).toEqual(['S256']);
     expect(asm.client_id_metadata_document_supported).toBe(true);
   });

@@ -1,0 +1,32 @@
+version: 2
+updates:
+  # One entry covers the whole pnpm workspace: Dependabot reads pnpm-workspace.yaml and pnpm-lock.yaml.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+
+  # The base image in the Dockerfile. The NAS compose file pins cloudflared by hand on purpose and is not listed.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    # Node majors are chosen by hand: only even (LTS) lines, after the tests ran on them.
+    ignore:
+      - dependency-name: node
+        update-types: [version-update:semver-major]
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]

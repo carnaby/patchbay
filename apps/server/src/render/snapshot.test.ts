@@ -483,6 +483,29 @@ describe('snapshot budgets', () => {
     }
   });
 
+  it('adds one credit line under dashboards that use connectors with an attribution', () => {
+    const doc = parseDashboard({
+      ...emptyDashboard('Weather'),
+      datasets: [
+        { id: 'w', name: 'Weather', source: { kind: 'connector', connector: 'weather-now', params: {} } },
+      ],
+      widgets: [{ id: 'v', type: 'kpi', datasetId: 'w', config: { field: 'temperature' } }],
+      layout: [{ i: 'v', x: 0, y: 0, w: 6, h: 2 }],
+    });
+    const credits = { attributions: { 'weather-now': 'Open-Meteo' } };
+    const without = renderDashboardPng(doc, new Map());
+    const withCredit = renderDashboardPng(doc, new Map(), credits);
+    expect(size(withCredit).height).toBe(size(without).height + 26);
+    expect(withCredit.equals(without)).toBe(false);
+    // No credit for a source that is not on the dashboard, or when nothing says what to credit.
+    expect(
+      renderDashboardPng(doc, new Map(), { attributions: { crypto: 'CoinGecko' } }).equals(without),
+    ).toBe(true);
+    expect(renderDashboardPng(textDoc([{ x: 0, y: 0, w: 6, h: 2 }]), new Map(), credits).length).toBe(
+      renderDashboardPng(textDoc([{ x: 0, y: 0, w: 6, h: 2 }]), new Map()).length,
+    );
+  });
+
   it('draws a widget stored far down where the browser shows it, at the top', () => {
     const started = Date.now();
     const far = renderDashboardPng(textDoc([{ x: 0, y: 10_000, w: 1, h: 2 }]), new Map());

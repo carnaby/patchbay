@@ -1,6 +1,17 @@
 {
   "name": "patchbay",
+  "version": "0.1.0",
+  "description": "Live dashboards that AI agents build over MCP: public APIs and your own data, declarative pipelines, server-rendered snapshots.",
   "private": true,
+  "license": "MIT",
+  "homepage": "https://github.com/carnaby/patchbay#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carnaby/patchbay.git"
+  },
+  "bugs": {
+    "url": "https://github.com/carnaby/patchbay/issues"
+  },
   "type": "module",
   "packageManager": "pnpm@10.28.0",
   "engines": {
@@ -9,7 +20,7 @@
   "scripts": {
     "dev": "pnpm --parallel --filter @patchbay/server --filter @patchbay/web dev",
     "build": "pnpm --filter @patchbay/web build",
-    "start": "node --expose-gc apps/server/src/main.ts --production",
+    "start": "node --expose-gc --env-file-if-exists=.env apps/server/src/main.ts --production",
     "test": "vitest run",
     "typecheck": "pnpm -r typecheck",
     "lint": "biome check .",

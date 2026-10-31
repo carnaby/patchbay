@@ -1,0 +1,69 @@
+name: Bug report
+description: Something does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems go through private vulnerability reporting instead (see SECURITY.md),
+        never into a public issue. Remove tokens, edit keys, secrets and private dashboard URLs from anything you paste.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that shows the problem. A dashboard document or the operations an agent sent help a lot.
+      placeholder: |
+        1. Create a dashboard from the Earthquakes template
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Image tag or digest (e.g. `ghcr.io/carnaby/patchbay:0.1.0`), a commit SHA, or "patchbay.me.uk".
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - patchbay.me.uk (hosted)
+        - Docker Compose with Caddy (docker-compose.yml)
+        - Home server or NAS (deploy/nas, Cloudflare Tunnel)
+        - Plain docker run
+        - From source (pnpm dev / pnpm start)
+        - Other (describe below)
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and OS
+      description: Only if the problem shows in the web app.
+      placeholder: Firefox 140 on Windows 11
+  - type: input
+    id: mcp-client
+    attributes:
+      label: MCP client
+      description: Only if an agent was involved, with its version.
+      placeholder: Claude Code 2.x, Claude desktop, Cursor, ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Server log lines around the problem (`docker compose logs patchbay`) and browser console errors.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Configuration that matters (OFFLINE, SECRETS, URL_SOURCES, TRUST_PROXY, reverse proxy, memory limit), screenshots.

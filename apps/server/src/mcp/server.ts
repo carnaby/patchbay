@@ -589,7 +589,12 @@ export function createMcp(deps: Deps) {
                     result: 'datasetId' in widget ? results.get(widget.datasetId) : undefined,
                     options: { theme: args.theme, entityColors: doc.colors },
                   }
-                : { kind: 'dashboard', doc, results, options: { theme: args.theme } },
+                : {
+                    kind: 'dashboard',
+                    doc,
+                    results,
+                    options: { theme: args.theme, attributions: deps.connectors.attributions() },
+                  },
             );
           });
           const problems = [...results.values()]
