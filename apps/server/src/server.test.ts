@@ -8,6 +8,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
+import { snapshotGate } from './render/gate.ts';
+import { MAX_PIXELS } from './render/snapshot.ts';
 import { isAcceptableRedirect, redirectMatches } from './routes/oauth.ts';
 import { buildTemplate, listTemplates } from './services/templates.ts';
 import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
@@ -225,6 +227,56 @@ describe('dashboards over REST', () => {
     const conflict = await save('Second');
     expect(conflict.status).toBe(409);
     expect(conflict.json.current.doc.title).toBe('First');
+  });
+
+  it('compacts a saved layout and keeps snapshots of it small', async () => {
+    const created = (await call('/api/dashboards', { body: {} })).json;
+    const id = created.envelope.meta.id;
+    const doc = {
+      ...created.envelope.doc,
+      widgets: [{ id: 'w1', type: 'text', title: 'x', config: { markdown: 'hi' } }],
+      layout: [{ i: 'w1', x: 0, y: 1500, w: 1, h: 40 }],
+    };
+    const saved = await call(`/api/dashboards/${id}`, {
+      method: 'PUT',
+      body: { doc, baseVersion: 1 },
+      headers: { 'x-edit-key': created.editKey },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.json.envelope.doc.layout).toEqual([{ i: 'w1', x: 0, y: 0, w: 1, h: 40 }]);
+    const res = await app.request(`${BASE}/api/dashboards/${id}/snapshot.png`, { headers: { origin: BASE } });
+    expect(res.status).toBe(200);
+    const png = Buffer.from(await res.arrayBuffer());
+    expect(png.readUInt32BE(16) * png.readUInt32BE(20)).toBeLessThanOrEqual(MAX_PIXELS);
+  });
+
+  it('answers 503 with Retry-After while the renderer is saturated', async () => {
+    const { envelope } = (await call('/api/dashboards', { body: { template: 'blank' } })).json;
+    let release!: () => void;
+    const hold = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holders: Promise<unknown>[] = [];
+    // Fill every admission slot of the process-wide gate with jobs that wait; admission is decided synchronously.
+    for (;;) {
+      const before = snapshotGate.pending();
+      const job = snapshotGate.run(() => hold);
+      if (snapshotGate.pending() === before) {
+        await job.catch(() => undefined);
+        break;
+      }
+      holders.push(job);
+    }
+    try {
+      const busy = await call(`/api/dashboards/${envelope.meta.id}/snapshot.png?theme=dark`);
+      expect(busy.status).toBe(503);
+      expect(Number(busy.headers.get('retry-after'))).toBeGreaterThan(0);
+      expect(busy.json.error).toMatch(/busy/);
+    } finally {
+      release();
+      await Promise.all(holders);
+    }
+    expect((await call(`/api/dashboards/${envelope.meta.id}/snapshot.png?theme=dark`)).status).toBe(200);
   });
 
   it('lets a signed-in user claim an anonymous dashboard', async () => {
