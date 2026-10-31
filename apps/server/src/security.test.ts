@@ -12,6 +12,7 @@ import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
 import { safeReturnTo } from './routes/auth.ts';
 import { RateLimiter } from './util/rate-limit.ts';
+import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
 
 const BASE = 'http://localhost:8787';
 let dir: string;
@@ -338,6 +339,49 @@ describe('what a bearer token can reach', () => {
       }),
     });
     expect(mcp.status).toBe(200);
+  });
+});
+
+describe('SSRF blocklist (IANA special-purpose registries)', () => {
+  it('refuses IPv4-translated, 6to4 relay and the other special-purpose ranges', () => {
+    for (const ip of [
+      '::ffff:0:127.0.0.1', // IPv4-translated, the URL parser writes it as ::ffff:0:7f00:1
+      '::ffff:0:7f00:1',
+      '::ffff:0:a9fe:a9fe',
+      '192.88.99.1', // 6to4 relay anycast
+      '2001::1', // Teredo
+      '2001:0:4136:e378:8000:63bf:3fff:fdd2',
+      '2001:2::1', // benchmarking
+      '2001:10::1', // ORCHID
+      '3fff::1', // documentation
+      '5f00::1', // SRv6
+      'fec0::1', // site local
+      '100:0:0:1::1', // dummy prefix
+      '4000::1', // unallocated
+      '::ffff:10.0.0.1',
+      '::ffff:192.88.99.1',
+    ]) {
+      expect([ip, isPrivateAddress(ip)]).toEqual([ip, true]);
+    }
+  });
+
+  it('still allows public addresses, including IPv4-mapped ones', () => {
+    for (const ip of [
+      '8.8.8.8',
+      '192.88.98.1',
+      '192.88.100.1',
+      '2606:4700::1111',
+      '2001:4860:4860::8888',
+      '2001:200::1',
+      '2a00:1450:4001::1',
+      '::ffff:8.8.8.8',
+    ]) {
+      expect([ip, isPrivateAddress(ip)]).toEqual([ip, false]);
+    }
+  });
+
+  it('refuses a literal IPv4-translated host in a URL', async () => {
+    await expect(safeFetchJson('https://[::ffff:0:127.0.0.1]/x')).rejects.toThrow(/private/);
   });
 });
 

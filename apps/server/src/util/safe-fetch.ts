@@ -30,6 +30,7 @@ for (const [net, prefix] of [
   ['172.16.0.0', 12],
   ['192.0.0.0', 24],
   ['192.0.2.0', 24],
+  ['192.88.99.0', 24], // 6to4 relay anycast (deprecated, RFC 7526)
   ['192.168.0.0', 16],
   ['198.18.0.0', 15],
   ['198.51.100.0', 24],
@@ -40,23 +41,38 @@ for (const [net, prefix] of [
 }
 for (const [net, prefix] of [
   ['::', 96], // unspecified, loopback and IPv4-compatible (IPv4-mapped is matched against the IPv4 rules by Node)
+  ['::ffff:0:0:0', 96], // IPv4-translated (SIIT), e.g. ::ffff:0:127.0.0.1
   ['64:ff9b::', 96], // NAT64
   ['64:ff9b:1::', 48],
   ['100::', 64], // discard
+  ['100:0:0:1::', 64], // dummy prefix (RFC 9780)
+  ['2001::', 23], // IETF protocol assignments: Teredo (embeds IPv4), benchmarking, ORCHID, ...
   ['2001:db8::', 32], // documentation
   ['2002::', 16], // 6to4
+  ['3fff::', 20], // documentation (RFC 9637)
+  ['5f00::', 16], // SRv6 SIDs (RFC 9602)
   ['fc00::', 7], // unique local
   ['fe80::', 10], // link local
+  ['fec0::', 10], // site local (deprecated, still routed by some stacks)
   ['ff00::', 8], // multicast
 ] as const) {
   BLOCKED.addSubnet(net, prefix, 'ipv6');
 }
 
+const IPV4_MAPPED = new BlockList();
+IPV4_MAPPED.addSubnet('::ffff:0:0', 96, 'ipv6');
+/** Everything else outside 2000::/3 is unallocated or special-purpose, so it is refused rather than listed. */
+const GLOBAL_UNICAST = new BlockList();
+GLOBAL_UNICAST.addSubnet('2000::', 3, 'ipv6');
+
 export function isPrivateAddress(raw: string): boolean {
   const ip = raw.replace(/^\[|\]$/g, '').split('%')[0]!;
   const family = isIP(ip);
   if (family === 0) return true; // not an IP at all: refuse rather than guess
-  return BLOCKED.check(ip, family === 4 ? 'ipv4' : 'ipv6');
+  if (family === 4) return BLOCKED.check(ip, 'ipv4');
+  // An IPv4-mapped address is the IPv4 address it carries; Node checks it against the IPv4 rules.
+  if (IPV4_MAPPED.check(ip, 'ipv6')) return BLOCKED.check(ip, 'ipv6');
+  return !GLOBAL_UNICAST.check(ip, 'ipv6') || BLOCKED.check(ip, 'ipv6');
 }
 
 async function assertPublicUrl(raw: string): Promise<URL> {
