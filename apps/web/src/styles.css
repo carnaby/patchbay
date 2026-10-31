@@ -76,9 +76,16 @@ body {
   background: color-mix(in srgb, var(--pb-accent) 25%, transparent);
 }
 
-:focus-visible {
-  outline: 2px solid var(--pb-accent);
-  outline-offset: 2px;
+/*
+  The keyboard focus ring for buttons, links and other controls. It sits in the base layer so a component can
+  replace it with its own indicator: text fields mark focus with their border (`focus:outline-none` in ui.tsx),
+  which an unlayered rule here would override with a second ring.
+*/
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--pb-accent);
+    outline-offset: 2px;
+  }
 }
 
 .tabular {
