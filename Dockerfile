@@ -40,7 +40,10 @@ RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]
 EXPOSE 8787
-HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+# /healthz answered in up to 4.4 s under a combined attack on a 384 MB container (9.75 s before the memory guard gave
+# memory back; guide/deployment.md, "Memory budget"), and the check first starts a node process in that busy
+# container: with 5 s a container that was coping could be marked unhealthy.
+HEALTHCHECK --interval=30s --timeout=10s CMD node -e "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 ENTRYPOINT ["tini", "--"]
 # --expose-gc: the snapshot renderer collects after each render to release resvg's native memory (render/gc.ts).
 CMD ["node", "--expose-gc", "apps/server/src/main.ts"]

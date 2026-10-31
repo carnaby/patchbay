@@ -222,19 +222,22 @@ defaults suit one container with 384 MB of memory; raise them only with more mem
 Fixed limits, for reference: uploads are parsed in the pipeline worker and refused as soon as they pass the cell limit;
 an upload has at most 500 columns with names of up to 200 characters, and a JSON upload nests at most 64 levels and
 holds at most three values per allowed cell, checked before it is parsed. Uploads are parsed and saved one at a time
-across the server (two more may wait); one request with a body over 1 MB is read at a time (eight more may wait);
-every JSON request body and HTTP source response is refused before parsing when it nests deeper than 64 levels. HTTP
-sources are fetched at most three at a time, two at a time and 60 times a minute per host, and a failing address is
-not asked again for 30 s; the pipeline worker's queue takes jobs round-robin per client, one client holding at most a
-tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are drawn one at a time in a worker thread, at most four
-requests in flight and two per client; each client may have four drawn at once and then one every two seconds (images
-served from the 30 s cache do not count), beyond which the API answers `429 Too Many Requests` with `Retry-After`.
-When a queue is full the API answers `503 Service Unavailable` with `Retry-After`, and live refreshes skip a beat,
-instead of the process running out of memory. Live refresh never runs for uploads and inline rows (they change only
-when edited) and at most every 30 s for HTTP sources. A dataset's result is sent only up to 4 MB as JSON (larger ones
-show an error asking for limit, select or aggregate steps); each result is serialised once and shared by everyone
-reading it, and response bodies still being read take at most 12 MB together (6 MB per client), with at most 4 MB more
-waiting for room up to 10 s; further large reads get a 503 at once.
+across the server (two more may wait). A request body over 1 MB is received in full before it is processed, one at a
+time (eight more may wait): it has to arrive at 32 KB/s or faster on average after its first 5 s and within 60 s, or the
+request gets `408` and the connection is closed, so a slow sender never holds the turn of others; bodies that are
+arriving or waiting hold at most 16 MB together, two per client. Node waits at most 20 s for a request's headers and 90
+s for a whole request. Every JSON request body and HTTP source response is refused before parsing when it nests deeper
+than 64 levels. HTTP sources are fetched at most three at a time, two at a time and 60 times a minute per host, and a
+failing address is not asked again for 30 s; the pipeline worker's queue takes jobs round-robin per client, one client
+holding at most a tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are drawn one at a time in a worker thread,
+at most four requests in flight and two per client; each client may have four drawn at once and then one every two
+seconds (images served from the 30 s cache do not count), beyond which the API answers `429 Too Many Requests` with
+`Retry-After`. When a queue is full the API answers `503 Service Unavailable` with `Retry-After`, and live refreshes
+skip a beat, instead of the process running out of memory. Live refresh never runs for uploads and inline rows (they
+change only when edited) and at most every 30 s for HTTP sources. A dataset's result is sent only up to 4 MB as JSON
+(larger ones show an error asking for limit, select or aggregate steps); each result is serialised once and shared by
+everyone reading it, and response bodies still being read take at most 12 MB together (6 MB per client), with at most 4
+MB more waiting for room up to 10 s; further large reads get a 503 at once.
 
 ### Memory budget
 
@@ -253,9 +256,10 @@ across the process, so at most one worker is at its peak while the others sit at
 
 The main thread's share is bounded by its caches and gates rather than by a heap flag: parsed tables (`DATA_CACHE_MB`,
 32), results reused for a few seconds (8 MB), serialised results (8 MB), snapshot images (8 MB), response bodies
-(12 MB, 4 MB waiting) and one large request body and one upload at a time. V8 lets that heap grow to about twice what
-is live before it collects, which is where most of the gap between resting and peak comes from. The snapshot and feed
-workers stop after a minute without work; an idle server with its pipeline worker takes about 85 MB.
+(12 MB, 4 MB waiting), large request bodies arriving or waiting for their turn (16 MB) and one large request body and
+one upload processed at a time. V8 lets that heap grow to about twice what is live before it collects, which is where
+most of the gap between resting and peak comes from. The snapshot and feed workers stop after a minute without work;
+an idle server with its pipeline worker takes about 85 MB.
 
 Measured with the production flags (`--memory 384m --cpus 2 --read-only`, `PIPELINE_WORKERS=1`,
 `URL_SOURCES=signed-in`), as the container's highest anonymous memory over 60–90 s of each load: a snapshot storm (25
@@ -263,12 +267,22 @@ clients cycling the widgets of a 60-chart dashboard, plus full renders after eve
 three at a time with 5 MB JSON uploads, deeply nested JSON and over-limit feeds 290 MB; 160 concurrent reads of 20
 different 2–4 MB results 267 MB. All of them at once need more than 384 MB: without the memory guard below, the
 container is killed after about half a minute, at about 350 MB, and with `--memory 512m` the same run peaks at 415 MB
-(447 MB with the kernel's share). With the guard, that run (90 s, with three viewers opening the template dashboards
-every second and keeping live streams open) holds at 384 MB: at most 341 MB with the kernel's share, the attackers
-get 503 for nearly all their heavy requests, and every viewer request and health check answers (viewers p99 under
-400 ms, `/healthz` at most 190 ms). At 512 MB it peaks at 413 MB, and viewers' p99 drops from 3.9 s to 1.2 s. A quiet
-instance (every template opened and drawn, a 160,000-cell upload) stays under 200 MB and never reaches the guard.
-Each extra pipeline worker adds 104 MB; keep one at either size.
+(447 MB with the kernel's share). With the guard, that run (90 s, with the reads seeded beforehand and three
+viewers opening the template dashboards every second and keeping live streams open) holds at 384 MB. In four runs it
+peaked at 297–346 MB (303–353 MB with the kernel's share), the attackers got 503 for nearly all their heavy requests,
+and every viewer request and health check answered: viewers' p99 0.5–2.7 s for a whole dashboard, `/healthz` p99
+0.1–0.4 s and at most 0.9–4.4 s. Before the guard admitted a lone job on a resting server and gave memory back while
+idle, the same run took viewers to a p99 of 4–11 s and `/healthz` to 3.6–9.75 s. The guard was back to normal 5–12 s
+after the attack, and a visitor creating a dashboard, drawing its snapshot and uploading two files 30 s, 90 s, 4 and
+6 minutes later was served every time. At 512 MB the run peaks at 406 MB (412 MB with the kernel's share), viewers'
+p99 is 2.3 s, and the guard is back to normal 20 s after. A quiet instance (every template opened and drawn, a
+160,000-cell upload) stays under 220 MB and never reaches the guard. Each extra pipeline worker adds 104 MB; keep one
+at either size.
+
+The Docker health check (`HEALTHCHECK` in the image) allows 10 s: under such an attack `/healthz` answered in up to
+4.4 s, and the check first starts a node process inside the busy container. With 5 s a container that was coping
+could be marked unhealthy, which misleads anything that restarts unhealthy containers; three answers in a row slower
+than 10 s are worth a restart.
 
 A worker that hits its heap limit fails its job, and its replacement starts only after it has exited, so a worker slot
 never holds two heaps. The worker limits hold only while Node runs without `--max-old-space-size` (or
@@ -281,20 +295,35 @@ V8's default limit; its use is bounded by the limits above rather than by a flag
 The limits above bound each kind of work; the OOM killer sees their sum. So the server also watches the container's
 real memory use and stops new work from adding to it while it is high (`util/memory-pressure.ts`). It reads the
 cgroup's charge without the page cache the kernel can drop (cgroup v2: `memory.current` minus `active_file` and
-`inactive_file`; cgroup v1 likewise), at most every 250 ms (about 12 µs per read), and compares it with the
-container's limit:
+`inactive_file`; cgroup v1 likewise), at most every 250 ms (about 12 µs per read) and every 10 s on its own, and
+compares it with the container's limit:
 
 - **Soft** (`MEMORY_SOFT_FRACTION`): new heavy work gets `503` with `Retry-After: 5`: snapshots that are not cached,
   uploads and other bodies over 1 MB, the heavy jobs above, pipelines over 20,000 cells and results over 512 KB that
-  are not serialised already.
-- **Hard** (`MEMORY_HARD_FRACTION`): also writes, MCP calls and new live streams, with `Retry-After: 10`.
+  are not serialised already. One exception: on a resting server, where no heavy work has run for 30 s and 112 MB
+  are still free (up to 272 MB at 384 MB), one job may start; the 30 s start again when it ends. A burst gets at
+  most one job every 30 s through it; a visitor after the burst gets served.
+- **Hard** (`MEMORY_HARD_FRACTION`): no new heavy work, writes, MCP calls or live streams, with `Retry-After: 10`.
 - `/healthz`, static files, dashboard documents, small results and results already in memory keep answering at
   either level, and work already running always finishes. Live refreshes skip a beat, as when a queue is full.
 
-A level is left once use is 5 % of the limit below its threshold, so it does not flap. While above soft, the main
-thread collects its garbage and idle workers collect or stop (the snapshot and feed workers start again on demand),
-at most every 5 s. Each change of level is logged once with its numbers (`[memory] soft pressure: 262 MB of 384 MB
-(68%), refusing new heavy work`), and the admin page shows the current use.
+The exception exists because memory does not always come back once the load is gone: glibc and V8 keep some of what
+a burst used, and the resting level after an attack was measured between 150 and 270 MB (85 MB on a fresh start).
+Refusing all heavy work above 256 MB then refused every visitor's snapshot and upload with nobody attacking, until a
+restart. It is not wider because one job is not small: a full render of a 60-chart dashboard took a server resting at
+270 MB to 365 MB. Its cost is a pause between heavy jobs while use stays above soft: after a chain of attack uploads,
+a visitor's own 1 MB upload took the server into soft for 12 s, and the upload it sent right after got a 503 with
+`Retry-After: 5`.
+
+A level is left once use is 5 % of the limit below its threshold, so it does not flap; soft is also left below its
+threshold itself once no heavy work has run for 30 s, since a reading with nothing running is the resting level.
+While above soft, the main thread collects its garbage and idle workers collect or stop (the snapshot and feed
+workers start again on demand), at most every 5 s. Once no heavy work has run for 30 s, at most once a minute, the
+server also empties its caches of parsed tables and results, replaces idle pipeline workers by fresh ones and
+compacts its heap; after the storm above that took use from 265–294 MB to 155–206 MB within a second. Each change of
+level is logged once with its numbers (`[memory] soft pressure: 262 MB of 384 MB
+(68%), refusing new heavy work`), and so is each such reclaim; the admin page shows the current use and
+refreshes it every 10 s.
 
 The default thresholds keep a fixed amount free rather than a share, because a heavy job takes the same memory in any
 container: 0.8 and 0.9 of the limit, but at least 128 MB and 64 MB below it. At 384 MB that is 256 MB and 320 MB; at
