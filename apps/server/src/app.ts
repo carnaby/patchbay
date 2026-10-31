@@ -10,7 +10,7 @@ import { SCOPES, Tokens } from './auth/tokens.ts';
 import { Users } from './auth/users.ts';
 import type { Config } from './config.ts';
 import { ConnectorService } from './connectors/registry.ts';
-import { type Deps, type Env, identify, sameOrigin } from './context.ts';
+import { clientKey, type Deps, type Env, identify, sameOrigin } from './context.ts';
 import { openDatabase } from './db.ts';
 import { LiveHub } from './live/hub.ts';
 import { createMcp } from './mcp/server.ts';
@@ -26,6 +26,7 @@ import { FolderStore } from './store/folder-store.ts';
 import { HttpError, toHttpError } from './util/errors.ts';
 import { prepareIndexHtml } from './util/index-html.ts';
 import { RateLimiter } from './util/rate-limit.ts';
+import { runAsClient } from './util/request-context.ts';
 import type { UpstreamTestSeam } from './util/safe-fetch.ts';
 
 /** Test seams that cannot be set from the environment. */
@@ -46,6 +47,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       : new WorkerPool({
           size: config.pipelineWorkers ?? defaultPoolSize(),
           timeoutMs: config.pipelineTimeoutMs,
+          workerMemoryMb: config.pipelineWorkerMemoryMb,
         });
   const users = new Users(db, config.adminEmails);
   const secrets = new Secrets(db, config.secrets.keyring);
@@ -59,7 +61,10 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   let dashboards: DashboardService | undefined;
   const data = new DataService(connectors, store, pipeline, {
     credentials: (target, dataset) => dashboards!.credentialsFor(target, dataset),
+    urlPolicy: (target) => dashboards!.assertMayFetchUrl(target),
     offline: config.offline,
+    cacheBytes: config.dataCacheBytes,
+    maxSourceCells: config.uploadMaxCells,
     ...(overrides.upstreamTest ? { upstreamTest: overrides.upstreamTest } : {}),
   });
   const hub = new LiveHub(data, async (id) => {
@@ -73,7 +78,16 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     hub,
     connectors,
     { store: secrets, mode: config.secrets.mode, users },
-    { anonymousStorageBytes: config.anonymousStorageBytes },
+    {
+      uploads: {
+        parse: (input) => data.parseUpload(input),
+        saved: (dashboardId, fileId, table) => data.uploaded(dashboardId, fileId, table),
+      },
+      uploadMaxCells: config.uploadMaxCells,
+      uploadMaxCellsAnonymous: config.uploadMaxCellsAnonymous,
+      urlSources: config.urlSources,
+      anonymousStorageBytes: config.anonymousStorageBytes,
+    },
   );
   return {
     config,
@@ -137,6 +151,9 @@ export function createApp(deps: Deps) {
   app.onError((err, c) => {
     const httpErr = toHttpError(err);
     if (httpErr.status === 500) console.error(err);
+    // Both busy errors (BusyError from data loading, RenderBusyError from snapshots) say when to come back.
+    const retryAfter = (httpErr as { retryAfterSec?: unknown }).retryAfterSec;
+    if (httpErr.status === 503 && typeof retryAfter === 'number') c.header('Retry-After', String(retryAfter));
     const details = httpErr.details as Record<string, unknown> | undefined;
     // OAuth endpoints answer with the RFC 6749 error shape.
     if (details && typeof details.error === 'string') return c.json(details, httpErr.status);
@@ -174,20 +191,28 @@ export function createApp(deps: Deps) {
               | { name: string }
               | undefined
           )?.name ?? 'MCP client');
-    return mcp.fetch(c.req.raw, {
-      authInfo: {
-        token: raw,
-        clientId: token.clientId ?? token.tokenId,
-        scopes: token.scopes,
-        expiresAt: Math.floor(token.expiresAt / 1000),
-        resource: new URL(config.mcpResource),
-        extra: { userId: token.userId, clientName },
-      },
-    });
+    return runAsClient(`user:${token.userId}`, () =>
+      mcp.fetch(c.req.raw, {
+        authInfo: {
+          token: raw,
+          clientId: token.clientId ?? token.tokenId,
+          scopes: token.scopes,
+          expiresAt: Math.floor(token.expiresAt / 1000),
+          resource: new URL(config.mcpResource),
+          extra: { userId: token.userId, clientName },
+        },
+      }),
+    );
   });
 
   // Middleware must be registered before the routes it guards.
   app.use('/api/*', identify(deps), sameOrigin(deps));
+  // Fair queues (pipeline worker, heavy loads, outbound fetches) need to know whose work they hold.
+  app.use('/api/*', async (c, next) => {
+    const user = c.get('user');
+    // The same key as the rate limits: an IPv6 client owns a whole /64, so per-address fairness would be no fairness.
+    await runAsClient(user ? `user:${user.id}` : `ip:${clientKey(c, config.trustProxy)}`, next);
+  });
   app.use('/auth/*', identify(deps), sameOrigin(deps));
   app.route('/', oauthRoutes(deps));
   app.route('/auth', authRoutes(deps));

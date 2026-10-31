@@ -26,6 +26,7 @@ import {
   rename,
   rm,
   stat,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -66,6 +67,11 @@ interface VersionEntry extends VersionInfo {
   bytes: number;
 }
 
+export interface FileStamp {
+  key: string;
+  mtimeMs: number;
+}
+
 interface StoredFile extends UploadedFile {
   table: DataTable;
 }
@@ -81,6 +87,8 @@ interface PackedTable {
 
 const ID_RE = /^[a-z0-9]{6,32}$/;
 const FILE_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+/** An upload's data file; `<fileId>.info.json` (a pre-release description file) does not match. */
+const UPLOAD_FILE_RE = /^[a-zA-Z0-9_-]{1,64}\.json$/;
 const VERSION_FILE_RE = /^\d+\.json$/;
 const VERSION_INDEX = 'index.json';
 export const MAX_VERSIONS = 50;
@@ -379,7 +387,7 @@ export class FolderStore {
 
   /**
    * Writes an uploaded file and returns its size on disk. `check` sees that size before anything is written and
-   * throws to refuse the file.
+   * throws to refuse the file. The description goes first and the table last, so listing reads only the header.
    */
   async saveFile(id: string, file: StoredFile, check?: (bytes: number) => void): Promise<number> {
     if (!FILE_ID_RE.test(file.id)) throw new Error('Invalid file id');
@@ -402,17 +410,25 @@ export class FolderStore {
     return file?.table ? unpackTable(file.table) : null;
   }
 
-  /** Metadata of the uploaded files, read from their headers: listing must not parse every table. */
+  /**
+   * Metadata of the uploaded files, read from their headers: listing must not parse every table. All stored shapes
+   * put the table last (pretty-printed object rows from early releases, compact object rows, packed rows), so the
+   * header read works for each; `<fileId>.info.json` descriptions written by a pre-release build are used only when
+   * it does not. Nothing is written here: rewriting a file would break the hard links copies share it through.
+   */
   async listFiles(id: string): Promise<UploadedFile[]> {
     const dir = join(this.dir(id), 'files');
     if (!existsSync(dir)) return [];
-    const names = (await readdir(dir)).filter((f) => f.endsWith('.json'));
+    const names = (await readdir(dir)).filter((f) => UPLOAD_FILE_RE.test(f));
     const files: UploadedFile[] = [];
     for (const name of names) {
       const path = join(dir, name);
       const info = await stat(path).catch(() => null);
       if (!info) continue;
       let head = (await readHead(path, 'table')) as Partial<UploadedFile> | null;
+      if (!head || typeof head.id !== 'string') {
+        head = await this.readJson<UploadedFile>(path.replace(/\.json$/, '.info.json')).catch(() => null);
+      }
       if (!head || typeof head.id !== 'string') {
         const full = await this.readJson<StoredFile>(path).catch(() => null);
         if (!full) continue;
@@ -430,6 +446,25 @@ export class FolderStore {
       });
     }
     return files.sort((a, b) => a.uploadedAt.localeCompare(b.uploadedAt));
+  }
+
+  /**
+   * Identifies the stored bytes of an upload; null when there is no such file. `key` changes whenever the file is
+   * replaced and is the same for every dashboard that shares the file through a hard link, so a cache of parsed
+   * tables holds a shared file once. `mtimeMs` is when the file was written: an upload's reading time, stable
+   * however often it is read.
+   */
+  async fileStamp(id: string, fileId: string): Promise<FileStamp | null> {
+    if (!FILE_ID_RE.test(fileId)) return null;
+    try {
+      const s = await stat(join(this.dir(id), 'files', `${fileId}.json`), { bigint: true });
+      // Some file systems report no inode numbers; there the path is the identity (and copies are never shared).
+      const identity = s.ino === 0n ? `${id}/${fileId}` : `${s.dev}:${s.ino}`;
+      return { key: `${identity}@${s.mtimeNs}:${s.size}`, mtimeMs: Number(s.mtimeMs) };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw e;
+    }
   }
 
   /**
@@ -453,13 +488,18 @@ export class FolderStore {
           `[patchbay] hard links are not supported in DATA_DIR (${(e as NodeJS.ErrnoException).code}); copies of dashboards copy their uploads`,
         );
       }
+      // Preserves the mtime, which is the upload's reading time (see fileStamp).
       await copyFile(source, target);
+      const { atime, mtime } = await stat(source);
+      await utimes(target, atime, mtime);
     }
   }
 
   async deleteFile(id: string, fileId: string) {
     if (!FILE_ID_RE.test(fileId)) return;
     await rm(join(this.dir(id), 'files', `${fileId}.json`), { force: true });
+    // Left behind by a pre-release build that described files separately.
+    await rm(join(this.dir(id), 'files', `${fileId}.info.json`), { force: true });
   }
 
   async remove(id: string) {

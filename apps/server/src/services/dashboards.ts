@@ -15,10 +15,12 @@ import {
   type DashboardEnvelope,
   type DashboardMeta,
   type Dataset,
+  type DataTable,
   describePlacement,
   docSecretIds,
   FEED_MIN_REFRESH_SEC,
-  inferTable,
+  HTTP_MIN_REFRESH_SEC,
+  isStaticSource,
   LIMITS,
   MAX_SECRETS_PER_USER,
   normalizeLayout,
@@ -37,7 +39,6 @@ import {
   type VersionInfo,
   type Visibility,
 } from '@patchbay/core';
-import Papa from 'papaparse';
 import type { Secrets } from '../auth/secrets.ts';
 import type { UserRow, Users } from '../auth/users.ts';
 import { unknownConnectorMessage } from '../connectors/registry.ts';
@@ -49,7 +50,9 @@ import { newDashboardId, newId, randomToken, safeEqual, sha256 } from '../util/c
 import { badRequest, forbidden, HttpError, notFound, unauthorized } from '../util/errors.ts';
 import type { Credential } from '../util/safe-fetch.ts';
 import type { DashboardTarget } from './data.ts';
+import { PipelineError } from './pipeline-pool.ts';
 import { buildTemplate } from './templates.ts';
+import { parseUpload, UploadError, type UploadInput } from './upload-parse.ts';
 
 export interface Principal {
   user: UserRow | null;
@@ -90,10 +93,18 @@ export { CONFIRM_PUBLIC_SECRETS, CREDENTIAL_ERRORS } from '@patchbay/core';
 const CLAIM_FIRST = 'Sign in and claim this dashboard to use secrets.';
 const TOKEN_PUBLISH =
   'Make it public in the web app; it would show data fetched with your secrets to anyone. Tokens cannot do this.';
+const URL_SOURCES_SIGNED_IN =
+  'This server loads data from URLs (http and feed sources) only for dashboards with an owner. Sign in and claim this dashboard first.';
 const TOKEN_PUBLIC_EDIT =
   'This dashboard is public and shows data fetched with secrets, so agents and tokens cannot change it: a person has to make this change in the Patchbay web app. Ask the user to do it there, or to make the dashboard private first.';
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
+/**
+ * Upload limits in cells (rows x columns): what a table costs in memory follows its cells, not the bytes of the file.
+ * 500,000 cells take roughly 20-40 MB once parsed; anonymous dashboards, which anyone can create, get less.
+ */
+export const DEFAULT_UPLOAD_MAX_CELLS = 500_000;
+export const DEFAULT_UPLOAD_MAX_CELLS_ANONYMOUS = 200_000;
 export const MAX_FILES = 20;
 /**
  * Uploaded data per dashboard, counted as stored on disk (parsed), not as uploaded. With the document limit and
@@ -219,6 +230,24 @@ export interface ConnectorLookup {
   get(id: string): { info: { minRefreshSec: number } } | undefined;
 }
 
+/** Who may make this server fetch URLs: anyone, or only dashboards that a signed-in user owns. */
+export type UrlSourcesMode = 'everyone' | 'signed-in';
+
+/** Where uploads are parsed (the pipeline worker, see DataService) and who hears about a saved one. */
+export interface UploadParser {
+  parse(input: UploadInput): Promise<DataTable>;
+  saved?(dashboardId: string, fileId: string, table: DataTable): Promise<void>;
+}
+
+export interface DashboardServiceOptions {
+  uploads?: UploadParser;
+  uploadMaxCells?: number;
+  uploadMaxCellsAnonymous?: number;
+  urlSources?: UrlSourcesMode;
+  /** Disk space all anonymous dashboards may take together; 0 = no limit. */
+  anonymousStorageBytes?: number;
+}
+
 export class DashboardService {
   private readonly store: FolderStore;
   private readonly index: DashboardIndex;
@@ -231,6 +260,10 @@ export class DashboardService {
   private readonly anonymousStorageBytes: number;
   /** Secret ids whose decryption failure was already logged; once per secret per process is enough. */
   private readonly undecryptableLogged = new Set<string>();
+  private readonly uploads: UploadParser;
+  private readonly uploadMaxCells: number;
+  private readonly uploadMaxCellsAnonymous: number;
+  private readonly urlSources: UrlSourcesMode;
 
   constructor(
     store: FolderStore,
@@ -238,8 +271,12 @@ export class DashboardService {
     hub: LiveHub,
     connectors: ConnectorLookup,
     secrets: { store: Secrets; mode: SecretMode; users: Users },
-    limits: { anonymousStorageBytes?: number } = {},
+    options: DashboardServiceOptions = {},
   ) {
+    this.uploads = options.uploads ?? { parse: async (input) => parseUpload(input) };
+    this.uploadMaxCells = options.uploadMaxCells ?? DEFAULT_UPLOAD_MAX_CELLS;
+    this.uploadMaxCellsAnonymous = options.uploadMaxCellsAnonymous ?? DEFAULT_UPLOAD_MAX_CELLS_ANONYMOUS;
+    this.urlSources = options.urlSources ?? 'everyone';
     this.store = store;
     this.index = index;
     this.hub = hub;
@@ -247,7 +284,7 @@ export class DashboardService {
     this.secrets = secrets.store;
     this.secretMode = secrets.mode;
     this.users = secrets.users;
-    this.anonymousStorageBytes = limits.anonymousStorageBytes ?? 0;
+    this.anonymousStorageBytes = options.anonymousStorageBytes ?? 0;
   }
 
   /**
@@ -311,11 +348,13 @@ export class DashboardService {
   }
 
   /**
-   * Raises a new or changed refreshSec that is below its connector's minRefreshSec to that minimum, as one more
-   * operation, and says so in the change log. The connector cache would serve the same reading until then anyway; a
-   * stored "every 5 s" on a source that updates every 15 min only misleads whoever reads the document. Raising beats
-   * rejecting: the batch an agent sent still saves. Datasets the batch did not touch are left alone, so documents
-   * saved before a minimum went up keep loading and accept unrelated edits.
+   * Raises a new or changed refreshSec that is below its source's minimum (a connector's minRefreshSec, the feed and
+   * HTTP cache times) to that minimum, as one more operation, and says so in the change log. The cache would serve
+   * the same reading until then anyway; a stored "every 5 s" on a source that updates every 15 min only misleads
+   * whoever reads the document. Uploads and inline rows change only when edited, so their refresh is turned off.
+   * Raising beats rejecting: the batch an agent sent still saves. Datasets the change did not touch are left alone,
+   * so documents saved before a minimum went up keep loading and accept unrelated edits; the live hub applies the
+   * same floors to them. Every write path (ops and full saves) goes through here.
    */
   private raiseRefreshToMinimum(before: DashboardDoc, result: { doc: DashboardDoc; changes: string[] }) {
     const previous = new Map(before.datasets.map((d) => [d.id, d]));
@@ -323,14 +362,23 @@ export class DashboardService {
       if (d.refreshSec <= 0) return [];
       let min: number;
       let what: string;
-      if (d.source.kind === 'connector') {
+      if (isStaticSource(d.source)) {
+        min = 0;
+        what =
+          d.source.kind === 'upload'
+            ? 'because an uploaded file only changes when it is replaced'
+            : 'because inline rows only change when the dashboard is edited';
+      } else if (d.source.kind === 'http') {
+        min = HTTP_MIN_REFRESH_SEC;
+        what = 'the minimum for HTTP sources (responses are cached that long)';
+      } else if (d.source.kind === 'connector') {
         min = this.connectors.get(d.source.connector)?.info.minRefreshSec ?? 0;
         what = `the minimum of the ${d.source.connector} connector`;
       } else if (d.source.kind === 'feed') {
         min = FEED_MIN_REFRESH_SEC;
         what = 'the minimum for feeds';
       } else return [];
-      if (d.refreshSec >= min) return [];
+      if (min > 0 && d.refreshSec >= min) return [];
       const old = previous.get(d.id);
       const untouched =
         old?.refreshSec === d.refreshSec && JSON.stringify(old.source) === JSON.stringify(d.source);
@@ -345,12 +393,33 @@ export class DashboardService {
       doc: raised.doc,
       changes: [
         ...result.changes,
-        ...raises.map(
-          ({ dataset, what, min }) =>
-            `Raised refreshSec of dataset "${dataset.name}" from ${dataset.refreshSec} s to ${min} s, ${what}`,
+        ...raises.map(({ dataset, what, min }) =>
+          min === 0
+            ? `Turned off live refresh of dataset "${dataset.name}" (was ${dataset.refreshSec} s), ${what}`
+            : `Raised refreshSec of dataset "${dataset.name}" from ${dataset.refreshSec} s to ${min} s, ${what}`,
         ),
       ],
     };
+  }
+
+  /**
+   * With URL_SOURCES=signed-in, a URL is fetched only for a dashboard that a signed-in user owns: a public instance
+   * on its operator's connection must not fetch arbitrary addresses for strangers. Checked at use time (DataService
+   * calls this before every http or feed load) and, for an early message, when such a source is saved.
+   */
+  assertMayFetchUrl(target: DashboardTarget) {
+    if (this.urlSources === 'signed-in' && target.ownerId === null) throw forbidden(URL_SOURCES_SIGNED_IN);
+  }
+
+  private checkUrlSources(meta: StoredMeta, before: DashboardDoc, after: DashboardDoc) {
+    if (this.urlSources !== 'signed-in' || meta.ownerId !== null) return;
+    const previous = new Map(before.datasets.map((d) => [d.id, JSON.stringify(d.source)]));
+    const added = after.datasets.some(
+      (d) =>
+        (d.source.kind === 'http' || d.source.kind === 'feed') &&
+        previous.get(d.id) !== JSON.stringify(d.source),
+    );
+    if (added) throw badRequest(URL_SOURCES_SIGNED_IN);
   }
 
   private publicMeta(m: StoredMeta, title: string): DashboardMeta {
@@ -505,6 +574,7 @@ export class DashboardService {
       const { meta, doc } = await this.load(id);
       this.assertCanEdit(meta, p);
       const next = mutate(doc, meta);
+      this.checkUrlSources(meta, doc, next.doc);
       this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
       this.checkSize(meta.ownerId, doc, next.doc);
       // A restore brings back what was stored before, like the secret checks above allow.
@@ -557,7 +627,7 @@ export class DashboardService {
         }
         const [bad] = this.unknownConnectors(current, doc);
         if (bad) throw badRequest(`Dataset "${bad.datasetId}": ${unknownConnectorMessage(bad.connector)}`);
-        return { doc, changes };
+        return this.raiseRefreshToMinimum(current, { doc, changes });
       },
       options,
     );
@@ -579,6 +649,7 @@ export class DashboardService {
       this.checkOpsConnectors(doc, applied.doc, ops);
       const result = this.raiseRefreshToMinimum(doc, applied);
       // A dry run answers exactly like the save would, so agents learn about secret rules before saving.
+      this.checkUrlSources(meta, doc, result.doc);
       this.checkSecretRefs(meta, doc, result.doc, p, options);
       this.checkSize(meta.ownerId, doc, result.doc);
       const inline = inlineTextTooLong(doc, result.doc);
@@ -737,27 +808,21 @@ export class DashboardService {
     if (meta.ownerId === null) this.assertAnonymousRoom(Buffer.byteLength(input.content));
     const format =
       input.format ?? (/\.json$/i.test(input.name) || /^\s*[[{]/.test(input.content) ? 'json' : 'csv');
-    let records: unknown[];
-    if (format === 'json') {
-      let json: unknown;
-      try {
-        json = JSON.parse(input.content);
-      } catch {
-        throw badRequest('The file is not valid JSON');
+    const maxCells = meta.ownerId === null ? this.uploadMaxCellsAnonymous : this.uploadMaxCells;
+    let table: DataTable;
+    try {
+      table = await this.uploads.parse({ content: input.content, format, maxCells });
+    } catch (e) {
+      if (e instanceof UploadError) {
+        const hint =
+          e.tooLarge && meta.ownerId === null && maxCells < this.uploadMaxCells
+            ? ` Dashboards of signed-in users accept up to ${this.uploadMaxCells.toLocaleString('en-US')} cells.`
+            : '';
+        throw badRequest(e.message + hint);
       }
-      records = Array.isArray(json) ? json : (Object.values(json as object).find(Array.isArray) ?? [json]);
-    } else {
-      const parsed = Papa.parse<Record<string, string>>(input.content.replace(/^﻿/, ''), {
-        header: true,
-        skipEmptyLines: 'greedy',
-        transformHeader: (h) => h.trim(),
-      });
-      if (parsed.errors.length && parsed.data.length === 0)
-        throw badRequest(`Could not parse CSV: ${parsed.errors[0]!.message}`);
-      records = parsed.data;
+      if (e instanceof PipelineError) throw badRequest(`Could not read the file: ${e.message}`);
+      throw e;
     }
-    const table = inferTable(records, { maxRows: 100_000 });
-    if (table.columns.length === 0) throw badRequest('The file contains no columns');
     const file = {
       id: `f_${newId()}`.slice(0, 20),
       name: input.name.slice(0, 120),
@@ -778,6 +843,7 @@ export class DashboardService {
       await this.updateSize(id);
       return bytes;
     });
+    await this.uploads.saved?.(id, file.id, table);
     return { ...file, storedBytes: written };
   }
 

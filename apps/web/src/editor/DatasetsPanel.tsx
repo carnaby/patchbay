@@ -7,6 +7,8 @@ import {
   diffSteps,
   FEED_MIN_REFRESH_SEC,
   formatValue,
+  HTTP_MIN_REFRESH_SEC,
+  isStaticSource,
   type OpInput,
   type ParamSpec,
   type Source,
@@ -669,14 +671,18 @@ function DatasetEditor({
   // A connector serves the same reading until its minimum interval has passed, so faster choices would only promise
   // a refresh that never shows (agents get theirs raised on save; here they are simply not offered).
   const source = draft.source;
-  // Feeds are fetched at most every 5 minutes on the server, whatever the dataset asks.
+  // Feeds and HTTP responses are cached on the server for a while, whatever the dataset asks. Uploads and inline rows
+  // only change when edited, so the server never refreshes them on a timer.
+  const staticSource = isStaticSource(source);
   const minRefreshSec =
     source.kind === 'connector'
       ? (connectors?.find((c) => c.id === source.connector)?.minRefreshSec ?? 0)
       : source.kind === 'feed'
         ? FEED_MIN_REFRESH_SEC
-        : 0;
-  const refreshTooFast = draft.refreshSec > 0 && draft.refreshSec < minRefreshSec;
+        : source.kind === 'http'
+          ? HTTP_MIN_REFRESH_SEC
+          : 0;
+  const refreshTooFast = draft.refreshSec > 0 && (staticSource || draft.refreshSec < minRefreshSec);
 
   const credentials = useCredentialContext();
   // Credential problems are explained while typing; a request that the server would refuse is not sent at all.
@@ -811,10 +817,16 @@ function DatasetEditor({
       <section className="grid gap-3 sm:grid-cols-2">
         <Field
           label="Live refresh"
-          hint={`While someone is watching, the server refreshes and pushes changes. Public APIs are cached to respect their limits${minRefreshSec > 1 ? `: this one updates at most every ${formatInterval(minRefreshSec)}` : ''}.`}
+          hint={
+            staticSource
+              ? 'Uploaded files and inline rows change only when you edit them, so there is nothing to refresh.'
+              : `While someone is watching, the server refreshes and pushes changes. Public APIs are cached to respect their limits${minRefreshSec > 1 ? `: this one updates at most every ${formatInterval(minRefreshSec)}` : ''}.`
+          }
           error={
             refreshTooFast
-              ? `This source updates at most every ${formatInterval(minRefreshSec)}. Choose a longer interval.`
+              ? staticSource
+                ? 'This source never changes on its own. Choose Off.'
+                : `This source updates at most every ${formatInterval(minRefreshSec)}. Choose a longer interval.`
               : null
           }
         >
@@ -829,7 +841,11 @@ function DatasetEditor({
                 <option value={draft.refreshSec}>Every {formatInterval(draft.refreshSec)}</option>
               )}
               {REFRESH_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value} disabled={o.value > 0 && o.value < minRefreshSec}>
+                <option
+                  key={o.value}
+                  value={o.value}
+                  disabled={o.value > 0 && (staticSource || o.value < minRefreshSec)}
+                >
                   {o.label}
                 </option>
               ))}

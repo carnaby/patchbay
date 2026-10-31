@@ -6,6 +6,7 @@ import {
   FEED_MIN_REFRESH_SEC,
   FUNCTIONS,
   GRID_COLUMNS,
+  HTTP_MIN_REFRESH_SEC,
   KPI_AGGS,
   LIMITS,
   MAX_SECRETS_PER_SOURCE,
@@ -59,15 +60,17 @@ small table belongs in upload_data, not inline rows; uploads do not count toward
   Show it as a table with style "list" and columns [{ "field": "title", "link": "link" }, "source", "published"].
   For a sound per new item: sound.trigger { kind: "newRows", key: "id" }.
 - refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers. Below the
-  connector's minRefreshSec (list_connectors) it is raised to that minimum when saved, and \`changes\` says so.
+  source's minimum (a connector's minRefreshSec from list_connectors, ${HTTP_MIN_REFRESH_SEC} s for http, ${FEED_MIN_REFRESH_SEC} s for feeds) it is
+  raised to that minimum when saved, and \`changes\` says so. Upload and inline sources only change when edited:
+  their refreshSec is set to 0 when saved, and widgets update on the edit itself.
 - accumulate N keeps a rolling history of the last N rows across refreshes and adds a "fetched_at" time column.
   Use it to chart sources that only return the current value (weather.current, crypto.price, iss.position).
   The history lives in server memory and gains a reading only when the dataset is loaded and the source has a new
   one. While a browser has the dashboard open, the server loads it every refreshSec. With nobody watching nothing
   refreshes: readings are added only when the data is requested (get_data, render_snapshot, the data check of
   apply_operations, a page load), so the history follows those requests and has gaps. A connector has a new reading
-  at most every minRefreshSec, an http source every 30 s. A server restart or a new source starts it afresh. Inline
-  and upload sources count as new on every load: do not accumulate them.
+  at most every minRefreshSec, an http source every ${HTTP_MIN_REFRESH_SEC} s. A server restart or a new source starts it afresh. Inline
+  and upload sources add a reading only when their content changes: do not accumulate them.
 
 ## Secrets (http sources)
 Some APIs need a key. The user saves keys under Settings → Secrets; you can list them (list_secrets) but never read,

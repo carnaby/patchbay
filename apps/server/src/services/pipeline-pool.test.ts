@@ -1,6 +1,8 @@
 import { inferTable, runPipeline, type Transform, TransformSchema } from '@patchbay/core';
 import { afterAll, describe, expect, it } from 'vitest';
-import { WorkerPool } from './pipeline-pool.ts';
+import { runAsClient } from '../util/request-context.ts';
+import { runsInline, WorkerPool } from './pipeline-pool.ts';
+import { UploadError } from './upload-parse.ts';
 
 const steps = (list: unknown[]) => list.map((s) => TransformSchema.parse(s)) as Transform[];
 
@@ -72,5 +74,76 @@ describe('worker pool', () => {
     ]);
     expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
     await busy.close();
+  });
+});
+
+describe('worker pool guards', () => {
+  it('sends expression and window steps to a worker even for tiny inputs', () => {
+    const tiny = inferTable([{ a: 1 }]);
+    expect(runsInline(tiny, steps([{ type: 'limit', n: 1 }]), 20_000)).toBe(true);
+    expect(runsInline(tiny, steps([{ type: 'derive', as: 'b', expr: 'a + 1' }]), 20_000)).toBe(false);
+    expect(runsInline(tiny, steps([{ type: 'filter', expr: 'a > 0' }]), 20_000)).toBe(false);
+    expect(runsInline(tiny, steps([{ type: 'window', op: 'cumsum', field: 'a' }]), 20_000)).toBe(false);
+    const many = steps(Array.from({ length: 5 }, () => ({ type: 'limit', n: 1 })));
+    expect(runsInline(tiny, many, 20_000)).toBe(false);
+    expect(runsInline(big, steps([{ type: 'limit', n: 1 }]), 20_000)).toBe(false);
+  });
+
+  it('lets one client hold only its share of the queue, and serves clients in turn', async () => {
+    const pool = new WorkerPool({ size: 1, timeoutMs: 20_000, inlineBelowCells: 1, maxQueuedPerClient: 2 });
+    try {
+      await pool.run(medium, steps([{ type: 'limit', n: 1 }])); // worker started
+      const order: string[] = [];
+      const job = (client: string) =>
+        runAsClient(client, () => pool.run(big, heavy)).then(
+          () => order.push(client),
+          (e: Error) => order.push(`${client}:${e.constructor.name}`),
+        );
+      // The first job of "a" runs at once and two more wait; the fourth is over its share.
+      const fromA = [job('a'), job('a'), job('a'), job('a')];
+      const fromB = job('b');
+      await Promise.all([...fromA, fromB]);
+      expect(order.filter((o) => o === 'a:BusyError')).toHaveLength(1);
+      // "b" was queued after two waiting jobs of "a", yet ran before the last of them.
+      expect(order.indexOf('b')).toBeLessThan(order.lastIndexOf('a'));
+    } finally {
+      await pool.close();
+    }
+  });
+
+  it('fails a job that exceeds the worker heap limit without losing the pool', async () => {
+    const pool = new WorkerPool({ size: 1, timeoutMs: 20_000, inlineBelowCells: 1, workerMemoryMb: 32 });
+    try {
+      const text = inferTable(Array.from({ length: 200 }, () => ({ s0: 'x'.repeat(1000) })));
+      const doubling = steps(
+        Array.from({ length: 24 }, (_, i) => ({
+          type: 'derive',
+          as: `s${i + 1}`,
+          expr: `concat(s${i}, s${i})`,
+        })),
+      );
+      await expect(pool.run(text, doubling)).rejects.toThrow();
+      expect((await pool.run(medium, steps([{ type: 'limit', n: 2 }]))).table.rows).toHaveLength(2);
+    } finally {
+      await pool.close();
+    }
+  });
+
+  it('parses uploads in a worker, with the uploader-facing errors intact', async () => {
+    const pool = new WorkerPool({ size: 1, timeoutMs: 20_000 });
+    try {
+      const table = await pool.parseUpload({ content: 'a,b\n1,x\n2,y\n', format: 'csv', maxCells: 100 });
+      expect(table.rows).toEqual([
+        { a: 1, b: 'x' },
+        { a: 2, b: 'y' },
+      ]);
+      const err = await pool
+        .parseUpload({ content: `a,b\n${'1,2\n'.repeat(100)}`, format: 'csv', maxCells: 50 })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(UploadError);
+      expect((err as UploadError).tooLarge).toBe(true);
+    } finally {
+      await pool.close();
+    }
   });
 });

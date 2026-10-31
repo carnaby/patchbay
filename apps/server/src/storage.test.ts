@@ -397,6 +397,11 @@ describe('copies', () => {
       (await call(`/api/dashboards/${copyId}/data/up`, { cookie: claimer })).json.table.rows,
     ).toHaveLength(500);
     expect(statSync(join(folder(copyId), 'files', `${file.id}.json`)).nlink).toBe(1);
+    // Its file list still describes the upload, counted with the bytes it now holds alone.
+    const listed = (await call(`/api/dashboards/${copyId}/files`, { cookie: claimer })).json;
+    expect(listed).toEqual([
+      { ...file, storedBytes: statSync(join(folder(copyId), 'files', `${file.id}.json`)).size },
+    ]);
   });
 });
 

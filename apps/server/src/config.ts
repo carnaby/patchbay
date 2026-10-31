@@ -55,6 +55,16 @@ const EnvSchema = z.object({
   PIPELINE_WORKERS: z.coerce.number().int().min(0).max(32).optional(),
   /** Hard time limit per pipeline run in a worker. */
   PIPELINE_TIMEOUT_MS: z.coerce.number().int().min(100).default(10_000),
+  /** Heap limit of each pipeline worker; a job that needs more fails instead of exhausting the container. */
+  PIPELINE_WORKER_MEMORY_MB: z.coerce.number().int().min(16).default(96),
+  /** Largest upload, in cells (rows x columns), for dashboards with an owner; also caps HTTP responses. */
+  UPLOAD_MAX_CELLS: z.coerce.number().int().min(1000).default(500_000),
+  /** Largest upload, in cells, for anonymous dashboards. */
+  UPLOAD_MAX_CELLS_ANONYMOUS: z.coerce.number().int().min(1000).default(200_000),
+  /** Memory for parsed tables kept between requests (uploads, inline rows, HTTP responses). */
+  DATA_CACHE_MB: z.coerce.number().int().min(1).default(48),
+  /** everyone: any dashboard may load http and feed sources. signed-in: only dashboards with an owner. */
+  URL_SOURCES: z.enum(['everyone', 'signed-in']).default('everyone'),
   /** Who may store credentials for HTTP sources. Off unless the operator decides otherwise, see proposal 0003. */
   SECRETS: z.enum(['off', 'admins', 'users']).default('off'),
   /** 32 random bytes, base64. Seals secret values; required unless SECRETS=off. */
@@ -159,6 +169,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     mcpResource: `${publicUrl}/mcp`,
     pipelineWorkers: parsed.PIPELINE_WORKERS,
     pipelineTimeoutMs: parsed.PIPELINE_TIMEOUT_MS,
+    pipelineWorkerMemoryMb: parsed.PIPELINE_WORKER_MEMORY_MB,
+    uploadMaxCells: parsed.UPLOAD_MAX_CELLS,
+    uploadMaxCellsAnonymous: Math.min(parsed.UPLOAD_MAX_CELLS_ANONYMOUS, parsed.UPLOAD_MAX_CELLS),
+    dataCacheBytes: parsed.DATA_CACHE_MB * 1024 * 1024,
+    urlSources: parsed.URL_SOURCES,
     secrets: { mode: parsed.SECRETS as SecretMode, keyring: secretKeys(parsed) },
     analytics: analytics(parsed),
   };

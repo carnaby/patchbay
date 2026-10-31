@@ -196,6 +196,83 @@ describe('FolderStore', () => {
     expect(await store.readFileTable('share02', 'f_shared')).toBeNull();
   });
 
+  it('loads every stored upload shape and lists each from its header, without rewriting anything', async () => {
+    await store.create(meta('shapes01'), emptyDashboard(), actor, ['Created']);
+    const files = join(dir, 'dashboards', 'shapes01', 'files');
+    const table = inferTable([
+      { day: 1, city: 'Oslo' },
+      { day: 2, city: 'Rome' },
+    ]);
+    const describe = (id: string) => ({
+      id,
+      name: `${id}.csv`,
+      rows: 2,
+      columns: 2,
+      size: 20,
+      uploadedAt: id,
+    });
+    // Early releases: pretty-printed, rows as objects.
+    writeFileSync(join(files, 'f_pretty.json'), pretty({ ...describe('f_pretty'), table }));
+    // A pre-release build: compact rows as objects, plus a separate description file.
+    writeFileSync(join(files, 'f_info.json'), JSON.stringify({ ...describe('f_info'), table }));
+    writeFileSync(join(files, 'f_info.info.json'), JSON.stringify(describe('f_info')));
+    // Current: compact, rows as arrays (written by saveFile).
+    await store.saveFile('shapes01', { ...describe('f_packed'), table });
+    // Not written by any release, but readable: the table first, so only a full parse finds the description.
+    writeFileSync(join(files, 'f_odd.json'), JSON.stringify({ table, ...describe('f_odd') }));
+    const before = Object.fromEntries(readdirSync(files).map((f) => [f, statSync(join(files, f)).mtimeMs]));
+
+    for (const id of ['f_pretty', 'f_info', 'f_packed', 'f_odd'])
+      expect(await store.readFileTable('shapes01', id)).toEqual(table);
+    const listed = await store.listFiles('shapes01');
+    expect(listed.map((f) => f.id)).toEqual(['f_info', 'f_odd', 'f_packed', 'f_pretty']);
+    for (const f of listed) {
+      expect(f).toEqual({ ...describe(f.id), storedBytes: statSync(join(files, `${f.id}.json`)).size });
+    }
+    const after = Object.fromEntries(readdirSync(files).map((f) => [f, statSync(join(files, f)).mtimeMs]));
+    expect(after).toEqual(before);
+
+    await store.deleteFile('shapes01', 'f_info');
+    expect(readdirSync(files)).not.toContain('f_info.info.json');
+  });
+
+  it('stamps a shared upload the same in every dashboard, with the time it was written', async () => {
+    await store.create(meta('stamp01'), emptyDashboard(), actor, ['Created']);
+    await store.create(meta('stamp02'), emptyDashboard(), actor, ['Created']);
+    const table = inferTable([{ n: 1 }]);
+    const file = { id: 'f_s', name: 's.csv', rows: 1, columns: 1, size: 1, uploadedAt: 'u', table };
+    await store.saveFile('stamp01', file);
+    await store.linkFile('stamp01', 'stamp02', 'f_s');
+    const a = (await store.fileStamp('stamp01', 'f_s'))!;
+    const b = (await store.fileStamp('stamp02', 'f_s'))!;
+    expect(b).toEqual(a);
+    expect(a.mtimeMs).toBe(
+      Math.floor(statSync(join(dir, 'dashboards', 'stamp01', 'files', 'f_s.json')).mtimeMs),
+    );
+    await store.listFiles('stamp02');
+    await store.readFileTable('stamp02', 'f_s');
+    expect(await store.fileStamp('stamp02', 'f_s')).toEqual(a);
+
+    await store.remove('stamp01');
+    expect(await store.fileStamp('stamp01', 'f_s')).toBeNull();
+    expect(await store.fileStamp('stamp02', 'f_s')).toEqual(a);
+    expect(await store.listFiles('stamp02')).toEqual([
+      {
+        id: 'f_s',
+        name: 's.csv',
+        rows: 1,
+        columns: 1,
+        size: 1,
+        uploadedAt: 'u',
+        storedBytes: statSync(join(dir, 'dashboards', 'stamp02', 'files', 'f_s.json')).size,
+      },
+    ]);
+    // Alone again, the copy carries the whole file.
+    const bytes = statSync(join(dir, 'dashboards', 'stamp02', 'files', 'f_s.json')).size;
+    expect(statSync(join(dir, 'dashboards', 'stamp02', 'files', 'f_s.json')).nlink).toBe(1);
+    expect(await store.sizeOf('stamp02')).toBeGreaterThanOrEqual(bytes);
+  });
+
   it('shares one parse between concurrent readers and never serves a read from before a write', async () => {
     await store.create(meta('reads01'), emptyDashboard('one'), actor, ['Created']);
     const [a, b] = await Promise.all([store.readDoc('reads01'), store.readDoc('reads01')]);

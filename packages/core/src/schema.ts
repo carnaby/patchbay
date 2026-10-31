@@ -53,6 +53,8 @@ const field = z.string().min(1).max(200);
 
 /** Feeds are fetched at most this often per address, whatever a dataset's refreshSec says. */
 export const FEED_MIN_REFRESH_SEC = 300;
+/** HTTP sources are cached this long per address, so a faster refresh would only re-read the cache. */
+export const HTTP_MIN_REFRESH_SEC = 30;
 
 export const SourceSchema = z.discriminatedUnion('kind', [
   z
@@ -100,6 +102,14 @@ export const SourceSchema = z.discriminatedUnion('kind', [
     .describe('An RSS, Atom or JSON Feed, or a web page that announces one'),
 ]);
 export type Source = z.infer<typeof SourceSchema>;
+
+/**
+ * Uploaded files and inline rows change only when someone edits the dashboard, never on a timer, so a live refresh
+ * of them would only repeat the same work.
+ */
+export function isStaticSource(source: Source): boolean {
+  return source.kind === 'upload' || source.kind === 'inline';
+}
 
 export const DatasetSchema = z.strictObject({
   id: IdSchema,

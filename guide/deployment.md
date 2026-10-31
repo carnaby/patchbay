@@ -18,6 +18,7 @@ cp .env.example .env
 #   DEV_LOGIN=0
 #   PRUNE_ANONYMOUS_AFTER_DAYS=60   (optional, see "Anonymous dashboards and disk space")
 #   PRUNE_BLANK_ANONYMOUS_AFTER_HOURS=24
+#   URL_SOURCES=signed-in           (optional; see "Limits for a small public instance")
 #   SECRETS=off                     (default; see "Secrets for HTTP sources" before changing it)
 PATCHBAY_DOMAIN=dash.example.com docker compose up -d
 ```
@@ -95,6 +96,9 @@ docker compose up -d
   dashboards and disk space".
 - `PIPELINE_WORKERS=1` and a 384 MB memory limit suit a 2-core machine. Measured: about 100–120 MB idle, about
   250 MB peak while a 5 MB upload is processed.
+- `URL_SOURCES=signed-in` is set in the compose file: the instance runs on a home connection, so only dashboards
+  owned by a signed-in user can load http and feed sources, and strangers cannot make it fetch arbitrary addresses
+  from your IP. See "Limits for a small public instance".
 - `UMAMI_SCRIPT_URL` and `UMAMI_WEBSITE_ID` (optional, in `.env`) turn on page-view analytics; see "Analytics"
   below. The compose file passes them through with empty defaults, which means off, and they take precedence over
   `patchbay.env`.
@@ -198,6 +202,27 @@ most 20 files and 25 MB as stored on the server (a parsed CSV can take more room
 "Make a copy" share the upload files of the original (hard links) instead of copying them; on a file system without
 hard links they are copied, and the server says so once in its log.
 
+## Limits for a small public instance
+
+Anyone can create anonymous dashboards, so everything a stranger can make the server hold or do is bounded. The
+defaults suit one container with 384 MB of memory; raise them only with more memory.
+
+| Variable                     | Default  | What it bounds                                                                                             |
+| ---------------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `UPLOAD_MAX_CELLS`           | 500000   | Rows × columns of an upload to a dashboard with an owner, and of an HTTP response kept in memory.          |
+| `UPLOAD_MAX_CELLS_ANONYMOUS` | 200000   | The same for anonymous dashboards.                                                                         |
+| `DATA_CACHE_MB`              | 48       | Parsed tables (uploads, inline rows, HTTP responses) kept between requests, least recently used first out. |
+| `PIPELINE_WORKER_MEMORY_MB`  | 96       | Heap of each pipeline worker; a job that needs more fails instead of exhausting the container.             |
+| `URL_SOURCES`                | everyone | `signed-in`: http and feed sources load only for dashboards owned by a signed-in user.                     |
+
+Fixed limits, for reference: uploads are parsed in the pipeline worker and refused as soon as they pass the cell limit;
+at most two stored uploads are parsed at a time; HTTP sources are fetched at most three at a time, two at a time and
+60 times a minute per host, and a failing address is not asked again for 30 s; the pipeline worker's queue takes jobs
+round-robin per client, one client holding at most a tenth of it. When a queue is full the API answers
+`503 Service Unavailable` with `Retry-After`, and live refreshes skip a beat, instead of the process running out of
+memory. Live refresh never runs for uploads and inline rows (they change only when edited) and at most every 30 s for
+HTTP sources.
+
 ## Analytics (optional)
 
 Patchbay has no analytics by default and loads no tracker. To count page views with a
@@ -233,8 +258,9 @@ for users, including unattended presentation screens. To keep your own visits ou
   SQLite. Back up `SECRETS_KEY` separately, never in the same place.
 - `GET /healthz` is a liveness probe; the image defines a Docker `HEALTHCHECK`.
 - Logs go to stdout. The process handles `SIGTERM` gracefully.
-- Limits worth knowing: uploads ≤ 5 MB per file and ≤ 25 MB per dashboard as stored, documents ≤ 1 MB, ≤ 10,000 rows
-  sent to the browser per dataset, ≤ 60 widgets and 30 datasets per dashboard, last 50 versions (≤ 10 MB) kept.
+- Limits worth knowing: uploads ≤ 5 MB and ≤ `UPLOAD_MAX_CELLS` cells per file and ≤ 25 MB per dashboard as stored,
+  documents ≤ 1 MB, ≤ 10,000 rows sent to the browser per dataset, ≤ 60 widgets and 30 datasets per dashboard, last
+  50 versions (≤ 10 MB) kept.
 
 ## Scaling notes
 

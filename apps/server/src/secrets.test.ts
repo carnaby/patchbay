@@ -1458,22 +1458,27 @@ describe('canary', () => {
         cookie: owner,
       });
 
-      // The live stream of the public dashboard, as an anonymous viewer.
+      // The live stream of the public dashboard, as an anonymous viewer. HTTP sources refresh at most every 30 s:
+      // only the refresh loop's interval is faked, the fetch it starts is real.
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
       const stream = await c.app.request(`${BASE}/api/dashboards/${dash}/events`);
       const reader = stream.body!.getReader();
       const decoder = new TextDecoder();
       let events = '';
       const until = Date.now() + 4000;
+      // A read that lost the race is still pending and receives the next chunk, so it is kept, not abandoned.
+      let pending: ReturnType<typeof reader.read> | null = null;
       while (Date.now() < until && !events.includes('"type":"data"')) {
-        const chunk = await Promise.race([
-          reader.read(),
-          new Promise<{ done: true; value: undefined }>((r) =>
-            setTimeout(() => r({ done: true, value: undefined }), 1500),
-          ),
-        ]);
+        vi.advanceTimersByTime(30_000);
+        pending ??= reader.read();
+        const chunk = await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), 250))]);
+        if (chunk === null) continue;
+        pending = null;
         if (chunk.value) events += decoder.decode(chunk.value);
+        if (chunk.done) break;
       }
       await reader.cancel();
+      vi.useRealTimers();
       expect(events).toContain('"type":"data"');
       c.seen.push(events);
 
