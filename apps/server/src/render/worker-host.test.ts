@@ -130,7 +130,7 @@ describe('render worker', () => {
   });
 
   it('replaces a worker that runs out of heap', async () => {
-    const host = new RenderWorker({ url: FIXTURE, oldGenerationMb: 32, youngGenerationMb: 8 });
+    const host = new RenderWorker({ url: FIXTURE, oldGenerationMb: 32 });
     try {
       const failure = await host.render(task('hog')).catch((e: unknown) => e);
       expect(failure).toBeInstanceOf(RenderFailedError);

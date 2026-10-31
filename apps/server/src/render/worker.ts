@@ -2,6 +2,7 @@
  * The render worker: draws snapshots off the main thread (render/worker-host.ts starts and stops it). Receives
  * { id, task } and answers { id, ok: true, png } or { id, ok: false, message }.
  */
+import { getHeapStatistics } from 'node:v8';
 import { parentPort } from 'node:worker_threads';
 import { releaseNativeMemory } from './gc.ts';
 import { renderDashboardPng, renderWidgetPng } from './snapshot.ts';
@@ -31,4 +32,4 @@ parentPort!.on('message', async ({ id, task }: { id: number; task: RenderTask })
 
 // Readiness only after the imports above (ECharts, the world map, resvg) loaded, so render time limits never include
 // start-up.
-parentPort!.postMessage({ ready: true });
+parentPort!.postMessage({ ready: true, heapLimitMb: getHeapStatistics().heap_size_limit / (1024 * 1024) });

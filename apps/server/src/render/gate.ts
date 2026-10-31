@@ -6,24 +6,21 @@
  * only one of them renders at a time, in the render worker (render/worker-host.ts). The rest are turned away with 503
  * straight away instead of queueing up behind each other.
  */
-import { HttpError } from '../util/errors.ts';
+import { RetryLaterError } from '../util/errors.ts';
+import { BusyError } from '../util/gate.ts';
 import type { RateLimiter } from '../util/rate-limit.ts';
 import { currentClient } from '../util/request-context.ts';
 import { type RenderTask, RenderWorker } from './worker-host.ts';
 
-export class RenderBusyError extends HttpError {
-  readonly retryAfterSec: number;
+export class RenderBusyError extends BusyError {
   constructor(retryAfterSec = 5) {
-    super(503, 'The server is busy rendering other snapshots; try again in a few seconds');
-    this.retryAfterSec = retryAfterSec;
+    super('The server is busy rendering other snapshots; try again in a few seconds', retryAfterSec);
   }
 }
 
-export class SnapshotRateError extends HttpError {
-  readonly retryAfterSec: number;
+export class SnapshotRateError extends RetryLaterError {
   constructor(retryAfterSec: number) {
-    super(429, `Too many snapshots from you; try again in ${retryAfterSec} s`);
-    this.retryAfterSec = retryAfterSec;
+    super(429, `Too many snapshots from you; try again in ${retryAfterSec} s`, retryAfterSec);
   }
 }
 

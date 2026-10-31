@@ -24,7 +24,7 @@ import { defaultPoolSize, InlineRunner, type PipelineRunner, WorkerPool } from '
 import { ResultWire } from './services/result-wire.ts';
 import { DashboardIndex } from './store/dashboard-index.ts';
 import { FolderStore } from './store/folder-store.ts';
-import { HttpError, toHttpError } from './util/errors.ts';
+import { HttpError, RetryLaterError, toHttpError } from './util/errors.ts';
 import { prepareIndexHtml } from './util/index-html.ts';
 import { checkedBody, isLargeBody, jsonBodyGuard, newLargeBodyGate } from './util/json-body.ts';
 import { RateLimiter } from './util/rate-limit.ts';
@@ -156,9 +156,8 @@ export function createApp(deps: Deps) {
   app.onError((err, c) => {
     const httpErr = toHttpError(err);
     if (httpErr.status === 500) console.error(err);
-    // Both busy errors (BusyError from data loading, RenderBusyError from snapshots) say when to come back.
-    const retryAfter = (httpErr as { retryAfterSec?: unknown }).retryAfterSec;
-    if (httpErr.status === 503 && typeof retryAfter === 'number') c.header('Retry-After', String(retryAfter));
+    // Busy gates, byte budgets, the renderer and per-client snapshot limits all say when to come back.
+    if (httpErr instanceof RetryLaterError) c.header('Retry-After', String(httpErr.retryAfterSec));
     const details = httpErr.details as Record<string, unknown> | undefined;
     // OAuth endpoints answer with the RFC 6749 error shape.
     if (details && typeof details.error === 'string') return c.json(details, httpErr.status);

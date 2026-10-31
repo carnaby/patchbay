@@ -431,28 +431,21 @@ export function apiRoutes(deps: Deps) {
     const widget = widgetId ? doc.widgets.find((w) => w.id === widgetId) : undefined;
     if (widgetId && !widget) throw notFound('Widget not found');
     const key = SnapshotCache.key({ id, version: meta.version, theme, widget: widgetId });
-    let png: Buffer;
-    try {
-      // Permission was checked above, for this request; the cache only saves the drawing.
-      png = await snapshotCache.get(key, async () => {
-        chargeSnapshot(deps.limits.snapshots);
-        return snapshotGate.run(async (draw) => {
-          if (widget) {
-            const dataset =
-              'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
-            const result = dataset ? await data.resolve(target, dataset) : undefined;
-            return draw({ kind: 'widget', widget, result, options: { theme, entityColors: doc.colors } });
-          }
-          const results = await resolveAll(doc.datasets);
-          return draw({ kind: 'dashboard', doc, results, options: { theme } });
-        });
+    // Permission was checked above, for this request; the cache only saves the drawing. Busy, rate limited or out of
+    // time, the error says when to come back (Retry-After, set by the app's error handler).
+    const png = await snapshotCache.get(key, async () => {
+      chargeSnapshot(deps.limits.snapshots);
+      return snapshotGate.run(async (draw) => {
+        if (widget) {
+          const dataset =
+            'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
+          const result = dataset ? await data.resolve(target, dataset) : undefined;
+          return draw({ kind: 'widget', widget, result, options: { theme, entityColors: doc.colors } });
+        }
+        const results = await resolveAll(doc.datasets);
+        return draw({ kind: 'dashboard', doc, results, options: { theme } });
       });
-    } catch (err) {
-      // Busy, rate limited, out of time: each says when to come back.
-      const retryAfter = (err as { retryAfterSec?: unknown }).retryAfterSec;
-      if (!(err instanceof HttpError) || typeof retryAfter !== 'number') throw err;
-      return c.json({ error: err.message }, err.status as 429 | 503, { 'Retry-After': String(retryAfter) });
-    }
+    });
     return c.body(new Uint8Array(png), 200, {
       'content-type': 'image/png',
       'cache-control': 'private, max-age=30',

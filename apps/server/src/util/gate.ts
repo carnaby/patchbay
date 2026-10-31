@@ -3,14 +3,12 @@
  * a table on its way to a worker). The instance is small: a burst that ran all of it at once would crash the process
  * for everyone, while a burst that queues briefly and then answers 503 only slows down the burst itself.
  */
-import { HttpError } from './errors.ts';
+import { RetryLaterError } from './errors.ts';
 
 /** The server is saturated; the request may be repeated after `retryAfterSec`. */
-export class BusyError extends HttpError {
-  readonly retryAfterSec: number;
+export class BusyError extends RetryLaterError {
   constructor(message = 'The server is busy; try again in a few seconds', retryAfterSec = 5) {
-    super(503, message);
-    this.retryAfterSec = retryAfterSec;
+    super(503, message, retryAfterSec);
   }
 }
 

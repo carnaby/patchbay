@@ -15,7 +15,8 @@
  */
 import { Worker } from 'node:worker_threads';
 import type { ColorMap, DashboardDoc, DatasetResult, ThemeMode, Widget } from '@patchbay/core';
-import { HttpError } from '../util/errors.ts';
+import { BusyError } from '../util/gate.ts';
+import { checkHeapLimit, retire, workerResourceLimits } from '../util/workers.ts';
 import type { DashboardRenderOptions } from './snapshot.ts';
 
 export type RenderTask =
@@ -33,13 +34,11 @@ export type RenderTask =
     };
 
 /** A render the worker could not finish: it ran out of time or memory, or the worker died. */
-export class RenderFailedError extends HttpError {
-  readonly retryAfterSec: number;
+export class RenderFailedError extends BusyError {
   /** Trying the same render again would fail the same way (time, memory), so the snapshot cache remembers it. */
   readonly lasting: boolean;
   constructor(message: string, options: { retryAfterSec?: number; lasting?: boolean } = {}) {
-    super(503, message);
-    this.retryAfterSec = options.retryAfterSec ?? 30;
+    super(message, options.retryAfterSec ?? 30);
     this.lasting = options.lasting ?? false;
   }
 }
@@ -47,15 +46,19 @@ export class RenderFailedError extends HttpError {
 export interface RenderWorkerOptions {
   /** Hard limit per render, start-up excluded; the worker is terminated when it is exceeded. */
   timeoutMs?: number;
-  /** Heap limits of the worker. resvg's pixmaps are native memory outside them, bounded by MAX_PIXELS instead. */
+  /**
+   * Old generation of the worker; young generation and stack follow the other workers (util/workers.ts). resvg's
+   * pixmaps are native memory outside this limit, bounded by MAX_PIXELS instead.
+   */
   oldGenerationMb?: number;
-  youngGenerationMb?: number;
   /** The worker stops after this long without a render. */
   idleMs?: number;
   /** The worker is replaced after this many renders, so fragmentation in native memory cannot add up. */
   maxRenders?: number;
   /** Limit for loading the renderer in a new worker. */
   startTimeoutMs?: number;
+  /** How long a terminated worker may take to exit before the next one starts anyway (see util/workers.ts). */
+  retireGraceMs?: number;
   /** Tests point this at a worker that misbehaves. */
   url?: URL;
 }
@@ -69,7 +72,6 @@ interface Pending {
 interface Live {
   worker: Worker;
   ready: Promise<void>;
-  exited: Promise<void>;
   renders: number;
   current: Pending | null;
 }
@@ -79,10 +81,10 @@ const WORKER_URL = new URL('./worker.ts', import.meta.url);
 export class RenderWorker {
   private readonly timeoutMs: number;
   private readonly oldGenerationMb: number;
-  private readonly youngGenerationMb: number;
   private readonly idleMs: number;
   private readonly maxRenders: number;
   private readonly startTimeoutMs: number;
+  private readonly retireGraceMs: number;
   private readonly url: URL;
   private live: Live | null = null;
   /** Termination of the previous worker, awaited before a new one starts. */
@@ -96,10 +98,10 @@ export class RenderWorker {
   constructor(options: RenderWorkerOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? 15_000;
     this.oldGenerationMb = options.oldGenerationMb ?? 128;
-    this.youngGenerationMb = options.youngGenerationMb ?? 16;
     this.idleMs = options.idleMs ?? 60_000;
     this.maxRenders = options.maxRenders ?? 100;
     this.startTimeoutMs = options.startTimeoutMs ?? 30_000;
+    this.retireGraceMs = options.retireGraceMs ?? 30_000;
     this.url = options.url ?? WORKER_URL;
   }
 
@@ -177,7 +179,7 @@ export class RenderWorker {
   private stop(live: Live) {
     if (this.live === live) this.live = null;
     const previous = this.stopping;
-    this.stopping = Promise.all([previous, live.worker.terminate().then(() => live.exited)]).then(
+    this.stopping = Promise.all([previous, retire(live.worker, this.retireGraceMs, 'render')]).then(
       () => undefined,
     );
   }
@@ -188,25 +190,16 @@ export class RenderWorker {
       await this.live.ready;
       return this.live;
     }
-    const worker = new Worker(this.url, {
-      resourceLimits: {
-        maxOldGenerationSizeMb: this.oldGenerationMb,
-        maxYoungGenerationSizeMb: this.youngGenerationMb,
-      },
-    });
+    const worker = new Worker(this.url, { resourceLimits: workerResourceLimits(this.oldGenerationMb) });
     worker.unref();
     this.started++;
     let ready!: () => void;
     let notReady!: (err: Error) => void;
-    let exited!: () => void;
     const live: Live = {
       worker,
       ready: new Promise<void>((res, rej) => {
         ready = res;
         notReady = rej;
-      }),
-      exited: new Promise<void>((res) => {
-        exited = res;
       }),
       renders: 0,
       current: null,
@@ -222,9 +215,17 @@ export class RenderWorker {
 
     worker.on(
       'message',
-      (msg: { ready?: true; id?: number; ok?: boolean; png?: Uint8Array; message?: string }) => {
+      (msg: {
+        ready?: true;
+        heapLimitMb?: number;
+        id?: number;
+        ok?: boolean;
+        png?: Uint8Array;
+        message?: string;
+      }) => {
         if (msg.ready) {
           clearTimeout(startTimer);
+          checkHeapLimit('render', this.oldGenerationMb, msg.heapLimitMb);
           ready();
           return;
         }
@@ -251,7 +252,6 @@ export class RenderWorker {
     });
     worker.on('exit', () => {
       clearTimeout(startTimer);
-      exited();
       const reason = new RenderFailedError('The snapshot renderer stopped', { retryAfterSec: 5 });
       notReady(reason);
       live.current?.reject(reason);
