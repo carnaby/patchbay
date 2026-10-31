@@ -204,6 +204,27 @@ in `render_snapshot`.
 sized by the first measure, or a track with night shading for accumulated positions (`accumulate` or a `fetched_at`
 column).
 
+## Start pages: clocks, feeds and search
+
+Three pieces make a dashboard work as a browser start page. Each is documented in `get_reference`.
+
+```jsonc
+{ "op": "addWidget", "widget": { "id": "time", "type": "clock", "config": { "timeZone": "Europe/Bratislava" } } }
+{ "op": "addDataset", "dataset": { "id": "news", "name": "BBC News", "source": { "kind": "feed", "url": "https://www.bbc.com/news" }, "refreshSec": 300 } }
+{ "op": "addWidget", "widget": { "id": "headlines", "type": "table", "datasetId": "news", "title": "BBC News", "config": { "style": "list", "pageSize": 8, "columns": [{ "field": "title", "link": "link" }, "source", "published"] } } }
+{ "op": "addWidget", "widget": { "id": "find", "type": "search", "config": { "engine": "duckduckgo" } } }
+```
+
+- `clock` has no dataset. Without `timeZone` it shows each viewer's local time (snapshots draw it in UTC and say so).
+  Digital is the default because many people read analog clocks slowly.
+- A `feed` source reads RSS, Atom and JSON Feed, or a web page that announces one, into the columns `id`, `title`,
+  `link`, `published`, `summary`, `author`, `source` and `image`, newest first. It is fetched at most every 5 minutes
+  per address; a lower `refreshSec` is raised on save. Feeds take no secrets, and `apply_operations` warns when a feed
+  URL carries something that looks like a token.
+- A table with `style: "list"` reads like headlines; a column's `link` names the column holding its URL (only
+  `http(s)` links are rendered). A sound cue with `{ kind: "newRows", key: "id" }` plays for every new article.
+- `search` opens the chosen engine's results in the browser; the query never reaches the server.
+
 ## Secrets
 
 Some APIs need a key. When the operator turned the feature on (`SECRETS=admins` or `users`, see

@@ -51,6 +51,9 @@ It is free, needs no API keys, and runs as a single process you can host anywher
 - 🔔 **Sound cues.** A widget can play a short built-in sound when its live data changes: a bell when a new order
   arrives, an alert when a price crosses a threshold. Synthesised in the browser (no audio files), edge-triggered,
   never on load, with a cooldown, a global throttle and a per-screen mute.
+- 🏠 **A start page, if you want one.** Clocks (digital or analog, any time zone), news from any RSS, Atom or JSON
+  feed shown as headlines, and a search box. Set a dashboard as your browser's home page and ask your agent to add
+  whatever you find; a ding on every new article is one sound cue away.
 - 🗺️ **Maps without tiles.** Points (earthquakes, stations) and tracks (the ISS) on a bundled world map, sized and
   coloured by value, with optional day/night shading. No tile server and no third-party requests, so maps work
   offline and in agent snapshots.
@@ -207,8 +210,9 @@ interval shown, so many viewers cost one upstream request.
 | `npm.downloads`                                              | Daily npm downloads                                                                        | 6 h        |
 | `demo.signal`, `demo.sales`                                  | Synthetic live signal and sales data (always offline)                                      | 1 s        |
 
-Plus your own data: **CSV/JSON uploads** (stored in the dashboard's folder), **inline rows**, and **any HTTPS JSON
-endpoint** (behind an SSRF guard). Endpoints that need a key use a **secret** saved under Settings → Secrets, sent as a
+Plus your own data: **CSV/JSON uploads** (stored in the dashboard's folder), **inline rows**, **any HTTPS JSON
+endpoint** (behind an SSRF guard), and **any public news feed** (RSS, Atom or JSON Feed; a site's home page is enough
+when it announces one), fetched at most every 5 minutes per address. Endpoints that need a key use a **secret** saved under Settings → Secrets, sent as a
 bearer token, a header or a query parameter, and only to the origin and path prefix it is bound to; the instance
 switch `SECRETS` decides who may store them. Adding a connector is one file: parameters, a `fetch`, and a `sample` for
 offline mode. See `apps/server/src/connectors/`.

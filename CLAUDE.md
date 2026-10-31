@@ -36,6 +36,9 @@ Monorepo (pnpm): `packages/core` (pure domain logic, shared), `apps/server` (Hon
 - Sound cue rules live in `soundDecision` (packages/core/src/sound.ts), not in components. The web app decides once
   per result by listening to the query cache (apps/web/src/state/sound-cues.ts); never trigger sounds from a widget
   render or an editor preview. The first result after load, reconnect or a definition change is only a baseline.
+- User-supplied URLs are fetched only through `util/safe-fetch.ts` (`safeFetchJson`, `safeFetchText`): the SSRF guard
+  is there. Feed text becomes plain text at parse time (apps/server/src/feeds/parse.ts) and links are http(s) only;
+  never render feed markup. Data-free widgets (`text`, `clock`, `search`) are told apart with `isDataWidgetType`.
 - Presentation mode (apps/web/src/editor/presentation.tsx) must keep working without user input after the first
   click: it is used unattended on wall screens and TVs.
 

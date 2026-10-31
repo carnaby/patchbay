@@ -27,6 +27,7 @@ A dashboard is one JSON document:
 - **Datasets** describe where data comes from (`source`) and how it is processed (`transforms`), plus live behaviour
   (`refreshSec`, `accumulate`).
 - **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `map`, `text`). Several widgets can share one dataset.
+  `text`, `clock` and `search` show no dataset (`isDataWidgetType`): no `datasetId`, no data query, no sound.
 - **Layout** is a single 12-column grid. Small screens stack widgets in reading order; there is deliberately no second,
   hand-maintained mobile layout to drift out of sync. On a phone the editor therefore only reorders (`reorderWidget`
   moves a widget in reading order and the widgets in between trade places on the same grid, see `reorderLayout`);
@@ -91,6 +92,11 @@ instances.
 - A **TTL cache with in-flight de-duplication** sits in front of connectors. The TTL is the connector's minimum refresh
   interval, chosen to respect each free tier. If upstream fails, a copy up to an hour old is served with a warning
   instead of an empty widget.
+- **Feeds** (`source.kind: "feed"`) take a user-supplied URL, so they go through the same SSRF guard as the `http`
+  source (`safeFetchText`), never through a connector. `apps/server/src/feeds/` finds the feed a web page announces,
+  parses RSS, Atom and JSON Feed into fixed columns and turns every text into plain text at parse time, so nothing
+  downstream renders feed markup. A feed is fetched at most every 5 minutes per address, shared by all dashboards
+  (publishers block faster polling); `OFFLINE=1` serves a deterministic sample.
 - **Pipelines run on the server.** The browser, the MCP agent and the PNG renderer therefore always agree on the numbers,
   and the browser never downloads more than it displays (10,000 rows max).
 - **Large pipelines run in worker threads** (`services/pipeline-pool.ts`). Inputs under 20,000 cells run inline,
