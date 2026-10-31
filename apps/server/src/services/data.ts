@@ -16,6 +16,7 @@ import {
 } from '@patchbay/core';
 
 import type { ConnectorService } from '../connectors/registry.ts';
+import { FeedService } from '../feeds/service.ts';
 import type { FolderStore } from '../store/folder-store.ts';
 import { HttpError } from '../util/errors.ts';
 import { type Credential, safeFetchJson, type UpstreamTestSeam } from '../util/safe-fetch.ts';
@@ -65,6 +66,8 @@ export type CredentialResolver = (target: DashboardTarget, dataset: Dataset) => 
 
 export interface DataServiceOptions {
   credentials?: CredentialResolver;
+  /** OFFLINE=1: feeds return their deterministic sample instead of fetching. */
+  offline?: boolean;
   /** Tests only, never from the environment. */
   upstreamTest?: UpstreamTestSeam;
 }
@@ -101,6 +104,7 @@ export class DataService {
   private readonly pipeline: PipelineRunner;
   private readonly credentialsFor: CredentialResolver;
   private readonly upstreamTest: UpstreamTestSeam | undefined;
+  private readonly feeds: FeedService;
 
   constructor(
     connectors: ConnectorService,
@@ -118,6 +122,7 @@ export class DataService {
         throw new HttpError(403, 'Credentials are turned off on this server.');
       });
     this.upstreamTest = options.upstreamTest;
+    this.feeds = new FeedService({ offline: options.offline ?? false, test: options.upstreamTest });
   }
 
   async loadSource(target: DashboardTarget, dataset: Dataset): Promise<Loaded> {
@@ -169,6 +174,11 @@ export class DataService {
         }
         const entry = await pending;
         return { table: entry.table, fetchedAt: entry.at, credentialKey };
+      }
+      case 'feed': {
+        const feed = await this.feeds.load(source.url);
+        const rows = feed.table.rows.slice(0, source.limit);
+        return { table: { columns: feed.table.columns, rows }, fetchedAt: feed.fetchedAt, credentialKey: '' };
       }
     }
   }

@@ -19,6 +19,8 @@ export interface ResolvedColumn {
   format: Format | undefined;
   bands: Bands | undefined;
   colorAs: 'fill' | 'text';
+  /** Column holding the URL this cell links to. */
+  link: string | undefined;
 }
 
 /** The table's columns with every default applied; plain names and column objects come out alike. */
@@ -35,6 +37,7 @@ export function tableColumns(config: TableConfig, table: DataTable): ResolvedCol
       format: ('format' in col && col.format) || config.format,
       bands: 'bands' in col ? col.bands : undefined,
       colorAs: ('colorAs' in col && col.colorAs) || 'fill',
+      link: 'link' in col ? col.link : undefined,
     };
   });
 }
@@ -120,4 +123,20 @@ export function cellStyle(row: Row, column: ResolvedColumn, rules: TableRules, t
   return colorAs === 'text'
     ? { text, color: resolveColor(color, theme, 'text'), ...(reason ? { reason } : {}) }
     : { text, background: resolveColor(color, theme, 'fill'), ...(reason ? { reason } : {}) };
+}
+
+/**
+ * The http(s) URL a cell links to, or null. Checked here as well as where feeds are parsed: table data can come from
+ * any source, and a `javascript:` value must never become a link.
+ */
+export function cellLink(row: Row, column: ResolvedColumn): string | null {
+  const field = column.link;
+  const value = field ? row[field] : undefined;
+  if (typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
+  } catch {
+    return null;
+  }
 }

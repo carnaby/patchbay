@@ -2,12 +2,16 @@ import {
   buildChartOption,
   buildGaugeOption,
   type ColorMap,
+  cellLink,
   cellStyle,
   compileTableRules,
   computeGauge,
   computeKpi,
   type DatasetResult,
   formatNumber,
+  formatRelative,
+  formatValue,
+  type ResolvedColumn,
   resolveColor,
   THEMES,
   tableColumns,
@@ -17,7 +21,7 @@ import { AlertTriangle, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Minus } f
 import { lazy, Suspense, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import { cx, Spinner } from '../components/ui.tsx';
-import { useTheme } from '../lib/hooks.ts';
+import { useNow, useTheme } from '../lib/hooks.ts';
 import { ClockBody } from './ClockBody.tsx';
 import { EChart } from './EChart.tsx';
 import { SearchBody } from './SearchBody.tsx';
@@ -228,80 +232,94 @@ export function TableBody({
   const pages = Math.max(1, Math.ceil(rows.length / size));
   const current = Math.min(page, pages - 1);
   const visible = rows.slice(current * size, current * size + size);
+  const list = widget.config.style === 'list';
   return (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
-        <table className="w-full text-left text-[13px]">
-          <thead className="sticky top-0 bg-surface">
-            <tr>
-              {columns.map((c, ci) => (
-                <th
-                  // biome-ignore lint/suspicious/noArrayIndexKey: a field may be shown twice, the position is its identity
-                  key={`${ci}:${c.field}`}
-                  className="border-b border-line px-2 py-1.5 font-medium whitespace-nowrap text-muted"
-                >
-                  <button
-                    type="button"
-                    className="hover:text-ink"
-                    // The field name stays findable when a label replaces it.
-                    title={c.label !== c.field ? c.field : undefined}
-                    onClick={() =>
-                      setSort((s) =>
-                        s?.field === c.field
-                          ? { field: c.field, dir: s.dir === 1 ? -1 : 1 }
-                          : { field: c.field, dir: 1 },
-                      )
-                    }
+        {list ? (
+          <ListRows rows={visible} columns={columns} rules={rules} mode={mode} />
+        ) : (
+          <table className="w-full text-left text-[13px]">
+            <thead className="sticky top-0 bg-surface">
+              <tr>
+                {columns.map((c, ci) => (
+                  <th
+                    // biome-ignore lint/suspicious/noArrayIndexKey: a field may be shown twice, the position is its identity
+                    key={`${ci}:${c.field}`}
+                    className="border-b border-line px-2 py-1.5 font-medium whitespace-nowrap text-muted"
                   >
-                    {c.label}
-                    {sort?.field === c.field ? (sort.dir === 1 ? ' ↑' : ' ↓') : ''}
-                  </button>
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {visible.map((row, i) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity
-              <tr key={i} className="border-b border-line/60 last:border-0 hover:bg-surface-2/60">
-                {columns.map((c, ci) => {
-                  const v = row[c.field] ?? null;
-                  const cell = cellStyle(row, c, rules, THEMES[mode]);
-                  const text = cell.text;
-                  return (
-                    <td
-                      // biome-ignore lint/suspicious/noArrayIndexKey: a field may be shown twice, the position is its identity
-                      key={`${ci}:${c.field}`}
-                      className={cx(
-                        'max-w-72 truncate px-2 py-1.5',
-                        c.type === 'number' && 'tabular text-right',
-                      )}
-                      style={
-                        cell.color || cell.background
-                          ? { color: cell.color, backgroundColor: cell.background }
-                          : undefined
+                    <button
+                      type="button"
+                      className="hover:text-ink"
+                      // The field name stays findable when a label replaces it.
+                      title={c.label !== c.field ? c.field : undefined}
+                      onClick={() =>
+                        setSort((s) =>
+                          s?.field === c.field
+                            ? { field: c.field, dir: s.dir === 1 ? -1 : 1 }
+                            : { field: c.field, dir: 1 },
+                        )
                       }
-                      title={cell.reason}
                     >
-                      {typeof v === 'string' && URL_RE.test(v) ? (
-                        <a
-                          href={v}
-                          target="_blank"
-                          rel="noopener noreferrer nofollow"
-                          className="text-data hover:underline"
-                        >
-                          {v.replace(URL_RE, '').slice(0, 40)}
-                        </a>
-                      ) : (
-                        text
-                      )}
-                    </td>
-                  );
-                })}
+                      {c.label}
+                      {sort?.field === c.field ? (sort.dir === 1 ? ' ↑' : ' ↓') : ''}
+                    </button>
+                  </th>
+                ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {visible.map((row, i) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity
+                <tr key={i} className="border-b border-line/60 last:border-0 hover:bg-surface-2/60">
+                  {columns.map((c, ci) => {
+                    const v = row[c.field] ?? null;
+                    const cell = cellStyle(row, c, rules, THEMES[mode]);
+                    const text = cell.text;
+                    return (
+                      <td
+                        // biome-ignore lint/suspicious/noArrayIndexKey: a field may be shown twice, the position is its identity
+                        key={`${ci}:${c.field}`}
+                        className={cx(
+                          'max-w-72 truncate px-2 py-1.5',
+                          c.type === 'number' && 'tabular text-right',
+                        )}
+                        style={
+                          cell.color || cell.background
+                            ? { color: cell.color, backgroundColor: cell.background }
+                            : undefined
+                        }
+                        title={cell.reason}
+                      >
+                        {cellLink(row, c) ? (
+                          <a
+                            href={cellLink(row, c)!}
+                            target="_blank"
+                            rel="noopener noreferrer nofollow"
+                            className="hover:underline"
+                          >
+                            {text}
+                          </a>
+                        ) : typeof v === 'string' && URL_RE.test(v) ? (
+                          <a
+                            href={v}
+                            target="_blank"
+                            rel="noopener noreferrer nofollow"
+                            className="text-data hover:underline"
+                          >
+                            {v.replace(URL_RE, '').slice(0, 40)}
+                          </a>
+                        ) : (
+                          text
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
       {pages > 1 ? (
         <div className="flex shrink-0 items-center justify-end gap-2 pt-2 text-xs text-muted">
@@ -329,6 +347,72 @@ export function TableBody({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * A table as headlines: the first column as the (linked) title, the others on a muted line under it. Times read as
+ * "12 min ago", with the exact time as the tooltip, and refresh every minute.
+ */
+function ListRows({
+  rows,
+  columns,
+  rules,
+  mode,
+}: {
+  rows: DatasetResult['table']['rows'];
+  columns: ResolvedColumn[];
+  rules: ReturnType<typeof compileTableRules>;
+  mode: 'light' | 'dark';
+}) {
+  const now = useNow(60_000);
+  const locale = typeof navigator === 'undefined' ? 'en' : navigator.language;
+  const [first, ...rest] = columns;
+  if (!first) return null;
+  return (
+    <ul className="divide-y divide-line/60">
+      {rows.map((row, i) => {
+        const title = cellStyle(row, first, rules, THEMES[mode]);
+        const href = cellLink(row, first);
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity
+          <li key={i} className="py-2 first:pt-0.5">
+            <div
+              className="line-clamp-2 text-[13.5px] leading-snug font-medium text-ink"
+              style={title.color ? { color: title.color } : undefined}
+              title={title.reason}
+            >
+              {href ? (
+                <a href={href} target="_blank" rel="noopener noreferrer nofollow" className="hover:underline">
+                  {title.text}
+                </a>
+              ) : (
+                title.text
+              )}
+            </div>
+            {rest.length ? (
+              <div className="mt-0.5 truncate text-xs text-muted">
+                {rest.map((c, ci) => {
+                  const v = row[c.field] ?? null;
+                  if (v === null || v === '') return null;
+                  const relative = c.type === 'time' && typeof v === 'number';
+                  const cell = cellStyle(row, c, rules, THEMES[mode]);
+                  return (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: a field may be shown twice
+                    <span key={ci} title={relative ? formatValue(v, 'time') : cell.reason}>
+                      {ci > 0 ? ' · ' : ''}
+                      <span style={cell.color ? { color: cell.color } : undefined}>
+                        {relative ? formatRelative(v, now, locale) : cell.text}
+                      </span>
+                    </span>
+                  );
+                })}
+              </div>
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

@@ -1,33 +1,6 @@
 import { type ClockConfig, clockModel, clockSvg, describeClock, THEMES } from '@patchbay/core';
-import { useEffect, useMemo, useState } from 'react';
-import { useTheme } from '../lib/hooks.ts';
-
-/** Re-renders on every second (or minute) boundary, and at once when a hidden tab becomes visible again. */
-function useNow(stepMs: number) {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    let timer: ReturnType<typeof setTimeout>;
-    const tick = () => {
-      const t = Date.now();
-      setNow(t);
-      // Aligned to the boundary, so the display never lags the real second by a random fraction.
-      timer = setTimeout(tick, stepMs - (t % stepMs) + 5);
-    };
-    tick();
-    // Browsers throttle timers in hidden tabs; a wall screen that comes back must not show a stale time.
-    const onVisible = () => {
-      if (document.visibilityState !== 'visible') return;
-      clearTimeout(timer);
-      tick();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [stepMs]);
-  return now;
-}
+import { useMemo } from 'react';
+import { useNow, useTheme } from '../lib/hooks.ts';
 
 export function ClockBody({ config }: { config: ClockConfig }) {
   const mode = useTheme();

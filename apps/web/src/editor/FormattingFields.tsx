@@ -444,16 +444,20 @@ type Entry = NonNullable<TableConfig['columns']>[number];
 const fieldOf = (e: Entry) => (typeof e === 'string' ? e : e.field);
 /** An object that only names its field is the plain name again, which keeps simple tables simple. */
 const simplify = (col: TableColumn): Entry =>
-  col.label || col.format || col.bands || col.colorAs === 'text' ? col : col.field;
+  col.label || col.format || col.bands || col.link || col.colorAs === 'text' ? col : col.field;
 
 function ColumnSettings({
   column,
+  columns,
   onChange,
 }: {
   column: TableColumn;
+  /** The data's columns, for the link target. */
+  columns: Column[];
   onChange: (c: TableColumn, label: string, coalesce?: string) => void;
 }) {
   const format = column.format;
+  const linkOptions = columns.filter((c) => c.type === 'string' && c.name !== column.field);
   const setFormat = (next: Format | undefined) => {
     const { format: _f, ...rest } = column;
     onChange(next ? { ...rest, format: next } : rest, 'Changed column format');
@@ -476,6 +480,28 @@ function ColumnSettings({
               );
             }}
           />
+        )}
+      </Field>
+      <Field label="Link to" hint="The cell opens the address held in this column (http/https only).">
+        {(fid) => (
+          <Select
+            id={fid}
+            value={column.link ?? ''}
+            onChange={(e) => {
+              const { link: _l, ...rest } = column;
+              onChange(e.target.value ? { ...rest, link: e.target.value } : rest, 'Changed column link');
+            }}
+          >
+            <option value="">No link</option>
+            {column.link && !linkOptions.some((c) => c.name === column.link) ? (
+              <option value={column.link}>{column.link} (missing)</option>
+            ) : null}
+            {linkOptions.map((c) => (
+              <option key={c.name} value={c.name}>
+                {c.name}
+              </option>
+            ))}
+          </Select>
         )}
       </Field>
       <div className="grid grid-cols-2 gap-2">
@@ -611,6 +637,7 @@ export function TableColumnChooser({
                 >
                   <ColumnSettings
                     column={object}
+                    columns={columns}
                     onChange={(col, label, coalesce) =>
                       save(
                         entries.map((e, j) => (j === at ? simplify(col) : e)),

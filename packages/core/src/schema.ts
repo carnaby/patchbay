@@ -40,6 +40,9 @@ export const SecretIdSchema = z
 const scalar = z.union([z.number(), z.string(), z.boolean(), z.null()]);
 const field = z.string().min(1).max(200);
 
+/** Feeds are fetched at most this often per address, whatever a dataset's refreshSec says. */
+export const FEED_MIN_REFRESH_SEC = 300;
+
 export const SourceSchema = z.discriminatedUnion('kind', [
   z
     .strictObject({
@@ -77,6 +80,13 @@ export const SourceSchema = z.discriminatedUnion('kind', [
     .describe(
       'An HTTPS JSON endpoint. Private networks are blocked. Credentials only via "secrets", never in the URL',
     ),
+  z
+    .strictObject({
+      kind: z.literal('feed'),
+      url: z.url({ protocol: /^https$/ }).max(2000),
+      limit: z.number().int().min(1).max(200).default(30),
+    })
+    .describe('An RSS, Atom or JSON Feed, or a web page that announces one'),
 ]);
 export type Source = z.infer<typeof SourceSchema>;
 
@@ -227,6 +237,7 @@ const colorAs = z.enum(['fill', 'text']).default('fill');
 export const TableColumnSchema = z.strictObject({
   field,
   label: z.string().min(1).max(80).optional(),
+  link: field.optional(),
   format: FormatSchema.optional(),
   bands: BandsSchema.optional(),
   colorAs,
@@ -251,6 +262,8 @@ export const TableConfigSchema = z.strictObject({
   pageSize: z.number().int().min(5).max(200).default(25),
   format: FormatSchema.optional(),
   rules: z.array(TableRuleSchema).max(6).optional(),
+  // Optional, not defaulted: tables saved before it existed must round-trip unchanged. Absent means "table".
+  style: z.enum(['table', 'list']).optional(),
 });
 export type TableConfig = z.infer<typeof TableConfigSchema>;
 

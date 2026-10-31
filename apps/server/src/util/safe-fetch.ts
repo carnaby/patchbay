@@ -282,8 +282,8 @@ export function redactJson(value: unknown, values: string[]): unknown {
 }
 
 /** The request for one hop: a copy of the URL (plus a query secret) and the headers. The document URL is untouched. */
-function attach(url: URL, credentials: Credential[]) {
-  const headers: Record<string, string> = { accept: 'application/json', 'user-agent': USER_AGENT };
+function attach(url: URL, credentials: Credential[], accept: string) {
+  const headers: Record<string, string> = { accept, 'user-agent': USER_AGENT };
   let search = url.search;
   for (const c of credentials) {
     if (c.placement === 'bearer') headers.authorization = `Bearer ${c.value}`;
@@ -328,13 +328,25 @@ function withoutOwnQuerySecrets(url: URL, credentials: Credential[]): URL {
   return next;
 }
 
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new HttpError(502, 'Response is not valid JSON');
+  }
+}
+
 /** Fetches JSON from an untrusted, user-supplied URL with SSRF protection, optionally with credentials. */
 export async function safeFetchJson(raw: string, options: SafeFetchOptions = {}): Promise<unknown> {
   const credentials = options.credentials ?? [];
-  if (credentials.length === 0) return fetchHops(raw, [], options);
+  if (credentials.length === 0)
+    return parseJson((await fetchHops(raw, [], options, 'application/json')).text);
   const values = credentials.map((c) => c.value);
   try {
-    return redactJson(await fetchHops(raw, credentials, options), values);
+    return redactJson(
+      parseJson((await fetchHops(raw, credentials, options, 'application/json')).text),
+      values,
+    );
   } catch (e) {
     // New errors without a cause: nothing that might hold request options reaches a logger.
     const err = e instanceof HttpError ? e : new HttpError(502, 'Request failed');
@@ -342,11 +354,31 @@ export async function safeFetchJson(raw: string, options: SafeFetchOptions = {})
   }
 }
 
+export interface FetchedText {
+  text: string;
+  /** The media type without parameters, lowercased ("application/rss+xml"); "" when the server sent none. */
+  contentType: string;
+  /** The address the body came from, after redirects: relative links in it resolve against this. */
+  url: string;
+}
+
+/**
+ * Fetches text (feeds, the HTML page that announces a feed) from an untrusted, user-supplied URL, with the same SSRF
+ * protection, limits and redirect checks as JSON. Never with credentials.
+ */
+export async function safeFetchText(
+  raw: string,
+  options: { accept: string; test?: UpstreamTestSeam | undefined },
+): Promise<FetchedText> {
+  return fetchHops(raw, [], options.test ? { test: options.test } : {}, options.accept);
+}
+
 async function fetchHops(
   raw: string,
   credentials: Credential[],
   options: SafeFetchOptions,
-): Promise<unknown> {
+  accept: string,
+): Promise<FetchedText> {
   const redirects = options.redirects ?? 3;
   let url = await assertPublicUrl(raw);
   for (let hop = 0; hop <= redirects; hop++) {
@@ -360,7 +392,7 @@ async function fetchHops(
         `The API redirected to another address. Credentials are only sent to ${bindingLabel(c)}, so the request was stopped.`,
       );
     }
-    const { target, headers } = attach(url, credentials);
+    const { target, headers } = attach(url, credentials, accept);
     const res = await undiciFetch(target, {
       redirect: 'manual',
       dispatcher: options.test?.dispatcher ?? guardedAgent,
@@ -391,11 +423,8 @@ async function fetchHops(
       throw new HttpError(502, `Upstream responded ${res.status}`);
     }
     const text = await readCapped(res as unknown as Response, MAX_BYTES);
-    try {
-      return JSON.parse(text);
-    } catch {
-      throw new HttpError(502, 'Response is not valid JSON');
-    }
+    const contentType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+    return { text, contentType, url: url.href };
   }
   throw new HttpError(502, 'Too many redirects');
 }

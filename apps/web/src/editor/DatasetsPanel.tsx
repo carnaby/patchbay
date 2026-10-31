@@ -5,6 +5,7 @@ import {
   type Dataset,
   type DatasetResult,
   diffSteps,
+  FEED_MIN_REFRESH_SEC,
   formatValue,
   type OpInput,
   type ParamSpec,
@@ -27,6 +28,7 @@ import {
   Plug,
   Plus,
   Radio,
+  Rss,
   Sparkles,
   Table2,
   Trash2,
@@ -78,7 +80,7 @@ const formatInterval = (sec: number) =>
 
 /** Skip previews for sources that are obviously not ready yet. */
 const previewable = (source: Source) =>
-  !(source.kind === 'http' && source.url.length < 12) &&
+  !((source.kind === 'http' || source.kind === 'feed') && source.url.length < 12) &&
   !(source.kind === 'upload' && source.fileId === 'none');
 
 type DraftDataset = Omit<Dataset, 'transforms'> & { transforms: TransformInput[] };
@@ -113,6 +115,8 @@ export function sourceSummary(source: Source, connectors: ConnectorInfo[] | unde
       return `${source.rows.length} inline rows`;
     case 'http':
       return new URL(source.url).host;
+    case 'feed':
+      return `Feed · ${new URL(source.url).host}`;
   }
 }
 
@@ -331,6 +335,7 @@ function SourceEditor({
     if (kind === 'upload') onChange({ kind, fileId: files.data?.[0]?.id ?? 'none' });
     if (kind === 'inline') onChange({ kind, rows: [] });
     if (kind === 'http') onChange({ kind, url: 'https://' });
+    if (kind === 'feed') onChange({ kind, url: 'https://', limit: 30 });
   };
 
   return (
@@ -375,8 +380,52 @@ function SourceEditor({
               </>
             ),
           },
+          {
+            value: 'feed',
+            label: (
+              <>
+                <Rss className="size-3.5" />
+                News feed
+              </>
+            ),
+          },
         ]}
       />
+
+      {source.kind === 'feed' ? (
+        <div className="grid gap-3 sm:grid-cols-[1fr_8rem]">
+          <Field
+            label="Feed or website address"
+            hint="RSS, Atom or JSON Feed. A site's home page works when it announces a feed. Checked at most every 5 minutes."
+          >
+            {(fid) => (
+              <Input
+                id={fid}
+                value={source.url}
+                spellCheck={false}
+                onChange={(e) => onChange({ ...source, url: e.target.value })}
+                placeholder="https://www.bbc.com/news"
+              />
+            )}
+          </Field>
+          <Field label="Newest items">
+            {(fid) => (
+              <Input
+                id={fid}
+                type="number"
+                min={1}
+                max={200}
+                value={source.limit}
+                onChange={(e) => {
+                  const n = Math.round(Number(e.target.value));
+                  if (e.target.value !== '' && Number.isFinite(n))
+                    onChange({ ...source, limit: Math.min(200, Math.max(1, n)) });
+                }}
+              />
+            )}
+          </Field>
+        </div>
+      ) : null}
 
       {source.kind === 'connector' ? (
         <div className="space-y-3">
@@ -620,10 +669,13 @@ function DatasetEditor({
   // A connector serves the same reading until its minimum interval has passed, so faster choices would only promise
   // a refresh that never shows (agents get theirs raised on save; here they are simply not offered).
   const source = draft.source;
+  // Feeds are fetched at most every 5 minutes on the server, whatever the dataset asks.
   const minRefreshSec =
     source.kind === 'connector'
       ? (connectors?.find((c) => c.id === source.connector)?.minRefreshSec ?? 0)
-      : 0;
+      : source.kind === 'feed'
+        ? FEED_MIN_REFRESH_SEC
+        : 0;
   const refreshTooFast = draft.refreshSec > 0 && draft.refreshSec < minRefreshSec;
 
   const credentials = useCredentialContext();

@@ -402,3 +402,41 @@ describe('start page widget snapshots', () => {
     expect(inkColumns(img, { x: 48, y: 14, w: 300, h: 40 }).length).toBeGreaterThan(60);
   });
 });
+
+describe('list-style table snapshots', () => {
+  it('draws headlines with a muted line under each', () => {
+    const now = Date.now();
+    const feed: DatasetResult = {
+      datasetId: 'news',
+      table: inferTable(
+        [0, 1, 2].map((i) => ({
+          title: `Headline number ${i}`,
+          link: `https://x.example/${i}`,
+          source: 'X',
+          published: now - i * 3_600_000,
+        })),
+        { types: { published: 'time' } },
+      ),
+      fetchedAt: new Date(now).toISOString(),
+      hash: 'f',
+      truncated: false,
+    };
+    const img = decodePng(
+      renderWidgetPng(
+        widget({
+          id: 'h',
+          type: 'table',
+          title: 'News',
+          datasetId: 'news',
+          config: { style: 'list', columns: [{ field: 'title', link: 'link' }, 'source', 'published'] },
+        }),
+        feed,
+      ),
+    );
+    // Title line, then the meta line ("X · 1 hour ago") of the second item, 42 px apart.
+    expect(inkColumns(img, { x: 14, y: 38, w: 300, h: 16 }).length).toBeGreaterThan(80);
+    expect(inkColumns(img, { x: 14, y: 42 + 56, w: 200, h: 14 }).length).toBeGreaterThan(30);
+    // No header row as in table style: the strip right under the title row is empty.
+    expect(inkColumns(img, { x: 300, y: 36, w: 300, h: 16 }).length).toBe(0);
+  });
+});

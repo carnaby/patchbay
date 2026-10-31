@@ -922,6 +922,23 @@ function TableFields({
 }) {
   return (
     <>
+      <div className="space-y-1.5">
+        <div className="text-[13px] font-medium text-ink-2">Show as</div>
+        <Segmented
+          value={widget.config.style ?? 'table'}
+          onChange={(style) =>
+            setConfig({ style: style === 'list' ? 'list' : undefined }, 'Changed table style')
+          }
+          options={[
+            { value: 'table', label: 'Table' },
+            {
+              value: 'list',
+              label: 'Headlines',
+              title: 'First column as a linked title, the others under it',
+            },
+          ]}
+        />
+      </div>
       <TableColumnChooser widget={widget} columns={columns} setConfig={setConfig} />
       <Field label="Rows per page">
         {(fid) => (

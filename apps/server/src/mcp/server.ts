@@ -312,12 +312,15 @@ export function createMcp(deps: Deps) {
           const touchedDatasets = result.envelope.doc.datasets.filter((d) => touched.has(d.id));
           // Keys pasted into URLs end up in every version and every get_dashboard answer: point to secrets instead.
           const warnings = touchedDatasets.flatMap((d) => {
-            const params = d.source.kind === 'http' ? credentialLikeParams(d.source.url) : [];
-            return params.length
-              ? [
-                  `Dataset "${d.id}": the URL has ${params.map((n) => `"${n}"`).join(', ')}, which looks like a credential. Credentials belong in secrets (list_secrets), never in a URL.`,
-                ]
-              : [];
+            const params =
+              d.source.kind === 'http' || d.source.kind === 'feed' ? credentialLikeParams(d.source.url) : [];
+            if (!params.length) return [];
+            const names = params.map((n) => `"${n}"`).join(', ');
+            return [
+              d.source.kind === 'feed'
+                ? `Dataset "${d.id}": the feed URL has ${names}, which looks like a private token. Feeds take no secrets: the token is stored in the dashboard and visible to everyone who can open it. Use a public feed address.`
+                : `Dataset "${d.id}": the URL has ${names}, which looks like a credential. Credentials belong in secrets (list_secrets), never in a URL.`,
+            ];
           });
           type WidgetOp = { op: string; id?: string; widget?: { id: string }; colors?: unknown };
           const widgetOps = args.operations as WidgetOp[];

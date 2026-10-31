@@ -22,6 +22,7 @@ import {
   type DashboardDoc,
   type DatasetResult,
   formatNumber,
+  formatRelative,
   GRID_COLUMNS,
   isDataWidgetType,
   resolveColor,
@@ -235,6 +236,36 @@ function widgetBody(
     case 'table': {
       const cols = tableColumns(widget.config, table).slice(0, 8);
       const rules = compileTableRules(widget.config);
+      if (widget.config.style === 'list' && cols.length) {
+        // Headlines: the first column as the title, the others muted under it; times relative to the render time.
+        const now = Date.now();
+        const first = cols[0]!;
+        const rest = cols.slice(1);
+        const perLine = Math.max(10, Math.floor(w / 7));
+        let out = '';
+        table.rows.slice(0, Math.max(0, Math.floor(h / 42))).forEach((row, r) => {
+          const y = r * 42;
+          out += text(0, y + 15, truncate(cellStyle(row, first, rules, theme).text, perLine), {
+            size: 13,
+            weight: 600,
+            color: theme.textPrimary,
+          });
+          const meta = rest
+            .map((c) => {
+              const v = row[c.field] ?? null;
+              if (v === null || v === '') return '';
+              return c.type === 'time' && typeof v === 'number'
+                ? formatRelative(v, now)
+                : cellStyle(row, c, rules, theme).text;
+            })
+            .filter(Boolean)
+            .join(' · ');
+          if (meta)
+            out += text(0, y + 31, truncate(meta, Math.floor(w / 6)), { size: 11, color: theme.muted });
+          if (r > 0) out += `<line x1="0" y1="${y - 4}" x2="${w}" y2="${y - 4}" stroke="${theme.grid}"/>`;
+        });
+        return out;
+      }
       const colW = w / Math.max(cols.length, 1);
       const maxChars = Math.max(4, Math.floor(colW / 7));
       let out = cols

@@ -520,8 +520,9 @@ describe('MCP tools', () => {
     // column objects and rules, setMeta `colors`; their descriptions live in get_reference instead; -> 37,300: the
     // map widget (proposal 0006), one more branch of the widget union with its shared fields and its colour map,
     // descriptions cut to a few words; -> 38,500: the clock and search widgets (proposal 0009), two more branches of
-    // the widget union, without field descriptions).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(38_500);
+    // the widget union, without field descriptions; -> 39,300: the feed source and the table's column `link` and
+    // `style`).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(39_300);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(
@@ -956,6 +957,74 @@ describe('MCP tools', () => {
       ).rows.map((r: { readings: number }) => r.readings);
     expect(await perDay({})).toEqual([10, 24, 24, 24, 24, 24, 24, 14]);
     expect(await perDay({ dropPartial: true })).toEqual([24, 24, 24, 24, 24, 24]);
+  });
+
+  it('reads feeds offline, raises their refresh, warns about tokens and builds a start page', async () => {
+    const agent = await ownClient('start-page@example.com');
+    const id = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'Start page' } })),
+    ).dashboardId;
+    const res = JSON.parse(
+      text(
+        await agent.callTool({
+          name: 'apply_operations',
+          arguments: {
+            dashboardId: id,
+            operations: [
+              {
+                op: 'addDataset',
+                dataset: {
+                  id: 'news',
+                  name: 'News',
+                  source: { kind: 'feed', url: 'https://news.example.com/rss?token=abc', limit: 5 },
+                  refreshSec: 60,
+                },
+              },
+              {
+                op: 'addWidget',
+                widget: {
+                  id: 'headlines',
+                  type: 'table',
+                  title: 'Headlines',
+                  datasetId: 'news',
+                  config: {
+                    style: 'list',
+                    columns: [{ field: 'title', link: 'link' }, 'source', 'published'],
+                  },
+                  sound: { trigger: { kind: 'newRows', key: 'id' }, sound: 'ding' },
+                },
+              },
+              {
+                op: 'addWidget',
+                widget: { id: 'time', type: 'clock', config: { timeZone: 'Europe/Bratislava' } },
+              },
+              { op: 'addWidget', widget: { id: 'find', type: 'search', config: {} } },
+            ],
+          },
+        }),
+      ),
+    );
+    expect(res.changes).toContain(
+      'Raised refreshSec of dataset "News" from 60 s to 300 s, the minimum for feeds',
+    );
+    expect(res.warnings).toEqual([expect.stringMatching(/feed URL has "token".*Feeds take no secrets/)]);
+    const data = JSON.parse(
+      text(await agent.callTool({ name: 'get_data', arguments: { dashboardId: id, datasetId: 'news' } })),
+    );
+    expect(data.rowCount).toBe(5);
+    expect(data.rows[0]).toMatchObject({ source: 'news.example.com (offline sample)' });
+    expect(Object.keys(data.rows[0])).toEqual([
+      'id',
+      'title',
+      'link',
+      'published',
+      'summary',
+      'author',
+      'source',
+      'image',
+    ]);
+    const snap = await agent.callTool({ name: 'render_snapshot', arguments: { dashboardId: id } });
+    expect(snap.isError).toBeFalsy();
   });
 
   it('raises refreshSec below the connector minimum and says so', async () => {

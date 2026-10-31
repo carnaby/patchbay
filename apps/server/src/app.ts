@@ -58,6 +58,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   let dashboards: DashboardService | undefined;
   const data = new DataService(connectors, store, pipeline, {
     credentials: (target, dataset) => dashboards!.credentialsFor(target, dataset),
+    offline: config.offline,
     ...(overrides.upstreamTest ? { upstreamTest: overrides.upstreamTest } : {}),
   });
   const hub = new LiveHub(data, async (id) => {
