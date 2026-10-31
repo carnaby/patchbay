@@ -62,7 +62,7 @@ const EnvSchema = z.object({
   /** Largest upload, in cells, for anonymous dashboards. */
   UPLOAD_MAX_CELLS_ANONYMOUS: z.coerce.number().int().min(1000).default(200_000),
   /** Memory for parsed tables kept between requests (uploads, inline rows, HTTP responses). */
-  DATA_CACHE_MB: z.coerce.number().int().min(1).default(48),
+  DATA_CACHE_MB: z.coerce.number().int().min(1).default(32),
   /** everyone: any dashboard may load http and feed sources. signed-in: only dashboards with an owner. */
   URL_SOURCES: z.enum(['everyone', 'signed-in']).default('everyone'),
   /** Who may store credentials for HTTP sources. Off unless the operator decides otherwise, see proposal 0003. */

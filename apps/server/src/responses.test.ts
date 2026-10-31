@@ -151,6 +151,6 @@ describe('data responses', () => {
     expect(new Set(responses.map((r) => r.status))).toEqual(new Set([200]));
     expect(new Set(responses.map((r) => r.text)).size).toBe(1);
     expect(responses[0]!.headers.get('content-length')).toBe(String(Buffer.byteLength(responses[0]!.text)));
-    expect(deps.wire.budget.stats()).toEqual({ bytes: 0, bodies: 0, waiting: 0 });
+    expect(deps.wire.budget.stats()).toEqual({ bytes: 0, bodies: 0, waiting: 0, waitingBytes: 0 });
   });
 });

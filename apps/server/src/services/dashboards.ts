@@ -49,6 +49,7 @@ import type { FolderStore, StoredMeta } from '../store/folder-store.ts';
 import { newDashboardId, newId, randomToken, safeEqual, sha256 } from '../util/crypto.ts';
 import { badRequest, forbidden, HttpError, notFound, unauthorized } from '../util/errors.ts';
 import { Gate } from '../util/gate.ts';
+import { heavyWork } from '../util/heavy.ts';
 import { currentClient } from '../util/request-context.ts';
 import type { Credential } from '../util/safe-fetch.ts';
 import type { DashboardTarget } from './data.ts';
@@ -836,8 +837,9 @@ export class DashboardService {
       if (problem) throw refused(problem);
     }
     // One upload at a time from parse to disk: each holds the file, its parsed table and its serialised form at once.
+    // That is a heavy job for the whole process too (util/heavy.ts): no snapshot or large pipeline runs meanwhile.
     return this.uploadGate.run(currentClient(), () =>
-      this.parseAndSave(id, meta, input, format, maxCells, refused),
+      heavyWork.run(() => this.parseAndSave(id, meta, input, format, maxCells, refused)),
     );
   }
 

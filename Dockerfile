@@ -28,6 +28,9 @@ LABEL org.opencontainers.image.source="https://github.com/carnaby/patchbay" \
 RUN apt-get update && apt-get install -y --no-install-recommends tini \
   && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production HOST=0.0.0.0 PORT=8787 DATA_DIR=/data
+# glibc gives each thread that allocates its own malloc arena; with the worker threads and libuv's pool that is many
+# half-empty arenas. Two keep native memory about 20 MB lower, part of the budget in guide/deployment.md.
+ENV MALLOC_ARENA_MAX=2
 COPY --from=build /app/package.json /app/pnpm-workspace.yaml ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages/core ./packages/core

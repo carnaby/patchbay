@@ -28,7 +28,7 @@ export class SnapshotCache {
 
   constructor(options: SnapshotCacheOptions = {}) {
     this.ttlMs = options.ttlMs ?? 30_000;
-    this.maxBytes = options.maxBytes ?? 16 * 1024 * 1024;
+    this.maxBytes = options.maxBytes ?? 8 * 1024 * 1024;
     this.now = options.now ?? Date.now;
   }
 

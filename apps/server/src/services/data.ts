@@ -31,6 +31,7 @@ import { FeedService } from '../feeds/service.ts';
 import type { FolderStore } from '../store/folder-store.ts';
 import { HttpError } from '../util/errors.ts';
 import { BusyError, Gate } from '../util/gate.ts';
+import { HEAVY_FILE_BYTES, HEAVY_PIPELINE_CELLS, heavyWork } from '../util/heavy.ts';
 import { approxTableBytes, ByteLru } from '../util/lru.ts';
 import { OutboundLimiter } from '../util/outbound.ts';
 import { currentClient } from '../util/request-context.ts';
@@ -48,8 +49,9 @@ const HTTP_TTL_MS = HTTP_MIN_REFRESH_SEC * 1000;
 const HTTP_ERROR_TTL_MS = HTTP_TTL_MS;
 /** Results are reused this briefly: long enough to absorb a burst of viewers, short enough for `now()` in steps. */
 const RESULT_TTL_MS = 5_000;
-export const DEFAULT_CACHE_BYTES = 48 * 1024 * 1024;
-const RESULT_CACHE_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_CACHE_BYTES = 32 * 1024 * 1024;
+/** Results reused for a burst of viewers (RESULT_TTL_MS); part of the memory budget in guide/deployment.md. */
+const RESULT_CACHE_BYTES = 8 * 1024 * 1024;
 const BUFFER_BYTES = 16 * 1024 * 1024;
 
 function pick(json: unknown, path: string | undefined): unknown {
@@ -233,7 +235,7 @@ export class DataService {
 
   /** Parses an uploaded file in the pipeline worker, a few at a time. */
   parseUpload(input: UploadInput): Promise<DataTable> {
-    return this.heavy.run(currentClient(), () => this.pipeline.parseUpload(input));
+    return this.heavy.run(currentClient(), () => heavyWork.run(() => this.pipeline.parseUpload(input)));
   }
 
   /** Keeps a freshly saved upload's table, so the preview that usually follows does not parse it again. */
@@ -259,12 +261,14 @@ export class DataService {
     if (!entry || !('table' in entry)) {
       let pending = this.loading.get(key);
       if (!pending) {
+        const read = async (): Promise<CacheEntry> => {
+          const table = await this.store.readFileTable(target.id, fileId);
+          if (!table) throw new HttpError(404, `Uploaded file "${fileId}" not found`);
+          return { table, at: stamp.mtimeMs, stamp: stamp.key };
+        };
         pending = this.heavy
-          .run(currentClient(), async (): Promise<CacheEntry> => {
-            const table = await this.store.readFileTable(target.id, fileId);
-            if (!table) throw new HttpError(404, `Uploaded file "${fileId}" not found`);
-            return { table, at: stamp.mtimeMs, stamp: stamp.key };
-          })
+          // A large file holds its text, its parsed values and the table at once: it takes its heavy turn.
+          .run(currentClient(), () => (stamp.bytes >= HEAVY_FILE_BYTES ? heavyWork.run(read) : read()))
           .then((e) => {
             if ('table' in e) this.tables.set(key, e, approxTableBytes(e.table));
             return e;
@@ -416,7 +420,10 @@ export class DataService {
   }
 
   private async compute(input: DataTable, transforms: Transform[], max: number): Promise<Computed> {
-    const { table, trace }: PipelineResult = await this.pipeline.run(input, transforms);
+    const run = () => this.pipeline.run(input, transforms);
+    // A large table can fill the pipeline worker's heap: it waits for its turn with the other heavy jobs.
+    const heavy = transforms.length > 0 && input.rows.length * input.columns.length >= HEAVY_PIPELINE_CELLS;
+    const { table, trace }: PipelineResult = await (heavy ? heavyWork.run(run) : run());
     const truncated = table.rows.length > max;
     const out: DataTable = truncated ? { columns: table.columns, rows: table.rows.slice(-max) } : table;
     // Measured in the compact form the web app reads, before anything is hashed, kept or serialised: a result too

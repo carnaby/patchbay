@@ -157,7 +157,7 @@ describe('ResultWire', () => {
     expect(fourth.retryAfterSec).toBe(3);
     second.release();
     running.release();
-    expect(wire.budget.stats()).toEqual({ bytes: 0, bodies: 0, waiting: 0 });
+    expect(wire.budget.stats()).toEqual({ bytes: 0, bodies: 0, waiting: 0, waitingBytes: 0 });
   });
 });
 
@@ -165,7 +165,7 @@ describe('ByteBudget', () => {
   it('counts a body many readers share once', async () => {
     const b = budget(100);
     const releases = await Promise.all(Array.from({ length: 50 }, () => b.acquire('ip:a', 'k', 80)));
-    expect(b.stats()).toEqual({ bytes: 80, bodies: 1, waiting: 0 });
+    expect(b.stats()).toEqual({ bytes: 80, bodies: 1, waiting: 0, waitingBytes: 0 });
     for (const r of releases) r();
     expect(b.stats().bytes).toBe(0);
   });
@@ -192,6 +192,28 @@ describe('ByteBudget', () => {
     other();
     (await queued)();
     (await waiting)();
+  });
+
+  it('bounds the bytes waiting, not only the number of waiters', async () => {
+    const b = new ByteBudget({
+      maxBytes: 100,
+      maxBytesPerClient: 100,
+      maxQueue: 10,
+      maxQueuedPerClient: 10,
+      maxQueuedBytes: 50,
+      maxWaitMs: 1_000,
+      retryAfterSec: 1,
+    });
+    const full = await b.acquire('ip:a', 'a', 100);
+    // Waiting bodies are built already: 30 + 20 fit the waiting room, the next byte does not.
+    const first = b.acquire('ip:b', 'b', 30);
+    const second = b.acquire('ip:c', 'c', 20);
+    await expect(b.acquire('ip:d', 'd', 1)).rejects.toBeInstanceOf(BusyError);
+    expect(b.stats().waitingBytes).toBe(50);
+    full();
+    (await first)();
+    (await second)();
+    expect(b.stats()).toEqual({ bytes: 0, bodies: 0, waiting: 0, waitingBytes: 0 });
   });
 
   it('runs inside the request client', async () => {

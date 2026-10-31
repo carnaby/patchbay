@@ -107,7 +107,8 @@ instances.
 - **Results are serialised once and shared** (`services/result-wire.ts`). The web app asks for rows as arrays
   (`?rows=arrays`, column names once instead of in every row; `decodeTable` in core turns them back); other clients
   get rows as objects. Concurrent readers of a result and every subscriber of a live push send the same bytes, and the
-  bodies still being read stay within a byte budget (24 MB); beyond it requests wait briefly, then get 503.
+  bodies still being read stay within a byte budget (12 MB, and 4 MB of bodies waiting); beyond it requests wait
+  briefly, then get 503.
 - **Large pipelines run in worker threads** (`services/pipeline-pool.ts`). Inputs under 20,000 cells run inline,
   because copying them to a worker costs more than processing them; larger ones go to a pool of `worker_threads`
   (CPUs − 1, at most 4), so one heavy dashboard never blocks the API for everyone else. Each job has a hard time limit:
@@ -121,6 +122,12 @@ instances.
   draws is bounded: 10,000 marks (dots, bars, cells) and 100,000 line points across all its charts, shared fairly and
   trimmed to each widget's newest rows, plus backstops on draw time and SVG size after which the remaining charts
   are left out with a note on their cards.
+- **Heavy jobs take turns** (`util/heavy.ts`). Each worker has its own heap limit, but a small container cannot hold
+  all of them at their peak at once, next to an upload being parsed and saved on the main thread. Drawing a snapshot,
+  an upload from parse to disk, loading a large stored upload, a pipeline over 100,000 cells or more and parsing a feed
+  of 512 KB or more therefore run one at a time across the process; small jobs never wait. Workers collect their
+  garbage after a large job, so the next one starts next to an emptied heap. The budget is in
+  [deployment.md](deployment.md#memory-budget).
 - **Accumulate** turns "current value" sources (current weather, a spot price, the ISS position) into rolling time
   series by appending each new reading with a `fetched_at` column. The buffer is in memory by design; it is a live view,
   not a database.

@@ -62,8 +62,9 @@ export function isLargeBody(request: Request): boolean {
 /**
  * Requests with large bodies admitted at the same time. Each one holds its body as bytes, as text and as parsed
  * values until it is answered, two to three times its size; ten 7 MB requests at once took 120 MB of the main
- * thread's memory. Waiting requests have not been read yet, so they cost only their socket. Two is enough: uploads
- * are parsed one at a time anyway (DashboardService), so two keep the next one read and checked while one is parsed.
+ * thread's memory. Waiting requests have not been read yet, so they cost only their socket. One at a time: uploads are
+ * parsed and saved one at a time anyway (DashboardService), and the main thread's share of the memory budget
+ * (guide/deployment.md) has room for one large body next to its caches, not two.
  */
 export const newLargeBodyGate = () =>
-  new Gate({ concurrency: 2, maxQueue: 8, maxQueuedPerClient: 2, maxWaitMs: 10_000, retryAfterSec: 5 });
+  new Gate({ concurrency: 1, maxQueue: 8, maxQueuedPerClient: 2, maxWaitMs: 15_000, retryAfterSec: 5 });

@@ -211,7 +211,7 @@ defaults suit one container with 384 MB of memory; raise them only with more mem
 | ---------------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
 | `UPLOAD_MAX_CELLS`           | 500000   | Rows × columns of an upload to a dashboard with an owner, and of an HTTP response kept in memory.          |
 | `UPLOAD_MAX_CELLS_ANONYMOUS` | 200000   | The same for anonymous dashboards.                                                                         |
-| `DATA_CACHE_MB`              | 48       | Parsed tables (uploads, inline rows, HTTP responses) kept between requests, least recently used first out. |
+| `DATA_CACHE_MB`              | 32       | Parsed tables (uploads, inline rows, HTTP responses) kept between requests, least recently used first out. |
 | `PIPELINE_WORKER_MEMORY_MB`  | 96       | Heap of each pipeline worker; a job that needs more fails instead of exhausting the container.             |
 | `PIPELINE_WORKERS`           | CPUs − 1 | Pipeline worker threads (at most 4). Each one can take its whole heap: keep `1` at 384 MB.                 |
 | `URL_SOURCES`                | everyone | `signed-in`: http and feed sources load only for dashboards owned by a signed-in user.                     |
@@ -219,35 +219,49 @@ defaults suit one container with 384 MB of memory; raise them only with more mem
 Fixed limits, for reference: uploads are parsed in the pipeline worker and refused as soon as they pass the cell limit;
 an upload has at most 500 columns with names of up to 200 characters, and a JSON upload nests at most 64 levels and
 holds at most three values per allowed cell, checked before it is parsed. Uploads are parsed and saved one at a time
-across the server (two more may wait); at most two requests with bodies over 1 MB are read at a time (eight more may
-wait); every JSON request body and HTTP source response is refused before parsing when it nests deeper than 64 levels.
-At most two stored uploads are parsed at a time; HTTP sources are fetched at most three at a time, two at a time and
-60 times a minute per host, and a failing address is not asked again for 30 s; the pipeline worker's queue takes jobs
-round-robin per client, one client holding at most a tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are
-drawn one at a time in a worker thread, at most four requests in flight and two per client; each client may have four
-drawn at once and then one every two seconds (images served from the 30 s cache do not count), beyond which the API
-answers `429 Too Many Requests` with `Retry-After`. When a queue is full the API answers
-`503 Service Unavailable` with `Retry-After`, and live refreshes skip a beat, instead of the process running out of
-memory. Live refresh never runs for uploads and inline rows (they change only when edited) and at most every 30 s for
-HTTP sources. A dataset's result is sent only up to 4 MB as JSON (larger ones show an error asking for limit, select or
-aggregate steps); each result is serialised once and shared by everyone reading it, and response bodies still being
-read take at most 24 MB together (8 MB per client) before further large reads wait up to 10 s and then get a 503.
+across the server (two more may wait); one request with a body over 1 MB is read at a time (eight more may wait);
+every JSON request body and HTTP source response is refused before parsing when it nests deeper than 64 levels. HTTP
+sources are fetched at most three at a time, two at a time and 60 times a minute per host, and a failing address is
+not asked again for 30 s; the pipeline worker's queue takes jobs round-robin per client, one client holding at most a
+tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are drawn one at a time in a worker thread, at most four
+requests in flight and two per client; each client may have four drawn at once and then one every two seconds (images
+served from the 30 s cache do not count), beyond which the API answers `429 Too Many Requests` with `Retry-After`.
+When a queue is full the API answers `503 Service Unavailable` with `Retry-After`, and live refreshes skip a beat,
+instead of the process running out of memory. Live refresh never runs for uploads and inline rows (they change only
+when edited) and at most every 30 s for HTTP sources. A dataset's result is sent only up to 4 MB as JSON (larger ones
+show an error asking for limit, select or aggregate steps); each result is serialised once and shared by everyone
+reading it, and response bodies still being read take at most 12 MB together (6 MB per client), with at most 4 MB more
+waiting for room up to 10 s; further large reads get a 503 at once.
 
 ### Memory budget
 
-One process holds everything; the worker threads are part of it and count against the same container limit.
+One process holds everything: the main thread, the worker threads and their native memory count against the same
+container limit. The heavy jobs take turns (`util/heavy.ts`): drawing a snapshot, an upload from parse to disk,
+loading a stored upload over 1 MB, a pipeline over 100,000 cells and parsing a feed over 512 KB run one at a time
+across the process, so at most one worker is at its peak while the others sit at their resting size.
 
-| Part               | Bound                                                                                           |
-| ------------------ | ----------------------------------------------------------------------------------------------- |
-| Native memory      | About 80 MB: Node, code, buffers, the fixed cost of each thread.                                |
-| Main thread's heap | 25 MB idle; `DATA_CACHE_MB`, one upload and two large bodies on top. At most 100 MB measured.   |
-| Pipeline worker    | `PIPELINE_WORKER_MEMORY_MB` + 8 MB young generation, per worker: 104 MB.                        |
-| Feed worker        | 48 + 8 MB, only while feeds are read (it stops after a minute without one): 56 MB.              |
-| Total              | About 340 MB, which leaves room for the 16 MB V8 adds while a worker over its limit is stopped. |
+| Part                      | Resting                                    | Peak                                                                      |
+| ------------------------- | ------------------------------------------ | ------------------------------------------------------------------------- |
+| Node, code, thread stacks | About 30 MB                                | The same; glibc keeps two malloc arenas (`MALLOC_ARENA_MAX=2`)            |
+| Main thread               | 20 MB heap, 10 MB buffers                  | Caches below plus one upload in flight: 100–120 MB heap, 30–60 MB buffers |
+| Pipeline worker           | 25 MB                                      | `PIPELINE_WORKER_MEMORY_MB` + 8 MB young generation: 104 MB               |
+| Snapshot worker           | 50 MB (ECharts, the world map), while used | 96 + 8 MB heap, plus resvg's pixmap (at most 4 megapixels)                |
+| Feed worker               | 30 MB, while used                          | 48 + 8 MB                                                                 |
 
-Measured with the production flags (`--memory 384m --cpus 2`, `PIPELINE_WORKERS=1`): three 500,000-cell uploads at
-once peak at about 290 MB; the same together with three over-limit feeds and ten hostile uploads at about 340 MB,
-without the container being killed. Each extra pipeline worker adds 104 MB; at 384 MB keep one.
+The main thread's share is bounded by its caches and gates rather than by a heap flag: parsed tables (`DATA_CACHE_MB`,
+32), results reused for a few seconds (8 MB), serialised results (8 MB), snapshot images (8 MB), response bodies
+(12 MB, 4 MB waiting) and one large request body and one upload at a time. V8 lets that heap grow to about twice what
+is live before it collects, which is where most of the gap between resting and peak comes from. The snapshot and feed
+workers stop after a minute without work; an idle server with its pipeline worker takes about 85 MB.
+
+Measured with the production flags (`--memory 384m --cpus 2 --read-only`, `PIPELINE_WORKERS=1`,
+`URL_SOURCES=signed-in`), as the container's highest anonymous memory over 60–90 s of each load: a snapshot storm (25
+clients cycling the widgets of a 60-chart dashboard, plus full renders after every edit) 275 MB; 500,000-cell uploads
+three at a time with 5 MB JSON uploads, deeply nested JSON and over-limit feeds 290 MB; 160 concurrent reads of 20
+different 2–4 MB results 267 MB. All of them at once need more than 384 MB: the container is killed after about half a
+minute, at about 350 MB. With `--memory 512m` the same run peaks at 415 MB (449 MB with the kernel's share) and keeps
+answering. So 384 MB holds any one kind of heavy load at its limits with about 100 MB to spare, and 512 MB holds all of
+them together. Each extra pipeline worker adds 104 MB; keep one at either size.
 
 A worker that hits its heap limit fails its job, and its replacement starts only after it has exited, so a worker slot
 never holds two heaps. The worker limits hold only while Node runs without `--max-old-space-size` (or

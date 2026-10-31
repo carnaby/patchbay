@@ -8,6 +8,7 @@
  */
 import { RetryLaterError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
+import { heavyWork } from '../util/heavy.ts';
 import type { RateLimiter } from '../util/rate-limit.ts';
 import { currentClient } from '../util/request-context.ts';
 import { type RenderTask, RenderWorker } from './worker-host.ts';
@@ -95,6 +96,9 @@ export const snapshotRenderer = new RenderWorker();
 
 /**
  * The one gate every snapshot goes through, REST and MCP alike: the limits only mean something if they are
- * process-wide.
+ * process-wide. Drawing also takes its turn with the other heavy jobs (util/heavy.ts): the renderer's heap and resvg's
+ * pixmaps never stack on a parse or a large pipeline.
  */
-export const snapshotGate = new RenderGate({ render: (task: RenderTask) => snapshotRenderer.render(task) });
+export const snapshotGate = new RenderGate({
+  render: (task: RenderTask) => heavyWork.run(() => snapshotRenderer.render(task)),
+});

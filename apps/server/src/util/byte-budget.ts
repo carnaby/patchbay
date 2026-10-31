@@ -14,6 +14,11 @@ export interface ByteBudgetOptions {
   /** Requests waiting beyond this are refused at once. */
   maxQueue: number;
   maxQueuedPerClient: number;
+  /**
+   * Bytes of the bodies waiting. A waiting body is already built (serialised, with its table still referenced), so
+   * the queue holds memory too: bounding it in bytes, not only in requests, keeps that memory known.
+   */
+  maxQueuedBytes?: number;
   /** A request that waited this long is refused: the budget is held by slow readers, and the client may retry. */
   maxWaitMs: number;
   retryAfterSec: number;
@@ -40,6 +45,7 @@ export class ByteBudget {
   private readonly waiting: Waiter[] = [];
   private readonly queued = new Map<string, number>();
   private total = 0;
+  private waitingBytes = 0;
 
   constructor(options: ByteBudgetOptions) {
     this.options = options;
@@ -47,7 +53,12 @@ export class ByteBudget {
 
   /** Diagnostics and tests. */
   stats() {
-    return { bytes: this.total, bodies: this.holders.size, waiting: this.waiting.length };
+    return {
+      bytes: this.total,
+      bodies: this.holders.size,
+      waiting: this.waiting.length,
+      waitingBytes: this.waitingBytes,
+    };
   }
 
   /**
@@ -59,7 +70,11 @@ export class ByteBudget {
       return Promise.resolve(this.take(client, key, bytes));
     }
     const queued = this.queued.get(client) ?? 0;
-    if (this.waiting.length >= this.options.maxQueue || queued >= this.options.maxQueuedPerClient) {
+    if (
+      this.waiting.length >= this.options.maxQueue ||
+      queued >= this.options.maxQueuedPerClient ||
+      this.waitingBytes + bytes > (this.options.maxQueuedBytes ?? Number.POSITIVE_INFINITY)
+    ) {
       return Promise.reject(new BusyError(undefined, this.options.retryAfterSec));
     }
     return new Promise((resolve, reject) => {
@@ -75,7 +90,7 @@ export class ByteBudget {
           const index = this.waiting.indexOf(waiter);
           if (index < 0) return;
           this.waiting.splice(index, 1);
-          this.dequeued(client);
+          this.dequeued(client, bytes);
           reject(new BusyError(undefined, this.options.retryAfterSec));
           // A waiter that gave up may have been what blocked the ones behind it.
           this.pump();
@@ -84,6 +99,7 @@ export class ByteBudget {
       waiter.timer.unref();
       this.waiting.push(waiter);
       this.queued.set(client, queued + 1);
+      this.waitingBytes += bytes;
     });
   }
 
@@ -146,7 +162,7 @@ export class ByteBudget {
       const shared = this.holders.has(w.key);
       if (shared || (!blocked && this.fits(w.client, w.bytes))) {
         this.waiting.splice(i, 1);
-        this.dequeued(w.client);
+        this.dequeued(w.client, w.bytes);
         w.grant();
         continue;
       }
@@ -155,7 +171,8 @@ export class ByteBudget {
     }
   }
 
-  private dequeued(client: string) {
+  private dequeued(client: string, bytes: number) {
+    this.waitingBytes -= bytes;
     const n = (this.queued.get(client) ?? 1) - 1;
     if (n <= 0) this.queued.delete(client);
     else this.queued.set(client, n);

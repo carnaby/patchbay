@@ -13,6 +13,7 @@
 import { type ResourceLimits, Worker } from 'node:worker_threads';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { HttpError } from '../util/errors.ts';
+import { HEAVY_FEED_BYTES, heavyWork } from '../util/heavy.ts';
 import {
   checkHeapLimit,
   retire,
@@ -94,10 +95,13 @@ export class FeedParser {
     if (this.closed) return Promise.reject(new HttpError(503, 'Server is shutting down'));
     if (this.queue.length >= this.maxQueue)
       return Promise.reject(new HttpError(503, 'The server is busy reading feeds; try again shortly'));
-    return new Promise((resolve, reject) => {
-      this.queue.push({ id: this.nextId++, body, contentType, base, resolve, reject });
-      this.drain();
-    });
+    const run = () =>
+      new Promise<ParsedFeed>((resolve, reject) => {
+        this.queue.push({ id: this.nextId++, body, contentType, base, resolve, reject });
+        this.drain();
+      });
+    // A large document can fill the worker's heap: it takes its turn with the other heavy jobs (util/heavy.ts).
+    return body.length >= HEAVY_FEED_BYTES ? heavyWork.run(run) : run();
   };
 
   async close() {

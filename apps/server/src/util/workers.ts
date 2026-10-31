@@ -43,6 +43,19 @@ export function checkHeapLimit(label: string, oldGenerationMb: number, heapLimit
   );
 }
 
+/** Heap a worker may keep after a job before it collects: below this, leftovers cost less than a full collection. */
+const COLLECT_ABOVE_BYTES = 32 * 1024 * 1024;
+
+/**
+ * Called by a worker after each job. V8 collects when it needs room, not when a job ends, so a worker that just
+ * parsed a large file would keep that heap until its next job; collecting now gives it back while other workers take
+ * their turn. A no-op without `--expose-gc` (dev, tests), where collection is left to V8.
+ */
+export function collectAfterLargeJob(usedHeapBytes: number) {
+  const gc = (globalThis as { gc?: unknown }).gc;
+  if (usedHeapBytes > COLLECT_ABOVE_BYTES && typeof gc === 'function') (gc as () => void)();
+}
+
 /** The part of `Worker` the pool and the feed parser use, so tests can stand in a fake. */
 export interface WorkerLike {
   postMessage(value: unknown, transferList?: readonly ArrayBuffer[]): void;

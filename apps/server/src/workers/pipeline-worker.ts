@@ -7,7 +7,7 @@ import { getHeapStatistics } from 'node:v8';
 import { parentPort } from 'node:worker_threads';
 import { type DataTable, runPipeline, type Transform } from '@patchbay/core';
 import { parseUpload, UploadError, type UploadInput } from '../services/upload-parse.ts';
-import { textFromWorkerBytes } from '../util/workers.ts';
+import { collectAfterLargeJob, textFromWorkerBytes } from '../util/workers.ts';
 
 type Job =
   | { id: number; kind: 'pipeline'; table: DataTable; transforms: Transform[] }
@@ -30,6 +30,8 @@ parentPort!.on('message', (job: Job) => {
       ...(e instanceof UploadError ? { upload: true, tooLarge: e.tooLarge } : {}),
     });
   }
+  // Once this handler has returned: until then the job and its result are still referenced and would survive.
+  setImmediate(() => collectAfterLargeJob(getHeapStatistics().used_heap_size));
 });
 
 // Signal readiness only after the imports above loaded, so job time limits

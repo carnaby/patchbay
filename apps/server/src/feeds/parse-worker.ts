@@ -6,7 +6,7 @@
 import { getHeapStatistics } from 'node:v8';
 import { parentPort } from 'node:worker_threads';
 import { HttpError } from '../util/errors.ts';
-import { textFromWorkerBytes } from '../util/workers.ts';
+import { collectAfterLargeJob, textFromWorkerBytes } from '../util/workers.ts';
 import { parseFeed } from './parse.ts';
 
 interface Job {
@@ -30,6 +30,8 @@ parentPort!.on('message', (job: Job) => {
       message: known ? e.message : 'The feed could not be read',
     });
   }
+  // Once this handler has returned: until then the job and its result are still referenced and would survive.
+  setImmediate(() => collectAfterLargeJob(getHeapStatistics().used_heap_size));
 });
 
 // Signal readiness only after the imports above loaded, so job time limits never include worker start-up. The heap

@@ -27,14 +27,19 @@ import { currentClient } from '../util/request-context.ts';
 export const MAX_RESULT_BYTES = 4 * 1024 * 1024;
 
 /** Serialised tables kept for the next reader; a result is reused for a few seconds (DataService). */
-const SERIALISED_CACHE_BYTES = 16 * 1024 * 1024;
+const SERIALISED_CACHE_BYTES = 8 * 1024 * 1024;
 
-/** Response bodies held while clients read them: six results at the cap, or many smaller ones. */
+/**
+ * Response bodies held while clients read them (four results at the cap, or many smaller ones), and the bodies
+ * waiting for room, which are built already and keep their tables referenced. Part of the memory budget in
+ * guide/deployment.md: a few large reads wait, the rest of a burst gets 503 at once.
+ */
 export const RESPONSE_BUDGET: ByteBudgetOptions = {
-  maxBytes: 24 * 1024 * 1024,
-  maxBytesPerClient: 8 * 1024 * 1024,
-  maxQueue: 64,
-  maxQueuedPerClient: 16,
+  maxBytes: 12 * 1024 * 1024,
+  maxBytesPerClient: 6 * 1024 * 1024,
+  maxQueue: 8,
+  maxQueuedPerClient: 4,
+  maxQueuedBytes: 4 * 1024 * 1024,
   maxWaitMs: 10_000,
   retryAfterSec: 5,
 };

@@ -78,6 +78,13 @@ interface Live {
 
 const WORKER_URL = new URL('./worker.ts', import.meta.url);
 
+/**
+ * The renderer's old generation, part of the memory budget in guide/deployment.md. The heaviest dashboard the drawing
+ * budgets allow (60 charts of 10,000 points) peaks at about 85 MB; 128 MB left 30 MB that the 384 MB container
+ * needed elsewhere.
+ */
+export const RENDER_WORKER_MEMORY_MB = 96;
+
 export class RenderWorker {
   private readonly timeoutMs: number;
   private readonly oldGenerationMb: number;
@@ -97,7 +104,7 @@ export class RenderWorker {
 
   constructor(options: RenderWorkerOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? 15_000;
-    this.oldGenerationMb = options.oldGenerationMb ?? 128;
+    this.oldGenerationMb = options.oldGenerationMb ?? RENDER_WORKER_MEMORY_MB;
     this.idleMs = options.idleMs ?? 60_000;
     this.maxRenders = options.maxRenders ?? 100;
     this.startTimeoutMs = options.startTimeoutMs ?? 30_000;
