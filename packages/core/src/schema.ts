@@ -204,7 +204,8 @@ export const ChartConfigSchema = z.strictObject({
   stacked: z.boolean().default(false),
   smooth: z.boolean().default(false),
   showLegend: z.boolean().optional(),
-  showLabels: z.boolean().default(false),
+  // No default: unset lets snapshots label a few bars (see the reference text), an explicit false wins there too.
+  showLabels: z.boolean().optional(),
   yMin: z.number().optional(),
   yMax: z.number().optional(),
   xMin: z.number().optional().describe('Scatter with a numeric x: fixed lower bound of the x axis'),

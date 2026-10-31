@@ -137,3 +137,36 @@ describe('time axis of dated buckets', () => {
     expect(build('bar').xAxis.boundaryGap).toBe(false);
   });
 });
+
+describe('value labels in snapshots', () => {
+  const sales = inferTable([
+    { region: 'North', units: 120 },
+    { region: 'South', units: 95 },
+    { region: 'West', units: 143 },
+  ]);
+  type Built = { series: { label?: { show: boolean } }[] };
+  const labelled = (config: Record<string, unknown>, opts = { static: true }) =>
+    Boolean(
+      (
+        buildChartOption(
+          ChartConfigSchema.parse({ kind: 'bar', x: 'region', y: ['units'], ...config }),
+          sales,
+          THEMES.light,
+          opts,
+        ) as unknown as Built
+      ).series[0]!.label?.show,
+    );
+
+  it('labels a few single-series bars in a snapshot when the author left showLabels unset', () => {
+    expect(labelled({})).toBe(true);
+    expect(labelled({}, { static: false })).toBe(false);
+  });
+
+  it('respects an explicit showLabels: false in a snapshot', () => {
+    expect(labelled({ showLabels: false })).toBe(false);
+  });
+
+  it('shows labels everywhere when showLabels is true', () => {
+    expect(labelled({ showLabels: true }, { static: false })).toBe(true);
+  });
+});

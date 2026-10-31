@@ -176,7 +176,7 @@ function cartesianOption(
     { entityColors: opts.entityColors, other: folded ? OTHER : undefined },
   );
   const labelled =
-    config.showLabels || (opts.static && !multi && table.rows.length <= 12 && markType === 'bar');
+    config.showLabels ?? Boolean(opts.static && !multi && table.rows.length <= 12 && markType === 'bar');
   const series = groups.map((g, idx) => {
     const data =
       axisKind === 'category'
