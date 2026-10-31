@@ -378,6 +378,15 @@ function Editor({ id }: { id: string }) {
                     >
                       Add data
                     </Button>
+                    <Button
+                      icon={<Plus className="size-4" />}
+                      onClick={() => {
+                        setEditing(true);
+                        addWidget();
+                      }}
+                    >
+                      Add widget
+                    </Button>
                     <Button icon={<Bot className="size-4" />} onClick={() => setPanel('ai')}>
                       Let your AI build it
                     </Button>
