@@ -17,6 +17,7 @@ import { availableParallelism } from 'node:os';
 import { type ResourceLimits, Worker } from 'node:worker_threads';
 import { type DataTable, type PipelineResult, runPipeline, type Transform } from '@patchbay/core';
 import { BusyError } from '../util/gate.ts';
+import { memoryGuard } from '../util/memory-pressure.ts';
 import { currentClient } from '../util/request-context.ts';
 import {
   checkHeapLimit,
@@ -31,6 +32,8 @@ export interface PipelineRunner {
   run(table: DataTable, transforms: Transform[]): Promise<PipelineResult>;
   /** Parses an uploaded file into a table, off the main thread when workers are on. */
   parseUpload(input: UploadInput): Promise<DataTable>;
+  /** Asks idle workers to collect their garbage (under memory pressure, util/memory-pressure.ts). */
+  collectIdle?(): void;
   close(): Promise<void>;
 }
 
@@ -298,6 +301,12 @@ export class WorkerPool implements PipelineRunner {
         return Promise.reject(e);
       }
     }
+    // A job for a worker copies its table there and grows the worker's heap: none start while memory is short.
+    try {
+      memoryGuard.admitHeavy();
+    } catch (e) {
+      return Promise.reject(e);
+    }
     return this.submit({ kind: 'pipeline', table, transforms });
   }
 
@@ -310,6 +319,14 @@ export class WorkerPool implements PipelineRunner {
       }
     }
     return this.submit({ kind: 'upload', input });
+  }
+
+  /**
+   * Idle workers collect at once. A worker collects after a large job (util/workers.ts), but below that threshold its
+   * leftovers stay until V8 needs room, which under memory pressure is room the container may not have.
+   */
+  collectIdle() {
+    for (const slot of this.slots) if (slot.ready && !slot.job) slot.worker.postMessage({ kind: 'collect' });
   }
 
   /** Workers currently processing a job (diagnostics and tests). */

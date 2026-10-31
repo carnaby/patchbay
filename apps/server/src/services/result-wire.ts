@@ -17,6 +17,7 @@ import {
 } from '@patchbay/core';
 import { ByteBudget, type ByteBudgetOptions } from '../util/byte-budget.ts';
 import { ByteLru } from '../util/lru.ts';
+import { memoryGuard } from '../util/memory-pressure.ts';
 import { currentClient } from '../util/request-context.ts';
 
 /**
@@ -146,6 +147,7 @@ export class ResultWire {
     format: RowsFormat,
     wrap?: { before: string; after: string },
   ): Promise<Body> {
+    this.admitSerialisation(result.table, format);
     let { key, chunks, size } = this.resultChunks(result, format);
     if (!chunks) {
       chunks = [Buffer.from(JSON.stringify(tooLargeResult(result, size)))];
@@ -161,6 +163,17 @@ export class ResultWire {
       bytes,
     );
     return { chunks, bytes, release };
+  }
+
+  /**
+   * Under memory pressure a large result is sent only when its bytes exist already: serialising it anew would add a
+   * copy of the table to a heap the container cannot spare. Live pushes are not refused here: their event is built
+   * once for every subscriber, and a stream that is open is work already running.
+   */
+  private admitSerialisation(table: DataTable, format: RowsFormat) {
+    if (memoryGuard.level() === 'normal') return;
+    if (this.serialised.get(this.keyOf(table, format)) !== undefined) return;
+    if (wireSize(table, format) >= SMALL_BODY_BYTES) memoryGuard.admitHeavy();
   }
 
   /**

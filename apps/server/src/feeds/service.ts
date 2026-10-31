@@ -9,6 +9,7 @@
 
 import { FEED_MIN_REFRESH_SEC } from '@patchbay/core';
 import { HttpError } from '../util/errors.ts';
+import { memoryGuard } from '../util/memory-pressure.ts';
 import type { OutboundLimiter } from '../util/outbound.ts';
 import { currentClient } from '../util/request-context.ts';
 import { safeFetchText, type UpstreamTestSeam } from '../util/safe-fetch.ts';
@@ -40,7 +41,11 @@ interface Entry {
 /** One parsing worker for the whole process, started on first use. */
 let sharedParser: FeedParser | undefined;
 const parseOnWorker: ParseFn = (body, contentType, base) => {
-  sharedParser ??= new FeedParser();
+  if (!sharedParser) {
+    sharedParser = new FeedParser();
+    const parser = sharedParser;
+    memoryGuard.setRelief('feeds', () => parser.releaseIdle());
+  }
   return sharedParser.parse(body, contentType, base);
 };
 

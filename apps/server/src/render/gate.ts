@@ -9,6 +9,7 @@
 import { RetryLaterError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
 import { heavyWork } from '../util/heavy.ts';
+import { memoryGuard } from '../util/memory-pressure.ts';
 import type { RateLimiter } from '../util/rate-limit.ts';
 import { currentClient } from '../util/request-context.ts';
 import { type RenderTask, RenderWorker } from './worker-host.ts';
@@ -29,8 +30,12 @@ export class SnapshotRateError extends RetryLaterError {
  * Counts a snapshot that has to be drawn against the caller's budget (`limits.snapshots`), or throws
  * SnapshotRateError. Cache hits are not counted: they cost nothing. Without this one client cycling through the
  * widgets and themes of one heavy dashboard (two images per widget, each a cache miss) kept the renderer busy alone.
+ *
+ * Under memory pressure the snapshot is refused first (util/memory-pressure.ts), before it costs the caller a turn of
+ * their budget or resolves any data.
  */
 export function chargeSnapshot(limiter: RateLimiter, client = currentClient()) {
+  memoryGuard.admitHeavy();
   if (!limiter.take(client)) throw new SnapshotRateError(limiter.retryAfterSec(client));
 }
 
@@ -93,6 +98,8 @@ export class RenderGate<Task = RenderTask, Out = Buffer> {
 
 /** The worker every snapshot is drawn in. */
 export const snapshotRenderer = new RenderWorker();
+// An idle renderer holds ECharts, the world map and its last heap; it starts again on the next snapshot.
+memoryGuard.setRelief('render', () => snapshotRenderer.releaseIdle());
 
 /**
  * The one gate every snapshot goes through, REST and MCP alike: the limits only mean something if they are

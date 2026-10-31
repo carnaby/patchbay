@@ -63,6 +63,15 @@ const EnvSchema = z.object({
   UPLOAD_MAX_CELLS_ANONYMOUS: z.coerce.number().int().min(1000).default(200_000),
   /** Memory for parsed tables kept between requests (uploads, inline rows, HTTP responses). */
   DATA_CACHE_MB: z.coerce.number().int().min(1).default(32),
+  /**
+   * The memory the guard measures against (util/memory-pressure.ts), in MB. Default: the container's limit (cgroup);
+   * without one the guard is off unless this is set. 0 turns the guard off.
+   */
+  MEMORY_LIMIT_MB: optional(z.coerce.number().int().min(0)),
+  /** Fraction of the limit above which new heavy work (renders, uploads, large pipelines and results) waits. */
+  MEMORY_SOFT_FRACTION: z.coerce.number().gt(0).lt(1).default(0.8),
+  /** Fraction of the limit above which writes and new live streams wait too. */
+  MEMORY_HARD_FRACTION: z.coerce.number().gt(0).max(1).default(0.9),
   /** everyone: any dashboard may load http and feed sources. signed-in: only dashboards with an owner. */
   URL_SOURCES: z.enum(['everyone', 'signed-in']).default('everyone'),
   /** Who may store credentials for HTTP sources. Off unless the operator decides otherwise, see proposal 0003. */
@@ -142,6 +151,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   ) {
     throw new Error('DEV_LOGIN is only allowed with NODE_ENV != production and a localhost PUBLIC_URL');
   }
+  if (parsed.MEMORY_HARD_FRACTION <= parsed.MEMORY_SOFT_FRACTION) {
+    throw new Error('MEMORY_HARD_FRACTION must be larger than MEMORY_SOFT_FRACTION');
+  }
   return {
     env: parsed.NODE_ENV,
     production,
@@ -173,6 +185,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     uploadMaxCells: parsed.UPLOAD_MAX_CELLS,
     uploadMaxCellsAnonymous: Math.min(parsed.UPLOAD_MAX_CELLS_ANONYMOUS, parsed.UPLOAD_MAX_CELLS),
     dataCacheBytes: parsed.DATA_CACHE_MB * 1024 * 1024,
+    memory: {
+      limitMb: parsed.MEMORY_LIMIT_MB,
+      soft: parsed.MEMORY_SOFT_FRACTION,
+      hard: parsed.MEMORY_HARD_FRACTION,
+    },
     urlSources: parsed.URL_SOURCES,
     secrets: { mode: parsed.SECRETS as SecretMode, keyring: secretKeys(parsed) },
     analytics: analytics(parsed),

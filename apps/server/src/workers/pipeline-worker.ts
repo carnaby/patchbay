@@ -1,13 +1,14 @@
 /**
  * Runs transform pipelines and parses uploaded files off the main thread. Receives
  * { id, kind: 'pipeline', table, transforms } or { id, kind: 'upload', input } (the file as transferred UTF-8
- * bytes, see util/workers.ts) and answers { id, ok, result } or { id, ok: false, message }.
+ * bytes, see util/workers.ts) and answers { id, ok, result } or { id, ok: false, message }. { kind: 'collect' } asks
+ * an idle worker to collect its garbage and gets no answer.
  */
 import { getHeapStatistics } from 'node:v8';
 import { parentPort } from 'node:worker_threads';
 import { type DataTable, runPipeline, type Transform } from '@patchbay/core';
 import { parseUpload, UploadError, type UploadInput } from '../services/upload-parse.ts';
-import { collectAfterLargeJob, textFromWorkerBytes } from '../util/workers.ts';
+import { collectAfterLargeJob, collectNow, textFromWorkerBytes } from '../util/workers.ts';
 
 type Job =
   | { id: number; kind: 'pipeline'; table: DataTable; transforms: Transform[] }
@@ -19,7 +20,12 @@ function run(job: Job) {
   return parseUpload({ ...rest, content: textFromWorkerBytes(bytes) });
 }
 
-parentPort!.on('message', (job: Job) => {
+parentPort!.on('message', (job: Job | { kind: 'collect' }) => {
+  // Asked by the pool while this worker is idle and memory is short; there is nothing to answer.
+  if (job.kind === 'collect') {
+    collectNow();
+    return;
+  }
   try {
     parentPort!.postMessage({ id: job.id, ok: true, result: run(job) });
   } catch (e) {

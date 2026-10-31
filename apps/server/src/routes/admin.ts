@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Deps, Env } from '../context.ts';
 import { forbidden } from '../util/errors.ts';
+import { memoryGuard } from '../util/memory-pressure.ts';
 
 /** The single admin surface, available to emails listed in ADMIN_EMAILS. */
 export function adminRoutes(deps: Deps) {
@@ -24,6 +25,8 @@ export function adminRoutes(deps: Deps) {
         anonymous: rows.filter((r) => r.ownerId === null).length,
         users: users.n,
         totalBytes: rows.reduce((s, r) => s + r.sizeBytes, 0),
+        // Null while the guard is off (no memory limit known).
+        memory: memoryGuard.state(),
       },
     });
   });

@@ -98,6 +98,8 @@ export class RenderWorker {
   private stopping: Promise<void> = Promise.resolve();
   private tail: Promise<unknown> = Promise.resolve();
   private idle: NodeJS.Timeout | null = null;
+  /** Renders asked for and not finished, waiting ones included. */
+  private inFlight = 0;
   private nextId = 1;
   private started = 0;
   private closed = false;
@@ -114,9 +116,21 @@ export class RenderWorker {
 
   /** Renders in the worker, one task after the other. */
   render(task: RenderTask): Promise<Buffer> {
-    const turn = this.tail.then(() => this.run(task));
+    this.inFlight++;
+    const turn = this.tail.then(() => this.run(task)).finally(() => this.inFlight--);
     this.tail = turn.catch(() => undefined);
     return turn;
+  }
+
+  /**
+   * Stops the worker now if nothing is being drawn or waiting, instead of after `idleMs`: asked under memory pressure
+   * (util/memory-pressure.ts). The next snapshot starts a fresh one.
+   */
+  releaseIdle() {
+    if (!this.live || this.inFlight > 0 || this.live.current) return;
+    if (this.idle) clearTimeout(this.idle);
+    this.idle = null;
+    this.stop(this.live);
   }
 
   /** Workers started so far (tests and diagnostics). */

@@ -27,6 +27,7 @@ import { FolderStore } from './store/folder-store.ts';
 import { HttpError, RetryLaterError, toHttpError } from './util/errors.ts';
 import { prepareIndexHtml } from './util/index-html.ts';
 import { checkedBody, isLargeBody, jsonBodyGuard, newLargeBodyGate } from './util/json-body.ts';
+import { memoryGuard } from './util/memory-pressure.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { runAsClient } from './util/request-context.ts';
 import type { UpstreamTestSeam } from './util/safe-fetch.ts';
@@ -51,6 +52,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
           timeoutMs: config.pipelineTimeoutMs,
           workerMemoryMb: config.pipelineWorkerMemoryMb,
         });
+  // Replaces the previous pool's registration (tests build several).
+  memoryGuard.setRelief('pipeline', () => pipeline.collectIdle?.());
   const users = new Users(db, config.adminEmails);
   const secrets = new Secrets(db, config.secrets.keyring);
   const rotated = secrets.rotate();
@@ -164,6 +167,16 @@ export function createApp(deps: Deps) {
     return c.json({ error: httpErr.message, ...(details ?? {}) }, httpErr.status);
   });
 
+  // Under hard memory pressure (util/memory-pressure.ts) only reads that answer from memory go on: the health check,
+  // static files, documents and cached results. Writes, MCP calls and new live streams wait; their bodies are not even
+  // read. Heavy reads (snapshots, large results) are refused by their own admission further down.
+  app.use('*', async (c, next) => {
+    const read = c.req.method === 'GET' || c.req.method === 'HEAD';
+    const stream = c.req.path.endsWith('/events') || c.req.path === '/mcp';
+    if (c.req.path !== '/healthz' && (!read || stream)) memoryGuard.admitRequest();
+    await next();
+  });
+
   // Request size limits: uploads get room for a 5 MB file (JSON-escaped), everything else 1 MB.
   const tooLarge = (c: Context) => c.json({ error: 'Request body too large' }, 413);
   const uploadLimit = bodyLimit({ maxSize: 8 * 1024 * 1024, onError: tooLarge });
@@ -173,9 +186,12 @@ export function createApp(deps: Deps) {
   );
   // A few large bodies in memory at a time, across the server; the rest wait unread or get 503.
   const largeBodies = newLargeBodyGate();
-  app.use('*', (c, next) =>
-    isLargeBody(c.req.raw) ? largeBodies.run(clientKey(c, config.trustProxy), next) : next(),
-  );
+  app.use('*', (c, next) => {
+    if (!isLargeBody(c.req.raw)) return next();
+    // Refused before it is read: a large body costs two to three times its size until it is answered.
+    memoryGuard.admitHeavy();
+    return largeBodies.run(clientKey(c, config.trustProxy), next);
+  });
   // After the size limit, before any route parses a body. /mcp checks its body itself, once the caller is known.
   app.use('*', (c, next) => (c.req.path === '/mcp' ? next() : jsonBodyGuard(c, next)));
 

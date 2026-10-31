@@ -52,8 +52,13 @@ const COLLECT_ABOVE_BYTES = 32 * 1024 * 1024;
  * their turn. A no-op without `--expose-gc` (dev, tests), where collection is left to V8.
  */
 export function collectAfterLargeJob(usedHeapBytes: number) {
+  if (usedHeapBytes > COLLECT_ABOVE_BYTES) collectNow();
+}
+
+/** A full collection of this thread's heap; a no-op without `--expose-gc`. */
+export function collectNow() {
   const gc = (globalThis as { gc?: unknown }).gc;
-  if (usedHeapBytes > COLLECT_ABOVE_BYTES && typeof gc === 'function') (gc as () => void)();
+  if (typeof gc === 'function') (gc as () => void)();
 }
 
 /** The part of `Worker` the pool and the feed parser use, so tests can stand in a fake. */

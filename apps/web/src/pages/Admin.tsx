@@ -23,8 +23,21 @@ import { formatBytes, PageHeader } from './_shared.tsx';
 
 interface AdminData {
   dashboards: AdminDashboardRow[];
-  stats: { dashboards: number; anonymous: number; users: number; totalBytes: number };
+  stats: {
+    dashboards: number;
+    anonymous: number;
+    users: number;
+    totalBytes: number;
+    /** The server's memory guard; null when it knows no memory limit. */
+    memory: { level: 'normal' | 'soft' | 'hard'; usedBytes: number; limitBytes: number } | null;
+  };
 }
+
+const PRESSURE: Record<'normal' | 'soft' | 'hard', string> = {
+  normal: '',
+  soft: ' · refusing heavy work',
+  hard: ' · refusing writes',
+};
 
 function Stat({ label, value }: { label: string; value: string | number }) {
   return (
@@ -212,11 +225,17 @@ export default function Admin() {
         title="Admin"
         subtitle="Every dashboard on this server. Folders on disk are the source of truth; this list is re-synced on every visit."
       />
-      <div className="mb-8 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="mb-8 grid grid-cols-2 gap-3 lg:grid-cols-5">
         <Stat label="Dashboards" value={stats.dashboards} />
         <Stat label="Anonymous" value={stats.anonymous} />
         <Stat label="Users" value={stats.users} />
         <Stat label="Disk used" value={formatBytes(stats.totalBytes)} />
+        {stats.memory && (
+          <Stat
+            label={`Memory of ${formatBytes(stats.memory.limitBytes)}${PRESSURE[stats.memory.level]}`}
+            value={formatBytes(stats.memory.usedBytes)}
+          />
+        )}
       </div>
 
       <div className="mb-3 flex items-center gap-2">
