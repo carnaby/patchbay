@@ -12,7 +12,8 @@ import {
 } from '@patchbay/core';
 import { Resvg } from '@resvg/resvg-js';
 import { describe, expect, it } from 'vitest';
-import { renderDashboardPng, renderWidgetPng } from './snapshot.ts';
+import { buildTemplate, listTemplates } from '../services/templates.ts';
+import { MARK_BUDGET, MAX_PIXELS, renderDashboardPng, renderWidgetPng, shareMarks } from './snapshot.ts';
 
 // Widget snapshots are 640x360 rendered at 1.5x; boxes below are in SVG coordinates.
 const SCALE = 1.5;
@@ -439,4 +440,130 @@ describe('list-style table snapshots', () => {
     // No header row as in table style: the strip right under the title row is empty.
     expect(inkColumns(img, { x: 300, y: 36, w: 300, h: 16 }).length).toBe(0);
   });
+});
+
+describe('snapshot budgets', () => {
+  /** Width and height from the PNG header, without decoding a possibly large image. */
+  const size = (png: Buffer) => ({ width: png.readUInt32BE(16), height: png.readUInt32BE(20) });
+  const textDoc = (layout: { x: number; y: number; w: number; h: number }[]) =>
+    parseDashboard({
+      ...emptyDashboard('Tall'),
+      widgets: layout.map((_, n) => ({
+        id: `t${n}`,
+        type: 'text',
+        title: `Note ${n}`,
+        config: { markdown: 'hi' },
+      })),
+      layout: layout.map((it, n) => ({ i: `t${n}`, ...it })),
+    });
+
+  it('keeps every template at the size it always had', () => {
+    for (const { id } of listTemplates()) {
+      const doc = buildTemplate(id);
+      const bottom = doc.layout.reduce((m, it) => Math.max(m, it.y + it.h), 0);
+      expect(size(renderDashboardPng(doc, new Map()))).toEqual({
+        width: 1280,
+        height: 64 + bottom * 80 + 24,
+      });
+    }
+  });
+
+  it('draws a widget stored far down where the browser shows it, at the top', () => {
+    const started = Date.now();
+    const far = renderDashboardPng(textDoc([{ x: 0, y: 10_000, w: 1, h: 2 }]), new Map());
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(size(far)).toEqual({ width: 1280, height: 64 + 2 * 80 + 24 });
+    expect(far.equals(renderDashboardPng(textDoc([{ x: 0, y: 0, w: 1, h: 2 }]), new Map()))).toBe(true);
+  });
+
+  it('cuts a dashboard taller than the pixel budget off and says so', () => {
+    // The largest layout the schema allows: 60 full-width widgets of 40 rows, 2 400 rows after compaction.
+    const tall = Array.from({ length: 60 }, (_, n) => ({ x: 0, y: n * 40, w: 12, h: 40 }));
+    const started = Date.now();
+    const png = renderDashboardPng(textDoc(tall), new Map());
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(size(png)).toEqual({ width: 1280, height: Math.floor(MAX_PIXELS / 1280) });
+    const img = decodePng(png);
+    // The note sits centred in the bottom 40 px.
+    expect(inkColumns(img, { x: 440, y: img.height - 30, w: 400, h: 20 }, 1).length).toBeGreaterThan(100);
+  });
+
+  it('keeps a wider snapshot within the same number of pixels', () => {
+    const tall = Array.from({ length: 10 }, (_, n) => ({ x: 0, y: n * 40, w: 12, h: 40 }));
+    for (const width of [2560, 100_000]) {
+      const got = size(renderDashboardPng(textDoc(tall), new Map(), { width }));
+      expect(got.width).toBe(2560);
+      expect(got.width * got.height).toBeLessThanOrEqual(MAX_PIXELS);
+    }
+  });
+
+  it('scales a large widget down instead of exceeding the budget', () => {
+    const big = size(
+      renderWidgetPng(widget({ id: 't', type: 'text', config: { markdown: 'hi' } }), undefined, {
+        width: 50_000,
+        height: 50_000,
+      }),
+    );
+    expect(big.width * big.height).toBeLessThanOrEqual(MAX_PIXELS);
+    // The default size is untouched: 640x360 at 1.5x.
+    const normal = render({ id: 't', type: 'text', config: { markdown: 'hi' } });
+    expect({ width: normal.width, height: normal.height }).toEqual({ width: 960, height: 540 });
+  });
+
+  it('shares the mark budget fairly and leaves small widgets alone', () => {
+    expect(
+      shareMarks(
+        new Map([
+          ['a', 5000],
+          ['b', 5000],
+          ['c', 0],
+        ]),
+      ),
+    ).toEqual(new Map());
+    const limits = shareMarks(
+      new Map([
+        ['small', 100],
+        ['big', 20_000],
+        ['huge', 20_000],
+      ]),
+      10_000,
+    );
+    expect(limits.get('small')).toBeUndefined();
+    expect(limits.get('big')! + limits.get('huge')!).toBeLessThanOrEqual(9_900);
+    const many = shareMarks(
+      new Map(Array.from({ length: 60 }, (_, n) => [`w${n}`, 10_000] as [string, number])),
+    );
+    expect([...many.values()].reduce((s, v) => s + v, 0)).toBeLessThanOrEqual(MARK_BUDGET);
+  });
+
+  it('renders sixty scatter charts of ten thousand rows in bounded time', () => {
+    const rows = Array.from({ length: 10_000 }, (_, i) => ({ x: (i * 37) % 1000, y: (i * 91) % 1000 }));
+    const results = new Map([
+      [
+        'd',
+        {
+          datasetId: 'd',
+          table: inferTable(rows),
+          fetchedAt: new Date(0).toISOString(),
+          hash: 'd',
+          truncated: false,
+        },
+      ],
+    ]);
+    const doc = parseDashboard({
+      ...emptyDashboard('Dots'),
+      datasets: [{ id: 'd', name: 'd', source: { kind: 'inline', rows: [] } }],
+      widgets: Array.from({ length: 60 }, (_, n) => ({
+        id: `c${n}`,
+        type: 'chart',
+        datasetId: 'd',
+        config: { kind: 'scatter', x: 'x', y: ['y'], maxPoints: 20_000 },
+      })),
+      layout: Array.from({ length: 60 }, (_, n) => ({ i: `c${n}`, x: (n * 2) % 12, y: 0, w: 2, h: 2 })),
+    });
+    const started = Date.now();
+    renderDashboardPng(doc, results);
+    // Without the mark budget this took about 15 s and 1.9 GB.
+    expect(Date.now() - started).toBeLessThan(10_000);
+  }, 20_000);
 });
