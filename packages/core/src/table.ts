@@ -23,7 +23,9 @@ export interface DataTable {
 export const EMPTY_TABLE: DataTable = { columns: [], rows: [] };
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
-const NUMERIC = /^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/;
+// The fraction is one optional group: `\d+\.?\d*` can split a run of digits in n ways, and a long digit string that
+// fails at its end ("1111…1x" in an upload) then takes quadratic time, seconds for 80,000 digits.
+const NUMERIC = /^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$/;
 
 /** Parses an ISO-like date string to epoch ms, or returns null. */
 export function parseTime(value: string): number | null {

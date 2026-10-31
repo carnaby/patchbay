@@ -27,14 +27,27 @@ export class ExprError extends Error {
 
 const MAX_LENGTH = 2000;
 const MAX_NODES = 400;
-/** Strings produced by expressions are capped so repeated derive steps cannot grow memory exponentially. */
-export const MAX_STRING = 10_000;
+/**
+ * Strings produced by expressions are capped so repeated derive steps cannot grow memory exponentially. 2,000 is as
+ * long as an expression may be, and covers joining a feed's title (300) and summary (500) with room to spare; the
+ * pipeline's size limit bounds the table as a whole.
+ */
+export const MAX_STRING = 2_000;
 
-function capped(text: string): string {
-  if (text.length > MAX_STRING)
+/** Joins text, refusing before the result is built: one concat of many long values would otherwise allocate it all. */
+function joined(parts: string[]): string {
+  let length = 0;
+  for (const p of parts) length += p.length;
+  if (length > MAX_STRING)
     throw new ExprError(`Text values are limited to ${MAX_STRING.toLocaleString('en')} characters`);
-  return text;
+  return parts.join('');
 }
+
+/**
+ * Longer than any date text Date.parse reads, such as "Thu Oct 01 2026 10:00:00 GMT+0200 (Central European Summer
+ * Time)".
+ */
+const MAX_DATE_TEXT = 100;
 
 type Token =
   | { t: 'num'; v: number; p: number }
@@ -282,6 +295,8 @@ function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): nu
 }
 
 const dateOf = (v: Scalar): Date | null => {
+  // Parsing scans the whole string, and an expression can parse a long text column hundreds of times per row.
+  if (typeof v === 'string' && v.length > MAX_DATE_TEXT) return null;
   const n = typeof v === 'string' ? Date.parse(v) : num(v);
   return n === null || Number.isNaN(n) ? null : new Date(n);
 };
@@ -348,7 +363,7 @@ export const FUNCTIONS: Record<string, { args: string; doc: string; fn: (...a: S
   upper: { args: 's', doc: 'Uppercase', fn: (s) => (s === null ? null : str(s).toUpperCase()) },
   trim: { args: 's', doc: 'Strip whitespace', fn: (s) => (s === null ? null : str(s).trim()) },
   len: { args: 's', doc: 'String length', fn: (s) => (s === null ? null : str(s).length) },
-  concat: { args: 'a, b, ...', doc: 'Join as strings', fn: (...a) => capped(a.map(str).join('')) },
+  concat: { args: 'a, b, ...', doc: 'Join as strings', fn: (...a) => joined(a.map(str)) },
   substr: {
     args: 's, start, length?',
     doc: 'Substring',
@@ -427,7 +442,7 @@ export function evaluate(ast: Node, row: Row): Scalar {
         (typeof a === 'string' || typeof b === 'string') &&
         (num(a) === null || num(b) === null)
       ) {
-        return capped(str(a) + str(b));
+        return joined([str(a), str(b)]);
       }
       const x = num(a);
       const y = num(b);
