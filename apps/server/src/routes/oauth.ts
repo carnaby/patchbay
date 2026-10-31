@@ -85,15 +85,23 @@ export function redirectMatches(registered: string[], candidate: string): boolea
   }
 }
 
+/**
+ * Registration is open to anyone, so every field and list is capped and only these fields are stored. Unknown
+ * metadata is dropped rather than refused: RFC 7591 §2 says a server must ignore metadata it does not understand,
+ * and real clients send extras (contacts, policy_uri, software_statement, ...).
+ */
+const shortList = z.array(z.string().max(64)).max(8);
 const RegistrationSchema = z.object({
-  redirect_uris: z.array(z.string().max(2000)).min(1).max(10),
+  redirect_uris: z.array(z.string().max(1000)).min(1).max(8),
   client_name: z.string().max(120).optional(),
-  client_uri: z.url().optional(),
-  logo_uri: z.url().optional(),
-  token_endpoint_auth_method: z.string().optional(),
-  grant_types: z.array(z.string()).optional(),
-  response_types: z.array(z.string()).optional(),
-  scope: z.string().optional(),
+  client_uri: z.url().max(1000).optional(),
+  logo_uri: z.url().max(1000).optional(),
+  token_endpoint_auth_method: z.string().max(64).optional(),
+  grant_types: shortList.optional(),
+  response_types: shortList.optional(),
+  scope: z.string().max(500).optional(),
+  software_id: z.string().max(200).optional(),
+  software_version: z.string().max(100).optional(),
 });
 
 const CimdSchema = z.object({
@@ -141,6 +149,10 @@ export function oauthRoutes(deps: Deps) {
       authorization_response_iss_parameter_supported: true,
     }),
   );
+
+  /** Feeds the purge of unused registrations (Users.purgeOAuthClients). */
+  const markClientUsed = (clientId: string) =>
+    db.prepare('UPDATE oauth_clients SET last_used_at = ? WHERE client_id = ?').run(now(), clientId);
 
   const getClient = (clientId: string) =>
     (db.prepare('SELECT * FROM oauth_clients WHERE client_id = ?').get(clientId) as ClientRow | undefined) ??
@@ -388,6 +400,7 @@ export function oauthRoutes(deps: Deps) {
         row.resource,
         row.grant_id ?? undefined,
       );
+      markClientUsed(clientId);
       return c.json({
         access_token: issued.accessToken,
         token_type: 'Bearer',
@@ -404,6 +417,7 @@ export function oauthRoutes(deps: Deps) {
       const issued = tokens.refresh(refresh, clientId, scope ? scope.split(' ') : undefined);
       if (!issued)
         throw oauthError(400, 'invalid_grant', 'The refresh token is invalid, expired or was revoked');
+      markClientUsed(clientId);
       return c.json({
         access_token: issued.accessToken,
         token_type: 'Bearer',

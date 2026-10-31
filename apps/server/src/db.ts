@@ -139,6 +139,12 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX secrets_user ON secrets(user_id);
   `,
+  // 4: registration is open to anyone, so clients that never get (or no longer hold) a grant are purged; this
+  // records when a client last obtained tokens.
+  `
+  ALTER TABLE oauth_clients ADD COLUMN last_used_at TEXT;
+  CREATE INDEX tokens_client ON tokens(client_id);
+  `,
 ];
 
 export function openDatabase(file: string): DB {

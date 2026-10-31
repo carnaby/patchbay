@@ -10,6 +10,7 @@ import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
 import { safeReturnTo } from './routes/auth.ts';
+import { RateLimiter } from './util/rate-limit.ts';
 
 const BASE = 'http://localhost:8787';
 let dir: string;
@@ -31,7 +32,8 @@ beforeAll(async () => {
       GOOGLE_CLIENT_SECRET: 'test-secret',
     }),
   );
-  app = createApp(deps);
+  // Rate limits are covered in proxy.test.ts; here they would only get in the way of the many registrations.
+  app = createApp({ ...deps, limits: { ...deps.limits, auth: new RateLimiter(10_000, 10_000) } });
 });
 
 afterAll(async () => {
@@ -158,5 +160,93 @@ describe('returnTo after sign-in', () => {
   it('sanitises the dev login return path the same way', async () => {
     const res = await call('/auth/dev', { body: { email: 'dev@example.com', returnTo: '/\t/evil.com' } });
     expect(res.json.returnTo).toBe('/me');
+  });
+});
+
+describe('OAuth dynamic client registration', () => {
+  const register = (body: Record<string, unknown>) =>
+    call('/oauth/register', { body: { redirect_uris: ['https://app.example/cb'], ...body } });
+  const stored = (clientId: string) =>
+    deps.db.prepare('SELECT * FROM oauth_clients WHERE client_id = ?').get(clientId) as
+      | { metadata: string; created_at: string; last_used_at: string | null }
+      | undefined;
+
+  it('caps every field and list', async () => {
+    const tooLong = 'x'.repeat(5000);
+    for (const body of [
+      { client_name: 'x'.repeat(121) },
+      { scope: tooLong },
+      { grant_types: ['authorization_code', tooLong] },
+      { grant_types: Array.from({ length: 9 }, () => 'authorization_code') },
+      { response_types: Array.from({ length: 9 }, () => 'code') },
+      { token_endpoint_auth_method: tooLong },
+      { client_uri: `https://app.example/${tooLong}` },
+      { software_id: tooLong },
+      { redirect_uris: Array.from({ length: 9 }, (_, i) => `https://app.example/cb${i}`) },
+      { redirect_uris: [`https://app.example/${tooLong}`] },
+    ]) {
+      const res = await register(body);
+      expect([Object.keys(body)[0], res.status]).toEqual([Object.keys(body)[0], 400]);
+    }
+  });
+
+  it('accepts unknown metadata (RFC 7591) without storing it', async () => {
+    const res = await register({
+      client_name: 'Client',
+      contacts: ['a@example.com'],
+      junk: 'y'.repeat(100_000),
+      grant_types: ['authorization_code', 'refresh_token'],
+    });
+    expect(res.status).toBe(201);
+    const row = stored(res.json.client_id)!;
+    expect(row.metadata.length).toBeLessThan(500);
+    expect(JSON.parse(row.metadata)).not.toHaveProperty('junk');
+  });
+
+  it('purges clients that never got a grant after a day, and idle ones after months', async () => {
+    const user = deps.users.upsert({ email: 'purge@example.com', name: 'Purge' });
+    const ids = {
+      fresh: (await register({ client_name: 'fresh' })).json.client_id as string,
+      abandoned: (await register({ client_name: 'abandoned' })).json.client_id as string,
+      active: (await register({ client_name: 'active' })).json.client_id as string,
+      idle: (await register({ client_name: 'idle' })).json.client_id as string,
+      recent: (await register({ client_name: 'recent' })).json.client_id as string,
+    };
+    const day = 86_400_000;
+    const backdate = (id: string, createdAgo: number, usedAgo: number | null) =>
+      deps.db
+        .prepare('UPDATE oauth_clients SET created_at = ?, last_used_at = ? WHERE client_id = ?')
+        .run(
+          new Date(Date.now() - createdAgo).toISOString(),
+          usedAgo === null ? null : new Date(Date.now() - usedAgo).toISOString(),
+          id,
+        );
+    backdate(ids.abandoned, day + 60_000, null);
+    backdate(ids.active, 200 * day, 120 * day);
+    backdate(ids.idle, 200 * day, 100 * day);
+    backdate(ids.recent, 200 * day, 10 * day);
+    // A live refresh token keeps a client, however long ago it last refreshed.
+    deps.tokens.issueOAuth(user.id, ids.active, ['dashboards:read'], `${BASE}/mcp`);
+
+    deps.users.purgeExpired();
+    expect(stored(ids.fresh)).toBeDefined();
+    expect(stored(ids.abandoned)).toBeUndefined();
+    expect(stored(ids.active)).toBeDefined();
+    expect(stored(ids.idle)).toBeUndefined();
+    expect(stored(ids.recent)).toBeDefined();
+  });
+
+  it('records when a client last obtained tokens', async () => {
+    const id = (await register({ client_name: 'used' })).json.client_id as string;
+    expect(stored(id)!.last_used_at).toBeNull();
+    const user = deps.users.upsert({ email: 'used@example.com', name: 'Used' });
+    const { refreshToken } = deps.tokens.issueOAuth(user.id, id, ['dashboards:read'], `${BASE}/mcp`);
+    const res = await app.request(`${BASE}/oauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: id }),
+    });
+    expect(res.status).toBe(200);
+    expect(stored(id)!.last_used_at).not.toBeNull();
   });
 });

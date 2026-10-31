@@ -12,6 +12,8 @@ export interface UserRow {
 
 export const SESSION_COOKIE = 'pb_session';
 const SESSION_DAYS = 30;
+export const OAUTH_CLIENT_UNUSED_TTL_MS = 24 * 3_600_000;
+export const OAUTH_CLIENT_IDLE_TTL_MS = 90 * 86_400_000;
 
 export class Users {
   private readonly db: DB;
@@ -104,5 +106,33 @@ export class Users {
     this.db
       .prepare("DELETE FROM tokens WHERE expires_at IS NOT NULL AND expires_at < ? AND kind != 'pat'")
       .run(at);
+    this.purgeOAuthClients(Date.now());
+  }
+
+  /**
+   * Anyone can register an OAuth client, so registrations must not pile up. A client that never obtained a grant
+   * goes after a day; one that did goes once it has held no live token for a long time. Client metadata documents
+   * are only a cache of a URL and can be fetched again, so they follow the short rule.
+   */
+  purgeOAuthClients(nowMs: number) {
+    const at = new Date(nowMs).toISOString();
+    const unusedBefore = new Date(nowMs - OAUTH_CLIENT_UNUSED_TTL_MS).toISOString();
+    const idleBefore = new Date(nowMs - OAUTH_CLIENT_IDLE_TTL_MS).toISOString();
+    return this.db
+      .prepare(
+        `DELETE FROM oauth_clients
+         WHERE (
+             (kind = 'dcr' AND last_used_at IS NULL AND created_at < @unusedBefore)
+             OR (kind = 'dcr' AND last_used_at < @idleBefore)
+             OR (kind = 'cimd' AND COALESCE(last_used_at, created_at) < @unusedBefore)
+           )
+           AND NOT EXISTS (SELECT 1 FROM tokens t WHERE t.client_id = oauth_clients.client_id
+                           AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > @at))
+           AND NOT EXISTS (SELECT 1 FROM oauth_codes c WHERE c.client_id = oauth_clients.client_id
+                           AND c.used_at IS NULL AND c.expires_at > @at)
+           AND NOT EXISTS (SELECT 1 FROM oauth_requests r WHERE r.client_id = oauth_clients.client_id
+                           AND r.expires_at > @at)`,
+      )
+      .run({ at, unusedBefore, idleBefore }).changes;
   }
 }
