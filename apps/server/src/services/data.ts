@@ -121,7 +121,7 @@ export type CredentialResolver = (target: DashboardTarget, dataset: Dataset) => 
 export interface DataServiceOptions {
   credentials?: CredentialResolver;
   /** Throws when this instance does not fetch URLs (http and feed sources) for the dashboard. */
-  urlPolicy?: (target: DashboardTarget) => void;
+  urlPolicy?: (target: DashboardTarget, url: string) => void;
   /** OFFLINE=1: feeds return their deterministic sample instead of fetching. */
   offline?: boolean;
   /** Memory for parsed tables (uploads, inline rows, HTTP responses), in bytes. */
@@ -178,7 +178,7 @@ export class DataService {
 
   private readonly pipeline: PipelineRunner;
   private readonly credentialsFor: CredentialResolver;
-  private readonly urlPolicy: (target: DashboardTarget) => void;
+  private readonly urlPolicy: (target: DashboardTarget, url: string) => void;
   private readonly upstreamTest: UpstreamTestSeam | undefined;
   private readonly feeds: FeedService;
   private readonly maxSourceCells: number;
@@ -370,10 +370,10 @@ export class DataService {
       case 'upload':
         return this.loadUpload(target, source.fileId);
       case 'http':
-        this.urlPolicy(target);
+        this.urlPolicy(target, source.url);
         return this.loadHttp(target, dataset, source);
       case 'feed': {
-        this.urlPolicy(target);
+        this.urlPolicy(target, source.url);
         const feed = await this.feeds.load(source.url);
         const rows = feed.table.rows.slice(0, source.limit);
         return { table: { columns: feed.table.columns, rows }, fetchedAt: feed.fetchedAt, credentialKey: '' };

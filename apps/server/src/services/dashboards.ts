@@ -247,6 +247,8 @@ export interface DashboardServiceOptions {
   uploadMaxCells?: number;
   uploadMaxCellsAnonymous?: number;
   urlSources?: UrlSourcesMode;
+  /** Exact source URLs from the repository's showcase; URL_SOURCES=signed-in lets these through. */
+  trustedUrls?: ReadonlySet<string>;
   /** Disk space all anonymous dashboards may take together; 0 = no limit. */
   anonymousStorageBytes?: number;
   /** Tests only: admission of uploads (one at a time by default). */
@@ -277,6 +279,7 @@ export class DashboardService {
   private readonly uploadMaxCells: number;
   private readonly uploadMaxCellsAnonymous: number;
   private readonly urlSources: UrlSourcesMode;
+  private readonly trustedUrls: ReadonlySet<string>;
   private readonly uploadGate: Gate;
 
   constructor(
@@ -291,6 +294,7 @@ export class DashboardService {
     this.uploadMaxCells = options.uploadMaxCells ?? DEFAULT_UPLOAD_MAX_CELLS;
     this.uploadMaxCellsAnonymous = options.uploadMaxCellsAnonymous ?? DEFAULT_UPLOAD_MAX_CELLS_ANONYMOUS;
     this.urlSources = options.urlSources ?? 'everyone';
+    this.trustedUrls = options.trustedUrls ?? new Set();
     this.uploadGate = options.uploadGate ?? newUploadGate();
     this.store = store;
     this.index = index;
@@ -420,10 +424,13 @@ export class DashboardService {
   /**
    * With URL_SOURCES=signed-in, a URL is fetched only for a dashboard that a signed-in user owns: a public instance
    * on its operator's connection must not fetch arbitrary addresses for strangers. Checked at use time (DataService
-   * calls this before every http or feed load) and, for an early message, when such a source is saved.
+   * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
+   * exception is a URL that appears verbatim in the repository's showcase, so anonymous copies of a use case work;
+   * matching is exact (no normalising), so a variant of a trusted URL is still refused.
    */
-  assertMayFetchUrl(target: DashboardTarget) {
-    if (this.urlSources === 'signed-in' && target.ownerId === null) throw forbidden(URL_SOURCES_SIGNED_IN);
+  assertMayFetchUrl(target: DashboardTarget, url: string) {
+    if (this.urlSources === 'signed-in' && target.ownerId === null && !this.trustedUrls.has(url))
+      throw forbidden(URL_SOURCES_SIGNED_IN);
   }
 
   private checkUrlSources(meta: StoredMeta, before: DashboardDoc, after: DashboardDoc) {
@@ -432,7 +439,8 @@ export class DashboardService {
     const added = after.datasets.some(
       (d) =>
         (d.source.kind === 'http' || d.source.kind === 'feed') &&
-        previous.get(d.id) !== JSON.stringify(d.source),
+        previous.get(d.id) !== JSON.stringify(d.source) &&
+        !this.trustedUrls.has(d.source.url),
     );
     if (added) throw badRequest(URL_SOURCES_SIGNED_IN);
   }
