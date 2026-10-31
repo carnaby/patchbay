@@ -7,21 +7,26 @@ platforms and makes everything else simple.
 
 **A small VPS with Docker Compose and Caddy** (e.g. Hetzner CX22, ~4 €/month). It is the cheapest option, the data is
 a plain directory you can back up with `rsync` or `restic`, and Caddy handles HTTPS automatically. The repository ships
-the compose file for exactly this.
+the compose file for exactly this; it runs the prebuilt image from GHCR, so the server builds nothing.
 
 ```bash
-# on the server
+# on the server (only docker-compose.yml and .env.example are needed)
 git clone https://github.com/carnaby/patchbay.git && cd patchbay
 cp .env.example .env
+#   PATCHBAY_DOMAIN=dash.example.com
+#   PATCHBAY_TAG=0.1.0              (optional; default latest, which follows main)
 #   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
 #   ADMIN_EMAILS=you@example.com
-#   DEV_LOGIN=0
 #   PRUNE_ANONYMOUS_AFTER_DAYS=60   (optional, see "Anonymous dashboards and disk space")
 #   PRUNE_BLANK_ANONYMOUS_AFTER_HOURS=24
 #   URL_SOURCES=signed-in           (optional; see "Limits for a small public instance")
 #   SECRETS=off                     (default; see "Secrets for HTTP sources" before changing it)
-PATCHBAY_DOMAIN=dash.example.com docker compose up -d
+docker compose up -d
 ```
+
+The compose file sets `PUBLIC_URL=https://$PATCHBAY_DOMAIN`, `DATA_DIR=/data`, `DEV_LOGIN=0` and `TRUST_PROXY=1`
+itself, overriding the development values in `.env`. To build the image from the checkout instead, replace its
+`image:` line with `build: .`.
 
 Google OAuth client (Google Cloud Console → APIs & Services → Credentials → OAuth client ID, type "Web application"):
 
@@ -43,7 +48,8 @@ Google OAuth client (Google Cloud Console → APIs & Services → Credentials �
 Runs Patchbay on a machine at home (a NAS, a mini PC) without opening a port on the router. A `cloudflared`
 container dials out to Cloudflare; Cloudflare terminates TLS for your hostname and forwards requests through the
 tunnel to `http://patchbay:8787` on the compose project's private network. Images come prebuilt from GHCR
-(`ghcr.io/carnaby/patchbay`, `latest` follows `main`, every commit is also tagged with its full SHA), so the
+(`ghcr.io/carnaby/patchbay`: `latest` follows `main`, releases are tagged `0.1.0` and `0.1`, and every commit
+is also tagged with its full SHA), so the
 machine needs no checkout and no build. Everything is in [`deploy/nas/`](../deploy/nas/).
 
 You need a domain whose DNS is on Cloudflare (any plan, including Free).
