@@ -8,6 +8,14 @@ import { createHash } from 'node:crypto';
 import type { Column, DataTable, Row } from '@patchbay/core';
 import { XMLParser } from 'fast-xml-parser';
 import { HttpError } from '../util/errors.ts';
+import {
+  cdataSections,
+  declaresEntities,
+  replaceTags,
+  startsLikeHtml,
+  stripMarkup,
+  unclosedTagStarts,
+} from './scan.ts';
 
 export const FEED_COLUMNS: Column[] = [
   { name: 'id', type: 'string' },
@@ -25,6 +33,18 @@ export const MAX_FEED_ITEMS = 200;
 const MAX_TITLE = 300;
 const MAX_SUMMARY = 500;
 const MAX_SHORT = 200;
+/**
+ * Raw characters read per text field, markup included. Far more than any field shows, so real feeds read exactly
+ * as before; it caps the work one hostile field can cause.
+ */
+const MAX_FIELD_RAW = 64 * 1024;
+/** Links and dates longer than this are not links or dates. */
+const MAX_LINK = 8 * 1024;
+const MAX_DATE = 128;
+/** fast-xml-parser rescans from each unclosed tag start (see `unclosedTagStarts`): a few cost little, many are an attack. */
+const MAX_UNCLOSED_TAGS = 8;
+/** Backstop for the whole document; the work is linear, so a real feed takes a small fraction of this. */
+const PARSE_BUDGET_MS = 4000;
 
 export interface ParsedFeed {
   title: string;
@@ -55,18 +75,28 @@ const parser = new XMLParser({
 const list = (node: Node): Node[] =>
   node === undefined || node === null ? [] : Array.isArray(node) ? node : [node];
 
-/** Every text inside a node, attributes left out (Atom `type="xhtml"` content arrives as nested elements). */
-function textOf(node: Node): string {
+/**
+ * Every text inside a node, attributes left out (Atom `type="xhtml"` content arrives as nested elements), up to
+ * `budget` characters: a field with a million children must not cost a million strings.
+ */
+function textOf(node: Node, budget = MAX_FIELD_RAW): string {
   if (node === undefined || node === null) return '';
-  if (typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean') return String(node);
-  if (Array.isArray(node)) return node.map(textOf).join(' ');
-  if (typeof node === 'object') {
-    return Object.entries(node as Record<string, Node>)
-      .filter(([key]) => !key.startsWith('@_'))
-      .map(([, value]) => textOf(value))
-      .join(' ');
+  if (typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean') {
+    const s = String(node);
+    return s.length > budget ? s.slice(0, budget) : s;
   }
-  return '';
+  if (typeof node !== 'object') return '';
+  const values = Array.isArray(node)
+    ? node
+    : Object.entries(node as Record<string, Node>)
+        .filter(([key]) => !key.startsWith('@_'))
+        .map(([, value]) => value);
+  let out = '';
+  for (let i = 0; i < values.length && out.length < budget; i++) {
+    if (i > 0) out += ' ';
+    out += textOf(values[i], budget - out.length);
+  }
+  return out;
 }
 
 const NAMED: Record<string, string> = {
@@ -105,15 +135,20 @@ function decodeHtmlEntities(text: string): string {
   });
 }
 
+/**
+ * The first `MAX_FIELD_RAW` characters, without a tag cut in half at the end (it would show as text). Every field
+ * is cut before any other processing, so the work per field is bounded whatever the feed sends.
+ */
+function bounded(raw: string): { text: string; cut: boolean } {
+  if (raw.length <= MAX_FIELD_RAW) return { text: raw, cut: false };
+  const text = raw.slice(0, MAX_FIELD_RAW);
+  const lt = text.lastIndexOf('<');
+  return { text: lt !== -1 && text.indexOf('>', lt) === -1 ? text.slice(0, lt) : text, cut: true };
+}
+
 /** Markup to readable text: scripts and styles go with their content, block ends become spaces. */
 export function plainText(raw: string, max: number): string {
-  const text = decodeHtmlEntities(
-    raw
-      .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, ' ')
-      .replace(/<!--[\s\S]*?-->/g, ' ')
-      .replace(/<\/?(br|p|div|li|h[1-6]|tr|blockquote)\b[^>]*>/gi, ' ')
-      .replace(/<[^>]*>/g, ''),
-  )
+  const text = decodeHtmlEntities(stripMarkup(bounded(raw).text))
     .replace(/\s+/g, ' ')
     .trim();
   return text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text;
@@ -135,17 +170,17 @@ const decodeXml = (s: string) =>
  * first and XML entities are decoded after, which turns escaped HTML into HTML that `plainText` then strips.
  */
 function richText(node: Node, max: number): string | null {
-  const raw = textOf(node);
+  const raw = bounded(textOf(node));
   let html = '';
-  for (const part of raw.split(/(<!\[CDATA\[[\s\S]*?\]\]>)/)) {
-    html += part.startsWith('<![CDATA[') ? part.slice(9, -3) : decodeXml(part.replace(/<[^>]*>/g, ' '));
+  for (const part of cdataSections(raw.text, raw.cut)) {
+    html += part.cdata ? part.text : decodeXml(replaceTags(part.text, /</g, ' '));
   }
   return plainText(html, max) || null;
 }
 
 /** An absolute http(s) URL resolved against the feed's address, or null. */
 export function safeLink(href: string | null | undefined, base: string): string | null {
-  if (!href) return null;
+  if (!href || href.length > MAX_LINK) return null;
   try {
     const url = new URL(decodeHtmlEntities(href.trim()), base);
     return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
@@ -162,8 +197,8 @@ const safeImage = (href: string | null | undefined, base: string) => {
 
 function time(...candidates: Node[]): number | null {
   for (const c of candidates) {
-    const raw = textOf(c).trim();
-    if (!raw) continue;
+    const raw = textOf(c, MAX_DATE * 4).trim();
+    if (!raw || raw.length > MAX_DATE) continue;
     const ms = Date.parse(raw);
     if (Number.isFinite(ms)) return ms;
   }
@@ -272,10 +307,10 @@ interface JsonFeedItem {
 
 const str = (v: unknown) => (typeof v === 'string' ? v : typeof v === 'number' ? String(v) : null);
 
-function jsonFeed(json: Record<string, unknown>, base: string): ParsedFeed {
+function jsonFeed(json: Record<string, unknown>, base: string, deadline: number): ParsedFeed {
   const source = plainText(str(json.title) ?? '', MAX_SHORT) || new URL(base).hostname;
   const items = Array.isArray(json.items) ? (json.items as JsonFeedItem[]) : [];
-  const rows = items.slice(0, MAX_FEED_ITEMS).map((item): Row => {
+  const rows = rowsWithin(items, deadline, (item): Row => {
     const link = safeLink(str(item.url) ?? str(item.external_url), base);
     const title = str(item.title) ? plainText(str(item.title)!, MAX_TITLE) || null : null;
     const published = time(str(item.date_published), str(item.date_modified));
@@ -293,6 +328,16 @@ function jsonFeed(json: Record<string, unknown>, base: string): ParsedFeed {
     };
   });
   return { title: source, table: finish(rows), ttlMinutes: null };
+}
+
+/** The first `MAX_FEED_ITEMS` items as rows, giving up when the document has used its time budget. */
+function rowsWithin<T>(items: T[], deadline: number, toRow: (item: T) => Row): Row[] {
+  const rows: Row[] = [];
+  for (const item of items.slice(0, MAX_FEED_ITEMS)) {
+    if (Date.now() > deadline) throw new HttpError(502, 'The feed took too long to read');
+    rows.push(toRow(item));
+  }
+  return rows;
 }
 
 /** Newest first, undated items last, in their feed order. */
@@ -315,11 +360,12 @@ const NOT_A_FEED = 'The address did not return an RSS, Atom or JSON feed';
 
 export function looksLikeHtml(text: string, contentType: string): boolean {
   if (contentType === 'text/html' || contentType === 'application/xhtml+xml') return true;
-  return /^\s*(<!--[\s\S]*?-->\s*)*<(!doctype\s+html|html)\b/i.test(text.slice(0, 2048).replace(/^﻿/, ''));
+  return startsLikeHtml(text.slice(0, 2048).replace(/^﻿/, ''));
 }
 
 /** Parses a feed document; `base` is the address it came from (relative links resolve against it). */
 export function parseFeed(body: string, contentType: string, base: string): ParsedFeed {
+  const deadline = Date.now() + PARSE_BUDGET_MS;
   const trimmed = body.replace(/^﻿/, '').trimStart();
   if (contentType.includes('json') || trimmed.startsWith('{')) {
     let json: unknown;
@@ -331,11 +377,13 @@ export function parseFeed(body: string, contentType: string, base: string): Pars
     const version = (json as Record<string, unknown> | null)?.version;
     if (typeof version !== 'string' || !version.startsWith('https://jsonfeed.org/version/'))
       throw new HttpError(502, NOT_A_FEED);
-    return jsonFeed(json as Record<string, unknown>, base);
+    return jsonFeed(json as Record<string, unknown>, base, deadline);
   }
   // Entity expansion is the classic XML denial of service, and real feeds never declare entities.
-  if (/<!DOCTYPE[^>]*\[[\s\S]*?<!ENTITY/i.test(trimmed.slice(0, 65_536)))
+  if (declaresEntities(trimmed.slice(0, 65_536)))
     throw new HttpError(502, 'Feeds with DTD entities are not supported');
+  if (unclosedTagStarts(trimmed, MAX_UNCLOSED_TAGS + 1) > MAX_UNCLOSED_TAGS)
+    throw new HttpError(502, NOT_A_FEED);
 
   let doc: Record<string, Node>;
   try {
@@ -348,11 +396,11 @@ export function parseFeed(body: string, contentType: string, base: string): Pars
   const channel = rss ? (list(rss.channel)[0] as Record<string, Node> | undefined) : undefined;
   if (channel) {
     const title = richText(channel.title, MAX_SHORT) ?? new URL(base).hostname;
-    const items = list(channel.item).slice(0, MAX_FEED_ITEMS) as Record<string, Node>[];
+    const items = list(channel.item) as Record<string, Node>[];
     const ttl = Number(textOf(channel.ttl));
     return {
       title,
-      table: finish(items.map((item) => rssItem(item, base, title))),
+      table: finish(rowsWithin(items, deadline, (item) => rssItem(item, base, title))),
       ttlMinutes: Number.isFinite(ttl) && ttl > 0 ? ttl : null,
     };
   }
@@ -361,14 +409,16 @@ export function parseFeed(body: string, contentType: string, base: string): Pars
     const title =
       richText((list(rdf.channel)[0] as Record<string, Node> | undefined)?.title, MAX_SHORT) ??
       new URL(base).hostname;
-    const items = list(rdf.item).slice(0, MAX_FEED_ITEMS) as Record<string, Node>[];
-    return { title, table: finish(items.map((item) => rssItem(item, base, title))), ttlMinutes: null };
+    const items = list(rdf.item) as Record<string, Node>[];
+    const rows = rowsWithin(items, deadline, (item) => rssItem(item, base, title));
+    return { title, table: finish(rows), ttlMinutes: null };
   }
   const feed = doc.feed as Record<string, Node> | undefined;
   if (feed && typeof feed === 'object') {
     const title = richText(feed.title, MAX_SHORT) ?? new URL(base).hostname;
-    const entries = list(feed.entry).slice(0, MAX_FEED_ITEMS) as Record<string, Node>[];
-    return { title, table: finish(entries.map((entry) => atomEntry(entry, base, title))), ttlMinutes: null };
+    const entries = list(feed.entry) as Record<string, Node>[];
+    const rows = rowsWithin(entries, deadline, (entry) => atomEntry(entry, base, title));
+    return { title, table: finish(rows), ttlMinutes: null };
   }
   throw new HttpError(502, NOT_A_FEED);
 }
