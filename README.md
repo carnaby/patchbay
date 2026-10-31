@@ -290,7 +290,7 @@ after every step.
 | `SECRETS`                                  | `off`                   | Who may store credentials for HTTP sources: `off`, `admins`, `users`.  |
 | `SECRETS_KEY`                              | –                       | 32 random bytes, base64. Required unless `SECRETS=off`.                |
 | `SECRETS_KEY_PREVIOUS`                     | –                       | Old key(s) during rotation, comma-separated.                           |
-| `UMAMI_SCRIPT_URL`, `UMAMI_WEBSITE_ID`     | –                       | Optional Umami page-view analytics; both or neither.                  |
+| `UMAMI_SCRIPT_URL`, `UMAMI_WEBSITE_ID`     | –                       | Optional Umami page-view analytics; both or neither.                   |
 
 ## Deployment
 
