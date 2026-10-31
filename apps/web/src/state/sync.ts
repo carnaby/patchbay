@@ -89,6 +89,9 @@ export const datasetKey = (dashboardId: string, dataset: Dataset) =>
   ['data', dashboardId, dataset.id, JSON.stringify(dataset)] as const;
 
 let reconnects = 0;
+/** First wait before opening a live channel the server refused again; doubled up to the maximum. */
+const RECONNECT_MIN_MS = 5000;
+const RECONNECT_MAX_MS = 60_000;
 /** How often the live channel reconnected; results after a reconnect only set a new sound baseline. */
 export const liveReconnects = () => reconnects;
 
@@ -101,9 +104,10 @@ export function useLiveEvents(id: string | undefined) {
 
   useEffect(() => {
     if (!id) return;
-    // Rows as arrays: column names once per result instead of once per row (see core wire.ts).
-    const source = new EventSource(`/api/dashboards/${id}/events?rows=arrays`, { withCredentials: true });
+    let source: EventSource;
     let stopped = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let retryMs = RECONNECT_MIN_MS;
     let greeted = false;
 
     const pullRemote = async (event: Extract<LiveEvent, { type: 'doc' }>) => {
@@ -141,9 +145,7 @@ export function useLiveEvents(id: string | undefined) {
       }
     };
 
-    source.onopen = () => setConnected(true);
-    source.onerror = () => setConnected(false);
-    source.onmessage = (msg) => {
+    const onMessage = (msg: MessageEvent<string>) => {
       if (stopped) return;
       const event = JSON.parse(msg.data) as LiveEvent;
       if (event.type === 'data') {
@@ -170,6 +172,25 @@ export function useLiveEvents(id: string | undefined) {
       }
     };
 
+    const connect = () => {
+      // Rows as arrays: column names once per result instead of once per row (see core wire.ts).
+      source = new EventSource(`/api/dashboards/${id}/events?rows=arrays`, { withCredentials: true });
+      source.onopen = () => {
+        retryMs = RECONNECT_MIN_MS;
+        setConnected(true);
+      };
+      source.onmessage = onMessage;
+      source.onerror = () => {
+        setConnected(false);
+        // EventSource reconnects by itself after a dropped connection, but gives up for good after an error answer
+        // (a busy server's 503, a 429). Unattended screens must come back without anyone reloading them.
+        if (source.readyState !== EventSource.CLOSED || stopped) return;
+        retry = setTimeout(connect, retryMs);
+        retryMs = Math.min(retryMs * 2, RECONNECT_MAX_MS);
+      };
+    };
+    connect();
+
     // After our own save finishes, process a remote version that arrived meanwhile.
     const unsubscribe = useEditor.subscribe((s, prev) => {
       if (prev.saving && !s.saving && pendingVersion.current > s.version) {
@@ -186,6 +207,7 @@ export function useLiveEvents(id: string | undefined) {
 
     return () => {
       stopped = true;
+      clearTimeout(retry);
       source.close();
       unsubscribe();
     };
