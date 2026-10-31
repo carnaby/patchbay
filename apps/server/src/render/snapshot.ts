@@ -563,12 +563,18 @@ export function renderDashboardPng(
   }
   if (foot) {
     // Over whatever a card cut off by the crop left in this strip.
-    if (cropped) parts.push(`<rect x="0" y="${visibleTo}" width="${width}" height="${foot}" fill="${page}"/>`);
+    if (cropped)
+      parts.push(`<rect x="0" y="${visibleTo}" width="${width}" height="${foot}" fill="${page}"/>`);
     parts.push(
-      text(GAP + 4, visibleTo + 18, truncate(`Data: ${credit.join(' · ')}`, Math.floor((width - GAP * 2) / 6)), {
-        size: 11,
-        color: theme.muted,
-      }),
+      text(
+        GAP + 4,
+        visibleTo + 18,
+        truncate(`Data: ${credit.join(' \u00b7 ')}`, Math.floor((width - GAP * 2) / 6)),
+        {
+          size: 11,
+          color: theme.muted,
+        },
+      ),
     );
   }
   if (cropped) {

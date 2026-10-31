@@ -77,7 +77,7 @@ export const WidgetFrame = memo(function WidgetFrame({
   const query = useDatasetResult(dashboardId, dataset, live);
   const attributions = useAttributions();
   const credit = useMemo(
-    () => (dataset ? widgetAttributions([dataset], [widget], attributions).join(' · ') : ''),
+    () => (dataset ? widgetAttributions([dataset], [widget], attributions).join(' \u00b7 ') : ''),
     [dataset, widget, attributions],
   );
   const [flashing, setFlashing] = useState(false);
@@ -304,7 +304,10 @@ export const WidgetFrame = memo(function WidgetFrame({
       </div>
       {credit ? (
         // Some providers require a visible credit; keep it quiet, and let the title attribute carry what is cut off.
-        <p className="shrink-0 truncate px-3 pb-2 text-[10.5px] leading-none text-muted" title={`Data: ${credit}`}>
+        <p
+          className="shrink-0 truncate px-3 pb-2 text-[10.5px] leading-none text-muted"
+          title={`Data: ${credit}`}
+        >
           Data: {credit}
         </p>
       ) : null}
