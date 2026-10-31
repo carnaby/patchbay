@@ -24,6 +24,7 @@ import { defaultPoolSize, InlineRunner, type PipelineRunner, WorkerPool } from '
 import { DashboardIndex } from './store/dashboard-index.ts';
 import { FolderStore } from './store/folder-store.ts';
 import { HttpError, toHttpError } from './util/errors.ts';
+import { prepareIndexHtml } from './util/index-html.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import type { UpstreamTestSeam } from './util/safe-fetch.ts';
 
@@ -102,6 +103,8 @@ export function createApp(deps: Deps) {
   const { config } = deps;
   const app = new Hono<Env>();
   const mcp = createMcp(deps);
+  // Optional Umami analytics: its script and its event endpoint share one origin. Nothing else is loosened.
+  const analyticsOrigin = config.analytics ? [config.analytics.origin] : [];
 
   app.use(
     '*',
@@ -110,8 +113,8 @@ export function createApp(deps: Deps) {
         defaultSrc: ["'self'"],
         imgSrc: ["'self'", 'data:', 'https://lh3.googleusercontent.com'],
         styleSrc: ["'self'", "'unsafe-inline'"],
-        scriptSrc: ["'self'"],
-        connectSrc: ["'self'"],
+        scriptSrc: ["'self'", ...analyticsOrigin],
+        connectSrc: ["'self'", ...analyticsOrigin],
         fontSrc: ["'self'", 'data:'],
         frameAncestors: ["'none'"],
         formAction: ["'self'"],
@@ -198,11 +201,14 @@ export function createApp(deps: Deps) {
   const dist = resolve(config.webDist ?? join(import.meta.dirname, '../../web/dist'));
   if (existsSync(join(dist, 'index.html'))) {
     // Re-read index.html when it changes on disk (a rebuild), so it never points at stale asset hashes.
-    let cached = { mtime: 0, html: '' };
-    const indexHtml = () => {
+    let cached = { mtime: 0, render: (_path: string) => '' };
+    const indexHtml = (c: Context) => {
       const mtime = statSync(join(dist, 'index.html')).mtimeMs;
-      if (mtime !== cached.mtime) cached = { mtime, html: readFileSync(join(dist, 'index.html'), 'utf8') };
-      return cached.html;
+      if (mtime !== cached.mtime) {
+        cached = { mtime, render: prepareIndexHtml(readFileSync(join(dist, 'index.html'), 'utf8'), config) };
+      }
+      const path = new URL(c.req.url).pathname;
+      return c.html(cached.render(path === '/index.html' ? '/' : path));
     };
     // serveStatic calls onFound after it has built the response, so a header set there never arrives.
     // Setting it once the response exists is the reliable way.
@@ -216,8 +222,12 @@ export function createApp(deps: Deps) {
     app.get('/assets/*', (c) => c.text('Not found', 404));
     // Unhashed files keep their name across deploys, so they must be revalidated: a stale sw.js or
     // manifest keeps an old app version alive, and a CDN would otherwise cache .js/.png by extension.
-    app.use('*', cacheControl('no-cache'), serveStatic({ root: dist }));
-    app.get('*', (c) => c.html(indexHtml()));
+    // index.html itself is rendered for this deployment below, never served as the raw file.
+    const staticFiles = serveStatic({ root: dist });
+    app.use('*', cacheControl('no-cache'), (c, next) =>
+      c.req.path.endsWith('/') || c.req.path.endsWith('/index.html') ? next() : staticFiles(c, next),
+    );
+    app.get('*', indexHtml);
   } else {
     app.get('/', (c) =>
       c.text('Patchbay API is running. Build the web app with `pnpm build`, or run `pnpm dev`.'),

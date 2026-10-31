@@ -95,6 +95,9 @@ docker compose up -d
   dashboards and disk space".
 - `PIPELINE_WORKERS=1` and a 384 MB memory limit suit a 2-core machine. Measured: about 100–120 MB idle, about
   250 MB peak while a 5 MB upload is processed.
+- `UMAMI_SCRIPT_URL` and `UMAMI_WEBSITE_ID` (optional, in `.env`) turn on page-view analytics; see "Analytics"
+  below. The compose file passes them through with empty defaults, which means off, and they take precedence over
+  `patchbay.env`.
 - The tunnel token goes only to `cloudflared` (it is in `.env`, which the app container does not receive).
   `cloudflared` is pinned to an exact version; bump it by hand.
 - Updates: the `patchbay` service carries the label `com.centurylinklabs.watchtower.enable=true` for a Watchtower
@@ -195,10 +198,35 @@ most 20 files and 25 MB as stored on the server (a parsed CSV can take more room
 "Make a copy" share the upload files of the original (hard links) instead of copying them; on a file system without
 hard links they are copied, and the server says so once in its log.
 
+## Analytics (optional)
+
+Patchbay has no analytics by default and loads no tracker. To count page views with a
+[Umami](https://umami.is) instance you run, set both variables and restart:
+
+```bash
+UMAMI_SCRIPT_URL=https://umami.example.com/script.js   # https only
+UMAMI_WEBSITE_ID=<the website ID Umami shows, a UUID>
+```
+
+Setting only one of them is a startup error. With both set, the server adds the tracker to every page and allows its
+origin in the Content Security Policy (`script-src` and `connect-src`, nothing else). The tracker is configured so that:
+
+- it only reports on the host of `PUBLIC_URL` (`data-domains`), and nothing when the browser sends Do Not Track;
+- query strings and fragments are never sent (OAuth consent pages carry codes and state in them);
+- dashboard links are reported as `/d/:id` and dashboard titles as "Dashboard": a link to a public dashboard works
+  like a key, so neither leaves the browser. This happens in Umami's `data-before-send` hook
+  (`apps/web/public/umami-hook.js`). Older trackers without that hook would send the real path: check that your
+  `script.js` contains `before-send` before turning analytics on.
+
+Umami sets no cookies; whether you need a notice or consent where you operate is yours to check. The script is
+loaded with `defer` and nothing depends on it: an ad blocker or an unreachable Umami server changes nothing
+for users, including unattended presentation screens. To keep your own visits out of the numbers, run
+`localStorage.setItem('umami.disabled', '1')` once in the browser console on your instance.
+
 ## Operations checklist
 
 - `PUBLIC_URL` must be the exact public origin (scheme + host, no trailing slash). OAuth issuer and MCP resource URIs
-  are derived from it; a mismatch breaks MCP sign-in.
+  are derived from it; a mismatch breaks MCP sign-in. Link previews (`og:image`, `og:url`, canonical) use it too.
 - Behind a reverse proxy, set `TRUST_PROXY=1` so rate limits see client IPs (`TRUST_PROXY=cloudflare` behind a
   Cloudflare Tunnel, see below).
 - Back up `DATA_DIR`. The SQLite index can be rebuilt from the folders, but users, tokens and secrets live only in

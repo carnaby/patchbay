@@ -22,6 +22,10 @@ const trustProxy = z
 
 export type TrustProxy = 'off' | 'forwarded' | 'cloudflare';
 
+/** Compose passes `${VAR:-}` through as an empty string; that means "not set", not "invalid". */
+const optional = <T extends z.ZodType>(schema: T) =>
+  z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), schema.optional());
+
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   HOST: z.string().default('0.0.0.0'),
@@ -57,6 +61,12 @@ const EnvSchema = z.object({
   SECRETS_KEY: z.string().optional(),
   /** Comma-separated earlier keys, only while rotating: rows sealed with them are re-sealed at startup. */
   SECRETS_KEY_PREVIOUS: z.string().optional(),
+  /** Umami tracker script, e.g. https://umami.example.com/script.js. Analytics are off unless both are set. */
+  UMAMI_SCRIPT_URL: optional(
+    z.url({ protocol: /^https$/, error: 'UMAMI_SCRIPT_URL must be an https:// URL' }),
+  ),
+  /** The website ID Umami shows for this site (a UUID). */
+  UMAMI_WEBSITE_ID: optional(z.uuid({ error: 'UMAMI_WEBSITE_ID must be the website UUID from Umami' })),
 });
 
 /**
@@ -88,6 +98,25 @@ function secretKeys(env: { SECRETS: SecretMode; SECRETS_KEY?: string; SECRETS_KE
   if (previous.length && !current)
     throw new Error('SECRETS_KEY_PREVIOUS needs a current SECRETS_KEY to rotate to');
   return current ? new SecretKeyring(current, previous) : null;
+}
+
+/**
+ * Analytics are opt-in per deployment: a self-hosted instance sends nothing to any third party unless its operator
+ * configures it. Half a configuration is an error rather than a silent no-op, so a typo cannot hide for months.
+ */
+function analytics(env: { UMAMI_SCRIPT_URL?: string; UMAMI_WEBSITE_ID?: string }) {
+  if (!env.UMAMI_SCRIPT_URL && !env.UMAMI_WEBSITE_ID) return null;
+  if (!env.UMAMI_SCRIPT_URL || !env.UMAMI_WEBSITE_ID) {
+    throw new Error(
+      'Umami analytics need both UMAMI_SCRIPT_URL and UMAMI_WEBSITE_ID: set both, or neither to turn analytics off',
+    );
+  }
+  const scriptUrl = new URL(env.UMAMI_SCRIPT_URL);
+  return {
+    scriptUrl: scriptUrl.href,
+    origin: scriptUrl.origin,
+    websiteId: env.UMAMI_WEBSITE_ID.toLowerCase(),
+  };
 }
 
 export type Config = ReturnType<typeof loadConfig>;
@@ -131,5 +160,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     pipelineWorkers: parsed.PIPELINE_WORKERS,
     pipelineTimeoutMs: parsed.PIPELINE_TIMEOUT_MS,
     secrets: { mode: parsed.SECRETS as SecretMode, keyring: secretKeys(parsed) },
+    analytics: analytics(parsed),
   };
 }
