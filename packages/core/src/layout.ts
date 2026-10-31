@@ -49,14 +49,33 @@ export function placeItem(
   return { i: id, w, h, ...findSlot(layout, w, h) };
 }
 
-/** Pulls every item up as far as it can go without overlapping (vertical compaction). */
+/**
+ * Pulls every item up as far as it can go without overlapping (vertical compaction).
+ *
+ * Moves in jumps rather than one row at a time: the schema allows y up to 10 000, and an unauthenticated snapshot
+ * compacts whatever layout was stored, so a row-by-row walk (about 200 ms for 60 widgets) was a cheap way to burn
+ * CPU. The result is the same as the row-by-row walk: an item rises until the row above it touches a placed item it
+ * shares a column with, then sinks past the bottom of anything it still overlaps.
+ */
 export function compact(layout: LayoutItem[]): LayoutItem[] {
   const sorted = [...layout].sort((a, b) => a.y - b.y || a.x - b.x);
   const placed: LayoutItem[] = [];
   for (const item of sorted) {
+    const columns = placed.filter((p) => item.x < p.x + p.w && p.x < item.x + item.w);
     let y = item.y;
-    while (y > 0 && !placed.some((p) => overlaps(p, { ...item, y: y - 1 }))) y--;
-    while (placed.some((p) => overlaps(p, { ...item, y }))) y++;
+    if (y > 0) {
+      let rest = 0;
+      for (const p of columns) {
+        // Already touching from the row above: it cannot rise at all.
+        if (p.y < y - 1 + item.h && y - 1 < p.y + p.h) rest = y;
+        else if (p.y + p.h <= y - 1) rest = Math.max(rest, p.y + p.h);
+      }
+      y = rest;
+    }
+    for (let hit = columns.find((p) => p.y < y + item.h && y < p.y + p.h); hit; ) {
+      y = hit.y + hit.h;
+      hit = columns.find((p) => p.y < y + item.h && y < p.y + p.h);
+    }
     placed.push({ ...item, y });
   }
   const order = new Map(layout.map((it, idx) => [it.i, idx]));

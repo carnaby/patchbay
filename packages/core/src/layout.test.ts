@@ -7,7 +7,7 @@ import {
   normalizeLayout,
   readingOrder,
 } from './index.ts';
-import { reorderLayout } from './layout.ts';
+import { compact, reorderLayout } from './layout.ts';
 
 const item = (i: string, x: number, y: number, w: number, h: number): LayoutItem => ({ i, x, y, w, h });
 
@@ -108,6 +108,53 @@ describe('reorderLayout', () => {
         ),
       ).toEqual(next);
     }
+  });
+});
+
+describe('compact', () => {
+  /** The original row-by-row walk, kept as the reference the jumping version must match exactly. */
+  const stepwise = (layout: LayoutItem[]): LayoutItem[] => {
+    const hits = (a: Omit<LayoutItem, 'i'>, b: Omit<LayoutItem, 'i'>) =>
+      a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+    const placed: LayoutItem[] = [];
+    for (const it of [...layout].sort((a, b) => a.y - b.y || a.x - b.x)) {
+      let y = it.y;
+      while (y > 0 && !placed.some((p) => hits(p, { ...it, y: y - 1 }))) y--;
+      while (placed.some((p) => hits(p, { ...it, y }))) y++;
+      placed.push({ ...it, y });
+    }
+    const order = new Map(layout.map((it, idx) => [it.i, idx]));
+    return placed.sort((a, b) => order.get(a.i)! - order.get(b.i)!);
+  };
+
+  it('matches the row-by-row walk, overlapping inputs included (randomised)', () => {
+    let seed = 7;
+    const random = () => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed / 2 ** 31;
+    };
+    for (let run = 0; run < 2000; run++) {
+      const count = 1 + Math.floor(random() * 14);
+      const layout = Array.from({ length: count }, (_, n) => {
+        const w = 1 + Math.floor(random() * GRID_COLUMNS);
+        return item(
+          `w${n}`,
+          Math.floor(random() * (GRID_COLUMNS - w + 1)),
+          Math.floor(random() * (run % 2 ? 12 : 200)),
+          w,
+          1 + Math.floor(random() * 8),
+        );
+      });
+      expect(compact(layout)).toEqual(stepwise(layout));
+    }
+  });
+
+  it('pulls a widget stored far down to the top without walking every row', () => {
+    const layout = Array.from({ length: 60 }, (_, n) => item(`w${n}`, n % 12, 10_000, 1, 40));
+    const started = performance.now();
+    const out = compact(layout);
+    expect(performance.now() - started).toBeLessThan(50);
+    expect(Math.max(...out.map((it) => it.y + it.h))).toBe(200);
   });
 });
 
