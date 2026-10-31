@@ -12,6 +12,12 @@ const app = createApp(deps);
 const { added, removed } = await deps.index.reconcile(deps.store);
 console.log(`[patchbay] index reconciled: +${added} -${removed}`);
 
+const synced = await deps.dashboards.syncShowcase(deps.useCases);
+if (deps.useCases.length)
+  console.log(
+    `[patchbay] showcase: ${deps.useCases.length} use cases (+${synced.created.length} ~${synced.updated.length})`,
+  );
+
 // Housekeeping: heal the index, expire sessions, prune stale anonymous dashboards.
 const housekeeping = setInterval(async () => {
   try {

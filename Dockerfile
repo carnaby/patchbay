@@ -36,6 +36,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages/core ./packages/core
 COPY --from=build /app/apps/server ./apps/server
 COPY --from=build /app/apps/web/dist ./apps/web/dist
+COPY --from=build /app/showcase ./showcase
 RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME ["/data"]

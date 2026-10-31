@@ -22,6 +22,7 @@ import { DashboardService } from './services/dashboards.ts';
 import { DataService } from './services/data.ts';
 import { defaultPoolSize, InlineRunner, type PipelineRunner, WorkerPool } from './services/pipeline-pool.ts';
 import { ResultWire } from './services/result-wire.ts';
+import { loadUseCases, trustedSourceUrls } from './showcase/load.ts';
 import { DashboardIndex } from './store/dashboard-index.ts';
 import { FolderStore } from './store/folder-store.ts';
 import { HttpError, RetryLaterError, toHttpError } from './util/errors.ts';
@@ -74,6 +75,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     const doc = meta ? await store.readDoc(id) : null;
     return meta && doc ? { doc, ownerId: meta.ownerId } : null;
   });
+  const useCases = loadUseCases(config.showcaseDir);
   dashboards = new DashboardService(
     store,
     index,
@@ -89,10 +91,12 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       uploadMaxCellsAnonymous: config.uploadMaxCellsAnonymous,
       urlSources: config.urlSources,
       anonymousStorageBytes: config.anonymousStorageBytes,
+      trustedUrls: trustedSourceUrls(useCases),
     },
   );
   return {
     config,
+    useCases,
     db,
     users,
     tokens: new Tokens(db),

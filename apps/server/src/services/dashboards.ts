@@ -31,6 +31,7 @@ import {
   type SecretInfo,
   type SecretMode,
   type SecretPlacement,
+  SHOWCASE_OWNER_ID,
   secretParamIssue,
   secretRefChanges,
   secretValueIssue,
@@ -44,6 +45,7 @@ import type { UserRow, Users } from '../auth/users.ts';
 import { unknownConnectorMessage } from '../connectors/registry.ts';
 import { now } from '../db.ts';
 import type { LiveHub } from '../live/hub.ts';
+import type { UseCase } from '../showcase/load.ts';
 import type { DashboardIndex } from '../store/dashboard-index.ts';
 import type { FolderStore, StoredMeta } from '../store/folder-store.ts';
 import { newDashboardId, newId, randomToken, safeEqual, sha256 } from '../util/crypto.ts';
@@ -1228,5 +1230,63 @@ export class DashboardService {
       this.hub.deleted(id);
     }
     return ids;
+  }
+
+  /**
+   * Keeps one public dashboard per showcase use case, owned by SHOWCASE_OWNER_ID so that nobody can edit it (canEdit
+   * compares owner ids) and nothing counts it as anonymous (storage ceiling, pruning). A changed dashboard.json
+   * becomes a new version, so the history shows when the repository changed it. An id that exists with another
+   * owner is never touched. An admin can still delete one; the next startup recreates it.
+   */
+  async syncShowcase(useCases: readonly UseCase[], warn: (m: string) => void = console.warn) {
+    const result = { created: [] as string[], updated: [] as string[], skipped: [] as string[] };
+    const actor: Actor = { kind: 'system', label: 'Patchbay showcase' };
+    for (const uc of useCases) {
+      const id = uc.dashboardId;
+      await this.store.withLock(id, async () => {
+        const meta = this.store.exists(id) ? await this.store.readMeta(id) : null;
+        if (meta && meta.ownerId !== SHOWCASE_OWNER_ID) {
+          warn(
+            `[patchbay] showcase: dashboard id "${id}" belongs to someone else; "${uc.meta.id}" not synced`,
+          );
+          result.skipped.push(id);
+          return;
+        }
+        const at = now();
+        if (!meta) {
+          const fresh: StoredMeta = {
+            id,
+            ownerId: SHOWCASE_OWNER_ID,
+            ownerEmail: null,
+            visibility: 'public',
+            editKeyHash: null,
+            version: 1,
+            createdAt: at,
+            updatedAt: at,
+            lastViewedAt: at,
+            lastActor: actor,
+          };
+          await this.store.create(fresh, uc.doc, actor, [`Created from showcase "${uc.meta.id}"`]);
+          this.index.upsert(fresh, {
+            title: uc.doc.title,
+            widgets: uc.doc.widgets.length,
+            sizeBytes: await this.store.sizeOf(id),
+          });
+          result.created.push(id);
+          return;
+        }
+        const current = await this.store.readDoc(id);
+        if (current && JSON.stringify(current) === JSON.stringify(uc.doc)) return;
+        const updated: StoredMeta = { ...meta, version: meta.version + 1, updatedAt: at, lastActor: actor };
+        await this.store.writeDoc(updated, uc.doc, actor, [`Updated from showcase "${uc.meta.id}"`]);
+        this.index.upsert(updated, {
+          title: uc.doc.title,
+          widgets: uc.doc.widgets.length,
+          sizeBytes: await this.store.sizeOf(id),
+        });
+        result.updated.push(id);
+      });
+    }
+    return result;
   }
 }
