@@ -34,5 +34,7 @@ export function showcaseRoutes(deps: Deps) {
         )
       : c.notFound();
   });
+  // Anything else under /showcase is a 404, never the SPA shell (a missing video must not come back as HTML).
+  app.all('/showcase/*', (c) => c.notFound());
   return app;
 }

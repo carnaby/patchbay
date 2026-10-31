@@ -246,6 +246,26 @@ _Rejected:_ tile maps (every viewer's browser would call a third party, the CSP 
 would need server-side tile fetching), ECharts' old bundled world map (unclear provenance), TopoJSON (40 % smaller on
 the wire but a runtime dependency on both sides for a file that is cached anyway).
 
+## 8b. Showcase use cases
+
+The landing page can present ready-made use cases. Each one is a folder `showcase/<id>/` with `meta.json` (strict:
+`id` equal to the folder name, lowercase words joined by single hyphens and at least 4 letters or digits, `order`,
+`title` up to 60 characters, `tab` up to 24, `description` up to 200), `prompt.md` (1-4000 characters), `dashboard.json`
+(a `DashboardDoc`) and optionally `video.mp4` (16:9 H.264, at most 5 MB) and `poster.jpg` (at most 150 KB).
+`budget.test.ts` fails when committed media exceed those sizes. A broken folder is skipped with a warning; when two
+folders carry the same dashboard id, the one that sorts first wins.
+
+At startup the server reads `SHOWCASE_DIR` and syncs one public dashboard per use case, with the stable id
+`sc<slug without hyphens>`, owned by `system`. These dashboards are read-only for everyone, admins included, never
+pruned and not counted in the anonymous storage limit. A changed `dashboard.json` becomes a new version; an id owned
+by anyone else is never touched. Anyone can make an editable copy. With `URL_SOURCES=signed-in`, the exact http and
+feed URLs used by showcase dashboards are trusted (exact match, no prefixes), so anonymous copies keep working.
+
+`GET /api/use-cases` lists them (`public, max-age=300`). `GET /showcase/<id>` redirects to the dashboard, and
+`/showcase/<id>/video.mp4` and `/poster.jpg` support single byte ranges, an ETag (content hash) and
+`public, max-age=86400`. The service worker does not cache them. The videos are produced outside this repository; only
+the final MP4 and poster are committed.
+
 ## 9. Known limits and next steps
 
 - Live updates send the whole processed table on every change. For rolling windows that is mostly redundant;

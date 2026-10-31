@@ -66,6 +66,8 @@ It is free, needs no API keys, and runs as a single process you can host anywher
   dataset use it. Encrypted at rest, only ever sent to the address it was saved for, never readable again, not even by
   agents. Off by default (`SECRETS`); self-host for sensitive data, because the operator can technically read it.
 - 🗂️ **Boring storage.** One folder per dashboard. Delete the folder and the dashboard is gone. SQLite only indexes.
+- 🎬 **Use cases on the landing page.** Tabs with a short video, the prompt that built the dashboard, a live
+  read-only example and a one-click editable copy. Add your own by dropping a folder into `showcase/`.
 - 🌗 **Accessible charts.** Colour-blind-validated palette, light and dark themes, no dual axes, tables as an
   alternative view, keyboard shortcuts.
 
@@ -280,6 +282,7 @@ after every step.
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | –                       | Google sign-in. Redirect URI: `PUBLIC_URL/auth/google/callback`.       |
 | `ADMIN_EMAILS`                             | –                       | Comma-separated emails with access to `/admin`.                        |
 | `DEV_LOGIN`                                | off                     | Passwordless login for development. Refused in production.             |
+| `SHOWCASE_DIR`                             | `./showcase`            | Folder with the landing page use cases (`/app/showcase` in Docker).    |
 | `OFFLINE`                                  | off                     | Serve synthetic connector data.                                        |
 | `PRUNE_ANONYMOUS_AFTER_DAYS`               | `0`                     | Auto-delete anonymous dashboards nobody opened for N days.             |
 | `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS`        | `0`                     | Auto-delete anonymous dashboards still blank N hours after creation.   |
