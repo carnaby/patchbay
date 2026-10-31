@@ -15,16 +15,12 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from '../components/ui.tsx';
-import { ApiError, api, errorMessage } from '../lib/api.ts';
-import { isRetryable, withRetry } from '../lib/retry.ts';
-import { publicSecretsRequest } from '../lib/secrets.ts';
+import { ApiError, api } from '../lib/api.ts';
 import { useEditor } from './editor.ts';
 import { openLiveChannel } from './live-channel.ts';
+import { performSave } from './save.ts';
 
 const SAVE_DEBOUNCE_MS = 600;
-
-/** The editor moved on to another dashboard while a save waited to retry. */
-class SaveAbandoned extends Error {}
 
 async function fetchEnvelope(id: string) {
   return api<DashboardEnvelope>(`/api/dashboards/${id}`, { dashboardId: id });
@@ -41,43 +37,9 @@ export function useAutosave() {
     if (!id || !doc || saving || conflict) return;
     if (doc === useEditor.getState().saved) return;
     if (secretsPrompt?.doc === doc) return;
-    const timer = setTimeout(async () => {
+    const timer = setTimeout(() => {
       const job = useEditor.getState().beginSave();
-      if (!job) return;
-      const current = () => useEditor.getState().saveSeq === job.seq;
-      try {
-        // A busy server (503) or a rate limit (429) is waited out with the change kept queued, while the status says
-        // "Saving…"; edits made meanwhile are saved next. Only a lasting failure is reported.
-        const res = await withRetry(() => {
-          if (!current()) throw new SaveAbandoned();
-          return api<{ envelope: DashboardEnvelope }>(`/api/dashboards/${id}`, {
-            method: 'PUT',
-            body: {
-              doc: job.doc,
-              baseVersion: job.baseVersion,
-              changes: job.labels,
-              ...(job.confirmPublicSecrets ? { confirmPublicSecrets: true } : {}),
-            },
-            dashboardId: id,
-          });
-        });
-        if (current()) useEditor.getState().saveSucceeded(job.doc, res.envelope);
-      } catch (e) {
-        if (e instanceof SaveAbandoned || !current()) return;
-        const secrets = publicSecretsRequest(e);
-        if (secrets) {
-          // Not a failure and not retried on its own: the user decides in the dialog (PublicSecretsPrompt).
-          useEditor.getState().saveNeedsConfirmation(job.doc, secrets);
-        } else if (e instanceof ApiError && e.status === 409 && e.body.current) {
-          const outcome = useEditor.getState().rebaseOnto(e.body.current as DashboardEnvelope);
-          if (outcome === 'rebased') toast('The dashboard changed elsewhere. Your edits were merged on top.');
-        } else {
-          // Still busy after the retries: autosave starts over. Anything else would be refused again as it is, so
-          // it waits for the next edit.
-          useEditor.getState().saveFailed(errorMessage(e), isRetryable(e) ? undefined : job.doc);
-          toast(`Could not save: ${errorMessage(e)}`, 'bad');
-        }
-      }
+      if (job) void performSave(id, job, (message, tone) => toast(message, tone));
     }, SAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [id, doc, saving, conflict, secretsPrompt]);

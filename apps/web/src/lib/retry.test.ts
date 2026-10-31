@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, parseRetryAfter } from './api.ts';
+import { ApiError, NetworkError, parseRetryAfter } from './api.ts';
 import { RETRY_FOR_MS, retryDelayMs, withRetry } from './retry.ts';
 
 const busy = (status = 503, retryAfterSec: number | null = null) =>
@@ -47,13 +47,25 @@ describe('withRetry', () => {
     expect(retryDelayMs(busy(503, null), 10)).toBe(30_000);
   });
 
-  it('does not retry anything else: validation errors, conflicts, server errors, network failures', async () => {
+  it('waits out a restarting server: 502, 504 and connections that fail, with the same backoff', async () => {
+    const { task, started } = scripted([
+      new NetworkError(new TypeError('Failed to fetch')),
+      busy(502),
+      busy(504),
+    ]);
+    const result = withRetry(task);
+    await vi.advanceTimersByTimeAsync(20_000);
+    await expect(result).resolves.toBe('saved');
+    expect(started).toEqual([0, 2000, 6000, 14_000]);
+  });
+
+  it('does not retry anything else: validation errors, conflicts, server faults, its own bugs', async () => {
     for (const error of [
       new ApiError(400, 'Invalid', {}),
       new ApiError(409, 'Conflict', {}),
       new ApiError(428, 'Confirm', {}),
       new ApiError(500, 'Broken', {}),
-      new TypeError('Failed to fetch'),
+      new TypeError('x is undefined'),
     ]) {
       const { task } = scripted([error]);
       await expect(withRetry(task)).rejects.toBe(error);
