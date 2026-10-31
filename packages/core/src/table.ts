@@ -161,13 +161,36 @@ export function columnType(table: DataTable, name: string): ColumnType | undefin
   return table.columns.find((c) => c.name === name)?.type;
 }
 
-/** A stable content hash (FNV-1a) used to skip pushing unchanged data to clients. */
+/**
+ * A stable content hash (FNV-1a) used to skip pushing unchanged data to clients. It runs over the values one by one:
+ * the table as one JSON string repeats every column name in every row, and with long names that string alone was
+ * larger than the server's heap.
+ */
 export function hashTable(table: DataTable): string {
-  const text = JSON.stringify(table);
   let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
+  // A tag before each value keeps 1, "1", true and "true" apart, and so does the end mark ["ab", "c"] and ["a", "bc"].
+  const add = (tag: number, text: string) => {
+    h ^= tag;
     h = Math.imul(h, 0x01000193);
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    h ^= 0x1f;
+    h = Math.imul(h, 0x01000193);
+  };
+  for (const c of table.columns) {
+    add(0x63, c.name);
+    add(0x74, c.type);
+  }
+  add(0x72, String(table.rows.length));
+  for (const row of table.rows) {
+    for (const c of table.columns) {
+      const v = row[c.name];
+      if (typeof v === 'string') add(0x73, v);
+      else if (v === undefined || v === null) add(0x7a, '');
+      else add(typeof v === 'number' ? 0x6e : 0x62, String(v));
+    }
   }
   return (h >>> 0).toString(36);
 }

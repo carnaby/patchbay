@@ -23,6 +23,7 @@ import {
 import { SnapshotCache, snapshotCache } from '../render/cache.ts';
 import { RenderBusyError, snapshotGate } from '../render/gate.ts';
 import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
+import { type Body, rowsFormat, streamBody } from '../services/result-wire.ts';
 import { listTemplates } from '../services/templates.ts';
 import { badRequest, forbidden, HttpError, notFound } from '../util/errors.ts';
 
@@ -72,9 +73,16 @@ async function secretBody<T>(c: Ctx, schema: z.ZodType<T>): Promise<T> {
   return parsed.data;
 }
 
+/** Sends a shared, budgeted body as it is read (see ResultWire). */
+const sendBody = (c: Ctx, body: Body) =>
+  c.body(streamBody(body), 200, {
+    'content-type': 'application/json; charset=UTF-8',
+    'content-length': String(body.bytes),
+  });
+
 export function apiRoutes(deps: Deps) {
   const app = new Hono<Env>();
-  const { dashboards, data, hub, tokens, connectors, config } = deps;
+  const { dashboards, data, wire, hub, tokens, connectors, config } = deps;
 
   // Per-IP budget for all API traffic, plus a tighter one for writes.
   app.use('*', async (c, next) => {
@@ -135,15 +143,16 @@ export function apiRoutes(deps: Deps) {
   ];
   // Every open landing page polls this every 2 s and the answer is the same for everyone, so all visitors share one
   // resolve per second, and concurrent requests wait for the one already running instead of starting their own.
-  let showcaseCache: { body: Promise<string>; settledAt: number | null } | null = null;
+  let showcaseCache: { body: Promise<Buffer>; settledAt: number | null } | null = null;
   const showcaseBody = () => {
     const cached = showcaseCache;
     if (cached && (cached.settledAt === null || Date.now() - cached.settledAt < SHOWCASE_TTL_MS))
       return cached.body;
     const target = { id: 'showcase00', ownerId: null };
-    const entry: { body: Promise<string>; settledAt: number | null } = {
+    const entry: { body: Promise<Buffer>; settledAt: number | null } = {
+      // Bytes, not a string, so each visitor gets the same memory instead of an encoding of their own.
       body: Promise.all(showcase.map((d) => data.resolve(target, d))).then((results) =>
-        JSON.stringify(Object.fromEntries(results.map((r) => [r.datasetId, r]))),
+        Buffer.from(JSON.stringify(Object.fromEntries(results.map((r) => [r.datasetId, r])))),
       ),
       settledAt: null,
     };
@@ -264,7 +273,8 @@ export function apiRoutes(deps: Deps) {
     const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
     const dataset = doc.datasets.find((d) => d.id === c.req.param('datasetId'));
     if (!dataset) throw notFound('Dataset not found');
-    return c.json(await data.resolve({ id, ownerId: meta.ownerId }, dataset));
+    const result = await data.resolve({ id, ownerId: meta.ownerId }, dataset);
+    return sendBody(c, await wire.dataBody(result, rowsFormat(c.req.query('rows'))));
   });
 
   /** Runs an unsaved dataset definition and returns rows, a profile and widget suggestions. */
@@ -280,14 +290,20 @@ export function apiRoutes(deps: Deps) {
     const target = await dashboards.previewTarget(principal, id, dataset, { requireEdit: true });
     const result = await data.resolve(target, { ...dataset, accumulate: 0 }, { maxRows: 500 });
     const profile = profileTable(result.table);
-    return c.json({
-      result,
+    const rest = JSON.stringify({
       profile,
       suggestions: suggestWidgets(profile, {
         transforms: dataset.transforms,
         accumulate: dataset.accumulate > 0,
       }),
     });
+    return sendBody(
+      c,
+      await wire.dataBody(result, rowsFormat(c.req.query('rows')), {
+        before: '{"result":',
+        after: `,${rest.slice(1)}`,
+      }),
+    );
   });
 
   app.get('/dashboards/:id/suggest/:datasetId', async (c) => {
@@ -333,6 +349,7 @@ export function apiRoutes(deps: Deps) {
     const ip = clientKey(c, config.trustProxy);
     if ((openStreams.get(ip) ?? 0) >= 30) throw new HttpError(429, 'Too many open live connections');
     openStreams.set(ip, (openStreams.get(ip) ?? 0) + 1);
+    const format = rowsFormat(c.req.query('rows'));
     const res = streamSSE(c, async (stream) => {
       const queue: LiveEvent[] = [];
       let wake: (() => void) | null = null;
@@ -340,6 +357,13 @@ export function apiRoutes(deps: Deps) {
       const unsubscribe = hub.subscribe(id, {
         principal,
         send: (event) => {
+          // A slow reader keeps only the newest result of each dataset, not every refresh it has not read yet.
+          if (event.type === 'data') {
+            const stale = queue.findIndex(
+              (e) => e.type === 'data' && e.result.datasetId === event.result.datasetId,
+            );
+            if (stale >= 0) queue.splice(stale, 1);
+          }
           queue.push(event);
           wake?.();
         },
@@ -375,7 +399,8 @@ export function apiRoutes(deps: Deps) {
             }
           }
           const event = queue.shift()!;
-          await stream.writeSSE({ event: 'message', data: JSON.stringify(event) });
+          // The same bytes for every subscriber of the room (writeSSE would encode a copy for each).
+          await stream.write(wire.frame(event, format));
           if (event.type === 'deleted') break;
         }
       } finally {

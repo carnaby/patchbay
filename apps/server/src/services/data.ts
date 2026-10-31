@@ -23,6 +23,7 @@ import {
   sourceSecretIds,
   type Transform,
   TransformError,
+  wireSize,
 } from '@patchbay/core';
 
 import type { ConnectorService } from '../connectors/registry.ts';
@@ -35,6 +36,7 @@ import { OutboundLimiter } from '../util/outbound.ts';
 import { currentClient } from '../util/request-context.ts';
 import { type Credential, safeFetchJson, type UpstreamTestSeam } from '../util/safe-fetch.ts';
 import { InlineRunner, type PipelineRunner } from './pipeline-pool.ts';
+import { MAX_RESULT_BYTES, tooLargeResult } from './result-wire.ts';
 import type { UploadInput } from './upload-parse.ts';
 
 export const MAX_ROWS_OUT = 10_000;
@@ -145,7 +147,7 @@ interface Loaded {
   stamp?: string;
 }
 
-type Computed = Pick<DatasetResult, 'table' | 'hash' | 'truncated' | 'trace'>;
+type Computed = Pick<DatasetResult, 'table' | 'hash' | 'truncated' | 'trace' | 'error'>;
 
 interface HistoryBuffer {
   rows: DataTable['rows'];
@@ -417,6 +419,10 @@ export class DataService {
     const { table, trace }: PipelineResult = await this.pipeline.run(input, transforms);
     const truncated = table.rows.length > max;
     const out: DataTable = truncated ? { columns: table.columns, rows: table.rows.slice(-max) } : table;
+    // Measured in the compact form the web app reads, before anything is hashed, kept or serialised: a result too
+    // large to send is an error for every reader alike (widget, agent, snapshot), and only the error is kept.
+    const size = wireSize(out, 'arrays');
+    if (size > MAX_RESULT_BYTES) return tooLargeResult({ table: out, hash: '', truncated, trace }, size);
     return { table: out, hash: hashTable(out), truncated, trace };
   }
 
@@ -459,7 +465,7 @@ export class DataService {
         ...base,
         ...computed,
         fetchedAt: new Date(loaded.fetchedAt).toISOString(),
-        ...(loaded.warning ? { error: loaded.warning } : {}),
+        ...(computed.error || loaded.warning ? { error: computed.error ?? loaded.warning } : {}),
       };
     } catch (e) {
       if (e instanceof BusyError) throw e;

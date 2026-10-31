@@ -221,7 +221,9 @@ at most two stored uploads are parsed at a time; HTTP sources are fetched at mos
 round-robin per client, one client holding at most a tenth of it. When a queue is full the API answers
 `503 Service Unavailable` with `Retry-After`, and live refreshes skip a beat, instead of the process running out of
 memory. Live refresh never runs for uploads and inline rows (they change only when edited) and at most every 30 s for
-HTTP sources.
+HTTP sources. A dataset's result is sent only up to 4 MB as JSON (larger ones show an error asking for limit, select or
+aggregate steps); each result is serialised once and shared by everyone reading it, and response bodies still being
+read take at most 24 MB together (8 MB per client) before further large reads wait up to 10 s and then get a 503.
 
 ## Analytics (optional)
 
@@ -259,7 +261,7 @@ for users, including unattended presentation screens. To keep your own visits ou
 - `GET /healthz` is a liveness probe; the image defines a Docker `HEALTHCHECK`.
 - Logs go to stdout. The process handles `SIGTERM` gracefully.
 - Limits worth knowing: uploads ≤ 5 MB and ≤ `UPLOAD_MAX_CELLS` cells per file and ≤ 25 MB per dashboard as stored,
-  documents ≤ 1 MB, ≤ 10,000 rows sent to the browser per dataset, ≤ 60 widgets and 30 datasets per dashboard, last
+  documents ≤ 1 MB, ≤ 10,000 rows and ≤ 4 MB sent to the browser per dataset, ≤ 60 widgets and 30 datasets per dashboard, last
   50 versions (≤ 10 MB) kept.
 
 ## Scaling notes

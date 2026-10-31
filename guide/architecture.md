@@ -103,7 +103,11 @@ instances.
   downstream renders feed markup. A feed is fetched at most every 5 minutes per address, shared by all dashboards
   (publishers block faster polling); `OFFLINE=1` serves a deterministic sample.
 - **Pipelines run on the server.** The browser, the MCP agent and the PNG renderer therefore always agree on the numbers,
-  and the browser never downloads more than it displays (10,000 rows max).
+  and the browser never downloads more than it displays (10,000 rows max, at most 4 MB as JSON).
+- **Results are serialised once and shared** (`services/result-wire.ts`). The web app asks for rows as arrays
+  (`?rows=arrays`, column names once instead of in every row; `decodeTable` in core turns them back); other clients
+  get rows as objects. Concurrent readers of a result and every subscriber of a live push send the same bytes, and the
+  bodies still being read stay within a byte budget (24 MB); beyond it requests wait briefly, then get 503.
 - **Large pipelines run in worker threads** (`services/pipeline-pool.ts`). Inputs under 20,000 cells run inline,
   because copying them to a worker costs more than processing them; larger ones go to a pool of `worker_threads`
   (CPUs − 1, at most 4), so one heavy dashboard never blocks the API for everyone else. Each job has a hard time limit:
