@@ -340,3 +340,40 @@ describe('what a bearer token can reach', () => {
     expect(mcp.status).toBe(200);
   });
 });
+
+describe('private dashboards and missing ones look the same', () => {
+  it('answers strangers, signed in or not, with an identical 404 on every route', async () => {
+    const owner = await login('owner@example.com');
+    const stranger = await login('stranger@example.com');
+    const created = await call('/api/dashboards', { body: { visibility: 'private' }, cookie: owner });
+    const id = created.json.envelope.meta.id as string;
+    const missing = 'doesnotexist00';
+    const requests: [string, Init][] = [
+      ['', {}],
+      ['/versions', {}],
+      ['/events', {}],
+      ['/files', {}],
+      ['/data/x', {}],
+      ['/snapshot.png', {}],
+      ['/ops', { body: { ops: [{ op: 'setTitle', title: 'x' }] } }],
+      ['/ops', { body: { ops: [{ op: 'setTitle', title: 'x' }], dryRun: true } }],
+      ['', { method: 'PUT', body: { doc: {}, baseVersion: 1 } }],
+      ['/settings', { method: 'PATCH', body: { visibility: 'public' } }],
+      ['/claim', { method: 'POST' }],
+      ['/versions/1/restore', { method: 'POST' }],
+      ['', { method: 'DELETE' }],
+      ['/files/f_1', { method: 'DELETE' }],
+    ];
+    for (const cookie of [undefined, stranger]) {
+      for (const [suffix, init] of requests) {
+        const withCookie = cookie ? { ...init, cookie } : init;
+        const real = await call(`/api/dashboards/${id}${suffix}`, withCookie);
+        const fake = await call(`/api/dashboards/${missing}${suffix}`, withCookie);
+        const label = `${init.method ?? (init.body ? 'POST' : 'GET')} ${suffix || '/'} ${cookie ? 'signed in' : 'anonymous'}`;
+        expect([label, real.status, real.json?.error]).toEqual([label, fake.status, fake.json?.error]);
+      }
+    }
+    // The owner still sees it.
+    expect((await call(`/api/dashboards/${id}`, { cookie: owner })).status).toBe(200);
+  });
+});

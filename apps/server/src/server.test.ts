@@ -201,7 +201,7 @@ describe('dashboards over REST', () => {
     });
     const id = created.json.envelope.meta.id;
     expect((await call(`/api/dashboards/${id}`, { cookie: alice })).status).toBe(200);
-    expect((await call(`/api/dashboards/${id}`)).status).toBe(401);
+    expect((await call(`/api/dashboards/${id}`)).status).toBe(404);
     expect((await call(`/api/dashboards/${id}`, { cookie: bob })).status).toBe(404);
     expect((await call(`/api/dashboards/${id}/snapshot.png`, { cookie: bob })).status).toBe(404);
     const admin = await login('admin@example.com');

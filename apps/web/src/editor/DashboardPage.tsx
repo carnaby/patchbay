@@ -38,7 +38,7 @@ import {
   Modal,
   Spinner,
 } from '../components/ui.tsx';
-import { ApiError, api } from '../lib/api.ts';
+import { api } from '../lib/api.ts';
 import { relativeTime, setTheme, useDocumentTitle, useMe, useTheme } from '../lib/hooks.ts';
 import { setMuted, useSoundSettings } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
@@ -65,6 +65,7 @@ export default function DashboardPage() {
     queryFn: () => api<DashboardEnvelope>(`/api/dashboards/${id}`, { dashboardId: id }),
     staleTime: Number.POSITIVE_INFINITY,
   });
+  const { data: me, isLoading: meLoading } = useMe();
   const loadedId = useEditor((s) => s.id);
   const load = useEditor((s) => s.load);
 
@@ -74,7 +75,9 @@ export default function DashboardPage() {
   }, [query.data, load]);
 
   if (query.isError) {
-    const status = query.error instanceof ApiError ? query.error.status : 0;
+    // The server answers a private dashboard exactly like a missing one, so a signed-out visitor gets a generic
+    // hint that signing in may help.
+    const signedOut = !meLoading && !me;
     return (
       <div className="min-h-screen">
         <header className="flex h-14 items-center justify-between border-b border-line px-4">
@@ -84,9 +87,9 @@ export default function DashboardPage() {
         <div className="mx-auto max-w-lg px-4 py-24">
           <EmptyState
             icon={<Lock className="size-8" />}
-            title={status === 401 ? 'This dashboard is private' : 'Dashboard not found'}
+            title="Dashboard not found"
             action={
-              status === 401 ? (
+              signedOut ? (
                 <Link to={`/login?returnTo=/d/${id}`}>
                   <Button variant="primary">Sign in</Button>
                 </Link>
@@ -97,9 +100,9 @@ export default function DashboardPage() {
               )
             }
           >
-            {status === 401
-              ? 'Sign in with the account that owns it.'
-              : 'It may have been deleted, or the link is wrong.'}
+            {signedOut
+              ? 'It may have been deleted or the link is wrong. If it is private, sign in with the account that owns it.'
+              : 'It may have been deleted, the link is wrong, or it is private to another account.'}
           </EmptyState>
         </div>
       </div>
