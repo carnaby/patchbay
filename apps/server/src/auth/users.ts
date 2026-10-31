@@ -98,6 +98,32 @@ export class Users {
     if (token) this.db.prepare('DELETE FROM sessions WHERE id_hash = ?').run(sha256(token));
   }
 
+  /**
+   * Removes everything the database holds for a user in one transaction: dashboard index rows, secrets, tokens
+   * (personal, OAuth access and refresh), authorization codes, sessions and the user. The foreign keys would
+   * cascade most of it, but the counts are what the operator logs, and nothing should depend on a pragma.
+   * Pending authorization requests carry no user id (they are anonymous until consent) and expire by themselves.
+   */
+  eraseUser(userId: string) {
+    const run = (sql: string) => Number(this.db.prepare(sql).run(userId).changes);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const counts = {
+        dashboardRows: run('DELETE FROM dashboards WHERE owner_id = ?'),
+        secrets: run('DELETE FROM secrets WHERE user_id = ?'),
+        tokens: run('DELETE FROM tokens WHERE user_id = ?'),
+        codes: run('DELETE FROM oauth_codes WHERE user_id = ?'),
+        sessions: run('DELETE FROM sessions WHERE user_id = ?'),
+        users: run('DELETE FROM users WHERE id = ?'),
+      };
+      this.db.exec('COMMIT');
+      return counts;
+    } catch (e) {
+      this.db.exec('ROLLBACK');
+      throw e;
+    }
+  }
+
   purgeExpired() {
     const at = now();
     this.db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(at);

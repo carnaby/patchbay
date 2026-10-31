@@ -203,6 +203,9 @@ Design rules for the tools:
 
 - People sign in with Google (OIDC through `arctic`), sessions are random tokens stored as SHA-256 hashes, cookies are
   HttpOnly and SameSite=Lax, and cookie-authenticated writes must carry our own `Origin`.
+- `DELETE /api/me` erases an account and everything it owns (session only, the email repeated in the body):
+  dashboards first, under their locks, then secrets, tokens, grants, sessions and the user in one transaction, so a
+  failed attempt can simply be repeated.
 - MCP clients use the built-in OAuth 2.1 authorization server. The MCP specification asks resource servers to
   delegate to an identity provider; here the identity provider (Google) only authenticates the person, while Patchbay
   issues its own audience-bound tokens. Doing this in-process keeps self-hosting to a single container, at the cost of

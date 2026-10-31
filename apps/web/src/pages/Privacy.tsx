@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import { Link } from 'react-router';
 import { PageContainer } from '../components/AppShell.tsx';
 import { useAuthConfig, useDocumentTitle } from '../lib/hooks.ts';
 import { retentionSentences } from '../lib/retention.ts';
@@ -85,8 +86,20 @@ export default function Privacy() {
           <li>Delete a dashboard in the app (its menu); its versions and uploaded files go with it.</li>
           <li>Revoke tokens, connected apps and secrets in Settings.</li>
           <li>
-            There is no button to delete an account yet. To have your account and everything it owns removed,
-            ask the operator of this instance. For the public instance at patchbay.me.uk, open an{' '}
+            To delete your account, open{' '}
+            <Link
+              className="text-ink underline underline-offset-2 hover:text-ink-2"
+              to="/settings#delete-account"
+            >
+              Settings
+            </Link>{' '}
+            and use Delete account. It removes your dashboards (with their versions and uploaded files),
+            secrets, tokens, connected apps and sessions at once, and cannot be undone. Anonymous dashboards
+            are not linked to an account; the retention rules above remove them.
+          </li>
+          <li>
+            If you cannot sign in any more, ask the operator of this instance to remove your account. For the
+            public instance at patchbay.me.uk, open an{' '}
             <a
               className="text-ink underline underline-offset-2 hover:text-ink-2"
               href={ISSUES}

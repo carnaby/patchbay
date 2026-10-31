@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bot, KeyRound, LockKeyhole, Plug, Terminal, Trash2 } from 'lucide-react';
+import { Bot, KeyRound, LockKeyhole, Plug, Terminal, Trash2, TriangleAlert } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { Link, Navigate, useLocation } from 'react-router';
 import { PageContainer } from '../components/AppShell.tsx';
@@ -19,7 +19,8 @@ import {
   Toggle,
   toast,
 } from '../components/ui.tsx';
-import { api } from '../lib/api.ts';
+import { ACCOUNT_DELETED_URL, emailMatches, erasureItems } from '../lib/account.ts';
+import { api, errorMessage } from '../lib/api.ts';
 import { relativeTime, useDocumentTitle, useMe, useSecrets } from '../lib/hooks.ts';
 import { secretsSectionMode } from '../lib/secrets.ts';
 import { CopyField, PageHeader } from './_shared.tsx';
@@ -321,6 +322,91 @@ function GrantsSection({ grants }: { grants: GrantInfo[] }) {
   );
 }
 
+function DeleteAccount({
+  email,
+  isAdmin,
+  tokens,
+  grants,
+  secrets,
+}: {
+  email: string;
+  isAdmin: boolean;
+  tokens: number;
+  grants: number;
+  secrets: number;
+}) {
+  const qc = useQueryClient();
+  const dashboards = useQuery({
+    queryKey: ['dashboards'],
+    queryFn: () => api<unknown[]>('/api/dashboards'),
+  });
+  const [typed, setTyped] = useState('');
+  const erase = useMutation({
+    mutationFn: () => api('/api/me', { method: 'DELETE', body: { confirm: typed } }),
+    onSuccess: () => {
+      // The session cookie is already gone; a full load drops every cached query and any open live stream.
+      qc.clear();
+      window.location.assign(ACCOUNT_DELETED_URL);
+    },
+  });
+  const items = erasureItems({
+    dashboards: dashboards.data?.length ?? 0,
+    secrets,
+    tokens,
+    connectedApps: grants,
+  });
+  const ready = emailMatches(typed, email);
+  return (
+    <Card className="border-bad/40 p-5">
+      <p className="text-sm text-ink-2">
+        This permanently deletes your account and everything it owns:{' '}
+        <strong className="text-ink">
+          {items.length ? items.join(', ') : 'no dashboards, secrets or tokens yet'}
+        </strong>
+        . Dashboards go with their versions and uploaded files. Copies other people made of your public
+        dashboards are theirs and stay. Anonymous dashboards are not linked to your account and are not
+        affected. This cannot be undone.
+      </p>
+      {isAdmin ? (
+        <p className="mt-2 text-sm text-ink-2">
+          Your email is listed as an administrator of this instance. Signing in again creates a fresh, empty
+          account.
+        </p>
+      ) : null}
+      <form
+        className="mt-4 grid gap-3 sm:max-w-md"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (ready) erase.mutate();
+        }}
+      >
+        <Field label={`Type ${email} to confirm`}>
+          {(id) => (
+            <Input
+              id={id}
+              value={typed}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder={email}
+              onChange={(e) => setTyped(e.target.value)}
+            />
+          )}
+        </Field>
+        {erase.error ? (
+          <p role="alert" className="text-sm text-bad">
+            {errorMessage(erase.error)}
+          </p>
+        ) : null}
+        <div>
+          <Button type="submit" variant="danger" disabled={!ready} loading={erase.isPending}>
+            Delete my account
+          </Button>
+        </div>
+      </form>
+    </Card>
+  );
+}
+
 export default function Settings() {
   useDocumentTitle('AI connections');
   const { data: user, isLoading } = useMe();
@@ -379,6 +465,20 @@ export default function Settings() {
           <SecretsManager list={secrets.data} />
         </Section>
       ) : null}
+      <Section
+        id="delete-account"
+        icon={<TriangleAlert className="size-5 text-bad" />}
+        title="Delete account"
+        subtitle="Remove your account and all your data from this instance."
+      >
+        <DeleteAccount
+          email={user.email}
+          isAdmin={user.isAdmin}
+          tokens={data.data?.tokens.length ?? 0}
+          grants={data.data?.grants.length ?? 0}
+          secrets={secrets.data?.secrets.length ?? 0}
+        />
+      </Section>
       <p className="mt-10 text-center text-xs text-muted">
         <Link to="/privacy" className="underline hover:text-ink">
           Privacy: what is stored and how to delete it

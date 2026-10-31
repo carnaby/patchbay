@@ -17,7 +17,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { type ReactNode, useMemo } from 'react';
-import { Link } from 'react-router';
+import { Link, useSearchParams } from 'react-router';
 import { Logo } from '../components/AppShell.tsx';
 import { Button, cx } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
@@ -555,8 +555,14 @@ function Footer() {
 
 export default function Landing() {
   useDocumentTitle('Live dashboards your AI can build');
+  const [params] = useSearchParams();
   return (
     <>
+      {params.get('account') === 'deleted' ? (
+        <div role="status" className="border-b border-line bg-surface-2 px-4 py-3 text-center text-sm">
+          Your account and everything it owned have been deleted, and you are signed out.
+        </div>
+      ) : null}
       <Hero />
       <UseCases />
       <HowItWorks />

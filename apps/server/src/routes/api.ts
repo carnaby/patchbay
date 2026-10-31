@@ -10,9 +10,11 @@ import {
   type UseCaseInfo,
 } from '@patchbay/core';
 import { Hono } from 'hono';
+import { deleteCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import { ALL_SCOPES } from '../auth/tokens.ts';
+import { SESSION_COOKIE } from '../auth/users.ts';
 import {
   type Ctx,
   clientKey,
@@ -108,6 +110,23 @@ export function apiRoutes(deps: Deps) {
     const user = c.get('user');
     const { mode, canUseSecrets } = dashboards.secretsStatus(user);
     return c.json({ user: user ? deps.users.toPublic(user) : null, secrets: mode, canUseSecrets });
+  });
+
+  // Erasure of the account and everything it owns. Session only (a leaked token must not be able to do this),
+  // with the email typed again; the same-origin check in front of /api covers cross-site requests.
+  app.delete('/me', async (c) => {
+    const user = requireSessionUser(c);
+    const body = z
+      .strictObject({ confirm: z.string().max(320) })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!body.success) throw badRequest('Send {"confirm": "<your email>"} to delete the account');
+    const counts = await dashboards.deleteAccount(c.get('principal'), body.data.confirm);
+    deleteCookie(c, SESSION_COOKIE, { path: '/' });
+    // The id only, never the email: the log must not keep what the user asked to have erased.
+    console.log(
+      `[patchbay] account ${user.id} deleted: ${counts.dashboards} dashboards, ${counts.secrets} secrets, ${counts.tokens} tokens, ${counts.sessions} sessions`,
+    );
+    return c.json({ ok: true, deleted: counts });
   });
 
   app.get('/connectors', (c) => c.json(connectors.list()));
