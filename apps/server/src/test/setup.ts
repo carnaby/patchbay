@@ -4,15 +4,18 @@ import { join, resolve } from 'node:path';
 import { vi } from 'vitest';
 
 // Tests that build createDeps must not pick up the repository's real showcase/ (its media, its dashboards): the
-// default folder is swapped for an empty one. A test that sets SHOWCASE_DIR itself is not affected.
+// config default is swapped for an empty folder. A test that sets SHOWCASE_DIR itself is not affected, and the
+// loader stays real, so budget.test.ts checks the real folder.
 const repoShowcase = resolve(import.meta.dirname, '../../../../showcase');
 const empty = mkdtempSync(join(tmpdir(), 'pb-no-showcase-'));
 
-vi.mock('../showcase/load.ts', async (importOriginal) => {
-  const real = await importOriginal<typeof import('../showcase/load.ts')>();
+vi.mock('../config.ts', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../config.ts')>();
   return {
     ...real,
-    loadUseCases: (dir: string, warn?: (m: string) => void) =>
-      real.loadUseCases(resolve(dir) === repoShowcase ? empty : dir, warn),
+    loadConfig: (...args: Parameters<typeof real.loadConfig>) => {
+      const config = real.loadConfig(...args);
+      return resolve(config.showcaseDir) === repoShowcase ? { ...config, showcaseDir: empty } : config;
+    },
   };
 });

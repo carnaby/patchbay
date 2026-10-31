@@ -120,7 +120,7 @@ describe('loadUseCases', () => {
     const root = tempRoot();
     const cases: Record<string, object> = {
       'with-upload': { kind: 'upload', fileId: 'abc123' },
-      'with-secret': { kind: 'http', url: 'https://api.example.org/x', secrets: ['s1'] },
+      'with-secret': { kind: 'http', url: 'https://api.example.org/x', secrets: ['sec_aaaaaaaaaaaaaaaa'] },
       inline: { kind: 'inline', rows: [{ a: 1 }] },
     };
     for (const [slug, source] of Object.entries(cases))
@@ -133,7 +133,7 @@ describe('loadUseCases', () => {
     const loaded = loadUseCases(root, (m) => warnings.push(m));
     expect(loaded.map((u) => u.meta.id)).toEqual(['inline']);
     expect(warnings.some((w) => /with-upload.*upload/.test(w))).toBe(true);
-    expect(warnings.some((w) => /with-secret.*secret/.test(w))).toBe(true);
+    expect(warnings.some((w) => /with-secret.*stored secret/.test(w))).toBe(true);
   });
 
   it('warns and returns nothing when the showcase path is a file', () => {

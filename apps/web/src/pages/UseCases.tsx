@@ -357,27 +357,24 @@ function Snapshot({ item, auto, onEnded }: { item: UseCaseInfo; auto: boolean; o
     const t = setTimeout(() => advance.current(), SNAPSHOT_DWELL_MS);
     return () => clearTimeout(t);
   }, [auto, visible]);
-  if (failed) {
-    return (
-      <div
-        ref={box}
-        className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-xl border border-line bg-surface-2 p-6 text-center"
-      >
-        <ImageOff className="size-6 text-muted" aria-hidden="true" />
-        <div className="font-medium">{item.title}</div>
-        <div className="text-sm text-ink-2">Preview unavailable. Open the live dashboard instead.</div>
-      </div>
-    );
-  }
+  // One outer element for both states: the visibility observer must not be left watching a removed node.
   return (
     <div ref={box}>
-      <img
-        src={`/api/dashboards/${item.dashboardId}/snapshot.png${theme === 'dark' ? '?theme=dark' : ''}`}
-        alt={`${item.title}: snapshot of the live dashboard`}
-        loading="lazy"
-        onError={() => setFailed(true)}
-        className="aspect-video w-full rounded-xl border border-line bg-surface-2 object-cover"
-      />
+      {failed ? (
+        <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-xl border border-line bg-surface-2 p-6 text-center">
+          <ImageOff className="size-6 text-muted" aria-hidden="true" />
+          <div className="font-medium">{item.title}</div>
+          <div className="text-sm text-ink-2">Preview unavailable. Open the live dashboard instead.</div>
+        </div>
+      ) : (
+        <img
+          src={`/api/dashboards/${item.dashboardId}/snapshot.png${theme === 'dark' ? '?theme=dark' : ''}`}
+          alt={`${item.title}: snapshot of the live dashboard`}
+          loading="lazy"
+          onError={() => setFailed(true)}
+          className="aspect-video w-full rounded-xl border border-line bg-surface-2 object-cover"
+        />
+      )}
     </div>
   );
 }
