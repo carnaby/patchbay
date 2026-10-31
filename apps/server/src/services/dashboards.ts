@@ -125,6 +125,49 @@ function documentTooLarge(doc: DashboardDoc, bytes: number): HttpError {
   );
 }
 
+/**
+ * Long inline text and column names that `after` adds. Checked here on writes rather than in the document schema,
+ * which also reads stored documents: those saved before the limits keep loading and accept other edits, and values
+ * they already hold may stay (editing one row of such a dataset still saves).
+ */
+function inlineTextTooLong(before: DashboardDoc, after: DashboardDoc): HttpError | null {
+  const existing = new Map(before.datasets.map((d) => [d.id, d]));
+  for (const dataset of after.datasets) {
+    if (dataset.source.kind !== 'inline') continue;
+    const old = existing.get(dataset.id)?.source;
+    if (old === dataset.source) continue;
+    const known = new Set<string>();
+    if (old?.kind === 'inline') {
+      for (const row of old.rows) {
+        for (const [name, value] of Object.entries(row)) {
+          if (name.length > LIMITS.inlineColumnName) known.add(name);
+          if (typeof value === 'string' && value.length > LIMITS.inlineText) known.add(value);
+        }
+      }
+    }
+    for (const [index, row] of dataset.source.rows.entries()) {
+      for (const [name, value] of Object.entries(row)) {
+        const where = `Dataset "${dataset.id}", inline row ${index + 1}`;
+        const advice =
+          'Put longer text in a CSV or JSON upload (upload_data, or POST /api/dashboards/:id/files) and use a source of kind "upload", or in a text widget.';
+        if (name.length > LIMITS.inlineColumnName && !known.has(name)) {
+          return badRequest(
+            `${where}: column names in inline rows are limited to ${LIMITS.inlineColumnName} characters ("${name.slice(0, 40)}…" has ${name.length}). Use a shorter name.`,
+            { code: 'INLINE_VALUE_TOO_LONG' },
+          );
+        }
+        if (typeof value === 'string' && value.length > LIMITS.inlineText && !known.has(value)) {
+          return badRequest(
+            `${where}, column "${name.slice(0, 40)}": text values in inline rows are limited to ${LIMITS.inlineText} characters (this one has ${value.length}). ${advice}`,
+            { code: 'INLINE_VALUE_TOO_LONG' },
+          );
+        }
+      }
+    }
+  }
+  return null;
+}
+
 export class ConflictError extends HttpError {
   readonly current: DashboardEnvelope;
   constructor(current: DashboardEnvelope) {
@@ -456,6 +499,9 @@ export class DashboardService {
       const next = mutate(doc, meta);
       this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
       this.checkSize(meta.ownerId, doc, next.doc);
+      // A restore brings back what was stored before, like the secret checks above allow.
+      const inline = secretOptions.restore ? null : inlineTextTooLong(doc, next.doc);
+      if (inline) throw inline;
       const actor = actorOf(p);
       const updated: StoredMeta = {
         ...meta,
@@ -524,6 +570,8 @@ export class DashboardService {
       // A dry run answers exactly like the save would, so agents learn about secret rules before saving.
       this.checkSecretRefs(meta, doc, result.doc, p, options);
       this.checkSize(meta.ownerId, doc, result.doc);
+      const inline = inlineTextTooLong(doc, result.doc);
+      if (inline) throw inline;
       return { envelope: this.envelope(meta, result.doc, p), changes: result.changes, dryRun: true };
     }
     return this.commit(

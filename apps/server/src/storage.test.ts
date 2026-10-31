@@ -105,18 +105,97 @@ describe('document size', () => {
     expect((await call(`/api/dashboards/${id}`, { cookie })).json.meta.version).toBe(2);
   });
 
-  it('caps the length of inline text values', async () => {
+  it('caps inline text and column names on writes, but keeps documents that already hold longer ones', async () => {
     const cookie = await login('long@example.com');
-    const id = (await call('/api/dashboards', { body: {}, cookie })).json.envelope.meta.id;
-    const rows = [{ text: 'x'.repeat(LIMITS.inlineText + 1) }];
-    const res = await call(`/api/dashboards/${id}/ops`, {
+    const created = (await call('/api/dashboards', { body: {}, cookie })).json.envelope;
+    const id = created.meta.id;
+    const longText = 'x'.repeat(5000);
+    const longName = `c${'n'.repeat(299)}`;
+    const inlineDataset = (datasetId: string, rows: unknown[]) => ({
+      op: 'addDataset',
+      dataset: { id: datasetId, name: datasetId, source: { kind: 'inline', rows } },
+    });
+
+    // Adding either is refused, with a reason an agent can act on, over ops, dry runs and full saves alike.
+    const value = await call(`/api/dashboards/${id}/ops`, {
+      body: { ops: [inlineDataset('d', [{ text: longText }])] },
+      cookie,
+    });
+    expect(value.status).toBe(400);
+    expect(value.json.code).toBe('INLINE_VALUE_TOO_LONG');
+    expect(value.json.error).toContain(`limited to ${LIMITS.inlineText} characters (this one has 5000)`);
+    expect(value.json.error).toContain('upload_data');
+    const name = await call(`/api/dashboards/${id}/ops`, {
+      body: { ops: [inlineDataset('d', [{ [longName]: 1 }])], dryRun: true },
+      cookie,
+    });
+    expect(name.status).toBe(400);
+    expect(name.json.error).toContain(`limited to ${LIMITS.inlineColumnName} characters`);
+    const oldRows = [
+      { day: 1, [longName]: 'a', note: longText },
+      { day: 2, [longName]: 'b', note: 'short' },
+    ];
+    const put = await call(`/api/dashboards/${id}`, {
+      method: 'PUT',
       body: {
-        ops: [{ op: 'addDataset', dataset: { id: 'd', name: 'd', source: { kind: 'inline', rows } } }],
+        doc: {
+          ...created.doc,
+          datasets: [{ id: 'old', name: 'Old', source: { kind: 'inline', rows: oldRows } }],
+        },
+        baseVersion: 1,
       },
       cookie,
     });
-    expect(res.status).toBe(400);
-    expect(res.json.error).toContain(`${LIMITS.inlineText}`);
+    expect(put.json.code).toBe('INLINE_VALUE_TOO_LONG');
+
+    // A document saved before the limits, holding both.
+    const legacy = {
+      ...created.doc,
+      datasets: [{ id: 'old', name: 'Old', source: { kind: 'inline', rows: oldRows } }],
+    };
+    writeFileSync(join(folder(id), 'dashboard.json'), JSON.stringify(legacy, null, 2));
+    const loaded = await call(`/api/dashboards/${id}`, { cookie });
+    expect(loaded.status).toBe(200);
+    expect(loaded.json.doc.datasets[0].source.rows[0].note).toHaveLength(5000);
+    expect((await call(`/api/dashboards/${id}/data/old`, { cookie })).json.table.rows).toHaveLength(2);
+
+    // Other edits work, including edits of that dataset that keep its long values.
+    const widget = { id: 'n', type: 'kpi', datasetId: 'old', config: { agg: 'count' } };
+    const edits = await call(`/api/dashboards/${id}/ops`, {
+      body: {
+        ops: [
+          { op: 'setMeta', title: 'Still mine' },
+          { op: 'addWidget', widget },
+          { op: 'updateDataset', id: 'old', set: { name: 'Renamed' } },
+          {
+            op: 'updateDataset',
+            id: 'old',
+            set: { source: { kind: 'inline', rows: [...oldRows, { day: 3 }] } },
+          },
+        ],
+      },
+      cookie,
+    });
+    expect(edits.status).toBe(200);
+    const snapshot = await app.request(`${BASE}/api/dashboards/${id}/snapshot.png`, { headers: { cookie } });
+    expect(snapshot.status).toBe(200);
+    expect(snapshot.headers.get('content-type')).toContain('image/png');
+
+    // But not new long values in it.
+    const grow = await call(`/api/dashboards/${id}/ops`, {
+      body: {
+        ops: [
+          {
+            op: 'updateDataset',
+            id: 'old',
+            set: { source: { kind: 'inline', rows: [...oldRows, { day: 4, note: `${longText}!` }] } },
+          },
+        ],
+      },
+      cookie,
+    });
+    expect(grow.json.code).toBe('INLINE_VALUE_TOO_LONG');
+    expect(grow.json.error).toContain('Dataset "old", inline row 3');
   });
 
   it('keeps loading a document stored before the limit, and lets it shrink but not grow', async () => {
@@ -179,6 +258,22 @@ describe('document size', () => {
       expect(res.isError).toBe(true);
       expect(text(res)).toContain('a dashboard document is limited to');
       expect(text(res)).toContain('upload_data');
+      const long = await client.callTool({
+        name: 'apply_operations',
+        arguments: {
+          dashboardId: id,
+          operations: [
+            {
+              op: 'addDataset',
+              dataset: { id: 'l', name: 'l', source: { kind: 'inline', rows: [{ t: 'x'.repeat(5000) }] } },
+            },
+          ],
+        },
+      });
+      expect(long.isError).toBe(true);
+      expect(text(long)).toContain(
+        `text values in inline rows are limited to ${LIMITS.inlineText} characters`,
+      );
       const reference = await client.callTool({ name: 'get_reference', arguments: {} });
       expect(text(reference)).toContain(
         `${Math.floor(LIMITS.documentBytes / 1000)} KB for the whole document`,

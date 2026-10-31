@@ -19,8 +19,12 @@ export const LIMITS = {
   datasets: 30,
   widgets: 60,
   inlineRows: 2000,
-  /** Characters per inline text value; longer text belongs in an upload or a text widget. */
+  /**
+   * Characters per inline text value and per inline column name. Checked on writes only (DashboardService), not in
+   * this schema, which also reads stored documents: those saved before the limits must keep loading.
+   */
   inlineText: 1000,
+  inlineColumnName: 200,
   transforms: 40,
   markdown: 20_000,
   title: 120,
@@ -44,7 +48,7 @@ export const SecretIdSchema = z
   .string()
   .regex(/^sec_[A-Za-z0-9]{16}$/, 'Secret ids look like "sec_…"; see list_secrets');
 
-const inlineValue = z.union([z.number(), z.string().max(LIMITS.inlineText), z.boolean(), z.null()]);
+const scalar = z.union([z.number(), z.string(), z.boolean(), z.null()]);
 const field = z.string().min(1).max(200);
 
 /** Feeds are fetched at most this often per address, whatever a dataset's refreshSec says. */
@@ -64,7 +68,7 @@ export const SourceSchema = z.discriminatedUnion('kind', [
   z
     .strictObject({
       kind: z.literal('inline'),
-      rows: z.array(z.record(z.string().max(200), inlineValue)).max(LIMITS.inlineRows),
+      rows: z.array(z.record(z.string(), scalar)).max(LIMITS.inlineRows),
     })
     .describe('Small data embedded directly in the dashboard'),
   z
