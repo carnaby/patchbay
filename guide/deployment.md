@@ -229,7 +229,7 @@ holds at most three values per allowed cell, checked before it is parsed. Inline
 column names (checked when saved). Every table built from a source has at most 500 columns, and inline rows and HTTP
 responses keep at most `UPLOAD_MAX_CELLS` cells; both are checked record by record while the table is built, so a
 single wide record cannot multiply it. Uploads are parsed and saved one at a time
-across the server (two more may wait). A request body over 1 MB is received in full before it is processed, one at a
+across the server (two more may wait). A request body over 256 KB is received in full before it is processed, one at a
 time (eight more may wait): it has to arrive at 32 KB/s or faster on average after its first 5 s and within 60 s, or the
 request gets `408` and the connection is closed, so a slow sender never holds the turn of others; bodies that are
 arriving or waiting hold at most 16 MB together, two per client. Node waits at most 20 s for a request's headers and 90
@@ -317,10 +317,11 @@ cgroup's charge without the page cache the kernel can drop (cgroup v2: `memory.c
 compares it with the container's limit:
 
 - **Soft** (`MEMORY_SOFT_FRACTION`): new heavy work gets `503` with `Retry-After: 5`: snapshots that are not cached,
-  uploads and other bodies over 1 MB, the heavy jobs above, pipelines over 20,000 cells and results over 512 KB that
-  are not serialised already. One exception: on a resting server, where no heavy work has run for 30 s and 112 MB
-  are still free (up to 272 MB at 384 MB), one job may start; the 30 s start again when it ends. A burst gets at
-  most one job every 30 s through it; a visitor after the burst gets served.
+  uploads and other bodies over 256 KB, the heavy jobs above, pipelines over 20,000 cells and results over 512 KB
+  that are not serialised already. One exception: on a resting server, where no heavy work has run for 30 s and 112
+  MB are still free (up to 272 MB at 384 MB), one job may start; the 30 s start again when it ends. A burst gets at
+  most one job every 30 s through it; a visitor after the burst gets served. A large body counts as running from
+  the moment it is admitted, while it still arrives, so slow uploads cannot all pass that one admission.
 - **Hard** (`MEMORY_HARD_FRACTION`): no new heavy work, writes, MCP calls or live streams, with `Retry-After: 10`.
 - `/healthz`, static files, dashboard documents, small results and results already in memory keep answering at
   either level, and work already running always finishes. Live refreshes skip a beat, as when a queue is full.

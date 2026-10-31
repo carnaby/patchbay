@@ -189,6 +189,14 @@ export interface MemoryGuardOptions {
  */
 export type Relief = (deep: boolean) => void;
 
+/** Heavy work admitted and counted ahead of running it; see `MemoryGuard.reserveHeavy`. */
+export interface HeavyReservation {
+  /** Runs the reserved work; what it starts is part of it, like inside `runHeavy`. */
+  run<T>(task: () => Promise<T>): Promise<T>;
+  /** Ends the count. Called once the work is done or given up; later calls do nothing. */
+  release(): void;
+}
+
 export interface MemoryState {
   level: PressureLevel;
   usedBytes: number;
@@ -349,6 +357,28 @@ export class MemoryGuard {
       this.running--;
       this.heavyEndedAt = this.options.now();
     }
+  }
+
+  /**
+   * `admitHeavy`, counting the job from the moment it is admitted rather than from when it starts: for work that
+   * waits between the two, like a large request body that is received and then queues for its turn. Counted only
+   * once it ran, a burst of slow uploads all found a resting server and all passed the check; counted from
+   * admission, the first one keeps the resting server's one admission and the rest are refused.
+   */
+  reserveHeavy(): HeavyReservation {
+    if (this.inside.getStore()) return { run: (task) => task(), release: () => {} };
+    this.admitHeavy();
+    this.running++;
+    let released = false;
+    return {
+      run: (task) => this.inside.run(true, task),
+      release: () => {
+        if (released) return;
+        released = true;
+        this.running--;
+        this.heavyEndedAt = this.options.now();
+      },
+    };
   }
 
   /** Heavy jobs running now (diagnostics and tests). */
