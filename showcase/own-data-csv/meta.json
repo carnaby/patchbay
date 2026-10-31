@@ -1,0 +1,7 @@
+{
+  "id": "own-data-csv",
+  "order": 2,
+  "title": "Your own data: a shop's sales",
+  "tab": "Your own data",
+  "description": "A small shop pastes its sales export; the agent builds weekly revenue, best sellers, channels and the morning KPIs."
+}
