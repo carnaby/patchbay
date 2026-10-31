@@ -262,7 +262,7 @@ const STEPS: { icon: LucideIcon; title: string; body: string; example: string }[
   {
     icon: Database,
     title: 'Plug in a source',
-    body: 'Pick one of 16 free public APIs, upload a CSV or JSON file, or point at any public HTTPS endpoint.',
+    body: 'Pick one of 14 free public APIs, upload a CSV or JSON file, or point at any public HTTPS endpoint.',
     example: 'weather.forecast · city: "Bratislava"',
   },
   {
@@ -436,7 +436,7 @@ const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
   },
   {
     icon: Database,
-    title: '16 public sources',
+    title: '14 public sources',
     body: 'Open-Meteo, CoinGecko, ECB rates, USGS earthquakes, World Bank, Wikipedia, Hacker News, GitHub, npm and more. No API keys.',
   },
   {
