@@ -240,7 +240,8 @@ function cartesianOption(
     splitLine: { show: false },
     ...(categories ? { data: categories } : {}),
     ...(isTime ? { axisLabel: { color: theme.muted, hideOverlap: true } } : {}),
-    boundaryGap: markType === 'bar' || axisKind === 'category' ? markType === 'bar' : false,
+    // ECharts reads a boolean boundaryGap only on a category axis; elsewhere it warns and ignores it.
+    boundaryGap: axisKind === 'category' && markType === 'bar',
     // Fixed bounds keep a lat/lon scatter "map" from rescaling every time the data moves.
     ...(valueX ? { min: config.xMin, max: config.xMax } : {}),
   };
@@ -284,6 +285,8 @@ function cartesianOption(
   if (horizontal && marks) right = Math.max(right, Math.ceil(textWidth(marks.longest, 11) / 2) + 6);
   return {
     ...base,
+    // Explicit both ways: the web app merges a data update into the previous option, which would keep a stale true.
+    ...(isTime ? { useUTC: utcDates(table, config.x) } : {}),
     tooltip: tooltip(theme, isScatter ? 'item' : 'axis', config),
     legend: showLegend
       ? {
@@ -301,6 +304,25 @@ function cartesianOption(
     yAxis: horizontal ? { ...categoryAxis, inverse: true } : valueAxis,
     series,
   };
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * Whether every x value is a UTC midnight: day, week, month or year buckets, or bare dates, which the app reads as UTC.
+ * ECharts puts time ticks at local midnights, which miss these by the viewer's offset: east of UTC the first date's
+ * tick lands before the axis start and its label is lost, west of UTC the last one's. Such columns hold dates, not
+ * instants, so they are laid out in UTC; timestamps within the day keep the viewer's local time.
+ */
+function utcDates(table: DataTable, field: string): boolean {
+  let any = false;
+  for (const row of table.rows) {
+    const v = row[field];
+    if (v === null || v === undefined) continue;
+    if (typeof v !== 'number' || v % DAY_MS !== 0) return false;
+    any = true;
+  }
+  return any;
 }
 
 const STAT_NAMES = { avg: 'Average', median: 'Median', min: 'Minimum', max: 'Maximum' } as const;
