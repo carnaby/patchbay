@@ -33,6 +33,7 @@ import {
   type ThemeMode,
   tableColumns,
   type Widget,
+  widgetAttributions,
 } from '@patchbay/core';
 import world from '@patchbay/core/geo/world-110m.json' with { type: 'json' };
 import { buildMapOption, mapTime, WORLD_MAP } from '@patchbay/core/map';
@@ -75,6 +76,8 @@ const DASHBOARD_WIDTH = { default: 1280, min: 480, max: 2560 };
 const WIDGET_SIZE = { width: 640, height: 360, min: 80, max: 1600, scale: 1.5 };
 /** Room kept at the bottom of a cropped dashboard for the line saying what was left out. */
 const CROP_NOTE = 40;
+/** Room for the line crediting the data sources, when the dashboard uses connectors that ask for one. */
+const CREDIT_LINE = 26;
 /**
  * Marks (dots, bars, cells) one snapshot may draw in charts and maps together. Each mark is an SVG element that
  * ECharts builds and resvg parses, about 400 bytes of SVG: 60 scatter charts of 10 000 rows took 15 s and 1.9 GB.
@@ -490,6 +493,8 @@ export interface DashboardRenderOptions {
   budgets?: Budgets;
   drawTimeMs?: number;
   svgBytes?: number;
+  /** Connector id to credit text. The sources of the dashboard's widgets are listed in one line at the bottom. */
+  attributions?: Record<string, string>;
 }
 
 /** Draws a whole dashboard, at most MAX_PIXELS. Like renderWidgetPng, request handlers go through `snapshotGate`. */
@@ -509,12 +514,20 @@ export function renderDashboardPng(
   // 10 000) are never on screen. Compacting here keeps the image faithful and keeps those rows out of the budget.
   const layout = compact(doc.layout.filter((it) => doc.widgets.some((w) => w.id === it.i)));
   const bottom = layout.reduce((m, it) => Math.max(m, it.y + it.h), 0);
-  const fullHeight = top + bottom * ROW_HEIGHT + GAP * 2;
+  // Every widget on the layout counts, also one below a crop: the credit is cheap and a missing one is not.
+  const credit = widgetAttributions(
+    doc.datasets,
+    layout.flatMap((it) => doc.widgets.filter((w) => w.id === it.i)),
+    options.attributions ?? {},
+  );
+  const foot = credit.length ? CREDIT_LINE : 0;
+  const fullHeight = top + bottom * ROW_HEIGHT + GAP * 2 + foot;
   const maxHeight = Math.floor(MAX_PIXELS / width);
   const cropped = fullHeight > maxHeight;
   const height = cropped ? maxHeight : fullHeight;
   // Cards starting below this line are left out; one crossing it is cut off by the note.
-  const visibleTo = cropped ? height - CROP_NOTE : height;
+  const bodyEnd = cropped ? height - CROP_NOTE : height;
+  const visibleTo = bodyEnd - foot;
   const page = theme.mode === 'light' ? '#f9f9f7' : '#0d0d0d';
   const parts = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
@@ -548,14 +561,24 @@ export function renderDashboardPng(
     // sum of all of them before V8 got round to collecting.
     if (heavy && !late) collectGarbage();
   }
+  if (foot) {
+    // Over whatever a card cut off by the crop left in this strip.
+    if (cropped) parts.push(`<rect x="0" y="${visibleTo}" width="${width}" height="${foot}" fill="${page}"/>`);
+    parts.push(
+      text(GAP + 4, visibleTo + 18, truncate(`Data: ${credit.join(' · ')}`, Math.floor((width - GAP * 2) / 6)), {
+        size: 11,
+        color: theme.muted,
+      }),
+    );
+  }
   if (cropped) {
     const note = hidden
       ? `Cut off at ${height} px: ${hidden} more widget${hidden === 1 ? '' : 's'} below not shown`
       : `Cut off at ${height} px: the rest of the dashboard is not shown`;
     parts.push(
-      `<rect x="0" y="${visibleTo}" width="${width}" height="${CROP_NOTE}" fill="${page}"/>`,
-      `<line x1="0" y1="${visibleTo + 0.5}" x2="${width}" y2="${visibleTo + 0.5}" stroke="${theme.grid}"/>`,
-      text(width / 2, visibleTo + 25, note, { size: 13, color: theme.muted, anchor: 'middle' }),
+      `<rect x="0" y="${bodyEnd}" width="${width}" height="${CROP_NOTE}" fill="${page}"/>`,
+      `<line x1="0" y1="${bodyEnd + 0.5}" x2="${width}" y2="${bodyEnd + 0.5}" stroke="${theme.grid}"/>`,
+      text(width / 2, bodyEnd + 25, note, { size: 13, color: theme.muted, anchor: 'middle' }),
     );
   }
   parts.push('</svg>');
