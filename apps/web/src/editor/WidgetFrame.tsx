@@ -1,4 +1,10 @@
-import { type SoundRule, soundRuleMissingColumns, sourceSecretIds, type Widget } from '@patchbay/core';
+import {
+  isDataWidgetType,
+  type SoundRule,
+  soundRuleMissingColumns,
+  sourceSecretIds,
+  type Widget,
+} from '@patchbay/core';
 import {
   ArrowDown,
   ArrowDownToLine,
@@ -148,6 +154,9 @@ export const WidgetFrame = memo(function WidgetFrame({
       </IconButton>
     ) : null;
 
+  // An untitled search box is one line; a header above it would double its height for nothing.
+  const headless = widget.type === 'search' && !widget.title && !editing && !expanded;
+
   return (
     <section
       ref={sectionRef}
@@ -160,7 +169,8 @@ export const WidgetFrame = memo(function WidgetFrame({
     >
       <header
         className={cx(
-          'flex h-10 shrink-0 items-center gap-1.5 pr-1.5 pl-3',
+          headless ? 'hidden' : 'flex',
+          'h-10 shrink-0 items-center gap-1.5 pr-1.5 pl-3',
           editing && !stacked && 'pb-drag cursor-grab active:cursor-grabbing',
           reorderable && 'h-11 pr-0.5',
         )}
@@ -169,7 +179,7 @@ export const WidgetFrame = memo(function WidgetFrame({
           <GripVertical className="-ml-1.5 size-3.5 shrink-0 text-muted" aria-hidden="true" />
         ) : null}
         <h3 className="truncate text-[13.5px] font-semibold" title={widget.description ?? widget.title}>
-          {widget.title ?? (widget.type === 'text' ? '' : widget.id)}
+          {widget.title ?? (isDataWidgetType(widget.type) ? widget.id : '')}
         </h3>
         {isLive ? (
           <span
@@ -269,7 +279,7 @@ export const WidgetFrame = memo(function WidgetFrame({
           </div>
         )}
       </header>
-      <div className="pb-no-drag min-h-0 flex-1 px-3 pb-3">
+      <div className={cx('pb-no-drag min-h-0 flex-1 px-3 pb-3', headless && 'pt-3')}>
         <WidgetBody
           widget={widget}
           result={result}

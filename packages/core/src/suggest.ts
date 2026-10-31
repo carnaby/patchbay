@@ -310,6 +310,36 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
 
   if (profile.rows === 0) return [];
 
+  // News, releases, posts: a feed, or anything shaped like one. Read as headlines, not as a spreadsheet.
+  const titleCol = profile.columns.find((c) => c.name === 'title' && c.type === 'string');
+  const linkCol = profile.columns.find((c) => c.name === 'link' && c.type === 'string');
+  if (titleCol && linkCol && time) {
+    const second = profile.columns.find((c) => c.name === 'source' && c.type === 'string');
+    out.push({
+      title: 'Headlines',
+      rationale: `Each ${label(titleCol)} links to its page, with ${second ? 'the source and ' : ''}how long ago it appeared.${
+        profile.columns.some((c) => c.name === 'id')
+          ? ' For a sound on every new item, use the id column as the key.'
+          : ''
+      }`,
+      widget: {
+        type: 'table',
+        title: 'Headlines',
+        config: {
+          style: 'list',
+          pageSize: 10,
+          columns: [
+            { field: titleCol.name, link: linkCol.name },
+            ...(second ? [second.name] : []),
+            time.name,
+          ],
+        },
+      },
+      transforms: [],
+      score: 98,
+    });
+  }
+
   // A single row is a set of headline numbers, not a chart.
   if (profile.rows === 1) {
     for (const m of by('measure').slice(0, 4)) {

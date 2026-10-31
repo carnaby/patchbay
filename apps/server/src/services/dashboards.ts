@@ -17,6 +17,7 @@ import {
   type Dataset,
   describePlacement,
   docSecretIds,
+  FEED_MIN_REFRESH_SEC,
   inferTable,
   MAX_SECRETS_PER_USER,
   OpError,
@@ -206,13 +207,21 @@ export class DashboardService {
   private raiseRefreshToMinimum(before: DashboardDoc, result: { doc: DashboardDoc; changes: string[] }) {
     const previous = new Map(before.datasets.map((d) => [d.id, d]));
     const raises = result.doc.datasets.flatMap((d) => {
-      if (d.source.kind !== 'connector' || d.refreshSec <= 0) return [];
-      const min = this.connectors.get(d.source.connector)?.info.minRefreshSec ?? 0;
+      if (d.refreshSec <= 0) return [];
+      let min: number;
+      let what: string;
+      if (d.source.kind === 'connector') {
+        min = this.connectors.get(d.source.connector)?.info.minRefreshSec ?? 0;
+        what = `the minimum of the ${d.source.connector} connector`;
+      } else if (d.source.kind === 'feed') {
+        min = FEED_MIN_REFRESH_SEC;
+        what = 'the minimum for feeds';
+      } else return [];
       if (d.refreshSec >= min) return [];
       const old = previous.get(d.id);
       const untouched =
         old?.refreshSec === d.refreshSec && JSON.stringify(old.source) === JSON.stringify(d.source);
-      return untouched ? [] : [{ dataset: d, connector: d.source.connector, min }];
+      return untouched ? [] : [{ dataset: d, what, min }];
     });
     if (raises.length === 0) return result;
     const raised = applyOps(
@@ -224,8 +233,8 @@ export class DashboardService {
       changes: [
         ...result.changes,
         ...raises.map(
-          ({ dataset, connector, min }) =>
-            `Raised refreshSec of dataset "${dataset.name}" from ${dataset.refreshSec} s to ${min} s, the minimum of the ${connector} connector`,
+          ({ dataset, what, min }) =>
+            `Raised refreshSec of dataset "${dataset.name}" from ${dataset.refreshSec} s to ${min} s, ${what}`,
         ),
       ],
     };

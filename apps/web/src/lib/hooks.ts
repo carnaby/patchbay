@@ -1,6 +1,6 @@
 import type { ConnectorInfo, PublicUser, SecretMode, ThemeMode } from '@patchbay/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { api } from './api.ts';
 import type { SecretsList } from './secrets.ts';
 
@@ -124,4 +124,31 @@ export function relativeTime(iso: string): string {
     if (abs < limit) return rtf.format(Math.round(seconds / size[unit]!), unit);
   }
   return rtf.format(Math.round(seconds / 31_536_000), 'year');
+}
+
+/** Re-renders on every second (or minute) boundary, and at once when a hidden tab becomes visible again. */
+export function useNow(stepMs: number) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = () => {
+      const t = Date.now();
+      setNow(t);
+      // Aligned to the boundary, so the display never lags the real second by a random fraction.
+      timer = setTimeout(tick, stepMs - (t % stepMs) + 5);
+    };
+    tick();
+    // Browsers throttle timers in hidden tabs; a wall screen that comes back must not show a stale time.
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      clearTimeout(timer);
+      tick();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [stepMs]);
+  return now;
 }

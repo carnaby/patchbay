@@ -67,3 +67,27 @@ export function formatValue(value: Scalar, type: ColumnType | undefined, format?
   if (typeof value === 'boolean') return value ? 'yes' : 'no';
   return value;
 }
+
+const RELATIVE_STEPS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['year', 365 * 86_400_000],
+  ['month', 30 * 86_400_000],
+  ['week', 7 * 86_400_000],
+  ['day', 86_400_000],
+  ['hour', 3_600_000],
+  ['minute', 60_000],
+];
+
+/** "12 minutes ago", "yesterday", "in 2 hours": for list-style tables, where the exact time is the tooltip. */
+export function formatRelative(ms: number, now: number, locale = 'en'): string {
+  const diff = ms - now;
+  let rtf: Intl.RelativeTimeFormat;
+  try {
+    rtf = new Intl.RelativeTimeFormat(locale, { numeric: 'auto', style: 'long' });
+  } catch {
+    rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto', style: 'long' });
+  }
+  for (const [unit, size] of RELATIVE_STEPS) {
+    if (Math.abs(diff) >= size) return rtf.format(Math.round(diff / size), unit);
+  }
+  return rtf.format(0, 'minute');
+}

@@ -7,6 +7,8 @@
  * than a widget that mysteriously ignores its config.
  */
 import { z } from 'zod';
+import { isValidTimeZone } from './clock.ts';
+import { SEARCH_ENGINES } from './search.ts';
 import { SoundRuleSchema } from './sound.ts';
 import { COLOR_TOKENS } from './theme.ts';
 import { ExpressionSchema, TransformSchema, withStepIds } from './transforms.ts';
@@ -37,6 +39,9 @@ export const SecretIdSchema = z
 
 const scalar = z.union([z.number(), z.string(), z.boolean(), z.null()]);
 const field = z.string().min(1).max(200);
+
+/** Feeds are fetched at most this often per address, whatever a dataset's refreshSec says. */
+export const FEED_MIN_REFRESH_SEC = 300;
 
 export const SourceSchema = z.discriminatedUnion('kind', [
   z
@@ -75,6 +80,13 @@ export const SourceSchema = z.discriminatedUnion('kind', [
     .describe(
       'An HTTPS JSON endpoint. Private networks are blocked. Credentials only via "secrets", never in the URL',
     ),
+  z
+    .strictObject({
+      kind: z.literal('feed'),
+      url: z.url({ protocol: /^https$/ }).max(2000),
+      limit: z.number().int().min(1).max(200).default(30),
+    })
+    .describe('An RSS, Atom or JSON Feed, or a web page that announces one'),
 ]);
 export type Source = z.infer<typeof SourceSchema>;
 
@@ -225,6 +237,7 @@ const colorAs = z.enum(['fill', 'text']).default('fill');
 export const TableColumnSchema = z.strictObject({
   field,
   label: z.string().min(1).max(80).optional(),
+  link: field.optional(),
   format: FormatSchema.optional(),
   bands: BandsSchema.optional(),
   colorAs,
@@ -249,6 +262,8 @@ export const TableConfigSchema = z.strictObject({
   pageSize: z.number().int().min(5).max(200).default(25),
   format: FormatSchema.optional(),
   rules: z.array(TableRuleSchema).max(6).optional(),
+  // Optional, not defaulted: tables saved before it existed must round-trip unchanged. Absent means "table".
+  style: z.enum(['table', 'list']).optional(),
 });
 export type TableConfig = z.infer<typeof TableConfigSchema>;
 
@@ -274,12 +289,41 @@ export const TextConfigSchema = z.strictObject({
   markdown: z.string().max(LIMITS.markdown),
 });
 
+export const TimeZoneSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .refine(isValidTimeZone, 'Unknown time zone; use an IANA name such as "Europe/Bratislava"');
+
+export const ClockConfigSchema = z.strictObject({
+  style: z.enum(['digital', 'analog']).default('digital'),
+  // Field descriptions live in the MCP reference text: every byte here is paid on each MCP connection.
+  timeZone: TimeZoneSchema.optional(),
+  label: z.string().max(60).optional(),
+  hourCycle: z.enum(['h23', 'h12']).default('h23'),
+  showDate: z.boolean().default(true),
+  showSeconds: z.boolean().default(false),
+});
+export type ClockConfig = z.infer<typeof ClockConfigSchema>;
+
+export const SearchConfigSchema = z.strictObject({
+  engine: z.enum(SEARCH_ENGINES).default('google'),
+  template: z
+    .url({ protocol: /^https$/ })
+    .max(500)
+    .refine((u) => u.includes('{q}'), 'The address must contain {q} where the query goes')
+    .optional(),
+  newTab: z.boolean().default(false),
+  autofocus: z.boolean().default(false),
+});
+export type SearchConfig = z.infer<typeof SearchConfigSchema>;
+
 const widgetBase = {
   id: IdSchema,
   title: z.string().max(120).optional(),
   description: z.string().max(500).optional(),
 };
-// Text widgets have no data, so only data-bound widgets can make a sound.
+// Text, clock and search widgets have no data, so only data-bound widgets can make a sound.
 const dataWidgetBase = { ...widgetBase, datasetId: IdSchema, sound: SoundRuleSchema.optional() };
 
 export const WidgetSchema = z.discriminatedUnion('type', [
@@ -289,9 +333,18 @@ export const WidgetSchema = z.discriminatedUnion('type', [
   z.strictObject({ ...dataWidgetBase, type: z.literal('table'), config: TableConfigSchema }),
   z.strictObject({ ...dataWidgetBase, type: z.literal('map'), config: MapConfigSchema }),
   z.strictObject({ ...widgetBase, type: z.literal('text'), config: TextConfigSchema }),
+  z.strictObject({ ...widgetBase, type: z.literal('clock'), config: ClockConfigSchema }),
+  z.strictObject({ ...widgetBase, type: z.literal('search'), config: SearchConfigSchema }),
 ]);
 export type Widget = z.infer<typeof WidgetSchema>;
 export type WidgetType = Widget['type'];
+export type DataWidget = Extract<Widget, { datasetId: string }>;
+
+/** Widget types that show no dataset: they have no `datasetId`, no data query and no sound. */
+export const DATA_FREE_WIDGET_TYPES = ['text', 'clock', 'search'] as const satisfies readonly WidgetType[];
+export function isDataWidgetType(type: WidgetType): boolean {
+  return !(DATA_FREE_WIDGET_TYPES as readonly string[]).includes(type);
+}
 export type WidgetInput = z.input<typeof WidgetSchema>;
 
 export const LayoutItemSchema = z.strictObject({
@@ -380,6 +433,13 @@ export function integrityIssues(doc: DashboardDoc): string[] {
       issues.push(`Widget "${w.id}": use series or color, not both; a map has one colour channel`);
     }
     if (w.type === 'chart') issues.push(...referenceLineIssues(w.id, w.config));
+    if (w.type === 'search' && (w.config.engine === 'custom') !== Boolean(w.config.template)) {
+      issues.push(
+        w.config.engine === 'custom'
+          ? `Widget "${w.id}": a custom search engine needs a template address with {q}`
+          : `Widget "${w.id}": template is only used with engine "custom"`,
+      );
+    }
   }
   const laidOut = new Set<string>();
   for (const item of doc.layout) {

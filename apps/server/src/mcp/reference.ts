@@ -3,6 +3,7 @@ import {
   AGGREGATE_OPS,
   CHART_KINDS,
   COLOR_TOKENS,
+  FEED_MIN_REFRESH_SEC,
   FUNCTIONS,
   GRID_COLUMNS,
   KPI_AGGS,
@@ -10,6 +11,7 @@ import {
   MAX_SECRETS_PER_SOURCE,
   REFERENCE_LINE_KINDS,
   REFERENCE_STATS,
+  SEARCH_ENGINES,
   SOUND_IDS,
   TIME_UNITS,
   WINDOW_OPS,
@@ -46,6 +48,12 @@ ${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows.
 - source.kind "upload": { fileId } (from upload_data)
 - source.kind "inline": { rows: [{...}, ...] } (small data you create yourself)
 - source.kind "http": { url: "https://...", path?: "data.items", secrets?: ["sec_..."] } (JSON APIs; see Secrets)
+- source.kind "feed": { url: "https://...", limit?: 30 } reads RSS, Atom or JSON Feed: news sites, blogs, YouTube
+  channels, subreddits (".../.rss"), GitHub releases (".../releases.atom"). A site's home page works when it
+  announces a feed. Columns: id, title, link, published (time), summary, author, source, image; newest first.
+  Fetched at most every ${FEED_MIN_REFRESH_SEC / 60} minutes (a lower refreshSec is raised). No secrets: only public feeds.
+  Show it as a table with style "list" and columns [{ "field": "title", "link": "link" }, "source", "published"].
+  For a sound per new item: sound.trigger { kind: "newRows", key: "id" }.
 - refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers. Below the
   connector's minRefreshSec (list_connectors) it is raised to that minimum when saved, and \`changes\` says so.
 - accumulate N keeps a rolling history of the last N rows across refreshes and adds a "fetched_at" time column.
@@ -104,7 +112,9 @@ ${fns}
 - gauge { field?, agg, min, max, bands?: [{ upTo, color }], format? }
   field is required except for agg "count": without a field count counts rows, with one it counts the rows where
   that field is not null.
-- table { columns?, pageSize, format?, rules? }   columns: names or { field, label?, format?, bands?, colorAs? }
+- table { columns?, pageSize, format?, rules?, style? }   columns: names or { field, label?, link?, format?, bands?, colorAs? }
+  style "list" shows headlines: the first column as the title, the others on a line under it, times as "12 min ago".
+  link names the column holding the URL a cell opens (http/https only).
 - text { markdown }   (no raw HTML)
 - map { lat, lon, mode: points|track, series?, size?, color?, label?, view: fit|world, basemap: countries|land|none,
   terminator, maxPoints, format?, colors? }
@@ -113,6 +123,14 @@ ${fns}
   color = numeric value on a sequential ramp, series = one colour per entity (not both color and series).
   terminator shades the night side for the time of the data. The base map is built in: no keys, no tiles.
   view fit frames the data (at least 30° x 15°), world shows 60°S to 84°N. basemap land hides country borders.
+- clock { style: digital|analog, timeZone?, label?, hourCycle: h23|h12, showDate, showSeconds }   no dataset.
+  Omit timeZone for each viewer's local time; an IANA zone ("America/New_York") shows that city's time, labelled
+  with the city unless label says otherwise. One clock per zone: several clocks side by side make world clocks.
+  Prefer digital (default): many people read analog clocks slowly. Use hourCycle h12 for US/UK audiences.
+- search { engine: ${SEARCH_ENGINES.join('|')}, template?, newTab, autofocus }   no dataset.
+  A search box that opens the engine's results; the query never reaches this server. engine custom needs template,
+  an https address with {q} where the query goes. autofocus puts the cursor in it on load (start pages only: it
+  catches the keyboard shortcuts).
 format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }
 
 ## Colours
@@ -165,7 +183,8 @@ reorderWidget { id, before: widgetId | null } (reading order, i.e. the order wid
 addStep { datasetId, step, before? }, updateStep { datasetId, stepId, set } (merged; type cannot change),
 removeStep { datasetId, stepId }, moveStep { datasetId, stepId, before: stepId | null }.
 Prefer step operations over updateDataset { set: { transforms } }: they do not overwrite steps the user changed meanwhile.
-Omit positions to auto-place. Typical sizes: kpi 3x2, gauge 3x3, chart 6x4, table 6x5, map 6x5, text 4x2 (w x h, row = 80 px).
+Omit positions to auto-place. Typical sizes: kpi 3x2, gauge 3x3, chart 6x4, table 6x5, map 6x5, text 4x2, clock 3x2,
+search 6x1 (w x h, row = 80 px).
 
 ## Design guidance
 - One headline per KPI. Use compare + sparkline for live values.

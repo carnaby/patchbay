@@ -1,5 +1,6 @@
 export * from './cells.ts';
 export * from './chart.ts';
+export * from './clock.ts';
 export * from './colors.ts';
 export * from './expr.ts';
 export * from './format.ts';
@@ -7,6 +8,7 @@ export * from './layout.ts';
 export * from './ops.ts';
 export * from './profile.ts';
 export * from './schema.ts';
+export * from './search.ts';
 export * from './secrets.ts';
 export * from './sound.ts';
 export * from './stats.ts';
