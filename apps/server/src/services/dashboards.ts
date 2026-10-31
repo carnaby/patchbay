@@ -48,11 +48,13 @@ import type { DashboardIndex } from '../store/dashboard-index.ts';
 import type { FolderStore, StoredMeta } from '../store/folder-store.ts';
 import { newDashboardId, newId, randomToken, safeEqual, sha256 } from '../util/crypto.ts';
 import { badRequest, forbidden, HttpError, notFound, unauthorized } from '../util/errors.ts';
+import { Gate } from '../util/gate.ts';
+import { currentClient } from '../util/request-context.ts';
 import type { Credential } from '../util/safe-fetch.ts';
 import type { DashboardTarget } from './data.ts';
 import { PipelineError } from './pipeline-pool.ts';
 import { buildTemplate } from './templates.ts';
-import { parseUpload, UploadError, type UploadInput } from './upload-parse.ts';
+import { jsonUploadProblem, parseUpload, UploadError, type UploadInput } from './upload-parse.ts';
 
 export interface Principal {
   user: UserRow | null;
@@ -246,7 +248,17 @@ export interface DashboardServiceOptions {
   urlSources?: UrlSourcesMode;
   /** Disk space all anonymous dashboards may take together; 0 = no limit. */
   anonymousStorageBytes?: number;
+  /** Tests only: admission of uploads (one at a time by default). */
+  uploadGate?: Gate;
 }
+
+/**
+ * Uploads parsed and saved at the same time, across the whole server. A 5 MB upload is a few times that in memory
+ * while it is parsed and written; a burst runs one at a time, a short queue waits, and the rest get 503 with
+ * Retry-After rather than the container running out of memory.
+ */
+export const newUploadGate = () =>
+  new Gate({ concurrency: 1, maxQueue: 4, maxQueuedPerClient: 2, maxWaitMs: 15_000, retryAfterSec: 5 });
 
 export class DashboardService {
   private readonly store: FolderStore;
@@ -264,6 +276,7 @@ export class DashboardService {
   private readonly uploadMaxCells: number;
   private readonly uploadMaxCellsAnonymous: number;
   private readonly urlSources: UrlSourcesMode;
+  private readonly uploadGate: Gate;
 
   constructor(
     store: FolderStore,
@@ -277,6 +290,7 @@ export class DashboardService {
     this.uploadMaxCells = options.uploadMaxCells ?? DEFAULT_UPLOAD_MAX_CELLS;
     this.uploadMaxCellsAnonymous = options.uploadMaxCellsAnonymous ?? DEFAULT_UPLOAD_MAX_CELLS_ANONYMOUS;
     this.urlSources = options.urlSources ?? 'everyone';
+    this.uploadGate = options.uploadGate ?? newUploadGate();
     this.store = store;
     this.index = index;
     this.hub = hub;
@@ -809,17 +823,37 @@ export class DashboardService {
     const format =
       input.format ?? (/\.json$/i.test(input.name) || /^\s*[[{]/.test(input.content) ? 'json' : 'csv');
     const maxCells = meta.ownerId === null ? this.uploadMaxCellsAnonymous : this.uploadMaxCells;
+    const refused = (e: UploadError) => {
+      const hint =
+        e.tooLarge && meta.ownerId === null && maxCells < this.uploadMaxCells
+          ? ` Dashboards of signed-in users accept up to ${this.uploadMaxCells.toLocaleString('en-US')} cells.`
+          : '';
+      return badRequest(e.message + hint);
+    };
+    // Here, not only in the worker: a hostile document is refused in milliseconds without taking a queue place.
+    if (format === 'json') {
+      const problem = jsonUploadProblem(input.content, maxCells);
+      if (problem) throw refused(problem);
+    }
+    // One upload at a time from parse to disk: each holds the file, its parsed table and its serialised form at once.
+    return this.uploadGate.run(currentClient(), () =>
+      this.parseAndSave(id, meta, input, format, maxCells, refused),
+    );
+  }
+
+  private async parseAndSave(
+    id: string,
+    meta: StoredMeta,
+    input: { name: string; content: string },
+    format: 'csv' | 'json',
+    maxCells: number,
+    refused: (e: UploadError) => HttpError,
+  ): Promise<UploadedFile> {
     let table: DataTable;
     try {
       table = await this.uploads.parse({ content: input.content, format, maxCells });
     } catch (e) {
-      if (e instanceof UploadError) {
-        const hint =
-          e.tooLarge && meta.ownerId === null && maxCells < this.uploadMaxCells
-            ? ` Dashboards of signed-in users accept up to ${this.uploadMaxCells.toLocaleString('en-US')} cells.`
-            : '';
-        throw badRequest(e.message + hint);
-      }
+      if (e instanceof UploadError) throw refused(e);
       if (e instanceof PipelineError) throw badRequest(`Could not read the file: ${e.message}`);
       throw e;
     }

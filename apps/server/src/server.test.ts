@@ -580,6 +580,22 @@ describe('MCP tools', () => {
     client = await connectAgent('agent-owner@example.com');
   });
 
+  it('refuses a nested request body before the MCP SDK parses it', async () => {
+    const cookie = await login('mcp-bomb@example.com');
+    const pat = await call('/api/tokens', { body: { name: 'bomb', scopes: ['dashboards:write'] }, cookie });
+    const res = await app.request(`${BASE}/mcp`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${pat.json.token}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: '['.repeat(1_000_000) + ']'.repeat(1_000_000),
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain('nests deeper than 64 levels');
+  });
+
   afterAll(async () => {
     await client?.close();
     for (const c of extraClients) await c.close();

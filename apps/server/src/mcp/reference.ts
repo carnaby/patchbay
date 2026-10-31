@@ -20,6 +20,8 @@ import {
   WINDOW_OPS,
 } from '@patchbay/core';
 import { MAX_RESULT_BYTES } from '../services/result-wire.ts';
+import { UPLOAD_MAX_COLUMN_NAME, UPLOAD_MAX_COLUMNS } from '../services/upload-parse.ts';
+import { MAX_JSON_DEPTH } from '../util/json-shape.ts';
 
 export const SERVER_INSTRUCTIONS = `Patchbay builds live data dashboards. You edit them with small, validated operations.
 
@@ -46,7 +48,8 @@ A dashboard has \`datasets\` (where data comes from + how it is processed) and \
 laid out on a ${GRID_COLUMNS}-column grid. Ids are lowercase slugs ("weather", "temp-chart"). Limits: ${LIMITS.datasets} datasets,
 ${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows per dataset (text values up to ${LIMITS.inlineText} characters,
 column names up to ${LIMITS.inlineColumnName}), and ${Math.floor(LIMITS.documentBytes / 1000)} KB for the whole document as JSON. Data larger than a
-small table belongs in upload_data, not inline rows; uploads do not count toward the document.
+small table belongs in upload_data, not inline rows; uploads do not count toward the document. An upload has at most
+${UPLOAD_MAX_COLUMNS} columns with names of up to ${UPLOAD_MAX_COLUMN_NAME} characters, and JSON uploads nest at most ${MAX_JSON_DEPTH} levels.
 
 ## Dataset
 { id, name, source, transforms: Transform[], refreshSec, accumulate }

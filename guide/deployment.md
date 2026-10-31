@@ -213,10 +213,15 @@ defaults suit one container with 384 MB of memory; raise them only with more mem
 | `UPLOAD_MAX_CELLS_ANONYMOUS` | 200000   | The same for anonymous dashboards.                                                                         |
 | `DATA_CACHE_MB`              | 48       | Parsed tables (uploads, inline rows, HTTP responses) kept between requests, least recently used first out. |
 | `PIPELINE_WORKER_MEMORY_MB`  | 96       | Heap of each pipeline worker; a job that needs more fails instead of exhausting the container.             |
+| `PIPELINE_WORKERS`           | CPUs − 1 | Pipeline worker threads (at most 4). Each one can take its whole heap: keep `1` at 384 MB.                 |
 | `URL_SOURCES`                | everyone | `signed-in`: http and feed sources load only for dashboards owned by a signed-in user.                     |
 
 Fixed limits, for reference: uploads are parsed in the pipeline worker and refused as soon as they pass the cell limit;
-at most two stored uploads are parsed at a time; HTTP sources are fetched at most three at a time, two at a time and
+an upload has at most 500 columns with names of up to 200 characters, and a JSON upload nests at most 64 levels and
+holds at most three values per allowed cell, checked before it is parsed. Uploads are parsed and saved one at a time
+across the server (two more may wait); at most two requests with bodies over 1 MB are read at a time (eight more may
+wait); every JSON request body and HTTP source response is refused before parsing when it nests deeper than 64 levels.
+At most two stored uploads are parsed at a time; HTTP sources are fetched at most three at a time, two at a time and
 60 times a minute per host, and a failing address is not asked again for 30 s; the pipeline worker's queue takes jobs
 round-robin per client, one client holding at most a tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are
 drawn one at a time in a worker thread, at most four requests in flight and two per client; each client may have four
@@ -227,6 +232,28 @@ memory. Live refresh never runs for uploads and inline rows (they change only wh
 HTTP sources. A dataset's result is sent only up to 4 MB as JSON (larger ones show an error asking for limit, select or
 aggregate steps); each result is serialised once and shared by everyone reading it, and response bodies still being
 read take at most 24 MB together (8 MB per client) before further large reads wait up to 10 s and then get a 503.
+
+### Memory budget
+
+One process holds everything; the worker threads are part of it and count against the same container limit.
+
+| Part               | Bound                                                                                           |
+| ------------------ | ----------------------------------------------------------------------------------------------- |
+| Native memory      | About 80 MB: Node, code, buffers, the fixed cost of each thread.                                |
+| Main thread's heap | 25 MB idle; `DATA_CACHE_MB`, one upload and two large bodies on top. At most 100 MB measured.   |
+| Pipeline worker    | `PIPELINE_WORKER_MEMORY_MB` + 8 MB young generation, per worker: 104 MB.                        |
+| Feed worker        | 48 + 8 MB, only while feeds are read (it stops after a minute without one): 56 MB.              |
+| Total              | About 340 MB, which leaves room for the 16 MB V8 adds while a worker over its limit is stopped. |
+
+Measured with the production flags (`--memory 384m --cpus 2`, `PIPELINE_WORKERS=1`): three 500,000-cell uploads at
+once peak at about 290 MB; the same together with three over-limit feeds and ten hostile uploads at about 340 MB,
+without the container being killed. Each extra pipeline worker adds 104 MB; at 384 MB keep one.
+
+A worker that hits its heap limit fails its job, and its replacement starts only after it has exited, so a worker slot
+never holds two heaps. The worker limits hold only while Node runs without `--max-old-space-size` (or
+`--max-old-space-size-percentage`): V8 applies that flag to every thread, overriding each worker's own limit, and the
+server warns when a worker starts with a different limit than it asked for. The main thread's heap therefore keeps
+V8's default limit; its use is bounded by the limits above rather than by a flag.
 
 ## Analytics (optional)
 

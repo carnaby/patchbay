@@ -10,6 +10,7 @@ import { BlockList, isIP } from 'node:net';
 import { bindingLabel, bindingMatches, type SecretPlacement } from '@patchbay/core';
 import { Agent, type Dispatcher, fetch as undiciFetch } from 'undici';
 import { HttpError } from './errors.ts';
+import { jsonShapeProblem, MAX_JSON_DEPTH } from './json-shape.ts';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const TIMEOUT_MS = 10_000;
@@ -345,6 +346,9 @@ function withoutOwnQuerySecrets(url: URL, credentials: Credential[]): URL {
 }
 
 function parseJson(text: string): unknown {
+  // Parsed on this thread, so the one shape whose cost is not bounded by its size in bytes is refused first.
+  if (jsonShapeProblem(text, { maxDepth: MAX_JSON_DEPTH, maxValues: Number.POSITIVE_INFINITY }))
+    throw new HttpError(502, `The response nests deeper than ${MAX_JSON_DEPTH} levels`);
   try {
     return JSON.parse(text);
   } catch {

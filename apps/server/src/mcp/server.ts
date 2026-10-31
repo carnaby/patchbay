@@ -514,7 +514,7 @@ export function createMcp(deps: Deps) {
       {
         title: 'Upload data',
         description:
-          'Stores CSV or JSON content as a file inside a dashboard and returns its fileId, a profile and suggested operations (including the addDataset op). Max 5 MB and a cell limit (rows × columns), lower when anonymous.',
+          'Stores CSV or JSON content as a file inside a dashboard and returns its fileId, a profile and suggested operations (including the addDataset op). Max 5 MB, 500 columns and a cell limit (rows × columns), lower when anonymous.',
         inputSchema: z.object({
           dashboardId,
           name: z.string().min(1).max(200).describe('File name, e.g. "sales-2026.csv"'),

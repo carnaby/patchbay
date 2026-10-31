@@ -139,6 +139,80 @@ describe('uploads', () => {
     expect(read).not.toHaveBeenCalled();
     read.mockRestore();
   });
+
+  it('refuses a nested JSON bomb on arrival, without handing it to a worker', async () => {
+    const anon = await anonymous();
+    const parse = vi.spyOn(deps.pipeline, 'parseUpload');
+    try {
+      const started = performance.now();
+      const res = await call(`/api/dashboards/${anon.id}/files`, {
+        body: { name: 'a.json', content: '['.repeat(2_000_000) + ']'.repeat(2_000_000) },
+        headers: anon.headers,
+      });
+      expect(res.status).toBe(400);
+      expect(res.json.error).toContain('nests deeper than 64 levels');
+      expect(performance.now() - started).toBeLessThan(2000);
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it('refuses a nested request body before any route parses it', async () => {
+    for (const path of ['/api/dashboards/nope/files', '/api/dashboards']) {
+      const res = await app.request(`${BASE}${path}`, {
+        method: 'POST',
+        headers: { origin: BASE, 'content-type': 'text/plain' },
+        body: '['.repeat(400_000) + ']'.repeat(400_000),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error).toContain('nests deeper than 64 levels');
+    }
+  });
+
+  it('refuses column names longer than inline ones may be', async () => {
+    const anon = await anonymous();
+    const res = await call(`/api/dashboards/${anon.id}/files`, {
+      body: { name: 'f.csv', content: `id,${'n'.repeat(1000)}\n1,2\n` },
+      headers: anon.headers,
+    });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toContain('Column names are limited to 200 characters');
+  });
+
+  it('parses one upload at a time, queues a few and turns the rest away with Retry-After', async () => {
+    const original = deps.pipeline.parseUpload.bind(deps.pipeline);
+    let running = 0;
+    let most = 0;
+    const parse = vi.spyOn(deps.pipeline, 'parseUpload').mockImplementation(async (input) => {
+      most = Math.max(most, ++running);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        return await original(input);
+      } finally {
+        running--;
+      }
+    });
+    try {
+      const boards = await Promise.all(Array.from({ length: 6 }, () => anonymous()));
+      const results = await Promise.all(
+        boards.map((d) =>
+          call(`/api/dashboards/${d.id}/files`, {
+            body: { name: 'a.csv', content: csv(10, 5) },
+            headers: d.headers,
+          }),
+        ),
+      );
+      expect(most).toBe(1);
+      // All six come from one client: one runs, two wait (its share of the queue), three are refused.
+      expect(results.filter((r) => r.status === 201)).toHaveLength(3);
+      const refused = results.filter((r) => r.status === 503);
+      expect(refused).toHaveLength(3);
+      expect(refused[0]!.headers.get('retry-after')).toBe('5');
+    } finally {
+      parse.mockRestore();
+    }
+  });
 });
 
 describe('refresh floors', () => {

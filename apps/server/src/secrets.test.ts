@@ -114,6 +114,9 @@ class Upstream {
         case '/v1/invalid':
           res.writeHead(200, { 'content-type': 'text/plain' });
           return res.end(`not json: ${auth} ${apiKey} ${req.url}`);
+        case '/v1/nested':
+          res.writeHead(200, { 'content-type': 'application/json' });
+          return res.end('['.repeat(1_000_000) + ']'.repeat(1_000_000));
         case '/v1/big':
           res.writeHead(200, {
             'content-type': 'application/json',
@@ -626,9 +629,11 @@ describe('fetching with secrets', () => {
       addDataset(http('invalid', '/v1/invalid', [s.id])),
       addDataset(http('big', '/v1/big', [s.id])),
       addDataset(http('slow', '/v1/slow', [s.id])),
+      addDataset(http('nested', '/v1/nested', [s.id])),
     ]);
     expect((await env.data(dash, 'unauth', cookie)).error).toBe('Upstream responded 401');
     expect((await env.data(dash, 'invalid', cookie)).error).toBe('Response is not valid JSON');
+    expect((await env.data(dash, 'nested', cookie)).error).toBe('The response nests deeper than 64 levels');
     expect((await env.data(dash, 'big', cookie)).error).toBe('Response larger than 5 MB');
     expect((await env.data(dash, 'slow', cookie)).error).toBe('Request timed out');
   });

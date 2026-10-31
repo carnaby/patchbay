@@ -3,6 +3,7 @@ import { connect } from 'node:net';
 import { Agent } from 'undici';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { HttpError } from '../util/errors.ts';
+import { FakeWorker, settle } from '../util/fake-worker.test-helper.ts';
 import { OutboundLimiter } from '../util/outbound.ts';
 import { discoverFeed } from './discover.ts';
 import { looksLikeHtml, parseFeed, plainText, safeLink } from './parse.ts';
@@ -339,6 +340,57 @@ describe('FeedParser', () => {
       });
     } finally {
       await small.close();
+    }
+  });
+
+  it('survives over-limit documents back to back, one worker heap at a time', async () => {
+    const small = new FeedParser({ maxHeapMb: 24 });
+    try {
+      const flood = `<rss version="2.0"><channel><item><guid>${fill('<a>x</a>')}</guid></item></channel></rss>`;
+      const results = await Promise.allSettled([
+        small.parse(flood, 'application/rss+xml', BASE),
+        small.parse(flood, 'application/rss+xml', BASE),
+        small.parse(RSS, 'application/rss+xml', BASE),
+      ]);
+      expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected', 'fulfilled']);
+      expect(small.threads()).toBeLessThanOrEqual(1);
+    } finally {
+      await small.close();
+    }
+  });
+
+  it('starts the next worker only after the failed one has exited', async () => {
+    const workers: FakeWorker[] = [];
+    const fake = new FeedParser({
+      createWorker: () => {
+        const worker = new FakeWorker();
+        workers.push(worker);
+        return worker;
+      },
+    });
+    try {
+      const first = fake.parse(RSS, 'application/rss+xml', BASE);
+      const second = fake.parse(RSS, 'application/rss+xml', BASE);
+      await settle();
+      const sent = workers[0]!.posted[0]!;
+      // The document travels as transferred bytes, not as a cloned string.
+      expect((sent.value as { bytes: Uint8Array }).bytes).toBeInstanceOf(Uint8Array);
+      expect(sent.transfer).toHaveLength(1);
+      workers[0]!.outOfMemory();
+      await expect(first).rejects.toThrow('too large');
+      await settle();
+      expect(workers).toHaveLength(1);
+      expect(fake.threads()).toBe(1);
+      workers[0]!.exit();
+      await settle();
+      expect(workers).toHaveLength(2);
+      const id = (workers[1]!.posted[0]!.value as { id: number }).id;
+      workers[1]!.emit('message', { id, ok: true, feed: { title: 'ok' } });
+      await expect(second).resolves.toMatchObject({ title: 'ok' });
+    } finally {
+      const closing = fake.close();
+      workers.at(-1)!.exit();
+      await closing;
     }
   });
 });

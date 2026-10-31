@@ -7,16 +7,24 @@
  * exceeds the time limit has its worker terminated and replaced - the only
  * reliable way to stop a runaway computation in JavaScript - and each worker has
  * its own heap limit, so a job that allocates without bound kills its worker,
- * not the process.
+ * not the process. The replacement starts only once the old worker has exited
+ * (util/workers.ts), so a slot never holds two heaps.
  *
  * The queue is shared fairly: waiting jobs are taken round-robin per client, and
  * one client may hold only a share of it.
  */
 import { availableParallelism } from 'node:os';
-import { Worker } from 'node:worker_threads';
+import { type ResourceLimits, Worker } from 'node:worker_threads';
 import { type DataTable, type PipelineResult, runPipeline, type Transform } from '@patchbay/core';
 import { BusyError } from '../util/gate.ts';
 import { currentClient } from '../util/request-context.ts';
+import {
+  checkHeapLimit,
+  retire,
+  type WorkerLike,
+  workerBytes,
+  workerResourceLimits,
+} from '../util/workers.ts';
 import { parseUpload, UploadError, type UploadInput } from './upload-parse.ts';
 
 export interface PipelineRunner {
@@ -57,7 +65,7 @@ interface Job {
 }
 
 interface Slot {
-  worker: Worker;
+  worker: WorkerLike;
   ready: boolean;
   job: Job | null;
   timer: NodeJS.Timeout | null;
@@ -75,6 +83,10 @@ export interface PoolOptions {
   maxQueuedPerClient?: number;
   /** Old-generation heap limit of each worker in MB; a job that needs more fails and its worker is replaced. */
   workerMemoryMb?: number;
+  /** How long a terminated worker may take to exit before its replacement starts anyway. */
+  retireGraceMs?: number;
+  /** Tests only: stands in for `new Worker`. */
+  createWorker?: (resourceLimits: ResourceLimits) => WorkerLike;
 }
 
 export const defaultPoolSize = () => Math.max(1, Math.min(4, availableParallelism() - 1));
@@ -110,6 +122,7 @@ interface WorkerReply {
   id: number;
   ok: boolean;
   ready?: boolean;
+  heapLimitMb?: number;
   result?: unknown;
   message?: string;
   /** The failure is an UploadError (its message is for the uploader). */
@@ -127,6 +140,11 @@ export class WorkerPool implements PipelineRunner {
   private readonly maxQueue: number;
   private readonly maxQueuedPerClient: number;
   private readonly workerMemoryMb: number;
+  private readonly retireGraceMs: number;
+  private readonly createWorker: (resourceLimits: ResourceLimits) => WorkerLike;
+  /** Workers terminated and not yet exited; each one's replacement waits for it. */
+  private readonly retiring = new Set<Promise<void>>();
+  private readonly size: number;
   private nextId = 1;
   private closed = false;
 
@@ -136,18 +154,20 @@ export class WorkerPool implements PipelineRunner {
     this.maxQueue = options.maxQueue ?? 100;
     this.maxQueuedPerClient = options.maxQueuedPerClient ?? Math.max(1, Math.ceil(this.maxQueue / 10));
     this.workerMemoryMb = options.workerMemoryMb ?? 96;
-    const size = options.size ?? defaultPoolSize();
-    for (let i = 0; i < size; i++) this.slots.push(this.spawn());
+    this.retireGraceMs = options.retireGraceMs ?? 30_000;
+    this.createWorker =
+      options.createWorker ?? ((resourceLimits) => new Worker(WORKER_URL, { resourceLimits }));
+    this.size = options.size ?? defaultPoolSize();
+    for (let i = 0; i < this.size; i++) this.slots.push(this.spawn());
   }
 
   private spawn(): Slot {
-    const worker = new Worker(WORKER_URL, {
-      resourceLimits: { maxOldGenerationSizeMb: this.workerMemoryMb },
-    });
+    const worker = this.createWorker(workerResourceLimits(this.workerMemoryMb));
     const slot: Slot = { worker, ready: false, job: null, timer: null };
     slot.worker.unref();
     slot.worker.on('message', (msg: WorkerReply) => {
       if (msg.ready) {
+        checkHeapLimit('pipeline', this.workerMemoryMb, msg.heapLimitMb);
         slot.ready = true;
         this.drain();
         return;
@@ -188,14 +208,23 @@ export class WorkerPool implements PipelineRunner {
   private replace(slot: Slot, reason: Error) {
     const job = slot.job;
     if (slot.timer) clearTimeout(slot.timer);
+    slot.timer = null;
+    slot.job = null;
     const index = this.slots.indexOf(slot);
     if (index < 0) return;
     // Remove first so the 'exit' event of the terminated worker is ignored.
     this.slots.splice(index, 1);
-    void slot.worker.terminate();
     job?.reject(reason);
-    if (!this.closed) this.slots.push(this.spawn());
-    this.drain();
+    // The replacement starts only after the old thread has exited: until then its heap is still allocated, and a
+    // new job in a new worker would add a second one. Waiting jobs stay queued meanwhile.
+    const exited = retire(slot.worker, this.retireGraceMs, 'pipeline');
+    this.retiring.add(exited);
+    void exited.then(() => {
+      this.retiring.delete(exited);
+      if (this.closed) return;
+      this.slots.push(this.spawn());
+      this.drain();
+    });
   }
 
   /** The next job, round-robin across clients: a client with many jobs waits for its turn like everyone else. */
@@ -223,7 +252,17 @@ export class WorkerPool implements PipelineRunner {
           ),
         this.timeoutMs,
       );
-      slot.worker.postMessage({ id: job.id, ...job.message });
+      const message = job.message;
+      if (message.kind === 'upload') {
+        // Encoded only now, so files waiting in the queue hold no second copy; then moved, not cloned.
+        const { content, ...rest } = message.input;
+        const bytes = workerBytes(content);
+        slot.worker.postMessage({ id: job.id, kind: 'upload', input: { ...rest, bytes } }, [
+          bytes.buffer as ArrayBuffer,
+        ]);
+      } else {
+        slot.worker.postMessage({ id: job.id, ...message });
+      }
     }
   }
 
@@ -250,7 +289,9 @@ export class WorkerPool implements PipelineRunner {
 
   run(table: DataTable, transforms: Transform[]): Promise<PipelineResult> {
     if (transforms.length === 0) return Promise.resolve({ table, trace: [] });
-    if (this.slots.length === 0 || runsInline(table, transforms, this.inlineBelowCells)) {
+    // The configured size, not the live slots: while a worker is being replaced there may be none, and that work
+    // must wait for the replacement rather than run here.
+    if (this.size === 0 || runsInline(table, transforms, this.inlineBelowCells)) {
       try {
         return Promise.resolve(runPipeline(table, transforms));
       } catch (e) {
@@ -261,7 +302,7 @@ export class WorkerPool implements PipelineRunner {
   }
 
   parseUpload(input: UploadInput): Promise<DataTable> {
-    if (this.slots.length === 0) {
+    if (this.size === 0) {
       try {
         return Promise.resolve(parseUpload(input));
       } catch (e) {
@@ -281,12 +322,22 @@ export class WorkerPool implements PipelineRunner {
     return this.queued;
   }
 
+  /** Workers alive or still exiting (tests): never more than the pool's size. */
+  threads(): number {
+    return this.slots.length + this.retiring.size;
+  }
+
   async close() {
     this.closed = true;
     for (const jobs of this.queues.values())
       for (const job of jobs) job.reject(new PipelineError('Server is shutting down'));
     this.queues.clear();
     this.queued = 0;
-    await Promise.all(this.slots.splice(0).map((s) => s.worker.terminate()));
+    for (const slot of this.slots) {
+      if (slot.timer) clearTimeout(slot.timer);
+      slot.job?.reject(new PipelineError('Server is shutting down'));
+      slot.job = null;
+    }
+    await Promise.all([...this.slots.splice(0).map((s) => s.worker.terminate()), ...this.retiring]);
   }
 }
