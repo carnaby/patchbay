@@ -6,7 +6,6 @@ import {
   coordinateRole,
   type Format,
   isDataWidgetType,
-  isValidTimeZone,
   KPI_AGGS,
   parse,
   REFERENCE_LINE_KINDS,
@@ -58,6 +57,7 @@ import {
 } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
 import { previewSound, SOUND_LABELS } from '../lib/sounds.ts';
+import { groupTimeZones, timeZones } from '../lib/time-zones.ts';
 import { useEditor } from '../state/editor.ts';
 import { useDatasetResult } from '../state/sync.ts';
 import {
@@ -1267,24 +1267,8 @@ export function ConditionInput({ expr, onChange }: { expr: string; onChange: (ex
   );
 }
 
-let zoneList: string[] | null = null;
-function timeZones(): string[] {
-  if (!zoneList) {
-    try {
-      zoneList = Intl.supportedValuesOf('timeZone');
-    } catch {
-      zoneList = [];
-    }
-  }
-  return zoneList;
-}
-
 function ClockFields({ config, setConfig }: { config: ClockConfig; setConfig: SetConfig }) {
-  // Typed text stays local until it names a real zone, so typing never fails an operation.
-  const [zone, setZone] = useState(config.timeZone ?? '');
-  useEffect(() => setZone(config.timeZone ?? ''), [config.timeZone]);
-  const zoneError =
-    zone.trim() && !isValidTimeZone(zone.trim()) ? 'Pick a zone from the list, e.g. Europe/Bratislava' : null;
+  const zones = groupTimeZones(timeZones(), config.timeZone);
   return (
     <>
       <div className="space-y-1.5">
@@ -1298,30 +1282,31 @@ function ClockFields({ config, setConfig }: { config: ClockConfig; setConfig: Se
           ]}
         />
       </div>
-      <Field label="Time zone" error={zoneError} hint="Empty: each viewer's own local time.">
+      <Field label="Time zone" hint="My local time: each viewer sees their own local time.">
         {(fid) => (
-          <>
-            <Input
-              id={fid}
-              list={`${fid}-zones`}
-              value={zone}
-              placeholder="My local time"
-              spellCheck={false}
-              onChange={(e) => {
-                const next = e.target.value;
-                setZone(next);
-                const trimmed = next.trim();
-                if (!trimmed) setConfig({ timeZone: undefined }, 'Changed clock time zone', 'clock-zone');
-                else if (isValidTimeZone(trimmed))
-                  setConfig({ timeZone: trimmed }, 'Changed clock time zone', 'clock-zone');
-              }}
-            />
-            <datalist id={`${fid}-zones`}>
-              {timeZones().map((z) => (
-                <option key={z} value={z} />
-              ))}
-            </datalist>
-          </>
+          <Select
+            id={fid}
+            value={config.timeZone ?? ''}
+            onChange={(e) =>
+              setConfig({ timeZone: e.target.value || undefined }, 'Changed clock time zone', 'clock-zone')
+            }
+          >
+            <option value="">My local time</option>
+            {zones.top.map((z) => (
+              <option key={z.value} value={z.value}>
+                {z.label}
+              </option>
+            ))}
+            {zones.groups.map((g) => (
+              <optgroup key={g.region} label={g.region}>
+                {g.zones.map((z) => (
+                  <option key={z.value} value={z.value}>
+                    {z.label}
+                  </option>
+                ))}
+              </optgroup>
+            ))}
+          </Select>
         )}
       </Field>
       <Field label="Label" hint="Shown under the time. Empty: the city of the time zone.">

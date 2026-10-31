@@ -8,7 +8,7 @@ import {
   WINDOW_OPS,
 } from '@patchbay/core';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
-import { useId, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Button, cx, IconButton, Input, Select } from '../components/ui.tsx';
 
 type Step = TransformInput;
@@ -81,33 +81,52 @@ export function columnsAfter(base: string[], steps: Step[]): string[] {
   return cols;
 }
 
-function ColumnInput({
+/**
+ * A reference to an existing column. While the source's columns are unknown (still loading, or the preview failed
+ * or is blocked) it is a plain text field, so the step stays editable; once they are known it is a select, and a
+ * name that is not among them stays listed as missing so a broken reference is visible rather than swapped.
+ */
+function ColumnSelect({
   value,
   columns,
   onChange,
-  placeholder,
 }: {
   value: string;
   columns: string[];
   onChange: (v: string) => void;
-  placeholder?: string;
 }) {
-  const id = useId();
-  return (
-    <>
+  if (columns.length === 0) {
+    return (
       <Input
-        list={id}
+        aria-label="Column"
         value={value}
-        placeholder={placeholder ?? 'column'}
+        placeholder="column"
+        spellCheck={false}
         onChange={(e) => onChange(e.target.value)}
         className="h-8 text-[13px]"
       />
-      <datalist id={id}>
-        {columns.map((c) => (
-          <option key={c} value={c} />
-        ))}
-      </datalist>
-    </>
+    );
+  }
+  return (
+    <Select
+      aria-label="Column"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-8 text-[13px]"
+    >
+      {value === '' ? (
+        <option value="" disabled>
+          Pick a column
+        </option>
+      ) : columns.includes(value) ? null : (
+        <option value={value}>{value} (missing)</option>
+      )}
+      {columns.map((c) => (
+        <option key={c} value={c}>
+          {c}
+        </option>
+      ))}
+    </Select>
   );
 }
 
@@ -273,7 +292,7 @@ function StepFields({
           {entries.map(([from, to], i) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: editing keys in place
             <div key={i} className="grid grid-cols-[1fr_auto_1fr_auto] items-center gap-1.5">
-              <ColumnInput
+              <ColumnSelect
                 value={from}
                 columns={columns}
                 onChange={(v) =>
@@ -320,7 +339,7 @@ function StepFields({
           {step.by.map((b, i) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: positional list
             <div key={i} className="grid grid-cols-[1fr_110px_auto] gap-1.5">
-              <ColumnInput
+              <ColumnSelect
                 value={b.field}
                 columns={columns}
                 onChange={(field) =>
@@ -383,7 +402,7 @@ function StepFields({
     case 'timeBucket':
       return (
         <div className={row}>
-          <ColumnInput
+          <ColumnSelect
             value={step.field}
             columns={columns}
             onChange={(field) => onChange({ ...step, field })}
@@ -428,7 +447,7 @@ function StepFields({
                 </option>
               ))}
             </Select>
-            <ColumnInput
+            <ColumnSelect
               value={step.field}
               columns={columns}
               onChange={(field) => onChange({ ...step, field })}
@@ -490,7 +509,7 @@ function StepFields({
               {m.op === 'count' ? (
                 <span className="self-center text-xs text-muted">rows</span>
               ) : (
-                <ColumnInput
+                <ColumnSelect
                   value={m.field ?? ''}
                   columns={columns}
                   onChange={(field) =>
