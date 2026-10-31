@@ -9,6 +9,8 @@ import {
   KPI_AGGS,
   LIMITS,
   MAX_SECRETS_PER_SOURCE,
+  MAX_STRING,
+  PIPELINE_LIMITS,
   REFERENCE_LINE_KINDS,
   REFERENCE_STATS,
   SEARCH_ENGINES,
@@ -96,11 +98,15 @@ operations below instead of resending the whole pipeline.
   inside it.
 - window { op, field, as?, size?, partitionBy? }   ops: ${WINDOW_OPS.join(', ')} (sort first)
 - fillNull { fields, value }
+Limits per run: ${PIPELINE_LIMITS.maxMillis / 1000} s, and every table (the source and each step's result) at most
+${(PIPELINE_LIMITS.maxSize / 1_000_000).toLocaleString('en')} million characters as JSON: on large data filter, aggregate, limit or
+select early.
 
 ## Expressions
 Operators: + - * / % ^, == != < <= > >=, && || ! (or: and, or, not), cond ? a : b. Strings in "double" or 'single'
 quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Trigonometry works in radians (convert
-with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed point. Functions:
+with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed point. Text built with concat or +
+is at most ${MAX_STRING.toLocaleString('en')} characters (use substr to shorten). Functions:
 ${fns}
 
 ## Widgets
