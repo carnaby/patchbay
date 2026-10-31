@@ -11,8 +11,15 @@ import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
 import { safeReturnTo } from './routes/auth.ts';
+import { describeRedirect } from './routes/oauth.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
+
+// The real implementation unless a test says otherwise, so the options callers pass can be checked.
+vi.mock('./util/safe-fetch.ts', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./util/safe-fetch.ts')>();
+  return { ...real, safeFetchJson: vi.fn(real.safeFetchJson) };
+});
 
 const BASE = 'http://localhost:8787';
 let dir: string;
@@ -339,6 +346,70 @@ describe('what a bearer token can reach', () => {
       }),
     });
     expect(mcp.status).toBe(200);
+  });
+});
+
+describe('OAuth consent screen data', () => {
+  const startAuthorization = async (clientId: string, redirectUri: string) => {
+    const res = await app.request(
+      `${BASE}/oauth/authorize?response_type=code&client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=abc&code_challenge_method=S256`,
+    );
+    return new URL(res.headers.get('location')!, BASE);
+  };
+
+  it('fetches client metadata documents without following redirects', async () => {
+    const clientId = 'https://client.example/oauth/meta.json';
+    vi.mocked(safeFetchJson).mockResolvedValueOnce({
+      client_id: clientId,
+      client_name: 'Claude',
+      redirect_uris: ['https://client.example/cb'],
+    });
+    const consent = await startAuthorization(clientId, 'https://client.example/cb');
+    expect(vi.mocked(safeFetchJson)).toHaveBeenLastCalledWith(clientId, { redirects: 0 });
+    const cookie = await login('consent@example.com');
+    const details = await call(`/api/oauth/requests/${consent.searchParams.get('request')}`, { cookie });
+    // The name is the client's claim; the host is what the user can check.
+    expect(details.json).toMatchObject({
+      clientName: 'Claude',
+      clientKind: 'cimd',
+      clientHost: 'client.example',
+      redirectHost: 'client.example',
+      redirectKind: 'web',
+    });
+  });
+
+  it('marks self-registered clients as having no verified identity', async () => {
+    const reg = await call('/oauth/register', {
+      body: { client_name: 'Claude', redirect_uris: ['http://127.0.0.1:4444/callback'] },
+    });
+    const consent = await startAuthorization(reg.json.client_id, 'http://127.0.0.1:4444/callback');
+    const cookie = await login('consent2@example.com');
+    const details = await call(`/api/oauth/requests/${consent.searchParams.get('request')}`, { cookie });
+    expect(details.json).toMatchObject({
+      clientKind: 'dcr',
+      clientHost: null,
+      redirectHost: '127.0.0.1:4444',
+      redirectKind: 'loopback',
+    });
+  });
+
+  it('describes where a redirect URI sends the user', () => {
+    expect(describeRedirect('https://claude.ai/api/mcp/auth_callback')).toEqual({
+      kind: 'web',
+      target: 'claude.ai',
+    });
+    expect(describeRedirect('http://localhost:6274/cb')).toEqual({
+      kind: 'loopback',
+      target: 'localhost:6274',
+    });
+    expect(describeRedirect('cursor://anysphere.cursor-retrieval/oauth/callback')).toEqual({
+      kind: 'app',
+      target: 'cursor://anysphere.cursor-retrieval',
+    });
+    expect(describeRedirect('com.example.app:/callback')).toEqual({
+      kind: 'app',
+      target: 'com.example.app:',
+    });
   });
 });
 

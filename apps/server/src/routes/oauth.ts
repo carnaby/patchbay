@@ -105,13 +105,21 @@ const RegistrationSchema = z.object({
 });
 
 const CimdSchema = z.object({
-  client_id: z.string(),
+  client_id: z.string().max(1000),
   client_name: z.string().max(120),
-  redirect_uris: z.array(z.string()).min(1).max(20),
-  client_uri: z.string().optional(),
-  logo_uri: z.string().optional(),
-  token_endpoint_auth_method: z.string().optional(),
+  redirect_uris: z.array(z.string().max(1000)).min(1).max(20),
+  client_uri: z.string().max(1000).optional(),
+  logo_uri: z.string().max(1000).optional(),
+  token_endpoint_auth_method: z.string().max(64).optional(),
 });
+
+/** Where approving sends the user, in the form the consent screen shows it. */
+export function describeRedirect(raw: string): { kind: 'web' | 'loopback' | 'app'; target: string } {
+  const url = new URL(raw);
+  if (url.protocol === 'https:') return { kind: 'web', target: url.host };
+  if (url.protocol === 'http:') return { kind: 'loopback', target: url.host };
+  return { kind: 'app', target: url.host ? `${url.protocol}//${url.host}` : url.protocol };
+}
 
 function oauthError(status: 400 | 401, error: string, description: string) {
   return new HttpError(status, description, { error, error_description: description });
@@ -179,7 +187,8 @@ export function oauthRoutes(deps: Deps) {
     if (failedAt && Date.now() - failedAt < CIMD_FAILURE_TTL_MS) {
       throw oauthError(400, 'invalid_client', 'Client metadata document is unavailable');
     }
-    const doc = CimdSchema.safeParse(await safeFetchJson(clientId).catch(() => null));
+    // No redirects: the document must live at the URL that is the client's identity, not wherever that URL points.
+    const doc = CimdSchema.safeParse(await safeFetchJson(clientId, { redirects: 0 }).catch(() => null));
     if (!doc.success) {
       cimdFailures.set(clientId, Date.now());
       if (cimdFailures.size > 1000) cimdFailures.delete(cimdFailures.keys().next().value!);
@@ -299,12 +308,18 @@ export function oauthRoutes(deps: Deps) {
     requireSessionUser(c);
     const row = pendingRequest(c.req.param('id'));
     const client = getClient(row.client_id);
+    const kind = client?.kind ?? 'dcr';
+    const redirect = describeRedirect(row.redirect_uri);
+    // Names are self-declared either way; what the user can check is who published the metadata (the host of a
+    // metadata document URL) and where the code goes.
     return c.json({
       id: row.id,
       clientName: client?.name ?? row.client_id,
-      clientKind: client?.kind ?? 'dcr',
+      clientKind: kind,
       clientId: row.client_id,
-      redirectHost: new URL(row.redirect_uri).host || row.redirect_uri,
+      clientHost: kind === 'cimd' ? new URL(row.client_id).host : null,
+      redirectHost: redirect.target,
+      redirectKind: redirect.kind,
       scopes: row.scopes.split(' '),
     });
   });

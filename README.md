@@ -253,8 +253,7 @@ after every step.
   resolved only against the dashboard owner's secrets, never accepted on anonymous dashboards, and echoed values are
   redacted from data. Agents can use but never read, create or change them, and cannot publish data fetched with them.
 - Cookie writes require a same-origin `Origin`; strict CSP; rate limits per IP (IPv6 per /64, new dashboards and
-  OAuth registrations per /56) and per user; `DEV_LOGIN` refuses to
-  start unless `PUBLIC_URL` is localhost.
+  OAuth registrations per /56) and per user; `DEV_LOGIN` refuses to start unless `PUBLIC_URL` is localhost.
 - User-supplied URLs: HTTPS only, IANA special-purpose ranges blocked (IPv6 only within global unicast), including IPv6
   forms that embed IPv4 (mapped, translated, NAT64, Teredo, 6to4); the check runs inside the socket's DNS lookup (no
   DNS-rebinding window); redirects re-checked; size and time capped.
