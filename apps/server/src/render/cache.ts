@@ -49,9 +49,11 @@ export class SnapshotCache {
         this.bytes += png.length;
         this.evict();
       },
-      // A failed render (busy, broken data) is not remembered: the next request tries again.
-      () => {
-        if (this.entries.get(key) === entry) this.entries.delete(key);
+      // A failed render (busy, rate limited, broken data) is not remembered: the next request tries again. One that
+      // ran out of time or memory would only do so again, at the same cost, so it is answered from here until expiry.
+      (err: unknown) => {
+        if (this.entries.get(key) === entry && !(err as { lasting?: unknown })?.lasting)
+          this.entries.delete(key);
       },
     );
     return entry.png;

@@ -31,7 +31,7 @@ beforeAll(async () => {
   const generous = () => new RateLimiter(100_000, 100_000);
   app = createApp({
     ...deps,
-    limits: { api: generous(), writes: generous(), auth: generous(), mcp: generous(), creates: generous() },
+    limits: { api: generous(), writes: generous(), auth: generous(), mcp: generous(), creates: generous(), snapshots: generous() },
   });
 });
 

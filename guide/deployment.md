@@ -218,7 +218,10 @@ defaults suit one container with 384 MB of memory; raise them only with more mem
 Fixed limits, for reference: uploads are parsed in the pipeline worker and refused as soon as they pass the cell limit;
 at most two stored uploads are parsed at a time; HTTP sources are fetched at most three at a time, two at a time and
 60 times a minute per host, and a failing address is not asked again for 30 s; the pipeline worker's queue takes jobs
-round-robin per client, one client holding at most a tenth of it. When a queue is full the API answers
+round-robin per client, one client holding at most a tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are
+drawn one at a time in a worker thread, at most four requests in flight and two per client; each client may have four
+drawn at once and then one every two seconds (images served from the 30 s cache do not count), beyond which the API
+answers `429 Too Many Requests` with `Retry-After`. When a queue is full the API answers
 `503 Service Unavailable` with `Retry-After`, and live refreshes skip a beat, instead of the process running out of
 memory. Live refresh never runs for uploads and inline rows (they change only when edited) and at most every 30 s for
 HTTP sources. A dataset's result is sent only up to 4 MB as JSON (larger ones show an error asking for limit, select or

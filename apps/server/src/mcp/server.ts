@@ -26,8 +26,7 @@ import {
 import { z } from 'zod';
 import { SCOPES } from '../auth/tokens.ts';
 import type { Deps } from '../context.ts';
-import { snapshotGate } from '../render/gate.ts';
-import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
+import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import type { Principal } from '../services/dashboards.ts';
 import { listTemplates } from '../services/templates.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
@@ -574,20 +573,23 @@ export function createMcp(deps: Deps) {
           if (args.widgetId && needed.length === 0) return fail(`No widget "${args.widgetId}"`);
           const ids = new Set(needed.flatMap((w) => ('datasetId' in w ? [w.datasetId] : [])));
           const widget = needed[0];
-          // Shares the REST endpoint's gate: concurrent snapshots from either side count against the same limit.
+          // Shares the REST endpoint's gate and per-client budget: snapshots from either side count against both.
+          chargeSnapshot(deps.limits.snapshots, `user:${userId}`);
           const png = await snapshotGate.run(async (draw) => {
             await Promise.all(
               doc.datasets
                 .filter((d) => ids.has(d.id))
                 .map(async (d) => results.set(d.id, await data.resolve(target, d))),
             );
-            return draw(() =>
+            return draw(
               args.widgetId && widget
-                ? renderWidgetPng(widget, 'datasetId' in widget ? results.get(widget.datasetId) : undefined, {
-                    theme: args.theme,
-                    entityColors: doc.colors,
-                  })
-                : renderDashboardPng(doc, results, { theme: args.theme }),
+                ? {
+                    kind: 'widget',
+                    widget,
+                    result: 'datasetId' in widget ? results.get(widget.datasetId) : undefined,
+                    options: { theme: args.theme, entityColors: doc.colors },
+                  }
+                : { kind: 'dashboard', doc, results, options: { theme: args.theme } },
             );
           });
           const problems = [...results.values()]

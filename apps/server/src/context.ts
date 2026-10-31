@@ -39,6 +39,8 @@ export interface Deps {
     auth: RateLimiter;
     mcp: RateLimiter;
     creates: RateLimiter;
+    /** Snapshots that have to be drawn (not cache hits), per client; see chargeSnapshot in render/gate.ts. */
+    snapshots: RateLimiter;
   };
 }
 

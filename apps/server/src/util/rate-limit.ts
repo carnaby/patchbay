@@ -47,6 +47,14 @@ export class RateLimiter {
     return ok;
   }
 
+  /** Whole seconds until `take(key, cost)` would succeed, for a Retry-After header. */
+  retryAfterSec(key: string, cost = 1): number {
+    const bucket = this.buckets.get(key);
+    const tokens = bucket ? this.level(bucket, Date.now()) : this.capacity;
+    if (tokens >= cost) return 0;
+    return Math.max(1, Math.ceil((cost - tokens) / this.refillPerSec));
+  }
+
   private level(bucket: { tokens: number; updated: number }, now: number): number {
     return Math.min(this.capacity, bucket.tokens + ((now - bucket.updated) / 1000) * this.refillPerSec);
   }

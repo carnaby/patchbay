@@ -114,6 +114,13 @@ instances.
   a runaway job's worker is terminated and replaced, the only reliable way to stop a computation in JavaScript.
   Workers report readiness before receiving jobs, so start-up never counts against the limit, and a bounded queue
   turns overload into a clear "busy" error instead of unbounded memory. `PIPELINE_WORKERS=0` disables the pool.
+- **Snapshots render in a worker thread of their own** (`render/worker-host.ts`), one at a time, with a heap limit and
+  a 15 s hard limit; a render over either has its worker terminated, and the next starts a fresh one once the old one
+  is gone. The worker starts on the first snapshot and stops after a minute without one. The main thread only resolves
+  the data and copies the tables over, so a heavy render never delays the API or the health check. What one snapshot
+  draws is bounded: 10,000 marks (dots, bars, cells) and 100,000 line points across all its charts, shared fairly and
+  trimmed to each widget's newest rows, plus backstops on draw time and SVG size after which the remaining charts
+  are left out with a note on their cards.
 - **Accumulate** turns "current value" sources (current weather, a spot price, the ISS position) into rolling time
   series by appending each new reading with a `fetched_at` column. The buffer is in memory by design; it is a live view,
   not a database.
@@ -245,8 +252,8 @@ the wire but a runtime dependency on both sides for a file that is cached anyway
 - `packages/core`: unit tests for the expression language (including injection attempts), every transform, op atomicity,
   colour tokens and contrast in both themes, series colours, table cell styling, reference lines,
   layout normalisation, profiling and suggestions.
-- `apps/server`: worker pool tests (identical results to inline, main thread stays responsive, timeouts replace the
-  worker, queue limit), and integration tests through `app.request()` against a real temporary data directory: permissions,
+- `apps/server`: worker pool and render worker tests (identical results to inline, main thread stays responsive,
+  timeouts and running out of heap replace the worker, queue limit), and integration tests through `app.request()` against a real temporary data directory: permissions,
   conflicts, claims, uploads, versioning, folder deletion, admin access, the complete OAuth flow, and MCP tools driven by
   the official MCP client.
 - The web app was verified end to end with Playwright during development (editing, undo, live agent edits arriving in an
