@@ -13,13 +13,25 @@ export function showcaseRoutes(deps: Deps) {
   app.get('/showcase/:slug/video.mp4', (c) => {
     const file = bySlug.get(c.req.param('slug'))?.video;
     return file
-      ? mediaResponse(file, 'video/mp4', c.req.header('range'), c.req.header('if-none-match'))
+      ? mediaResponse(
+          file,
+          'video/mp4',
+          c.req.header('range'),
+          c.req.header('if-none-match'),
+          c.req.method === 'HEAD',
+        )
       : c.notFound();
   });
   app.get('/showcase/:slug/poster.jpg', (c) => {
     const file = bySlug.get(c.req.param('slug'))?.poster;
     return file
-      ? mediaResponse(file, 'image/jpeg', c.req.header('range'), c.req.header('if-none-match'))
+      ? mediaResponse(
+          file,
+          'image/jpeg',
+          c.req.header('range'),
+          c.req.header('if-none-match'),
+          c.req.method === 'HEAD',
+        )
       : c.notFound();
   });
   return app;

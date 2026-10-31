@@ -1,7 +1,20 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+const opened = vi.hoisted(() => ({ count: 0 }));
+vi.mock('node:fs', async (orig) => {
+  const fs = await orig<typeof import('node:fs')>();
+  return {
+    ...fs,
+    createReadStream: ((...a: Parameters<typeof fs.createReadStream>) => {
+      opened.count++;
+      return fs.createReadStream(...a);
+    }) as typeof fs.createReadStream,
+  };
+});
+
 import { mediaResponse } from './media.ts';
 
 const path = join(mkdtempSync(join(tmpdir(), 'pb-media-')), 'v.mp4');
@@ -38,5 +51,30 @@ describe('mediaResponse', () => {
 
   it('answers 304 when the etag matches', () => {
     expect(mediaResponse(file, 'video/mp4', undefined, '"abcdef0123456789"').status).toBe(304);
+  });
+
+  it('accepts weak validators, lists and *', () => {
+    for (const h of ['W/"abcdef0123456789"', '"x", "abcdef0123456789"', '*'])
+      expect(mediaResponse(file, 'video/mp4', undefined, h).status).toBe(304);
+    expect(mediaResponse(file, 'video/mp4', undefined, '"other"').status).toBe(200);
+  });
+
+  it('answers HEAD with the same headers, no body and no opened file', () => {
+    const before = opened.count;
+    const full = mediaResponse(file, 'video/mp4', undefined, undefined, true);
+    const part = mediaResponse(file, 'video/mp4', 'bytes=2-5', undefined, true);
+    expect(full.status).toBe(200);
+    expect(full.headers.get('content-length')).toBe('10');
+    expect(full.body).toBeNull();
+    expect(part.status).toBe(206);
+    expect(part.headers.get('content-range')).toBe('bytes 2-5/10');
+    expect(part.body).toBeNull();
+    expect(opened.count).toBe(before);
+  });
+
+  it('closes the file when the client aborts', async () => {
+    const r = mediaResponse(file, 'video/mp4', undefined, undefined);
+    await r.body!.cancel();
+    expect(r.body!.locked).toBe(false);
   });
 });

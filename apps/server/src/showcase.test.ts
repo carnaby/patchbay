@@ -222,6 +222,7 @@ describe('showcase routes', () => {
       writeFileSync(join(base, 'dashboard.json'), JSON.stringify(buildTemplate('blank')));
     }
     writeFileSync(join(showcaseDir, 'with-video', 'video.mp4'), Buffer.from('0123456789'));
+    writeFileSync(join(showcaseDir, 'with-video', 'poster.jpg'), Buffer.from('jpegdata'));
     routeDeps = await createDeps(
       loadConfig({
         NODE_ENV: 'test',
@@ -259,7 +260,8 @@ describe('showcase routes', () => {
       '/showcase/nope',
       '/showcase/..%2F..%2Fetc',
       '/showcase/no-video/video.mp4',
-      '/showcase/with-video/../../package.json',
+      '/showcase/with-video/video.mp4/extra',
+      '/showcase/no-video/poster.jpg',
     ])
       expect((await app.request(p)).status).toBe(404);
   });
@@ -270,5 +272,27 @@ describe('showcase routes', () => {
     expect(res.headers.get('content-type')).toBe('video/mp4');
     expect(res.headers.get('cache-control')).toBe('public, max-age=86400');
     expect(await res.text()).toBe('0123');
+  });
+
+  it('serves the poster', async () => {
+    const res = await app.request('/showcase/with-video/poster.jpg');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/jpeg');
+    expect(await res.text()).toBe('jpegdata');
+  });
+
+  it('answers 304 when the etag matches', async () => {
+    const first = await app.request('/showcase/with-video/video.mp4');
+    const etag = first.headers.get('etag')!;
+    await first.arrayBuffer();
+    const res = await app.request('/showcase/with-video/video.mp4', { headers: { 'if-none-match': etag } });
+    expect(res.status).toBe(304);
+  });
+
+  it('answers HEAD without a body', async () => {
+    const res = await app.request('/showcase/with-video/video.mp4', { method: 'HEAD' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-length')).toBe('10');
+    expect(await res.text()).toBe('');
   });
 });
