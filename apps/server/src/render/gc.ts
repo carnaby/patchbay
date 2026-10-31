@@ -5,27 +5,13 @@
  * memory behind tiny JavaScript wrappers, and ECharts leaves a large graph of short-lived objects per chart. Collecting
  * at known points keeps one snapshot's peak near the cost of its biggest part instead of the sum of all parts.
  */
-import { setFlagsFromString } from 'node:v8';
-import { runInNewContext } from 'node:vm';
+// The production start command passes --expose-gc (Dockerfile, `pnpm start`). Turning the flag on at run time
+// instead is undocumented V8 behaviour; without the flag (dev, tests) collection is left to V8 as usual.
+const gc = (globalThis as { gc?: unknown }).gc;
 
-function exposeGc(): (() => void) | null {
-  const existing = (globalThis as { gc?: () => void }).gc;
-  if (typeof existing === 'function') return existing;
-  try {
-    // Only contexts created after the flag see `gc`; the main context and its globals stay as they were.
-    setFlagsFromString('--expose-gc');
-    const gc = runInNewContext('gc') as unknown;
-    return typeof gc === 'function' ? (gc as () => void) : null;
-  } catch {
-    return null;
-  }
-}
-
-const gc = exposeGc();
-
-/** A full, synchronous collection of the JavaScript heap; a no-op where the runtime refuses to expose it. */
+/** A full, synchronous collection of the JavaScript heap; a no-op when the process was started without the flag. */
 export function collectGarbage() {
-  gc?.();
+  if (typeof gc === 'function') (gc as () => void)();
 }
 
 /** Also lets native finalisers run: Node calls them from setImmediate, after the collection that found them. */

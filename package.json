@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "pnpm --parallel --filter @patchbay/server --filter @patchbay/web dev",
     "build": "pnpm --filter @patchbay/web build",
-    "start": "node apps/server/src/main.ts --production",
+    "start": "node --expose-gc apps/server/src/main.ts --production",
     "test": "vitest run",
     "typecheck": "pnpm -r typecheck",
     "lint": "biome check .",

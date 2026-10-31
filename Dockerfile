@@ -39,4 +39,5 @@ VOLUME ["/data"]
 EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=5s CMD node -e "fetch('http://127.0.0.1:8787/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 ENTRYPOINT ["tini", "--"]
-CMD ["node", "apps/server/src/main.ts"]
+# --expose-gc: the snapshot renderer collects after each render to release resvg's native memory (render/gc.ts).
+CMD ["node", "--expose-gc", "apps/server/src/main.ts"]
