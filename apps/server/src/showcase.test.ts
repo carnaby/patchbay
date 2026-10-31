@@ -1,10 +1,10 @@
 /** The repository's showcase: trusted source URLs under URL_SOURCES=signed-in (more blocks are added below). */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { useCaseDashboardId } from '@patchbay/core';
+import { type UseCaseInfo, useCaseDashboardId } from '@patchbay/core';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { createDeps } from './app.ts';
+import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
 import { now } from './db.ts';
@@ -197,5 +197,78 @@ describe('syncShowcase', () => {
     await svc.syncShowcase([fixtureUseCase('morning-board')]);
     expect(await svc.prune({ olderThanDays: 0, onlyAnonymous: true })).not.toContain('scmorningboard');
     expect(await svc.pruneUntouched({ olderThanHours: 0 })).not.toContain('scmorningboard');
+  });
+});
+
+describe('showcase routes', () => {
+  let routeDir: string;
+  let routeDeps: Deps;
+  let app: ReturnType<typeof createApp>;
+
+  beforeAll(async () => {
+    routeDir = mkdtempSync(join(tmpdir(), 'patchbay-showcase-routes-'));
+    const showcaseDir = join(routeDir, 'showcase');
+    for (const [order, id] of [
+      [1, 'with-video'],
+      [2, 'no-video'],
+    ] as const) {
+      const base = join(showcaseDir, id);
+      mkdirSync(base, { recursive: true });
+      writeFileSync(
+        join(base, 'meta.json'),
+        JSON.stringify({ id, order, title: id, tab: 'Fixture', description: 'Fixture use case' }),
+      );
+      writeFileSync(join(base, 'prompt.md'), 'Build a board');
+      writeFileSync(join(base, 'dashboard.json'), JSON.stringify(buildTemplate('blank')));
+    }
+    writeFileSync(join(showcaseDir, 'with-video', 'video.mp4'), Buffer.from('0123456789'));
+    routeDeps = await createDeps(
+      loadConfig({
+        NODE_ENV: 'test',
+        DATA_DIR: join(routeDir, 'data'),
+        OFFLINE: '1',
+        PUBLIC_URL: 'http://localhost:8787',
+        SHOWCASE_DIR: showcaseDir,
+      }),
+    );
+    await routeDeps.dashboards.syncShowcase(routeDeps.useCases);
+    app = createApp(routeDeps);
+  });
+
+  afterAll(async () => {
+    routeDeps.hub.close();
+    await routeDeps.pipeline.close();
+    routeDeps.db.close();
+    rmSync(routeDir, { recursive: true, force: true });
+  });
+
+  it('lists use cases with media URLs carrying cache keys', async () => {
+    const res = await app.request('/api/use-cases');
+    expect(res.status).toBe(200);
+    const list = (await res.json()) as UseCaseInfo[];
+    expect(list.map((u) => u.id)).toEqual(['with-video', 'no-video']);
+    expect(list[0]!.video).toMatch(/^\/showcase\/with-video\/video\.mp4\?v=[a-f0-9]{16}$/);
+    expect(list[1]).toMatchObject({ video: null, poster: null, dashboardId: 'scnovideo' });
+  });
+
+  it('redirects a slug to its dashboard and 404s unknown or odd slugs', async () => {
+    const res = await app.request('/showcase/with-video');
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe('/d/scwithvideo');
+    for (const p of [
+      '/showcase/nope',
+      '/showcase/..%2F..%2Fetc',
+      '/showcase/no-video/video.mp4',
+      '/showcase/with-video/../../package.json',
+    ])
+      expect((await app.request(p)).status).toBe(404);
+  });
+
+  it('serves video with ranges and keeps its own caching headers', async () => {
+    const res = await app.request('/showcase/with-video/video.mp4', { headers: { range: 'bytes=0-3' } });
+    expect(res.status).toBe(206);
+    expect(res.headers.get('content-type')).toBe('video/mp4');
+    expect(res.headers.get('cache-control')).toBe('public, max-age=86400');
+    expect(await res.text()).toBe('0123');
   });
 });

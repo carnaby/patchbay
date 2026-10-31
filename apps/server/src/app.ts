@@ -18,6 +18,7 @@ import { adminRoutes } from './routes/admin.ts';
 import { apiRoutes } from './routes/api.ts';
 import { authRoutes } from './routes/auth.ts';
 import { oauthRoutes } from './routes/oauth.ts';
+import { showcaseRoutes } from './routes/showcase.ts';
 import { DashboardService } from './services/dashboards.ts';
 import { DataService } from './services/data.ts';
 import { defaultPoolSize, InlineRunner, type PipelineRunner, WorkerPool } from './services/pipeline-pool.ts';
@@ -239,6 +240,7 @@ export function createApp(deps: Deps) {
   app.route('/auth', authRoutes(deps));
   app.route('/api/admin', adminRoutes(deps));
   app.route('/api', apiRoutes(deps));
+  app.route('/', showcaseRoutes(deps));
   app.all('/api/*', () => {
     throw new HttpError(404, 'Not found');
   });
