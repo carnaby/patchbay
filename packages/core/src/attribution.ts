@@ -21,3 +21,8 @@ export function widgetAttributions(
   }
   return [...lines];
 }
+
+/** One quiet line for the credits; "Data:" is added only where the provider's own wording does not say it. */
+export function creditLine(lines: readonly string[]): string {
+  return lines.map((l) => (/\bdata\b/i.test(l) ? l : `Data: ${l}`)).join(' · ');
+}

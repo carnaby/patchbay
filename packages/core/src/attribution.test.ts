@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { widgetAttributions } from './attribution.ts';
+import { creditLine, widgetAttributions } from './attribution.ts';
 
 const connector = (id: string, c: string) => ({
   id,
   source: { kind: 'connector' as const, connector: c, params: {} },
 });
 const widget = (datasetId: string) => ({ type: 'kpi' as const, datasetId });
+
+describe('creditLine', () => {
+  it('prefixes only the credits that do not already say they are data', () => {
+    expect(creditLine(['Data provided by CoinGecko', 'U.S. Geological Survey'])).toBe(
+      'Data provided by CoinGecko · Data: U.S. Geological Survey',
+    );
+    expect(creditLine([])).toBe('');
+  });
+});
 
 describe('widgetAttributions', () => {
   const datasets = [

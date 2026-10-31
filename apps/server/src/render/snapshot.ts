@@ -20,6 +20,7 @@ import {
   compileTableRules,
   computeGauge,
   computeKpi,
+  creditLine,
   type DashboardDoc,
   type DatasetResult,
   formatNumber,
@@ -566,15 +567,10 @@ export function renderDashboardPng(
     if (cropped)
       parts.push(`<rect x="0" y="${visibleTo}" width="${width}" height="${foot}" fill="${page}"/>`);
     parts.push(
-      text(
-        GAP + 4,
-        visibleTo + 18,
-        truncate(`Data: ${credit.join(' \u00b7 ')}`, Math.floor((width - GAP * 2) / 6)),
-        {
-          size: 11,
-          color: theme.muted,
-        },
-      ),
+      text(GAP + 4, visibleTo + 18, truncate(creditLine(credit), Math.floor((width - GAP * 2) / 6)), {
+        size: 11,
+        color: theme.muted,
+      }),
     );
   }
   if (cropped) {
