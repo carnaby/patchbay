@@ -40,7 +40,9 @@ export function referenceText(publicUrl = '<PUBLIC_URL>'): string {
 ## Document
 A dashboard has \`datasets\` (where data comes from + how it is processed) and \`widgets\` (how it is shown),
 laid out on a ${GRID_COLUMNS}-column grid. Ids are lowercase slugs ("weather", "temp-chart"). Limits: ${LIMITS.datasets} datasets,
-${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows.
+${LIMITS.widgets} widgets, ${LIMITS.inlineRows} inline rows per dataset (text values up to ${LIMITS.inlineText} characters,
+column names up to 200), and ${Math.floor(LIMITS.documentBytes / 1000)} KB for the whole document as JSON. Data larger than a
+small table belongs in upload_data, not inline rows; uploads do not count toward the document.
 
 ## Dataset
 { id, name, source, transforms: Transform[], refreshSec, accumulate }

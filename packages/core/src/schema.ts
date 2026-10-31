@@ -19,10 +19,17 @@ export const LIMITS = {
   datasets: 30,
   widgets: 60,
   inlineRows: 2000,
+  /** Characters per inline text value; longer text belongs in an upload or a text widget. */
+  inlineText: 1000,
   transforms: 40,
   markdown: 20_000,
   title: 120,
   description: 1000,
+  /**
+   * Serialised size of a whole document in bytes. Below the 1 MiB request body limit, so every document the server
+   * accepts can still be saved whole from the editor; larger data belongs in uploads, which are stored on their own.
+   */
+  documentBytes: 1_000_000,
 } as const;
 
 export const IdSchema = z
@@ -37,7 +44,7 @@ export const SecretIdSchema = z
   .string()
   .regex(/^sec_[A-Za-z0-9]{16}$/, 'Secret ids look like "sec_…"; see list_secrets');
 
-const scalar = z.union([z.number(), z.string(), z.boolean(), z.null()]);
+const inlineValue = z.union([z.number(), z.string().max(LIMITS.inlineText), z.boolean(), z.null()]);
 const field = z.string().min(1).max(200);
 
 /** Feeds are fetched at most this often per address, whatever a dataset's refreshSec says. */
@@ -57,7 +64,7 @@ export const SourceSchema = z.discriminatedUnion('kind', [
   z
     .strictObject({
       kind: z.literal('inline'),
-      rows: z.array(z.record(z.string(), scalar)).max(LIMITS.inlineRows),
+      rows: z.array(z.record(z.string().max(200), inlineValue)).max(LIMITS.inlineRows),
     })
     .describe('Small data embedded directly in the dashboard'),
   z

@@ -38,6 +38,13 @@ const EnvSchema = z.object({
   OFFLINE: bool,
   /** Automatically delete anonymous dashboards not viewed for this many days (0 = never). */
   PRUNE_ANONYMOUS_AFTER_DAYS: z.coerce.number().int().min(0).default(0),
+  /** Delete anonymous dashboards still blank (never edited) this many hours after creation (0 = never). */
+  PRUNE_BLANK_ANONYMOUS_AFTER_HOURS: z.coerce.number().int().min(0).default(0),
+  /**
+   * Disk space all anonymous dashboards together may take, in MB (0 = no limit). Above it, anonymous dashboards
+   * cannot be created or grown; signed-in users are not affected.
+   */
+  ANONYMOUS_STORAGE_LIMIT_MB: z.coerce.number().int().min(0).default(1024),
   WEB_DIST: z.string().optional(),
   TRUST_PROXY: trustProxy,
   /** Worker threads for data processing; 0 runs pipelines on the main thread. Default: CPUs - 1, max 4. */
@@ -116,6 +123,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     devLogin: parsed.DEV_LOGIN,
     offline: parsed.OFFLINE,
     pruneAnonymousAfterDays: parsed.PRUNE_ANONYMOUS_AFTER_DAYS,
+    pruneBlankAnonymousAfterHours: parsed.PRUNE_BLANK_ANONYMOUS_AFTER_HOURS,
+    anonymousStorageBytes: parsed.ANONYMOUS_STORAGE_LIMIT_MB * 1024 * 1024,
     webDist: parsed.WEB_DIST,
     trustProxy: parsed.TRUST_PROXY,
     mcpResource: `${publicUrl}/mcp`,
