@@ -274,26 +274,26 @@ after every step.
 
 ## Configuration
 
-| Variable                                   | Default                 | Purpose                                                                |
-| ------------------------------------------ | ----------------------- | ---------------------------------------------------------------------- |
-| `PUBLIC_URL`                               | `http://localhost:8787` | Canonical origin; OAuth issuer and MCP resource are derived from it.   |
-| `PORT`, `HOST`                             | `8787`, `0.0.0.0`       | Where the server listens.                                              |
-| `DATA_DIR`                                 | `./data`                | Dashboard folders and `patchbay.db`.                                   |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | –                       | Google sign-in. Redirect URI: `PUBLIC_URL/auth/google/callback`.       |
-| `ADMIN_EMAILS`                             | –                       | Comma-separated emails with access to `/admin`.                        |
-| `DEV_LOGIN`                                | off                     | Passwordless login for development. Refused in production.             |
-| `SHOWCASE_DIR`                             | `./showcase`            | Folder with the landing page use cases (`/app/showcase` in Docker).    |
-| `OFFLINE`                                  | off                     | Serve synthetic connector data.                                        |
-| `PRUNE_ANONYMOUS_AFTER_DAYS`               | `0`                     | Auto-delete anonymous dashboards nobody opened for N days.             |
-| `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS`        | `0`                     | Auto-delete anonymous dashboards still blank N hours after creation.   |
-| `ANONYMOUS_STORAGE_LIMIT_MB`               | `1024`                  | Disk space all anonymous dashboards may take together; `0` = no limit. |
-| `TRUST_PROXY`                              | off                     | `1`: IP from `X-Forwarded-For`; `cloudflare`: from `CF-Connecting-IP`  |
-| `PIPELINE_WORKERS`                         | CPUs − 1, max 4         | Worker threads for data processing; `0` processes on the main thread.  |
-| `PIPELINE_TIMEOUT_MS`                      | `10000`                 | Hard time limit for one pipeline run in a worker.                      |
-| `SECRETS`                                  | `off`                   | Who may store credentials for HTTP sources: `off`, `admins`, `users`.  |
-| `SECRETS_KEY`                              | –                       | 32 random bytes, base64. Required unless `SECRETS=off`.                |
-| `SECRETS_KEY_PREVIOUS`                     | –                       | Old key(s) during rotation, comma-separated.                           |
-| `UMAMI_SCRIPT_URL`, `UMAMI_WEBSITE_ID`     | –                       | Optional Umami page-view analytics; both or neither.                   |
+| Variable                                   | Default                       | Purpose                                                                                                     |
+| ------------------------------------------ | ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_URL`                               | `http://localhost:8787`       | Canonical origin; OAuth issuer and MCP resource are derived from it.                                        |
+| `PORT`, `HOST`                             | `8787`, `0.0.0.0`             | Where the server listens.                                                                                   |
+| `DATA_DIR`                                 | `./data`                      | Dashboard folders and `patchbay.db`.                                                                        |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | –                             | Google sign-in. Redirect URI: `PUBLIC_URL/auth/google/callback`.                                            |
+| `ADMIN_EMAILS`                             | –                             | Comma-separated emails with access to `/admin`.                                                             |
+| `DEV_LOGIN`                                | off                           | Passwordless login for development. Refused in production.                                                  |
+| `SHOWCASE_DIR`                             | `showcase/` in the repository | Folder with the landing page use cases (`/app/showcase` in Docker). An empty folder turns the showcase off. |
+| `OFFLINE`                                  | off                           | Serve synthetic connector data.                                                                             |
+| `PRUNE_ANONYMOUS_AFTER_DAYS`               | `0`                           | Auto-delete anonymous dashboards nobody opened for N days.                                                  |
+| `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS`        | `0`                           | Auto-delete anonymous dashboards still blank N hours after creation.                                        |
+| `ANONYMOUS_STORAGE_LIMIT_MB`               | `1024`                        | Disk space all anonymous dashboards may take together; `0` = no limit.                                      |
+| `TRUST_PROXY`                              | off                           | `1`: IP from `X-Forwarded-For`; `cloudflare`: from `CF-Connecting-IP`                                       |
+| `PIPELINE_WORKERS`                         | CPUs − 1, max 4               | Worker threads for data processing; `0` processes on the main thread.                                       |
+| `PIPELINE_TIMEOUT_MS`                      | `10000`                       | Hard time limit for one pipeline run in a worker.                                                           |
+| `SECRETS`                                  | `off`                         | Who may store credentials for HTTP sources: `off`, `admins`, `users`.                                       |
+| `SECRETS_KEY`                              | –                             | 32 random bytes, base64. Required unless `SECRETS=off`.                                                     |
+| `SECRETS_KEY_PREVIOUS`                     | –                             | Old key(s) during rotation, comma-separated.                                                                |
+| `UMAMI_SCRIPT_URL`, `UMAMI_WEBSITE_ID`     | –                             | Optional Umami page-view analytics; both or neither.                                                        |
 
 ## Deployment
 
