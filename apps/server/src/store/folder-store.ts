@@ -30,6 +30,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type {
   Actor,
   Column,
@@ -42,6 +43,39 @@ import type {
   Visibility,
 } from '@patchbay/core';
 import { parseDashboard } from '@patchbay/core';
+
+/**
+ * How a file being replaced (temp file + rename) can look for a moment where rename over an existing file is not
+ * atomic: missing to a reader, or locked to the writer while a reader has it open. Windows does this, and so do the
+ * Windows folders Docker Desktop mounts into Linux containers: there, readers of a dashboard whose owner saved it
+ * quickly found dashboard.json missing hundreds of times a minute and answered 404. On Linux file systems (ext4,
+ * btrfs, a Docker volume) rename is atomic and none of this happens.
+ */
+const REPLACING_READ = new Set(['ENOENT', 'EPERM', 'EBUSY', 'EACCES']);
+const REPLACING_WRITE = new Set(['EPERM', 'EBUSY', 'EACCES']);
+/** A reader waits out one replace; a writer waits for the readers that hold the file open, which can take longer. */
+const READ_RETRY_MS = [5, 15, 40, 100];
+const WRITE_RETRY_MS = [5, 15, 40, 100, 250, 500];
+
+/** Repeats `attempt` briefly while it fails the way a replace in progress does and `exists` says it should not. */
+async function duringReplace<T>(
+  attempt: () => Promise<T>,
+  codes: ReadonlySet<string>,
+  exists: () => boolean,
+  delays = READ_RETRY_MS,
+): Promise<T> {
+  for (let i = 0; ; i++) {
+    try {
+      return await attempt();
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (i >= delays.length || !code || !codes.has(code) || !exists()) throw e;
+      await sleep(delays[i]);
+    }
+  }
+}
+
+let tmpSeq = 0;
 
 export interface StoredMeta {
   id: string;
@@ -70,6 +104,8 @@ interface VersionEntry extends VersionInfo {
 export interface FileStamp {
   key: string;
   mtimeMs: number;
+  /** Size on disk. */
+  bytes: number;
 }
 
 interface StoredFile extends UploadedFile {
@@ -197,9 +233,19 @@ export class FolderStore {
   }
 
   private async writeText(path: string, text: string) {
-    const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
+    const tmp = `${path}.${process.pid}.${Date.now()}.${++tmpSeq}.tmp`;
     await writeFile(tmp, text);
-    await rename(tmp, path);
+    try {
+      await duringReplace(
+        () => rename(tmp, path),
+        REPLACING_WRITE,
+        () => true,
+        WRITE_RETRY_MS,
+      );
+    } catch (e) {
+      await rm(tmp, { force: true });
+      throw e;
+    }
   }
 
   private async writeJson(path: string, value: unknown) {
@@ -227,7 +273,19 @@ export class FolderStore {
 
   async readMeta(id: string): Promise<StoredMeta | null> {
     if (!ID_RE.test(id)) return null;
-    return this.readJson<StoredMeta>(join(this.dir(id), 'meta.json'));
+    const dir = this.dir(id);
+    // A deleted dashboard has no folder: it answers at once, without waiting for a replace that is not happening.
+    return this.readReplaced<StoredMeta>(join(dir, 'meta.json'), () => existsSync(dir));
+  }
+
+  /** A file that is replaced in place (meta.json, dashboard.json), read through a replace in progress. */
+  private async readReplaced<T>(path: string, exists: () => boolean): Promise<T | null> {
+    try {
+      return JSON.parse(await duringReplace(() => readFile(path, 'utf8'), REPLACING_READ, exists)) as T;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw e;
+    }
   }
 
   async writeMeta(meta: StoredMeta) {
@@ -236,7 +294,8 @@ export class FolderStore {
 
   async readDoc(id: string): Promise<DashboardDoc | null> {
     const path = join(this.dir(id), 'dashboard.json');
-    const info = await stat(path).catch(() => null);
+    const exists = () => existsSync(join(this.dir(id), 'meta.json'));
+    const info = await duringReplace(() => stat(path), REPLACING_READ, exists).catch(() => null);
     if (!info) return null;
     const cached = this.docCache.get(id);
     if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) {
@@ -247,7 +306,7 @@ export class FolderStore {
     }
     const pending = this.docReads.get(id);
     if (pending) return pending;
-    const read: Promise<DashboardDoc | null> = this.readJson<unknown>(path).then((raw) => {
+    const read: Promise<DashboardDoc | null> = this.readReplaced<unknown>(path, exists).then((raw) => {
       if (raw === null) return null;
       // Parse on read too: a hand-edited file must fail loudly, not load as empty.
       const doc = parseDashboard(raw);
@@ -460,7 +519,7 @@ export class FolderStore {
       const s = await stat(join(this.dir(id), 'files', `${fileId}.json`), { bigint: true });
       // Some file systems report no inode numbers; there the path is the identity (and copies are never shared).
       const identity = s.ino === 0n ? `${id}/${fileId}` : `${s.dev}:${s.ino}`;
-      return { key: `${identity}@${s.mtimeNs}:${s.size}`, mtimeMs: Number(s.mtimeMs) };
+      return { key: `${identity}@${s.mtimeNs}:${s.size}`, mtimeMs: Number(s.mtimeMs), bytes: Number(s.size) };
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw e;
