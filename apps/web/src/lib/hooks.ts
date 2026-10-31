@@ -1,6 +1,6 @@
 import type { ConnectorInfo, PublicUser, SecretMode, ThemeMode } from '@patchbay/core';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { api } from './api.ts';
 import type { SecretsList } from './secrets.ts';
 
@@ -39,10 +39,22 @@ export function useSecrets(enabled = true) {
   });
 }
 
+export interface AuthConfig {
+  google: boolean;
+  devLogin: boolean;
+  offline: boolean;
+  /** Days without a view after which anonymous dashboards are deleted; 0 = never. */
+  pruneAnonymousAfterDays: number;
+  /** Hours after which an anonymous dashboard nobody edited is deleted; 0 = never. */
+  pruneBlankAnonymousAfterHours: number;
+  /** Whether the operator turned on cookieless Umami page views. */
+  analytics: boolean;
+}
+
 export function useAuthConfig() {
   return useQuery({
     queryKey: ['auth-config'],
-    queryFn: () => api<{ google: boolean; devLogin: boolean; offline: boolean }>('/auth/config'),
+    queryFn: () => api<AuthConfig>('/auth/config'),
     staleTime: Number.POSITIVE_INFINITY,
   });
 }
@@ -53,6 +65,12 @@ export function useConnectors() {
     queryFn: () => api<ConnectorInfo[]>('/api/connectors'),
     staleTime: Number.POSITIVE_INFINITY,
   });
+}
+
+/** Connector id to credit text, for the "Data: ..." line viewers see. Empty until the connector list has loaded. */
+export function useAttributions(): Record<string, string> {
+  const { data } = useConnectors();
+  return useMemo(() => Object.fromEntries((data ?? []).map((c) => [c.id, c.attribution])), [data]);
 }
 
 export function useLogout() {
