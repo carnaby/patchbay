@@ -341,6 +341,23 @@ describe('what a bearer token can reach', () => {
   });
 });
 
+describe('response headers', () => {
+  it('sends a CSP that also locks down <base> and plugins', async () => {
+    const csp = (await app.request(`${BASE}/api/me`)).headers.get('content-security-policy')!;
+    const directives = new Map(
+      csp.split(';').map((d) => {
+        const [name, ...values] = d.trim().split(/\s+/);
+        return [name, values.join(' ')] as const;
+      }),
+    );
+    expect(directives.get('base-uri')).toBe("'none'");
+    expect(directives.get('object-src')).toBe("'none'");
+    expect(directives.get('frame-ancestors')).toBe("'none'");
+    expect(directives.get('script-src')).toContain("'self'");
+    expect(directives.get('script-src')).not.toContain('unsafe');
+  });
+});
+
 describe('private dashboards and missing ones look the same', () => {
   it('answers strangers, signed in or not, with an identical 404 on every route', async () => {
     const owner = await login('owner@example.com');
