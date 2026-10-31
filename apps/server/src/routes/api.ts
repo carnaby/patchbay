@@ -7,6 +7,7 @@ import {
   SECRET_PLACEMENTS,
   suggestWidgets,
   type ThemeMode,
+  type UseCaseInfo,
 } from '@patchbay/core';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
@@ -83,6 +84,17 @@ export function apiRoutes(deps: Deps) {
   const app = new Hono<Env>();
   const { dashboards, data, wire, hub, tokens, connectors, config } = deps;
 
+  const useCaseList: UseCaseInfo[] = deps.useCases.map((u) => ({
+    id: u.meta.id,
+    title: u.meta.title,
+    tab: u.meta.tab,
+    description: u.meta.description,
+    prompt: u.prompt,
+    dashboardId: u.dashboardId,
+    video: u.video ? `/showcase/${u.meta.id}/video.mp4?v=${u.video.etag}` : null,
+    poster: u.poster ? `/showcase/${u.meta.id}/poster.jpg?v=${u.poster.etag}` : null,
+  }));
+
   // Per-IP budget for all API traffic, plus a tighter one for writes.
   app.use('*', async (c, next) => {
     const ip = clientKey(c, config.trustProxy);
@@ -100,6 +112,10 @@ export function apiRoutes(deps: Deps) {
 
   app.get('/connectors', (c) => c.json(connectors.list()));
   app.get('/templates', (c) => c.json(listTemplates()));
+  app.get('/use-cases', (c) => {
+    c.header('Cache-Control', 'public, max-age=300');
+    return c.json(useCaseList);
+  });
 
   /** Fixed, server-defined demo data for the landing page (no user input reaches a connector). */
   const showcase = [

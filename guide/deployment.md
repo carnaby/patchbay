@@ -239,6 +239,17 @@ change only when edited) and at most every 30 s for HTTP sources. A dataset's re
 everyone reading it, and response bodies still being read take at most 12 MB together (6 MB per client), with at most 4
 MB more waiting for room up to 10 s; further large reads get a 503 at once.
 
+### Showcase use cases
+
+`SHOWCASE_DIR` points at the folder with the landing page use cases (see the architecture guide). It defaults to
+`showcase/` in the repository, and the Docker image ships it as `/app/showcase`, so nothing needs configuring. To
+change it in Docker, mount your folder over `/app/showcase` (the image bakes the repository's one in); to turn the
+showcase off, point `SHOWCASE_DIR` at an empty folder. Restart after changing files: sizes and ETags are read at
+startup. Their dashboards are public and read-only (an admin delete lasts until the next restart). The video and
+poster routes are not behind the API rate limiter, so put a CDN or a proxy limit in front when the server is exposed
+directly. With `URL_SOURCES=signed-in`, the exact URLs that appear in them still load for
+anonymous copies; any other http or feed URL needs a signed-in owner as before.
+
 ### Memory budget
 
 One process holds everything: the main thread, the worker threads and their native memory count against the same

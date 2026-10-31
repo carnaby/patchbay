@@ -31,6 +31,7 @@ import {
   type SecretInfo,
   type SecretMode,
   type SecretPlacement,
+  SHOWCASE_OWNER_ID,
   secretParamIssue,
   secretRefChanges,
   secretValueIssue,
@@ -44,6 +45,7 @@ import type { UserRow, Users } from '../auth/users.ts';
 import { unknownConnectorMessage } from '../connectors/registry.ts';
 import { now } from '../db.ts';
 import type { LiveHub } from '../live/hub.ts';
+import type { UseCase } from '../showcase/load.ts';
 import type { DashboardIndex } from '../store/dashboard-index.ts';
 import type { FolderStore, StoredMeta } from '../store/folder-store.ts';
 import { newDashboardId, newId, randomToken, safeEqual, sha256 } from '../util/crypto.ts';
@@ -247,6 +249,8 @@ export interface DashboardServiceOptions {
   uploadMaxCells?: number;
   uploadMaxCellsAnonymous?: number;
   urlSources?: UrlSourcesMode;
+  /** Exact source URLs from the repository's showcase; URL_SOURCES=signed-in lets these through. */
+  trustedUrls?: ReadonlySet<string>;
   /** Disk space all anonymous dashboards may take together; 0 = no limit. */
   anonymousStorageBytes?: number;
   /** Tests only: admission of uploads (one at a time by default). */
@@ -277,6 +281,7 @@ export class DashboardService {
   private readonly uploadMaxCells: number;
   private readonly uploadMaxCellsAnonymous: number;
   private readonly urlSources: UrlSourcesMode;
+  private readonly trustedUrls: ReadonlySet<string>;
   private readonly uploadGate: Gate;
 
   constructor(
@@ -291,6 +296,7 @@ export class DashboardService {
     this.uploadMaxCells = options.uploadMaxCells ?? DEFAULT_UPLOAD_MAX_CELLS;
     this.uploadMaxCellsAnonymous = options.uploadMaxCellsAnonymous ?? DEFAULT_UPLOAD_MAX_CELLS_ANONYMOUS;
     this.urlSources = options.urlSources ?? 'everyone';
+    this.trustedUrls = options.trustedUrls ?? new Set();
     this.uploadGate = options.uploadGate ?? newUploadGate();
     this.store = store;
     this.index = index;
@@ -420,10 +426,13 @@ export class DashboardService {
   /**
    * With URL_SOURCES=signed-in, a URL is fetched only for a dashboard that a signed-in user owns: a public instance
    * on its operator's connection must not fetch arbitrary addresses for strangers. Checked at use time (DataService
-   * calls this before every http or feed load) and, for an early message, when such a source is saved.
+   * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
+   * exception is a URL that appears verbatim in the repository's showcase, so anonymous copies of a use case work;
+   * matching is exact (no normalising), so a variant of a trusted URL is still refused.
    */
-  assertMayFetchUrl(target: DashboardTarget) {
-    if (this.urlSources === 'signed-in' && target.ownerId === null) throw forbidden(URL_SOURCES_SIGNED_IN);
+  assertMayFetchUrl(target: DashboardTarget, url: string) {
+    if (this.urlSources === 'signed-in' && target.ownerId === null && !this.trustedUrls.has(url))
+      throw forbidden(URL_SOURCES_SIGNED_IN);
   }
 
   private checkUrlSources(meta: StoredMeta, before: DashboardDoc, after: DashboardDoc) {
@@ -432,7 +441,8 @@ export class DashboardService {
     const added = after.datasets.some(
       (d) =>
         (d.source.kind === 'http' || d.source.kind === 'feed') &&
-        previous.get(d.id) !== JSON.stringify(d.source),
+        previous.get(d.id) !== JSON.stringify(d.source) &&
+        !this.trustedUrls.has(d.source.url),
     );
     if (added) throw badRequest(URL_SOURCES_SIGNED_IN);
   }
@@ -1220,5 +1230,89 @@ export class DashboardService {
       this.hub.deleted(id);
     }
     return ids;
+  }
+
+  /**
+   * Keeps one public dashboard per showcase use case, owned by SHOWCASE_OWNER_ID so that nobody can edit it (canEdit
+   * compares owner ids) and nothing counts it as anonymous (storage ceiling, pruning). A changed dashboard.json
+   * becomes a new version, so the history shows when the repository changed it. An id that exists with another
+   * owner is never touched. An admin can still delete one; the next startup recreates it. One broken use case never
+   * stops the others (or the server): it is skipped with a warning.
+   */
+  async syncShowcase(useCases: readonly UseCase[], warn: (m: string) => void = console.warn) {
+    const result = { created: [] as string[], updated: [] as string[], skipped: [] as string[] };
+    const actor: Actor = { kind: 'system', label: 'Patchbay showcase' };
+    for (const uc of useCases) {
+      const id = uc.dashboardId;
+      try {
+        await this.syncOne(uc, actor, result, warn);
+      } catch (e) {
+        warn(
+          `[patchbay] showcase: "${uc.meta.id}" not synced: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        result.skipped.push(id);
+      }
+    }
+    return result;
+  }
+
+  private async syncOne(
+    uc: UseCase,
+    actor: Actor,
+    result: { created: string[]; updated: string[]; skipped: string[] },
+    warn: (m: string) => void,
+  ) {
+    {
+      const id = uc.dashboardId;
+      await this.store.withLock(id, async () => {
+        const meta = this.store.exists(id) ? await this.store.readMeta(id) : null;
+        if (meta && meta.ownerId !== SHOWCASE_OWNER_ID) {
+          warn(
+            `[patchbay] showcase: dashboard id "${id}" belongs to someone else; "${uc.meta.id}" not synced`,
+          );
+          result.skipped.push(id);
+          return;
+        }
+        const at = now();
+        if (!meta) {
+          const fresh: StoredMeta = {
+            id,
+            ownerId: SHOWCASE_OWNER_ID,
+            ownerEmail: null,
+            visibility: 'public',
+            editKeyHash: null,
+            version: 1,
+            createdAt: at,
+            updatedAt: at,
+            lastViewedAt: at,
+            lastActor: actor,
+          };
+          await this.store.create(fresh, uc.doc, actor, [`Created from showcase "${uc.meta.id}"`]);
+          this.index.upsert(fresh, {
+            title: uc.doc.title,
+            widgets: uc.doc.widgets.length,
+            sizeBytes: await this.store.sizeOf(id),
+          });
+          result.created.push(id);
+          return;
+        }
+        // A stored document that no longer parses is system-owned, so it is replaced by a new version, not skipped.
+        const current = await this.store.readDoc(id).catch((e) => {
+          warn(`[patchbay] showcase: stored "${id}" is unreadable, rewriting it: ${String(e)}`);
+          return null;
+        });
+        if (current && JSON.stringify(current) === JSON.stringify(uc.doc)) return;
+        // Written without commit(): the document was validated when the repository was loaded and the owner is
+        // the system, and nobody can be subscribed to it yet at startup, so there is nothing to check or publish.
+        const updated: StoredMeta = { ...meta, version: meta.version + 1, updatedAt: at, lastActor: actor };
+        await this.store.writeDoc(updated, uc.doc, actor, [`Updated from showcase "${uc.meta.id}"`]);
+        this.index.upsert(updated, {
+          title: uc.doc.title,
+          widgets: uc.doc.widgets.length,
+          sizeBytes: await this.store.sizeOf(id),
+        });
+        result.updated.push(id);
+      });
+    }
   }
 }

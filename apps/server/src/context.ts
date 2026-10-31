@@ -13,6 +13,7 @@ import type { DashboardService, Principal } from './services/dashboards.ts';
 import type { DataService } from './services/data.ts';
 import type { PipelineRunner } from './services/pipeline-pool.ts';
 import type { ResultWire } from './services/result-wire.ts';
+import type { UseCase } from './showcase/load.ts';
 import type { DashboardIndex } from './store/dashboard-index.ts';
 import type { FolderStore } from './store/folder-store.ts';
 import { forbidden, unauthorized } from './util/errors.ts';
@@ -20,6 +21,7 @@ import type { RateLimiter } from './util/rate-limit.ts';
 
 export interface Deps {
   config: Config;
+  useCases: UseCase[];
   db: DB;
   users: Users;
   tokens: Tokens;

@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { SecretMode } from '@patchbay/core';
 import { z } from 'zod';
 import { parseSecretKey, SecretKeyring } from './util/crypto.ts';
@@ -50,6 +51,7 @@ const EnvSchema = z.object({
    */
   ANONYMOUS_STORAGE_LIMIT_MB: z.coerce.number().int().min(0).default(1024),
   WEB_DIST: z.string().optional(),
+  SHOWCASE_DIR: z.string().optional(),
   TRUST_PROXY: trustProxy,
   /** Worker threads for data processing; 0 runs pipelines on the main thread. Default: CPUs - 1, max 4. */
   PIPELINE_WORKERS: z.coerce.number().int().min(0).max(32).optional(),
@@ -184,6 +186,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     pruneBlankAnonymousAfterHours: parsed.PRUNE_BLANK_ANONYMOUS_AFTER_HOURS,
     anonymousStorageBytes: parsed.ANONYMOUS_STORAGE_LIMIT_MB * 1024 * 1024,
     webDist: parsed.WEB_DIST,
+    showcaseDir: parsed.SHOWCASE_DIR ?? join(import.meta.dirname, '../../../showcase'),
     trustProxy: parsed.TRUST_PROXY,
     mcpResource: `${publicUrl}/mcp`,
     pipelineWorkers: parsed.PIPELINE_WORKERS,

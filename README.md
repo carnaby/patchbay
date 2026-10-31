@@ -66,6 +66,8 @@ It is free, needs no API keys, and runs as a single process you can host anywher
   dataset use it. Encrypted at rest, only ever sent to the address it was saved for, never readable again, not even by
   agents. Off by default (`SECRETS`); self-host for sensitive data, because the operator can technically read it.
 - 🗂️ **Boring storage.** One folder per dashboard. Delete the folder and the dashboard is gone. SQLite only indexes.
+- 🎬 **Use cases on the landing page.** Tabs with a short video, the prompt that built the dashboard, a live
+  read-only example and a one-click editable copy. Add your own by dropping a folder into `showcase/`.
 - 🌗 **Accessible charts.** Colour-blind-validated palette, light and dark themes, no dual axes, tables as an
   alternative view, keyboard shortcuts.
 
@@ -272,28 +274,29 @@ after every step.
 
 ## Configuration
 
-| Variable                                   | Default                 | Purpose                                                                |
-| ------------------------------------------ | ----------------------- | ---------------------------------------------------------------------- |
-| `PUBLIC_URL`                               | `http://localhost:8787` | Canonical origin; OAuth issuer and MCP resource are derived from it.   |
-| `PORT`, `HOST`                             | `8787`, `0.0.0.0`       | Where the server listens.                                              |
-| `DATA_DIR`                                 | `./data`                | Dashboard folders and `patchbay.db`.                                   |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | –                       | Google sign-in. Redirect URI: `PUBLIC_URL/auth/google/callback`.       |
-| `ADMIN_EMAILS`                             | –                       | Comma-separated emails with access to `/admin`.                        |
-| `DEV_LOGIN`                                | off                     | Passwordless login for development. Refused in production.             |
-| `OFFLINE`                                  | off                     | Serve synthetic connector data.                                        |
-| `PRUNE_ANONYMOUS_AFTER_DAYS`               | `0`                     | Auto-delete anonymous dashboards nobody opened for N days.             |
-| `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS`        | `0`                     | Auto-delete anonymous dashboards still blank N hours after creation.   |
-| `ANONYMOUS_STORAGE_LIMIT_MB`               | `1024`                  | Disk space all anonymous dashboards may take together; `0` = no limit. |
-| `TRUST_PROXY`                              | off                     | `1`: IP from `X-Forwarded-For`; `cloudflare`: from `CF-Connecting-IP`  |
-| `PIPELINE_WORKERS`                         | CPUs − 1, max 4         | Worker threads for data processing; `0` processes on the main thread.  |
-| `PIPELINE_TIMEOUT_MS`                      | `10000`                 | Hard time limit for one pipeline run in a worker.                      |
-| `MEMORY_LIMIT_MB`                          | the container's limit   | Memory the memory guard measures against; `0` turns the guard off.     |
-| `MEMORY_SOFT_FRACTION`                     | `0.8`, less when small  | Above this share of it, new heavy work gets 503 and Retry-After.       |
-| `MEMORY_HARD_FRACTION`                     | `0.9`, less when small  | Above this share, writes and new live streams get 503 too.             |
-| `SECRETS`                                  | `off`                   | Who may store credentials for HTTP sources: `off`, `admins`, `users`.  |
-| `SECRETS_KEY`                              | –                       | 32 random bytes, base64. Required unless `SECRETS=off`.                |
-| `SECRETS_KEY_PREVIOUS`                     | –                       | Old key(s) during rotation, comma-separated.                           |
-| `UMAMI_SCRIPT_URL`, `UMAMI_WEBSITE_ID`     | –                       | Optional Umami page-view analytics; both or neither.                   |
+| Variable                                   | Default                       | Purpose                                                                                                     |
+| ------------------------------------------ | ----------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `PUBLIC_URL`                               | `http://localhost:8787`       | Canonical origin; OAuth issuer and MCP resource are derived from it.                                        |
+| `PORT`, `HOST`                             | `8787`, `0.0.0.0`             | Where the server listens.                                                                                   |
+| `DATA_DIR`                                 | `./data`                      | Dashboard folders and `patchbay.db`.                                                                        |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | –                             | Google sign-in. Redirect URI: `PUBLIC_URL/auth/google/callback`.                                            |
+| `ADMIN_EMAILS`                             | –                             | Comma-separated emails with access to `/admin`.                                                             |
+| `DEV_LOGIN`                                | off                           | Passwordless login for development. Refused in production.                                                  |
+| `SHOWCASE_DIR`                             | `showcase/` in the repository | Folder with the landing page use cases (`/app/showcase` in Docker). An empty folder turns the showcase off. |
+| `OFFLINE`                                  | off                           | Serve synthetic connector data.                                                                             |
+| `PRUNE_ANONYMOUS_AFTER_DAYS`               | `0`                           | Auto-delete anonymous dashboards nobody opened for N days.                                                  |
+| `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS`        | `0`                           | Auto-delete anonymous dashboards still blank N hours after creation.                                        |
+| `ANONYMOUS_STORAGE_LIMIT_MB`               | `1024`                        | Disk space all anonymous dashboards may take together; `0` = no limit.                                      |
+| `TRUST_PROXY`                              | off                           | `1`: IP from `X-Forwarded-For`; `cloudflare`: from `CF-Connecting-IP`                                       |
+| `PIPELINE_WORKERS`                         | CPUs − 1, max 4               | Worker threads for data processing; `0` processes on the main thread.                                       |
+| `PIPELINE_TIMEOUT_MS`                      | `10000`                       | Hard time limit for one pipeline run in a worker.                                                           |
+| `MEMORY_LIMIT_MB`                          | the container's limit         | Memory the memory guard measures against; `0` turns the guard off.                                          |
+| `MEMORY_SOFT_FRACTION`                     | `0.8`, less when small        | Above this share of it, new heavy work gets 503 and Retry-After.                                            |
+| `MEMORY_HARD_FRACTION`                     | `0.9`, less when small        | Above this share, writes and new live streams get 503 too.                                                  |
+| `SECRETS`                                  | `off`                         | Who may store credentials for HTTP sources: `off`, `admins`, `users`.                                       |
+| `SECRETS_KEY`                              | –                             | 32 random bytes, base64. Required unless `SECRETS=off`.                                                     |
+| `SECRETS_KEY_PREVIOUS`                     | –                             | Old key(s) during rotation, comma-separated.                                                                |
+| `UMAMI_SCRIPT_URL`, `UMAMI_WEBSITE_ID`     | –                             | Optional Umami page-view analytics; both or neither.                                                        |
 
 ## Deployment
 

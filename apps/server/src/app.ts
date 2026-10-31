@@ -18,10 +18,12 @@ import { adminRoutes } from './routes/admin.ts';
 import { apiRoutes } from './routes/api.ts';
 import { authRoutes } from './routes/auth.ts';
 import { oauthRoutes } from './routes/oauth.ts';
+import { showcaseRoutes } from './routes/showcase.ts';
 import { DashboardService } from './services/dashboards.ts';
 import { DataService } from './services/data.ts';
 import { defaultPoolSize, InlineRunner, type PipelineRunner, WorkerPool } from './services/pipeline-pool.ts';
 import { ResultWire } from './services/result-wire.ts';
+import { loadUseCases, trustedSourceUrls } from './showcase/load.ts';
 import { DashboardIndex } from './store/dashboard-index.ts';
 import { FolderStore } from './store/folder-store.ts';
 import { HttpError, RetryLaterError, toHttpError } from './util/errors.ts';
@@ -77,7 +79,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   let dashboards: DashboardService | undefined;
   const data = new DataService(connectors, store, pipeline, {
     credentials: (target, dataset) => dashboards!.credentialsFor(target, dataset),
-    urlPolicy: (target) => dashboards!.assertMayFetchUrl(target),
+    urlPolicy: (target, url) => dashboards!.assertMayFetchUrl(target, url),
     offline: config.offline,
     cacheBytes: config.dataCacheBytes,
     maxSourceCells: config.uploadMaxCells,
@@ -88,6 +90,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     const doc = meta ? await store.readDoc(id) : null;
     return meta && doc ? { doc, ownerId: meta.ownerId } : null;
   });
+  const useCases = loadUseCases(config.showcaseDir);
   dashboards = new DashboardService(
     store,
     index,
@@ -103,6 +106,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       uploadMaxCellsAnonymous: config.uploadMaxCellsAnonymous,
       urlSources: config.urlSources,
       anonymousStorageBytes: config.anonymousStorageBytes,
+      trustedUrls: trustedSourceUrls(useCases),
     },
   );
   const wire = new ResultWire();
@@ -114,6 +118,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   });
   return {
     config,
+    useCases,
     db,
     users,
     tokens: new Tokens(db),
@@ -137,6 +142,26 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       snapshots: new RateLimiter(4, 30),
     },
   };
+}
+
+/**
+ * Syncs the use cases into dashboards and drops from deps.useCases every one that failed or that clashes with
+ * someone else's dashboard, so the landing page never offers a link to a dashboard that is not the showcase's own.
+ * Never throws: the showcase is decoration and must not keep the server from starting. Call it before createApp.
+ */
+export async function syncShowcaseUseCases(deps: Deps, warn: (m: string) => void = console.warn) {
+  let skipped: string[];
+  let result = { created: [] as string[], updated: [] as string[], skipped: [] as string[] };
+  try {
+    result = await deps.dashboards.syncShowcase(deps.useCases, warn);
+    skipped = result.skipped;
+  } catch (e) {
+    warn(`[patchbay] showcase: sync failed: ${e instanceof Error ? e.message : String(e)}`);
+    skipped = deps.useCases.map((u) => u.dashboardId);
+  }
+  for (let i = deps.useCases.length - 1; i >= 0; i--)
+    if (skipped.includes(deps.useCases[i]!.dashboardId)) deps.useCases.splice(i, 1);
+  return result;
 }
 
 export interface AppOptions {
@@ -306,6 +331,7 @@ export function createApp(deps: Deps, options: AppOptions = {}) {
   app.route('/auth', authRoutes(deps));
   app.route('/api/admin', adminRoutes(deps));
   app.route('/api', apiRoutes(deps));
+  app.route('/', showcaseRoutes(deps));
   app.all('/api/*', () => {
     throw new HttpError(404, 'Not found');
   });

@@ -44,6 +44,8 @@ Monorepo (pnpm): `packages/core` (pure domain logic, shared), `apps/server` (Hon
 - User-supplied URLs are fetched only through `util/safe-fetch.ts` (`safeFetchJson`, `safeFetchText`): the SSRF guard
   is there. Feed text becomes plain text at parse time (apps/server/src/feeds/parse.ts) and links are http(s) only;
   never render feed markup. Data-free widgets (`text`, `clock`, `search`) are told apart with `isDataWidgetType`.
+- Landing page use cases live in `showcase/<id>/` (format in `showcase/README.md`). Their videos are produced outside
+  this repository; commit only the final MP4 and poster. `budget.test.ts` enforces 5 MB and 150 KB.
 - Presentation mode (apps/web/src/editor/presentation.tsx) must keep working without user input after the first
   click: it is used unattended on wall screens and TVs.
 

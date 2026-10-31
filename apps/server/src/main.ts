@@ -1,5 +1,5 @@
 import { serve } from '@hono/node-server';
-import { createApp, createDeps } from './app.ts';
+import { createApp, createDeps, syncShowcaseUseCases } from './app.ts';
 import { loadConfig } from './config.ts';
 import { detectMemoryReader, memoryGuard } from './util/memory-pressure.ts';
 
@@ -16,10 +16,17 @@ memoryGuard.configure({
   pollMs: 10_000,
 });
 const deps = await createDeps(config);
-const app = createApp(deps);
 
 const { added, removed } = await deps.index.reconcile(deps.store);
 console.log(`[patchbay] index reconciled: +${added} -${removed}`);
+
+// Before createApp: the routes list only the use cases that really have their dashboard.
+const synced = await syncShowcaseUseCases(deps);
+if (deps.useCases.length)
+  console.log(
+    `[patchbay] showcase: ${deps.useCases.length} use cases (+${synced.created.length} ~${synced.updated.length})`,
+  );
+const app = createApp(deps);
 
 // Housekeeping: heal the index, expire sessions, prune stale anonymous dashboards.
 const housekeeping = setInterval(async () => {

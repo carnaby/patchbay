@@ -1,4 +1,9 @@
-import type { AdminDashboardRow, DashboardMeta, Visibility } from '@patchbay/core';
+import {
+  type AdminDashboardRow,
+  type DashboardMeta,
+  SHOWCASE_OWNER_ID,
+  type Visibility,
+} from '@patchbay/core';
 import type { DB } from '../db.ts';
 import type { FolderStore, StoredMeta } from './folder-store.ts';
 
@@ -106,8 +111,9 @@ export class DashboardIndex {
   }
 
   idsViewedBefore(cutoff: string, onlyAnonymous: boolean): string[] {
-    const sql = `SELECT id FROM dashboards WHERE last_viewed_at < ?${onlyAnonymous ? ' AND owner_id IS NULL' : ''}`;
-    return (this.db.prepare(sql).all(cutoff) as { id: string }[]).map((r) => r.id);
+    // The showcase belongs to the repository, not to a user: pruning must never take it.
+    const sql = `SELECT id FROM dashboards WHERE last_viewed_at < ? AND owner_id IS NOT ?${onlyAnonymous ? ' AND owner_id IS NULL' : ''}`;
+    return (this.db.prepare(sql).all(cutoff, SHOWCASE_OWNER_ID) as { id: string }[]).map((r) => r.id);
   }
 
   allIds(): string[] {
