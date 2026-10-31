@@ -36,14 +36,25 @@ describe('worker pool', () => {
   });
 
   it('keeps the main thread responsive during heavy processing', async () => {
-    let ticks = 0;
-    const timer = setInterval(() => ticks++, 10);
-    const started = Date.now();
+    await pool.run(big, heavy); // warm up: both workers started, code compiled
+    // What one job costs on this thread, measured under the same load as the rest of the test: a busy machine slows
+    // both sides alike, where a fixed tick count would fail on a busy machine and pass a blocked thread on a fast one.
+    const inlineStarted = performance.now();
+    runPipeline(big, heavy);
+    const inlineMs = performance.now() - inlineStarted;
+    let last = performance.now();
+    let longestStall = 0;
+    const timer = setInterval(() => {
+      const now = performance.now();
+      longestStall = Math.max(longestStall, now - last);
+      last = now;
+    }, 5);
     await Promise.all([pool.run(big, heavy), pool.run(big, heavy)]);
-    const elapsed = Date.now() - started;
     clearInterval(timer);
-    // If the work ran on this thread, the interval could not fire at all meanwhile.
-    expect(ticks).toBeGreaterThan(Math.floor(elapsed / 10 / 4));
+    longestStall = Math.max(longestStall, performance.now() - last);
+    // Work on this thread would stall it for at least one job's whole run; in workers only copying the table over
+    // blocks it, a small part of that.
+    expect(longestStall).toBeLessThan(inlineMs / 2);
   });
 
   it('reports pipeline errors without losing the worker', async () => {
