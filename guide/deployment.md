@@ -91,9 +91,9 @@ docker compose up -d
 - `SECRETS` and `SECRETS_KEY` (in `patchbay.env`) decide whether users may store credentials for HTTP sources; leave
   `SECRETS=off` unless you mean it, and read "Secrets for HTTP sources" below first. If you set a key, keep
   `patchbay.env` out of the backup of `data/` (see Backups).
-- `PRUNE_ANONYMOUS_AFTER_DAYS=60`, `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS=24` and `ANONYMOUS_STORAGE_LIMIT_MB=1024` are
-  set in the compose file, because anyone can create anonymous dashboards on a public instance; see "Anonymous
-  dashboards and disk space".
+- `PRUNE_ANONYMOUS_AFTER_DAYS=60`, `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS=24`, `ANONYMOUS_STORAGE_LIMIT_MB=1024` and
+  `USER_STORAGE_LIMIT_MB=500` are set in the compose file, because anyone can create anonymous dashboards (or sign in
+  with a Google account) on a public instance; see "Anonymous dashboards and disk space".
 - `PIPELINE_WORKERS=1` and a 512 MB memory limit suit a 2-core machine. 384 MB also holds thanks to the memory
   guard, but it refuses heavy work much sooner under load; see "Memory budget" for the measurements at both sizes.
 - `URL_SOURCES=signed-in` is set in the compose file: the instance runs on a home connection, so only dashboards
@@ -179,7 +179,7 @@ stored (never names or values), so you know whom to tell.
 ## Anonymous dashboards and disk space
 
 Anyone can create a dashboard without an account (it is public and editable with its edit key), so on a public
-instance strangers decide how much disk is used. Three settings bound it:
+instance strangers decide how much disk is used. Three settings bound it, and a fourth bounds each signed-in user:
 
 - `ANONYMOUS_STORAGE_LIMIT_MB` (default `1024`, `0` = no limit) is the disk space all anonymous dashboards may take
   together, counted from what is really on disk (documents, versions, parsed uploads). Above it, anonymous dashboards
@@ -191,6 +191,10 @@ instance strangers decide how much disk is used. Three settings bound it:
   dashboards alive by viewing them, which is what the storage limit is for.
 - `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS` (default `0` = keep) deletes anonymous dashboards still blank that many hours
   after creation: never edited, no data, no widgets. Viewing does not keep them.
+- `USER_STORAGE_LIMIT_MB` (default `500`, `0` = no limit) is the disk space one signed-in user's dashboards may take,
+  counted the same way. Above it, the API answers `507` to that user's new dashboards, writes that grow a document,
+  uploads, copies (a copy's uploads count in full, though they share the original's bytes on disk) and claims;
+  edits that do not grow a document and deletes keep working. Administrators (`ADMIN_EMAILS`) are not limited.
 
 Both pruning settings default to off: without Google sign-in every dashboard is anonymous, and a self-hosted instance
 should not start deleting its owner's work after an upgrade. Turn them on for a public instance; the NAS compose file

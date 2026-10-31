@@ -109,6 +109,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       uploadMaxCellsAnonymous: config.uploadMaxCellsAnonymous,
       urlSources: config.urlSources,
       anonymousStorageBytes: config.anonymousStorageBytes,
+      userStorageBytes: config.userStorageBytes,
       trustedUrls: trustedSourceUrls(useCases),
     },
   );

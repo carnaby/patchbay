@@ -39,14 +39,20 @@ afterAll(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-type Init = { method?: string; body?: unknown; cookie?: string; key?: string };
+type Init = {
+  method?: string;
+  body?: unknown;
+  cookie?: string;
+  key?: string;
+  on?: ReturnType<typeof createApp>;
+};
 
 async function call(path: string, init: Init = {}) {
   const headers: Record<string, string> = { origin: BASE };
   if (init.body !== undefined) headers['content-type'] = 'application/json';
   if (init.cookie) headers.cookie = init.cookie;
   if (init.key) headers['x-edit-key'] = init.key;
-  const res = await app.request(`${BASE}${path}`, {
+  const res = await (init.on ?? app).request(`${BASE}${path}`, {
     method: init.method ?? (init.body !== undefined ? 'POST' : 'GET'),
     headers,
     ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
@@ -61,8 +67,8 @@ async function call(path: string, init: Init = {}) {
   return { status: res.status, json };
 }
 
-async function login(email: string): Promise<string> {
-  const res = await app.request(`${BASE}/auth/dev`, {
+async function login(email: string, on = app): Promise<string> {
+  const res = await on.request(`${BASE}/auth/dev`, {
     method: 'POST',
     headers: { origin: BASE, 'content-type': 'application/json' },
     body: JSON.stringify({ email }),
@@ -323,6 +329,110 @@ describe('anonymous storage ceiling', () => {
     expect(
       (await call(`/api/dashboards/${b.id}/ops`, { body: { ops: [inline('x', 300)] }, key: b.key })).status,
     ).toBe(200);
+  });
+});
+
+describe('per-user storage limit', () => {
+  let userDir: string;
+  let userDeps: Deps;
+  let on: ReturnType<typeof createApp>;
+
+  beforeAll(async () => {
+    userDir = mkdtempSync(join(tmpdir(), 'patchbay-user-storage-'));
+    userDeps = await createDeps(
+      loadConfig({
+        NODE_ENV: 'test',
+        DATA_DIR: userDir,
+        OFFLINE: '1',
+        DEV_LOGIN: '1',
+        ADMIN_EMAILS: 'admin@example.com',
+        PUBLIC_URL: BASE,
+        USER_STORAGE_LIMIT_MB: '2',
+      }),
+    );
+    on = createApp(userDeps);
+  });
+
+  afterAll(async () => {
+    userDeps.hub.close();
+    await userDeps.pipeline.close();
+    userDeps.db.close();
+    rmSync(userDir, { recursive: true, force: true });
+  });
+
+  const create = async (cookie: string, body: Record<string, unknown> = {}) =>
+    (await call('/api/dashboards', { body, cookie, on })).json.envelope.meta.id as string;
+  const ops = (id: string, list: unknown[], cookie: string) =>
+    call(`/api/dashboards/${id}/ops`, { body: { ops: list }, cookie, on });
+  // About 900 KB of CSV.
+  const bigCsv = `n
+${`${'z'.repeat(100)}
+`.repeat(9000)}`;
+
+  it('stops growth of an account at the limit, but not edits that do not grow, and not admins', async () => {
+    const cookie = await login('quota@example.com', on);
+    const first = await create(cookie);
+    // A 600 KB document and its version: about 1.2 MB of the 2 MB.
+    expect((await ops(first, [inline('a', 600)], cookie)).status).toBe(200);
+    const second = await create(cookie);
+    const full = await ops(second, [inline('b', 600)], cookie);
+    expect(full.status).toBe(507);
+    expect(full.json.code).toBe('USER_STORAGE_FULL');
+    expect(full.json.error).toContain('of the 2.0 MB this server allows per account');
+    const upload = await call(`/api/dashboards/${second}/files`, {
+      body: { name: 'big.csv', content: bigCsv },
+      cookie,
+      on,
+    });
+    expect(upload.status).toBe(507);
+    // Edits that do not grow a document still save, so a full account can be tidied up.
+    expect((await ops(first, [{ op: 'setMeta', title: 'x' }], cookie)).status).toBe(200);
+    expect((await ops(first, [{ op: 'removeDataset', id: 'a' }], cookie)).status).toBe(200);
+
+    const admin = await login('admin@example.com', on);
+    const a1 = await create(admin);
+    const a2 = await create(admin);
+    expect((await ops(a1, [inline('a', 600)], admin)).status).toBe(200);
+    expect((await ops(a2, [inline('b', 600)], admin)).status).toBe(200);
+  });
+
+  it('counts claims and copies with their uploads', async () => {
+    const cookie = await login('claimer@example.com', on);
+    const mine = await create(cookie);
+    expect((await ops(mine, [inline('a', 600)], cookie)).status).toBe(200);
+
+    const anon = (await call('/api/dashboards', { body: {}, on })).json;
+    const anonId = anon.envelope.meta.id as string;
+    expect(
+      (
+        await call(`/api/dashboards/${anonId}/ops`, {
+          body: { ops: [inline('x', 600)] },
+          key: anon.editKey,
+          on,
+        })
+      ).status,
+    ).toBe(200);
+    const claim = await call(`/api/dashboards/${anonId}/claim`, { body: {}, cookie, key: anon.editKey, on });
+    expect(claim.status).toBe(507);
+    expect(claim.json.code).toBe('USER_STORAGE_FULL');
+
+    // A public dashboard with a large upload, copied by someone with room for the document but not the file.
+    const admin = await login('admin@example.com', on);
+    const shared = await create(admin, { visibility: 'public' });
+    const file = await call(`/api/dashboards/${shared}/files`, {
+      body: { name: 'big.csv', content: bigCsv },
+      cookie: admin,
+      on,
+    });
+    expect(file.status).toBe(201);
+    const dataset = { id: 'f', name: 'File', source: { kind: 'upload', fileId: file.json.id } };
+    expect((await ops(shared, [{ op: 'addDataset', dataset }], admin)).status).toBe(200);
+    const copy = await call(`/api/dashboards/${shared}/duplicate`, { body: {}, cookie, on });
+    expect(copy.status).toBe(507);
+    const fresh = await login('fresh@example.com', on);
+    expect((await call(`/api/dashboards/${shared}/duplicate`, { body: {}, cookie: fresh, on })).status).toBe(
+      201,
+    );
   });
 });
 

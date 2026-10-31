@@ -287,6 +287,7 @@ after every step.
 | `PRUNE_ANONYMOUS_AFTER_DAYS`               | `0`                           | Auto-delete anonymous dashboards nobody opened for N days.                                                  |
 | `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS`        | `0`                           | Auto-delete anonymous dashboards still blank N hours after creation.                                        |
 | `ANONYMOUS_STORAGE_LIMIT_MB`               | `1024`                        | Disk space all anonymous dashboards may take together; `0` = no limit.                                      |
+| `USER_STORAGE_LIMIT_MB`                    | `500`                         | Disk space one signed-in user's dashboards may take; `0` = no limit. Administrators are exempt.             |
 | `TRUST_PROXY`                              | off                           | `1`: IP from `X-Forwarded-For`; `cloudflare`: from `CF-Connecting-IP`                                       |
 | `PIPELINE_WORKERS`                         | CPUs − 1, max 4               | Worker threads for data processing; `0` processes on the main thread.                                       |
 | `PIPELINE_TIMEOUT_MS`                      | `10000`                       | Hard time limit for one pipeline run in a worker.                                                           |

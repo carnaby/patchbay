@@ -100,6 +100,22 @@ export class DashboardIndex {
     return Number(row.total);
   }
 
+  /** What one owner's dashboards take on disk, as of their last write or reconcile. */
+  ownerBytes(ownerId: string): number {
+    const row = this.db
+      .prepare('SELECT COALESCE(SUM(size_bytes), 0) AS total FROM dashboards WHERE owner_id = ?')
+      .get(ownerId) as { total: number };
+    return Number(row.total);
+  }
+
+  /** One dashboard's size on disk as last recorded, or 0 when it is not indexed. */
+  sizeOf(id: string): number {
+    const row = this.db.prepare('SELECT size_bytes FROM dashboards WHERE id = ?').get(id) as
+      | { size_bytes: number }
+      | undefined;
+    return Number(row?.size_bytes ?? 0);
+  }
+
   setSize(id: string, sizeBytes: number) {
     this.db.prepare('UPDATE dashboards SET size_bytes = ? WHERE id = ?').run(sizeBytes, id);
   }
