@@ -8,7 +8,8 @@
       "!**/data",
       "!apps/web/public",
       "!docs",
-      "!packages/core/geo/world-110m.json"
+      "!packages/core/geo/world-110m.json",
+      "!pnpm-lock.yaml"
     ]
   },
   "formatter": {
