@@ -1,5 +1,5 @@
 import { inferTable } from '@patchbay/core';
-import { type Connector, DAY, floorTo, HOUR, rng, round, seedOf } from './types.ts';
+import { type Connector, clampParam, DAY, floorTo, HOUR, rng, round, seedOf } from './types.ts';
 
 const COINS: Record<string, { name: string; symbol: string; price: number }> = {
   bitcoin: { name: 'Bitcoin', symbol: 'btc', price: 98_000 },
@@ -50,7 +50,7 @@ export const cryptoMarkets: Connector = {
     attribution: ATTR_CG,
   },
   async fetch(params, ctx) {
-    const limit = Math.min(Math.max(Number(params.limit ?? 10), 1), 100);
+    const limit = clampParam(params.limit, 10, 1, 100);
     const json = await ctx.fetchJson<Record<string, unknown>[]>(
       `https://api.coingecko.com/api/v3/coins/markets?vs_currency=${params.currency ?? 'usd'}&order=market_cap_desc&per_page=${limit}&page=1&price_change_percentage=24h`,
     );
@@ -71,7 +71,7 @@ export const cryptoMarkets: Connector = {
   },
   sample(params) {
     const bucket = floorTo(Date.now(), 60_000);
-    const limit = Math.min(Number(params.limit ?? 10), Object.keys(COINS).length);
+    const limit = Math.min(clampParam(params.limit, 10, 1, 100), Object.keys(COINS).length);
     const rows = Object.entries(COINS)
       .slice(0, limit)
       .map(([id, c], i) => {
@@ -118,7 +118,7 @@ export const cryptoHistory: Connector = {
     attribution: ATTR_CG,
   },
   async fetch(params, ctx) {
-    const days = Math.min(Math.max(Number(params.days ?? 30), 1), 365);
+    const days = clampParam(params.days, 30, 1, 365);
     const json = await ctx.fetchJson<{
       prices: [number, number][];
       market_caps: [number, number][];
@@ -138,7 +138,7 @@ export const cryptoHistory: Connector = {
   },
   sample(params) {
     const coin = COINS[String(params.coin)] ?? COINS.bitcoin!;
-    const days = Math.min(Number(params.days ?? 30), 365);
+    const days = clampParam(params.days, 30, 1, 365);
     const step = days <= 2 ? HOUR / 12 : days <= 90 ? HOUR : DAY;
     const steps = Math.round((days * DAY) / step);
     const end = floorTo(Date.now(), step);
@@ -253,7 +253,7 @@ export const fxRates: Connector = {
     attribution: ATTR_FX,
   },
   async fetch(params, ctx) {
-    const days = Math.min(Math.max(Number(params.days ?? 90), 1), 3650);
+    const days = clampParam(params.days, 90, 1, 3650);
     const from = new Date(Date.now() - days * DAY).toISOString().slice(0, 10);
     const json = await ctx.fetchJson<{ rates: Record<string, Record<string, number>> }>(
       `https://api.frankfurter.dev/v1/${from}..?base=${encodeURIComponent(String(params.base ?? 'EUR'))}&symbols=${encodeURIComponent(String(params.symbols ?? 'USD'))}`,
@@ -264,10 +264,13 @@ export const fxRates: Connector = {
     return inferTable(rows);
   },
   sample(params) {
+    // Frankfurter knows about 30 currencies, so the real API never answers more; here more names would only
+    // multiply synthetic rows (10 years each).
     const symbols = String(params.symbols ?? 'USD')
       .split(',')
-      .map((s) => s.trim().toUpperCase());
-    const days = Math.min(Number(params.days ?? 90), 3650);
+      .map((s) => s.trim().toUpperCase())
+      .slice(0, 40);
+    const days = clampParam(params.days, 90, 1, 3650);
     const end = floorTo(Date.now(), DAY);
     const anchors: Record<string, number> = {
       USD: 1.08,

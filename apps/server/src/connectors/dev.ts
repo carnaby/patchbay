@@ -1,5 +1,5 @@
 import { inferTable } from '@patchbay/core';
-import { type Connector, DAY, floorTo, rng, seedOf } from './types.ts';
+import { type Connector, clampParam, DAY, floorTo, rng, seedOf } from './types.ts';
 
 interface HnItem {
   id: number;
@@ -37,7 +37,7 @@ export const hackerNews: Connector = {
     attribution: 'Hacker News (Y Combinator)',
   },
   async fetch(params, ctx) {
-    const limit = Math.min(Math.max(Number(params.limit ?? 20), 1), 50);
+    const limit = clampParam(params.limit, 20, 1, 50);
     const ids = await ctx.fetchJson<number[]>(
       `https://hacker-news.firebaseio.com/v0/${params.list ?? 'top'}stories.json`,
     );
@@ -60,7 +60,7 @@ export const hackerNews: Connector = {
     );
   },
   sample(params) {
-    const limit = Math.min(Number(params.limit ?? 20), 50);
+    const limit = clampParam(params.limit, 20, 1, 50);
     const r = rng(seedOf('hn', floorTo(Date.now(), 600_000)));
     const topics = [
       'Show HN: A dashboard you wire up with an AI agent',

@@ -3,6 +3,7 @@ import { HttpError } from '../util/errors.ts';
 import {
   type Connector,
   type ConnectorContext,
+  clampParam,
   floorTo,
   HOUR,
   type Params,
@@ -125,6 +126,11 @@ function varsOf(params: Params, allowed: string[], fallback: string) {
   return vars.length ? vars : fallback.split(',');
 }
 
+/** Forecast and past days as Open-Meteo accepts them (1-16 and 0-7). */
+function forecastRange(params: Params) {
+  return { days: clampParam(params.days, 3, 1, 16), past: clampParam(params.pastDays, 1, 0, 7) };
+}
+
 function synthHourly(params: Params, vars: string[], from: number, hours: number): DataTable {
   const r = rng(seedOf('weather', params.city, params.latitude));
   const place = samplePlace(params);
@@ -194,8 +200,7 @@ export const weatherForecast: Connector = {
   async fetch(params, ctx) {
     const loc = await resolveLocation(params, ctx);
     const vars = varsOf(params, HOURLY_VARS, 'temperature_2m,precipitation,wind_speed_10m');
-    const days = Math.min(Math.max(Number(params.days ?? 3), 1), 16);
-    const past = Math.min(Math.max(Number(params.pastDays ?? 1), 0), 7);
+    const { days, past } = forecastRange(params);
     const json = await ctx.fetchJson<{ hourly?: Record<string, (number | null)[]> }>(
       `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}&hourly=${vars.join(',')}&forecast_days=${days}&past_days=${past}&timeformat=unixtime&timezone=UTC`,
     );
@@ -203,8 +208,7 @@ export const weatherForecast: Connector = {
   },
   sample(params) {
     const vars = varsOf(params, HOURLY_VARS, 'temperature_2m,precipitation,wind_speed_10m');
-    const past = Number(params.pastDays ?? 1);
-    const days = Number(params.days ?? 3);
+    const { days, past } = forecastRange(params);
     return synthHourly(params, vars, floorTo(Date.now(), 86_400_000) - past * 86_400_000, (past + days) * 24);
   },
 };
