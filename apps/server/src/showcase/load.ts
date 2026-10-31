@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   type DashboardDoc,
+  docSecretIds,
   parseDashboard,
   type UseCaseMeta,
   UseCaseMetaSchema,
@@ -37,8 +38,34 @@ function media(path: string, max: number, warn: (m: string) => void): MediaFile 
     warn(`[patchbay] showcase: ${path} is ${size} bytes, more than ${max}; not served`);
     return null;
   }
-  const etag = createHash('sha256').update(readFileSync(path)).digest('hex').slice(0, 16);
-  return { path, size, etag };
+  return { path, size, etag: hashFile(path) };
+}
+
+/** Hashes in chunks so a video at the size limit is never held in memory whole. */
+function hashFile(path: string): string {
+  const hash = createHash('sha256');
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.allocUnsafe(64 * 1024);
+    for (let n = readSync(fd, buf, 0, buf.length, null); n > 0; n = readSync(fd, buf, 0, buf.length, null))
+      hash.update(buf.subarray(0, n));
+  } finally {
+    closeSync(fd);
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+
+/**
+ * A use case's data must work for the owner "system" and in anonymous copies: uploads are stored per dashboard and
+ * secrets belong to a user, so neither can be shared.
+ */
+function assertPortable(doc: DashboardDoc) {
+  if (doc.datasets.some((d) => d.source.kind === 'upload'))
+    throw new Error(
+      'dashboard.json uses an upload source; use inline rows, a built-in connector or a public URL',
+    );
+  if (docSecretIds(doc).length)
+    throw new Error('dashboard.json references a stored secret; a showcase cannot hold credentials');
 }
 
 /**
@@ -49,9 +76,15 @@ export function loadUseCases(dir: string, warn: (message: string) => void = cons
   if (!existsSync(dir)) return [];
   const out: UseCase[] = [];
   const ids = new Map<string, string>();
-  const folders = readdirSync(dir, { withFileTypes: true })
-    .filter((d) => d.isDirectory())
-    .map((d) => d.name);
+  let folders: string[];
+  try {
+    folders = readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  } catch (e) {
+    warn(`[patchbay] showcase: cannot read ${dir}: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
+  }
   for (const folder of folders.sort()) {
     const base = join(dir, folder);
     try {
@@ -61,6 +94,7 @@ export function loadUseCases(dir: string, warn: (message: string) => void = cons
       if (!prompt || prompt.length > MAX_PROMPT_CHARS)
         throw new Error(`prompt.md must have 1–${MAX_PROMPT_CHARS} characters`);
       const doc = parseDashboard(JSON.parse(readFileSync(join(base, 'dashboard.json'), 'utf8')));
+      assertPortable(doc);
       const dashboardId = useCaseDashboardId(meta.id);
       const clash = ids.get(dashboardId);
       if (clash) throw new Error(`maps to the same dashboard id as "${clash}"`);

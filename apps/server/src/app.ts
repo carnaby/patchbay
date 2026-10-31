@@ -123,6 +123,26 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   };
 }
 
+/**
+ * Syncs the use cases into dashboards and drops from deps.useCases every one that failed or that clashes with
+ * someone else's dashboard, so the landing page never offers a link to a dashboard that is not the showcase's own.
+ * Never throws: the showcase is decoration and must not keep the server from starting. Call it before createApp.
+ */
+export async function syncShowcaseUseCases(deps: Deps, warn: (m: string) => void = console.warn) {
+  let skipped: string[];
+  let result = { created: [] as string[], updated: [] as string[], skipped: [] as string[] };
+  try {
+    result = await deps.dashboards.syncShowcase(deps.useCases, warn);
+    skipped = result.skipped;
+  } catch (e) {
+    warn(`[patchbay] showcase: sync failed: ${e instanceof Error ? e.message : String(e)}`);
+    skipped = deps.useCases.map((u) => u.dashboardId);
+  }
+  for (let i = deps.useCases.length - 1; i >= 0; i--)
+    if (skipped.includes(deps.useCases[i]!.dashboardId)) deps.useCases.splice(i, 1);
+  return result;
+}
+
 export function createApp(deps: Deps) {
   const { config } = deps;
   const app = new Hono<Env>();

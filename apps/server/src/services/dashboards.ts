@@ -1236,12 +1236,33 @@ export class DashboardService {
    * Keeps one public dashboard per showcase use case, owned by SHOWCASE_OWNER_ID so that nobody can edit it (canEdit
    * compares owner ids) and nothing counts it as anonymous (storage ceiling, pruning). A changed dashboard.json
    * becomes a new version, so the history shows when the repository changed it. An id that exists with another
-   * owner is never touched. An admin can still delete one; the next startup recreates it.
+   * owner is never touched. An admin can still delete one; the next startup recreates it. One broken use case never
+   * stops the others (or the server): it is skipped with a warning.
    */
   async syncShowcase(useCases: readonly UseCase[], warn: (m: string) => void = console.warn) {
     const result = { created: [] as string[], updated: [] as string[], skipped: [] as string[] };
     const actor: Actor = { kind: 'system', label: 'Patchbay showcase' };
     for (const uc of useCases) {
+      const id = uc.dashboardId;
+      try {
+        await this.syncOne(uc, actor, result, warn);
+      } catch (e) {
+        warn(
+          `[patchbay] showcase: "${uc.meta.id}" not synced: ${e instanceof Error ? e.message : String(e)}`,
+        );
+        result.skipped.push(id);
+      }
+    }
+    return result;
+  }
+
+  private async syncOne(
+    uc: UseCase,
+    actor: Actor,
+    result: { created: string[]; updated: string[]; skipped: string[] },
+    warn: (m: string) => void,
+  ) {
+    {
       const id = uc.dashboardId;
       await this.store.withLock(id, async () => {
         const meta = this.store.exists(id) ? await this.store.readMeta(id) : null;
@@ -1275,8 +1296,14 @@ export class DashboardService {
           result.created.push(id);
           return;
         }
-        const current = await this.store.readDoc(id);
+        // A stored document that no longer parses is system-owned, so it is replaced by a new version, not skipped.
+        const current = await this.store.readDoc(id).catch((e) => {
+          warn(`[patchbay] showcase: stored "${id}" is unreadable, rewriting it: ${String(e)}`);
+          return null;
+        });
         if (current && JSON.stringify(current) === JSON.stringify(uc.doc)) return;
+        // Written without commit(): the document was validated when the repository was loaded and the owner is
+        // the system, and nobody can be subscribed to it yet at startup, so there is nothing to check or publish.
         const updated: StoredMeta = { ...meta, version: meta.version + 1, updatedAt: at, lastActor: actor };
         await this.store.writeDoc(updated, uc.doc, actor, [`Updated from showcase "${uc.meta.id}"`]);
         this.index.upsert(updated, {
@@ -1287,6 +1314,5 @@ export class DashboardService {
         result.updated.push(id);
       });
     }
-    return result;
   }
 }

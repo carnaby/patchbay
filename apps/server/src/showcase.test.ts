@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type UseCaseInfo, useCaseDashboardId } from '@patchbay/core';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { createApp, createDeps } from './app.ts';
+import { createApp, createDeps, syncShowcaseUseCases } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
 import { now } from './db.ts';
@@ -188,8 +188,100 @@ describe('syncShowcase', () => {
     const warnings: string[] = [];
     const result = await svc.syncShowcase([fixtureUseCase('morning-board')], (m) => warnings.push(m));
     expect(result.skipped).toEqual(['scmorningboard']);
-    expect((await svc.get('scmorningboard', signedIn())).meta.ownerId).not.toBe('system');
+    const theirs = await svc.get('scmorningboard', signedIn());
+    expect(theirs.meta.ownerId).not.toBe('system');
+    expect(theirs.meta.version).toBe(1);
+    expect(theirs.doc.title).toBe(buildTemplate('blank').title);
     expect(warnings).toHaveLength(1);
+  });
+
+  it('rewrites a stored showcase document that no longer parses', async () => {
+    const svc = makeService();
+    const uc = fixtureUseCase('morning-board');
+    await svc.syncShowcase([uc]);
+    writeFileSync(join(deps.store.dir('scmorningboard'), 'dashboard.json'), '{ not json');
+    const warnings: string[] = [];
+    const result = await svc.syncShowcase([uc], (m) => warnings.push(m));
+    expect(result.updated).toEqual(['scmorningboard']);
+    expect(warnings).toHaveLength(1);
+    const env = await svc.get('scmorningboard', anonymous());
+    expect(env.meta.version).toBe(2);
+    expect(env.doc.title).toBe(uc.doc.title);
+  });
+
+  it('skips with a warning, and does not throw, when the stored meta is corrupt', async () => {
+    const svc = makeService();
+    const both = [fixtureUseCase('morning-board'), fixtureUseCase('second-board')];
+    await svc.syncShowcase(both);
+    writeFileSync(join(deps.store.dir('scmorningboard'), 'meta.json'), '{ nope');
+    const warnings: string[] = [];
+    const result = await svc.syncShowcase(both, (m) => warnings.push(m));
+    expect(result.skipped).toEqual(['scmorningboard']);
+    expect(warnings).toHaveLength(1);
+    await deps.store.remove('scsecondboard');
+    deps.index.remove('scsecondboard');
+  });
+
+  it('keeps a skipped use case out of deps.useCases', async () => {
+    await createWithId('scmorningboard', signedIn());
+    const fake = {
+      useCases: [fixtureUseCase('morning-board')],
+      dashboards: makeService(),
+    } as unknown as Deps;
+    const warnings: string[] = [];
+    await syncShowcaseUseCases(fake, (m) => warnings.push(m));
+    expect(fake.useCases).toEqual([]);
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('survives a sync that throws as a whole', async () => {
+    const fake = {
+      useCases: [fixtureUseCase('morning-board')],
+      dashboards: {
+        syncShowcase: async () => {
+          throw new Error('boom');
+        },
+      },
+    } as unknown as Deps;
+    const warnings: string[] = [];
+    await expect(syncShowcaseUseCases(fake, (m) => warnings.push(m))).resolves.toBeDefined();
+    expect(fake.useCases).toEqual([]);
+    expect(warnings.join()).toMatch(/boom/);
+  });
+
+  it('is never removed by an admin prune of all dashboards', async () => {
+    const svc = makeService();
+    await svc.syncShowcase([fixtureUseCase('morning-board')]);
+    const cutoff = new Date(Date.now() + 86_400_000).toISOString();
+    expect(deps.index.idsViewedBefore(cutoff, false)).not.toContain('scmorningboard');
+    expect(await svc.prune({ olderThanDays: 0, onlyAnonymous: false })).not.toContain('scmorningboard');
+  });
+
+  it('refuses every write path that bypasses applyOps', async () => {
+    const svc = makeService();
+    await svc.syncShowcase([fixtureUseCase('morning-board')]);
+    const id = 'scmorningboard';
+    const before = await svc.get(id, anonymous());
+    const admin = signedIn('admin2@example.com', { isAdmin: true });
+    const user = signedIn('someone@example.com');
+    const file = { name: 'a.csv', content: 'a\n1' };
+    await expect(svc.setVisibility(id, user, 'private')).rejects.toThrow();
+    await expect(svc.setVisibility(id, admin, 'private')).rejects.toThrow();
+    await expect(svc.claim(id, user)).rejects.toThrow();
+    await expect(svc.claim(id, anonymous())).rejects.toThrow();
+    await expect(svc.restore(id, user, 1)).rejects.toThrow();
+    await expect(svc.restore(id, admin, 1)).rejects.toThrow();
+    await expect(svc.uploadFile(id, user, file)).rejects.toThrow();
+    await expect(svc.uploadFile(id, admin, file)).rejects.toThrow();
+    await expect(svc.delete(id, user)).rejects.toThrow();
+    await expect(svc.delete(id, anonymous())).rejects.toThrow();
+    const after = await svc.get(id, anonymous());
+    expect(after.meta).toMatchObject({
+      ownerId: 'system',
+      visibility: 'public',
+      version: before.meta.version,
+    });
+    expect(after.doc).toEqual(before.doc);
   });
 
   it('is not counted as anonymous storage and not pruned', async () => {
@@ -232,7 +324,7 @@ describe('showcase routes', () => {
         SHOWCASE_DIR: showcaseDir,
       }),
     );
-    await routeDeps.dashboards.syncShowcase(routeDeps.useCases);
+    await syncShowcaseUseCases(routeDeps);
     app = createApp(routeDeps);
   });
 
@@ -294,5 +386,90 @@ describe('showcase routes', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-length')).toBe('10');
     expect(await res.text()).toBe('');
+  });
+});
+
+describe('trusted URLs through the whole app', () => {
+  let wireDir: string;
+  let wireDeps: Deps;
+  let app: ReturnType<typeof createApp>;
+  const OTHER = 'https://example.org/other.xml';
+
+  beforeAll(async () => {
+    wireDir = mkdtempSync(join(tmpdir(), 'patchbay-showcase-wire-'));
+    const base = join(wireDir, 'showcase', 'news');
+    mkdirSync(base, { recursive: true });
+    writeFileSync(
+      join(base, 'meta.json'),
+      JSON.stringify({ id: 'news', order: 1, title: 'News', tab: 'News', description: 'Feed.' }),
+    );
+    writeFileSync(join(base, 'prompt.md'), 'Build a news board');
+    writeFileSync(
+      join(base, 'dashboard.json'),
+      JSON.stringify({ ...buildTemplate('blank'), datasets: [feedDataset(FEED)] }),
+    );
+    wireDeps = await createDeps(
+      loadConfig({
+        NODE_ENV: 'test',
+        DATA_DIR: join(wireDir, 'data'),
+        OFFLINE: '1',
+        URL_SOURCES: 'signed-in',
+        PUBLIC_URL: 'http://localhost:8787',
+        SHOWCASE_DIR: join(wireDir, 'showcase'),
+        PIPELINE_WORKERS: '0',
+      }),
+    );
+    await syncShowcaseUseCases(wireDeps);
+    app = createApp(wireDeps);
+  });
+
+  afterAll(async () => {
+    wireDeps.hub.close();
+    await wireDeps.pipeline.close();
+    wireDeps.db.close();
+    rmSync(wireDir, { recursive: true, force: true });
+  });
+
+  it('lets an anonymous copy load the trusted feed but not take another URL', async () => {
+    expect(wireDeps.useCases.map((u) => u.meta.id)).toEqual(['news']);
+    const copy = await wireDeps.dashboards.duplicate('scnews', anonymous());
+    const id = copy.envelope.meta.id;
+    const key = { 'x-edit-key': copy.editKey! };
+
+    const ok = await app.request(`/api/dashboards/${id}/data/news`, { headers: key });
+    expect(ok.status).toBe(200);
+    // A refused source does not fail the request: DataService.resolve reports it in the result's error.
+    const body = (await ok.json()) as { error?: string; table: { rows: unknown[] } };
+    expect(body.error).toBeUndefined();
+    expect(body.table.rows.length).toBeGreaterThan(0);
+
+    const retarget = await app.request(`/api/dashboards/${id}/ops`, {
+      method: 'POST',
+      headers: { ...key, 'content-type': 'application/json' },
+      body: JSON.stringify({ ops: [setSource(OTHER)] }),
+    });
+    expect(retarget.status).toBe(400);
+  });
+
+  it('refuses an anonymous dashboard that reads a different URL', async () => {
+    const at = now();
+    const meta: StoredMeta = {
+      id: 'anonother1',
+      ownerId: null,
+      ownerEmail: null,
+      visibility: 'public',
+      editKeyHash: null,
+      version: 1,
+      createdAt: at,
+      updatedAt: at,
+      lastViewedAt: at,
+      lastActor: { kind: 'user', label: 'test' },
+    };
+    const doc = { ...buildTemplate('blank'), datasets: [feedDataset(OTHER)] };
+    await wireDeps.store.create(meta, doc as never, meta.lastActor!, ['Created']);
+    wireDeps.index.upsert(meta, { title: doc.title, widgets: 0 });
+    const res = await app.request('/api/dashboards/anonother1/data/news');
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { error?: string }).error).toMatch(/signed-in|sign/i);
   });
 });
