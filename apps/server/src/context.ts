@@ -57,9 +57,13 @@ export function identify(deps: Deps) {
     const auth = c.req.header('authorization');
     if (auth?.startsWith('Bearer ')) {
       token = deps.tokens.verify(auth.slice(7).trim());
-      // OAuth access tokens are audience-bound to the MCP resource; PATs work everywhere.
-      if (token && token.kind === 'access' && token.resource !== deps.config.mcpResource) token = null;
       if (!token) throw unauthorized('Invalid or expired access token');
+      // OAuth access tokens are audience-bound to the MCP resource (RFC 8707), so /mcp is the only place that
+      // accepts them: one leaked from an MCP client must not reach the REST API. PATs work everywhere.
+      if (token.kind !== 'pat')
+        throw unauthorized(
+          'OAuth access tokens only work on /mcp; use a personal access token for the REST API',
+        );
       user = deps.users.byId(token.userId);
     } else {
       user = deps.users.userForSession(getCookie(c, SESSION_COOKIE));
@@ -105,6 +109,16 @@ export function sameOrigin(deps: Deps) {
 export function requireUser(c: Ctx): UserRow {
   const user = c.get('user');
   if (!user) throw unauthorized();
+  return user;
+}
+
+/**
+ * For routes that manage access itself (tokens, connected clients, OAuth consent): a bearer token must not be able
+ * to mint, list or revoke credentials, or a leaked one could approve a fresh grant that outlives its own revocation.
+ */
+export function requireSessionUser(c: Ctx): UserRow {
+  const user = requireUser(c);
+  if (c.get('token')) throw forbidden('This needs a signed-in session in the web app, not a token');
   return user;
 }
 

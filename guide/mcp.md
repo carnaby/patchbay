@@ -17,7 +17,10 @@ Discovery documents:
 Supported: authorization code + PKCE (S256 only), public clients, Client ID Metadata Documents
 (`client_id_metadata_document_supported: true`), dynamic client registration (`/oauth/register`), resource indicators
 (tokens are bound to `PUBLIC_URL/mcp`), refresh token rotation with reuse detection, revocation (`/oauth/revoke`).
-Access tokens live 1 hour, refresh tokens 30 days. Users can see and revoke connected clients under _Settings_.
+Access tokens live 1 hour, refresh tokens 30 days, and work only on `/mcp` (the REST API takes personal access
+tokens). Users can see and revoke connected clients under _Settings_; tokens, connections and the consent screen are
+managed only from a signed-in web session, never with a token. Dynamically registered clients that never obtain a
+grant are removed after a day, and clients without a live token after 90 days.
 
 Scopes:
 

@@ -12,7 +12,14 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 import { ALL_SCOPES } from '../auth/tokens.ts';
-import { type Ctx, clientKey, type Deps, type Env, IPV6_CREATE_PREFIX, requireUser } from '../context.ts';
+import {
+  type Ctx,
+  clientKey,
+  type Deps,
+  type Env,
+  IPV6_CREATE_PREFIX,
+  requireSessionUser,
+} from '../context.ts';
 import { renderDashboardPng, renderWidgetPng } from '../render/snapshot.ts';
 import { listTemplates } from '../services/templates.ts';
 import { badRequest, forbidden, HttpError, notFound } from '../util/errors.ts';
@@ -380,13 +387,13 @@ export function apiRoutes(deps: Deps) {
     });
   });
 
-  // Personal access tokens and connected OAuth clients.
-  app.get('/tokens', (c) =>
-    c.json({ tokens: tokens.listPats(requireUser(c).id), grants: tokens.listGrants(requireUser(c).id) }),
-  );
+  // Personal access tokens and connected OAuth clients: managed only from a web session, never with a token.
+  app.get('/tokens', (c) => {
+    const user = requireSessionUser(c);
+    return c.json({ tokens: tokens.listPats(user.id), grants: tokens.listGrants(user.id) });
+  });
   app.post('/tokens', async (c) => {
-    const user = requireUser(c);
-    if (c.get('token')) throw forbidden('Tokens cannot create tokens; use the web UI');
+    const user = requireSessionUser(c);
     const body = z
       .object({
         name: z.string().min(1).max(80),
@@ -397,11 +404,12 @@ export function apiRoutes(deps: Deps) {
     return c.json(tokens.createPat(user.id, body.name, body.scopes, body.expiresInDays), 201);
   });
   app.delete('/tokens/:id', (c) => {
-    if (!tokens.revokePat(requireUser(c).id, c.req.param('id'))) throw notFound('Token not found');
+    if (!tokens.revokePat(requireSessionUser(c).id, c.req.param('id'))) throw notFound('Token not found');
     return c.json({ ok: true });
   });
   app.delete('/grants/:id', (c) => {
-    if (!tokens.revokeGrant(requireUser(c).id, c.req.param('id'))) throw notFound('Connection not found');
+    if (!tokens.revokeGrant(requireSessionUser(c).id, c.req.param('id')))
+      throw notFound('Connection not found');
     return c.json({ ok: true });
   });
 

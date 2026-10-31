@@ -2,6 +2,7 @@
  * Regressions for the pre-launch security review: open redirects, OAuth client registration, existence leaks,
  * response headers and the reach of bearer tokens.
  */
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -248,5 +249,94 @@ describe('OAuth dynamic client registration', () => {
     });
     expect(res.status).toBe(200);
     expect(stored(id)!.last_used_at).not.toBeNull();
+  });
+});
+
+describe('what a bearer token can reach', () => {
+  const pkce = () => {
+    const verifier = randomBytes(32).toString('base64url');
+    return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
+  };
+
+  async function setup(email: string) {
+    const cookie = await login(email);
+    const pat = (
+      await call('/api/tokens', {
+        body: { name: 'script', scopes: ['dashboards:read', 'dashboards:write'] },
+        cookie,
+      })
+    ).json.token as string;
+    return { cookie, pat };
+  }
+
+  it('cannot approve a new OAuth grant with a token (no self-renewing access)', async () => {
+    const { pat } = await setup('leak@example.com');
+    const bearer = { authorization: `Bearer ${pat}` };
+    const redirectUri = 'http://127.0.0.1:4444/callback';
+    const clientId = (await call('/oauth/register', { body: { redirect_uris: [redirectUri] } })).json
+      .client_id;
+    const { challenge } = pkce();
+    const authorize = await app.request(
+      `${BASE}/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&code_challenge=${challenge}&code_challenge_method=S256`,
+    );
+    const requestId = new URL(authorize.headers.get('location')!, BASE).searchParams.get('request');
+    expect(requestId).toBeTruthy();
+    expect((await call(`/api/oauth/requests/${requestId}`, { headers: bearer })).status).toBe(403);
+    const approve = await call(`/api/oauth/requests/${requestId}`, {
+      body: { approve: true },
+      headers: bearer,
+    });
+    expect(approve.status).toBe(403);
+    expect(approve.json.redirect).toBeUndefined();
+  });
+
+  it('cannot list or revoke tokens and connected clients', async () => {
+    const { cookie, pat } = await setup('manage@example.com');
+    const bearer = { authorization: `Bearer ${pat}` };
+    const listed = await call('/api/tokens', { cookie });
+    const patId = listed.json.tokens[0].id as string;
+    expect((await call('/api/tokens', { headers: bearer })).status).toBe(403);
+    expect((await call(`/api/tokens/${patId}`, { method: 'DELETE', headers: bearer })).status).toBe(403);
+    expect((await call('/api/grants/grant_x', { method: 'DELETE', headers: bearer })).status).toBe(403);
+    expect(
+      (await call('/api/tokens', { body: { name: 'more', scopes: ['dashboards:read'] }, headers: bearer }))
+        .status,
+    ).toBe(403);
+    // The session still manages everything.
+    expect((await call(`/api/tokens/${patId}`, { method: 'DELETE', cookie })).status).toBe(200);
+  });
+
+  it('keeps OAuth access tokens on /mcp, where their audience is', async () => {
+    const { pat } = await setup('audience@example.com');
+    const user = deps.users.upsert({ email: 'audience@example.com', name: 'Audience' });
+    const { accessToken } = deps.tokens.issueOAuth(
+      user.id,
+      'client',
+      ['dashboards:read', 'dashboards:write'],
+      `${BASE}/mcp`,
+    );
+    const me = (token: string) => call('/api/me', { headers: { authorization: `Bearer ${token}` } });
+    expect((await me(accessToken)).status).toBe(401);
+    expect(
+      (await call('/api/dashboards', { headers: { authorization: `Bearer ${accessToken}` } })).status,
+    ).toBe(401);
+    // Personal access tokens are meant for scripts and keep working on the REST API.
+    expect((await me(pat)).json.user.email).toBe('audience@example.com');
+    // And the access token still works where it belongs.
+    const mcp = await app.request(`${BASE}/mcp`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } },
+      }),
+    });
+    expect(mcp.status).toBe(200);
   });
 });

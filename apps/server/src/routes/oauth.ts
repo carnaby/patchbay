@@ -15,7 +15,7 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { normalizeScopes, SCOPES } from '../auth/tokens.ts';
-import { clientKey, type Deps, type Env, IPV6_CREATE_PREFIX, requireUser } from '../context.ts';
+import { clientKey, type Deps, type Env, IPV6_CREATE_PREFIX, requireSessionUser } from '../context.ts';
 import { now } from '../db.ts';
 import { newId, randomToken, sha256, verifyPkce } from '../util/crypto.ts';
 import { HttpError, notFound } from '../util/errors.ts';
@@ -294,9 +294,9 @@ export function oauthRoutes(deps: Deps) {
     return row;
   };
 
-  /** Data for the consent screen (session required). */
+  /** Data for the consent screen. A web session is required: a token must never approve a new grant. */
   app.get('/api/oauth/requests/:id', (c) => {
-    requireUser(c);
+    requireSessionUser(c);
     const row = pendingRequest(c.req.param('id'));
     const client = getClient(row.client_id);
     return c.json({
@@ -310,7 +310,7 @@ export function oauthRoutes(deps: Deps) {
   });
 
   app.post('/api/oauth/requests/:id', async (c) => {
-    const user = requireUser(c);
+    const user = requireSessionUser(c);
     const row = pendingRequest(c.req.param('id'));
     const body = z
       .object({ approve: z.boolean(), scopes: z.array(z.string()).optional() })
