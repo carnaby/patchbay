@@ -185,6 +185,37 @@ function inlineTextTooLong(before: DashboardDoc, after: DashboardDoc): HttpError
   return null;
 }
 
+/** Distinct keys across inline rows. Linear in a document already bounded by its size limit. */
+function inlineColumnCount(rows: readonly Record<string, unknown>[]): number {
+  const names = new Set<string>();
+  for (const row of rows) for (const name of Object.keys(row)) names.add(name);
+  return names.size;
+}
+
+/**
+ * An inline dataset that `after` makes wider than LIMITS.inlineColumns. On writes only, like `inlineTextTooLong`: a
+ * stored dataset that is already wider keeps loading (DataService holds its own limits when it reads one) and may be
+ * edited as long as the edit does not add columns.
+ */
+function inlineTooWide(before: DashboardDoc, after: DashboardDoc): HttpError | null {
+  const existing = new Map(before.datasets.map((d) => [d.id, d]));
+  for (const dataset of after.datasets) {
+    if (dataset.source.kind !== 'inline') continue;
+    const old = existing.get(dataset.id)?.source;
+    if (old === dataset.source) continue;
+    const count = inlineColumnCount(dataset.source.rows);
+    if (count <= LIMITS.inlineColumns) continue;
+    if (old?.kind === 'inline' && count <= inlineColumnCount(old.rows)) continue;
+    return badRequest(
+      `Dataset "${dataset.id}": inline rows may use at most ${LIMITS.inlineColumns} different column names (these use ${count.toLocaleString('en-US')}). ` +
+        'Every row of a table has every column, so keep the fields you need, reshape wide data into rows (one row per name and value), ' +
+        'or put it in a CSV or JSON upload (upload_data, or POST /api/dashboards/:id/files) and use a source of kind "upload".',
+      { code: 'INLINE_TOO_WIDE', columns: count, limit: LIMITS.inlineColumns },
+    );
+  }
+  return null;
+}
+
 export class ConflictError extends HttpError {
   readonly current: DashboardEnvelope;
   constructor(current: DashboardEnvelope) {
@@ -603,7 +634,9 @@ export class DashboardService {
       this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
       this.checkSize(meta.ownerId, doc, next.doc);
       // A restore brings back what was stored before, like the secret checks above allow.
-      const inline = secretOptions.restore ? null : inlineTextTooLong(doc, next.doc);
+      const inline = secretOptions.restore
+        ? null
+        : (inlineTooWide(doc, next.doc) ?? inlineTextTooLong(doc, next.doc));
       if (inline) throw inline;
       const actor = actorOf(p);
       const updated: StoredMeta = {
@@ -677,7 +710,7 @@ export class DashboardService {
       this.checkUrlSources(meta, doc, result.doc);
       this.checkSecretRefs(meta, doc, result.doc, p, options);
       this.checkSize(meta.ownerId, doc, result.doc);
-      const inline = inlineTextTooLong(doc, result.doc);
+      const inline = inlineTooWide(doc, result.doc) ?? inlineTextTooLong(doc, result.doc);
       if (inline) throw inline;
       return { envelope: this.envelope(meta, result.doc, p), changes: result.changes, dryRun: true };
     }

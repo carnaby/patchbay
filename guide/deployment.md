@@ -209,7 +209,7 @@ defaults suit one container with 384 MB of memory; raise them only with more mem
 
 | Variable                     | Default  | What it bounds                                                                                             |
 | ---------------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `UPLOAD_MAX_CELLS`           | 500000   | Rows × columns of an upload to a dashboard with an owner, and of an HTTP response kept in memory.          |
+| `UPLOAD_MAX_CELLS`           | 500000   | Rows × columns of an upload to an owned dashboard, and of an HTTP response or inline rows in memory.       |
 | `UPLOAD_MAX_CELLS_ANONYMOUS` | 200000   | The same for anonymous dashboards.                                                                         |
 | `DATA_CACHE_MB`              | 32       | Parsed tables (uploads, inline rows, HTTP responses) kept between requests, least recently used first out. |
 | `PIPELINE_WORKER_MEMORY_MB`  | 96       | Heap of each pipeline worker; a job that needs more fails instead of exhausting the container.             |
@@ -221,7 +221,10 @@ defaults suit one container with 384 MB of memory; raise them only with more mem
 
 Fixed limits, for reference: uploads are parsed in the pipeline worker and refused as soon as they pass the cell limit;
 an upload has at most 500 columns with names of up to 200 characters, and a JSON upload nests at most 64 levels and
-holds at most three values per allowed cell, checked before it is parsed. Uploads are parsed and saved one at a time
+holds at most three values per allowed cell, checked before it is parsed. Inline rows may use at most 200 different
+column names (checked when saved). Every table built from a source has at most 500 columns, and inline rows and HTTP
+responses keep at most `UPLOAD_MAX_CELLS` cells; both are checked record by record while the table is built, so a
+single wide record cannot multiply it. Uploads are parsed and saved one at a time
 across the server (two more may wait). A request body over 1 MB is received in full before it is processed, one at a
 time (eight more may wait): it has to arrive at 32 KB/s or faster on average after its first 5 s and within 60 s, or the
 request gets `408` and the connection is closed, so a slow sender never holds the turn of others; bodies that are

@@ -17,10 +17,12 @@ import {
   FEED_MIN_REFRESH_SEC,
   HTTP_MIN_REFRESH_SEC,
   hashTable,
-  inferTable,
+  INFER_MAX_COLUMNS,
+  inferTableCapped,
   isStaticSource,
   type PipelineResult,
   sourceSecretIds,
+  TableTooWideError,
   type Transform,
   TransformError,
   wireSize,
@@ -78,23 +80,23 @@ export function recordsFrom(json: unknown, path?: string): unknown[] {
   throw new HttpError(400, 'The response does not contain a list of records');
 }
 
-/** Infers a table of at most `maxCells` cells, judging the width from the first records so it never builds more. */
+/**
+ * Infers a table of at most `maxCells` cells and `INFER_MAX_COLUMNS` columns. The limits hold while the records are
+ * read (see `inferTableCapped`), so a wide record anywhere in the response cannot multiply the table before a cap
+ * applies. Too many columns is an error for the dataset: dropping columns would silently change what it shows.
+ */
 export function cappedTable(records: unknown[], maxCells: number): { table: DataTable; capped: boolean } {
-  const width = Math.max(1, inferTable(records.slice(0, 200)).columns.length);
-  const maxRows = Math.max(1, Math.min(MAX_ROWS_IN, Math.floor(maxCells / width)));
-  let table = inferTable(records, { maxRows });
-  let capped = records.length > maxRows;
-  // Later records may add columns the first ones did not have.
-  const cells = table.rows.length * table.columns.length;
-  if (cells > maxCells) {
-    table = {
-      columns: table.columns,
-      rows: table.rows.slice(0, Math.floor(maxCells / table.columns.length)),
-    };
-    capped = true;
+  try {
+    return inferTableCapped(records, { maxRows: MAX_ROWS_IN, maxCells, maxColumns: INFER_MAX_COLUMNS });
+  } catch (e) {
+    if (e instanceof TableTooWideError) throw new HttpError(400, e.message);
+    throw e;
   }
-  return { table, capped };
 }
+
+/** The warning a dataset shows when its source was cut to fit the cell limit. */
+const cappedWarning = (table: DataTable, of: string) =>
+  `Showing the first ${table.rows.length.toLocaleString('en-US')} rows of ${of}`;
 
 /** FNV-1a over a string: tells inline row sets apart without keeping them. */
 function fnv(text: string): string {
@@ -291,15 +293,34 @@ export class DataService {
     return { table: entry.table, fetchedAt: entry.at, credentialKey: '', stamp: key };
   }
 
+  /**
+   * Inline rows are at most 2,000 in a document of at most 1 MB, and the table built from them is held to the same
+   * cell limit as an HTTP response, so this is cheap enough for the main thread; stored documents that predate the
+   * write limits (LIMITS.inlineColumns) still load, within these limits. A refusal is remembered like a table, so a
+   * crowd of viewers costs one attempt.
+   */
   private loadInline(rows: Record<string, unknown>[]): Loaded {
     const stamp = `inline:${fnv(JSON.stringify(rows))}`;
     let entry = this.tables.get(stamp);
-    if (!entry || !('table' in entry)) {
-      const table = inferTable(rows);
-      entry = { table, at: Date.now(), stamp };
-      this.tables.set(stamp, entry, approxTableBytes(table));
+    if (!entry) {
+      try {
+        const { table, capped } = cappedTable(rows, this.maxSourceCells);
+        entry = { table, at: Date.now(), stamp, ...(capped ? { capped } : {}) };
+        this.tables.set(stamp, entry, approxTableBytes(table));
+      } catch (e) {
+        if (!(e instanceof HttpError)) throw e;
+        entry = { error: { status: e.status, message: e.message }, at: Date.now() };
+        this.tables.set(stamp, entry, 256 + e.message.length * 2);
+      }
     }
-    return { table: entry.table, fetchedAt: entry.at, credentialKey: '', stamp };
+    if ('error' in entry) throw new HttpError(entry.error.status as 400, entry.error.message);
+    return {
+      table: entry.table,
+      fetchedAt: entry.at,
+      credentialKey: '',
+      stamp,
+      ...(entry.capped ? { warning: cappedWarning(entry.table, 'the inline rows') } : {}),
+    };
   }
 
   private async loadHttp(
@@ -328,11 +349,7 @@ export class DataService {
       table: entry.table,
       fetchedAt: entry.at,
       credentialKey,
-      ...(entry.capped
-        ? {
-            warning: `Showing the first ${entry.table.rows.length.toLocaleString('en-US')} rows of the response`,
-          }
-        : {}),
+      ...(entry.capped ? { warning: cappedWarning(entry.table, 'the response') } : {}),
     };
   }
 

@@ -174,6 +174,39 @@ describe('parseUpload', () => {
     expect(jsonUploadProblem(JSON.stringify([{ a: [1, 2, 3], b: { c: 'x' } }]), 10)).toBeNull();
   });
 
+  it('holds the cell and column limits of JSON uploads whatever the order of wide and narrow records', () => {
+    // Judging the width from the first 200 records let 200 empty ones hide a wide one: 450 million cells.
+    const wideRecord = (keys: number) =>
+      Object.fromEntries(Array.from({ length: keys }, (_, i) => [`k${i}`, 1]));
+    const lateWide = (keys: number, tail: number) =>
+      JSON.stringify([
+        ...Array.from({ length: 200 }, () => ({})),
+        wideRecord(keys),
+        ...Array.from({ length: tail }, () => ({})),
+      ]);
+    const startedAt = Date.now();
+    expect(() => parseUpload({ content: lateWide(400, 99_799), format: 'json', maxCells: 500_000 })).toThrow(
+      /up to 500,000 cells/,
+    );
+    expect(() => parseUpload({ content: lateWide(4500, 10_000), format: 'json', maxCells: 500_000 })).toThrow(
+      `uploads are limited to ${UPLOAD_MAX_COLUMNS}`,
+    );
+    // One record with more keys than the whole limit allows is refused without copying it.
+    const entries = vi.spyOn(Object, 'entries');
+    try {
+      expect(() => parseUpload({ content: lateWide(150_000, 0), format: 'json', maxCells: 500_000 })).toThrow(
+        `uploads are limited to ${UPLOAD_MAX_COLUMNS}`,
+      );
+      expect(entries).not.toHaveBeenCalled();
+    } finally {
+      entries.mockRestore();
+    }
+    expect(Date.now() - startedAt).toBeLessThan(5000);
+    const fits = parseUpload({ content: lateWide(10, 100), format: 'json', maxCells: 5000 });
+    expect(fits.columns).toHaveLength(10);
+    expect(fits.rows).toHaveLength(301);
+  });
+
   it('keeps the old parsing rules: BOM, trimmed headers, invalid JSON', () => {
     const table = parseUpload({ content: '﻿ a , b \n1,2\n', format: 'csv', maxCells: 100 });
     expect(table.columns.map((c) => c.name)).toEqual(['a', 'b']);

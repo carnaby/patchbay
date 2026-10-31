@@ -135,6 +135,33 @@ describe('uploaded files', () => {
     expect((await data.resolve(target, ds)).table.rows).toHaveLength(2);
   });
 
+  it('refuses stored inline rows wider than the column limit, once, with a message instead of the table', async () => {
+    // What a document saved before the write limit, or written by hand, can hold: 94 million cells if built.
+    const rows = [
+      Object.fromEntries(Array.from({ length: 47_000 }, (_, i) => [`k${i}`, 1])),
+      ...Array.from({ length: 1999 }, () => ({})),
+    ];
+    const data = new DataService(connectors, store);
+    const ds = dataset({ kind: 'inline', rows });
+    const startedAt = Date.now();
+    const first = await data.resolve(target, ds);
+    expect(first.error).toMatch(/more than 500 columns/);
+    expect(first.table.rows).toEqual([]);
+    expect(Date.now() - startedAt).toBeLessThan(3000);
+    expect((await data.resolve(target, ds)).error).toBe(first.error);
+    // Narrower stored rows still load, cut to the source cell limit with a warning.
+    const narrow = dataset({
+      kind: 'inline',
+      rows: [Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`k${i}`, i])), ...rows.slice(1)],
+    });
+    const capped = await new DataService(connectors, store, new InlineRunner(), {
+      maxSourceCells: 30_000,
+    }).resolve(target, narrow);
+    expect(capped.table.columns).toHaveLength(300);
+    expect(capped.table.rows).toHaveLength(100);
+    expect(capped.error).toMatch(/first 100 rows of the inline rows/);
+  });
+
   it('answers busy instead of queueing without limit, and does not fold that into the result', async () => {
     await saveUpload('f_busy', 10);
     const heavy = new Gate({ concurrency: 1, maxQueue: 0 });
@@ -202,6 +229,28 @@ describe('http sources', () => {
     const r = await data.resolve(target, http('https://wide.example/x'));
     expect(r.table.rows).toHaveLength(250);
     expect(r.error).toMatch(/first 250 rows/);
+  });
+
+  it('never builds more than maxSourceCells cells when a wide record follows narrow ones', async () => {
+    // Judging the width from the first 200 records let this build 400 columns for every one of 100,000 rows.
+    const wideRecord = Object.fromEntries(Array.from({ length: 400 }, (_, c) => [`c${c}`, c]));
+    fetchMock.mockResolvedValue([
+      ...Array.from({ length: 200 }, () => ({})),
+      wideRecord,
+      ...Array.from({ length: 99_799 }, () => ({})),
+    ]);
+    const data = new DataService(connectors, store, new InlineRunner(), { maxSourceCells: 500_000 });
+    const r = await data.resolve(target, http('https://late-wide.example/x'));
+    expect(r.table.columns).toHaveLength(400);
+    expect(r.table.rows.length * r.table.columns.length).toBeLessThanOrEqual(500_000);
+    expect(r.error).toMatch(/first 1,250 rows/);
+    fetchMock.mockResolvedValue([
+      {},
+      Object.fromEntries(Array.from({ length: 47_000 }, (_, c) => [`k${c}`, 1])),
+    ]);
+    expect((await data.resolve(target, http('https://very-wide.example/x'))).error).toMatch(
+      /more than 500 columns/,
+    );
   });
 
   it('applies the URL policy before fetching, for http and feed sources', async () => {

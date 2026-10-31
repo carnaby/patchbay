@@ -25,6 +25,11 @@ export const LIMITS = {
    */
   inlineText: 1000,
   inlineColumnName: 200,
+  /**
+   * Different column names in one inline dataset. Checked on writes only, like the two above. Every row of a table
+   * holds every column, so a single row with many keys among many rows without them is a very large table.
+   */
+  inlineColumns: 200,
   transforms: 40,
   markdown: 20_000,
   title: 120,
