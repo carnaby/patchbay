@@ -54,7 +54,8 @@ describe('LargeBodyReceiver', () => {
   });
 
   it('refuses a body larger than allowed while it arrives', async () => {
-    const receiver = new LargeBodyReceiver(fast);
+    // A pace no machine can miss: this is about size, and on a loaded test run the pace check must not fire first.
+    const receiver = new LargeBodyReceiver({ ...fast, graceMs: 60_000, minBytesPerSec: 1, maxMs: 60_000 });
     await expect(receiver.receive(trickle(5, 1000, 1), 'ip:a', 3000)).rejects.toBeInstanceOf(
       BodyTooLargeError,
     );
