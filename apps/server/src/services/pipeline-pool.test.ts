@@ -8,8 +8,10 @@ import { UploadError } from './upload-parse.ts';
 
 const steps = (list: unknown[]) => list.map((s) => TransformSchema.parse(s)) as Transform[];
 
+// Heavy enough to measure on this thread, light enough that two concurrent runs stay well inside the core's 3 s
+// pipeline limit on a slow two-core CI runner.
 const big = inferTable(
-  Array.from({ length: 60_000 }, (_, i) => ({
+  Array.from({ length: 30_000 }, (_, i) => ({
     a: (i * 7919) % 10_007,
     b: (i * 104_729) % 977,
     g: `g${i % 13}`,
@@ -17,12 +19,12 @@ const big = inferTable(
 );
 const medium = inferTable(Array.from({ length: 2000 }, (_, i) => ({ a: i })));
 const heavy = steps([
-  ...Array.from({ length: 12 }, (_, k) => ({
+  ...Array.from({ length: 8 }, (_, k) => ({
     type: 'derive',
     as: `d${k}`,
     expr: `round(sqrt(a * b + ${k}) + log(a + 1), 3)`,
   })),
-  { type: 'aggregate', groupBy: ['g'], metrics: [{ op: 'avg', field: 'd11', as: 'avg' }, { op: 'count' }] },
+  { type: 'aggregate', groupBy: ['g'], metrics: [{ op: 'avg', field: 'd7', as: 'avg' }, { op: 'count' }] },
   { type: 'sort', by: [{ field: 'g' }] },
 ]);
 
