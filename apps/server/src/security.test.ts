@@ -456,6 +456,33 @@ describe('SSRF blocklist (IANA special-purpose registries)', () => {
   });
 });
 
+describe('landing page showcase under load', () => {
+  it('resolves once per second for all visitors, and once for concurrent requests', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const resolve = vi.spyOn(deps.data, 'resolve');
+    try {
+      // A separate app, so no earlier test has filled the cache.
+      const fresh = createApp(deps);
+      const get = () => fresh.request(`${BASE}/api/showcase`);
+      const first = await Promise.all(Array.from({ length: 20 }, get));
+      expect(first.every((r) => r.status === 200)).toBe(true);
+      expect(first[0]!.headers.get('content-type')).toMatch(/^application\/json/);
+      const bodies = await Promise.all(first.map((r) => r.json()));
+      expect(Object.keys(bodies[0] as object).sort()).toEqual(['products', 'revenue', 'signal']);
+      expect(resolve).toHaveBeenCalledTimes(3);
+      vi.advanceTimersByTime(500);
+      await get();
+      expect(resolve).toHaveBeenCalledTimes(3);
+      vi.advanceTimersByTime(600);
+      await get();
+      expect(resolve).toHaveBeenCalledTimes(6);
+    } finally {
+      resolve.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('response headers', () => {
   it('sends a CSP that also locks down <base> and plugins', async () => {
     const csp = (await app.request(`${BASE}/api/me`)).headers.get('content-security-policy')!;

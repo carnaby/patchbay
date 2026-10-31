@@ -26,6 +26,7 @@ import { badRequest, forbidden, HttpError, notFound } from '../util/errors.ts';
 
 /** Live stream heartbeat while nothing else is sent. */
 const HEARTBEAT_MS = 25_000;
+const SHOWCASE_TTL_MS = 1000;
 
 const CreateBody = z.object({
   title: z.string().min(1).max(120).optional(),
@@ -130,10 +131,34 @@ export function apiRoutes(deps: Deps) {
       ],
     }),
   ];
-  app.get('/showcase', async (c) => {
+  // Every open landing page polls this every 2 s and the answer is the same for everyone, so all visitors share one
+  // resolve per second, and concurrent requests wait for the one already running instead of starting their own.
+  let showcaseCache: { body: Promise<string>; settledAt: number | null } | null = null;
+  const showcaseBody = () => {
+    const cached = showcaseCache;
+    if (cached && (cached.settledAt === null || Date.now() - cached.settledAt < SHOWCASE_TTL_MS))
+      return cached.body;
     const target = { id: 'showcase00', ownerId: null };
-    const results = await Promise.all(showcase.map((d) => data.resolve(target, d)));
-    return c.json(Object.fromEntries(results.map((r) => [r.datasetId, r])));
+    const entry: { body: Promise<string>; settledAt: number | null } = {
+      body: Promise.all(showcase.map((d) => data.resolve(target, d))).then((results) =>
+        JSON.stringify(Object.fromEntries(results.map((r) => [r.datasetId, r]))),
+      ),
+      settledAt: null,
+    };
+    entry.body.then(
+      () => {
+        entry.settledAt = Date.now();
+      },
+      () => {
+        if (showcaseCache === entry) showcaseCache = null;
+      },
+    );
+    showcaseCache = entry;
+    return entry.body;
+  };
+  app.get('/showcase', async (c) => {
+    c.header('content-type', 'application/json; charset=UTF-8');
+    return c.body(await showcaseBody());
   });
 
   app.get('/dashboards', (c) => c.json(dashboards.listMine(c.get('principal'))));
