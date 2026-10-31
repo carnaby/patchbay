@@ -76,6 +76,14 @@ describe('table inference', () => {
     expect(t.rows[0]!.date).toBe(Date.UTC(2026, 0, 1));
     expect(t.rows[0]!.v).toBe(3.5);
   });
+
+  it('detects numbers in linear time, even in a huge run of digits that is not one', () => {
+    const startedAt = Date.now();
+    const t = inferTable([{ v: `${'1'.repeat(200_000)}x` }, { v: '1.' }, { v: '-2.5e3' }]);
+    expect(Date.now() - startedAt).toBeLessThan(500);
+    expect(t.columns[0]!.type).toBe('string');
+    expect(inferTable([{ v: '1.' }, { v: '.5' }, { v: '-2.E3' }]).columns[0]!.type).toBe('number');
+  });
 });
 
 describe('pipeline', () => {
