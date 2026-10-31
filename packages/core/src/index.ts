@@ -17,4 +17,5 @@ export * from './table.ts';
 export * from './theme.ts';
 export * from './transforms.ts';
 export * from './types.ts';
+export * from './use-cases.ts';
 export * from './wire.ts';
