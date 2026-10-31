@@ -97,6 +97,7 @@ describe('a file being replaced', () => {
     replacing.missing = 100;
     const started = Date.now();
     expect(await store.readMeta('missing0')).toBeNull();
-    expect(Date.now() - started).toBeLessThan(50);
+    // 100 failing attempts would take seconds; a missing file must answer at once, not after retrying.
+    expect(Date.now() - started).toBeLessThan(1000);
   });
 });

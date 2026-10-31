@@ -151,9 +151,13 @@ describe('compact', () => {
 
   it('pulls a widget stored far down to the top without walking every row', () => {
     const layout = Array.from({ length: 60 }, (_, n) => item(`w${n}`, n % 12, 10_000, 1, 40));
+    // Walking every row would cost 60 x 2 million steps here: seconds, where the real thing takes microseconds.
+    // The bound is that far from both so a slow runner cannot reach it.
+    const far = Array.from({ length: 60 }, (_, n) => item(`w${n}`, n % 12, 2_000_000, 1, 40));
     const started = performance.now();
+    compact(far);
+    expect(performance.now() - started).toBeLessThan(1000);
     const out = compact(layout);
-    expect(performance.now() - started).toBeLessThan(50);
     expect(Math.max(...out.map((it) => it.y + it.h))).toBe(200);
   });
 });

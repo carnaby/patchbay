@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isLargeBody, LARGE_BODY_BYTES } from './json-body.ts';
 import { jsonShapeProblem, MAX_JSON_DEPTH } from './json-shape.ts';
+import { measureScaling, scalingProblem } from './scaling.test-helper.ts';
 
 describe('isLargeBody', () => {
   it('judges large bodies by their headers', () => {
@@ -35,13 +36,20 @@ describe('jsonShapeProblem', () => {
   });
 
   it('refuses a nested-array bomb in one fast pass', () => {
-    const bomb = '['.repeat(2_000_000) + ']'.repeat(2_000_000);
-    const started = performance.now();
+    const bombOf = (n: number) => '['.repeat(n) + ']'.repeat(n);
+    const bomb = bombOf(2_000_000);
     expect(jsonShapeProblem(bomb, { maxDepth: MAX_JSON_DEPTH, maxValues: 1e9 })).toEqual({
       kind: 'depth',
       limit: MAX_JSON_DEPTH,
     });
-    expect(performance.now() - started).toBeLessThan(50);
+    const times = measureScaling(
+      (n) => {
+        const text = bombOf(n);
+        return () => jsonShapeProblem(text, { maxDepth: MAX_JSON_DEPTH, maxValues: 1e9 });
+      },
+      { size: 2_000_000 },
+    );
+    expect(scalingProblem(times)).toBeNull();
   });
 
   it('passes ordinary documents at the default depth', () => {

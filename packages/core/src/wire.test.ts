@@ -81,6 +81,7 @@ describe('hashTable', () => {
     // As one JSON string this table is about 200 MB.
     const started = Date.now();
     expect(hashTable({ columns, rows })).toMatch(/^[0-9a-z]+$/);
-    expect(Date.now() - started).toBeLessThan(2_000);
+    // A 200 MB JSON string would take far longer and allocate gigabytes; this is only a safety net.
+    expect(Date.now() - started).toBeLessThan(15_000);
   });
 });

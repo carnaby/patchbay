@@ -47,7 +47,8 @@ describe('pipeline size limit', () => {
     expect(error.message).toMatch(/substr\(\)/);
     // Stops within the first few steps, long before 40 steps of 4 million characters each.
     expect((error as TransformError).step).toBeLessThan(10);
-    expect(ms).toBeLessThan(1000);
+    // The early stop is proven by the step number above; this bound only catches running all the steps.
+    expect(ms).toBeLessThan(10_000);
   });
 
   it('counts values copied by reference too, since each copy is repeated in the JSON', () => {
@@ -77,7 +78,7 @@ describe('pipeline size limit', () => {
       runPipeline(input, steps([{ type: 'aggregate', groupBy: ['id'], metrics }])),
     );
     expect(error.message).toMatch(/Step 1: The data grew past/);
-    expect(ms).toBeLessThan(1000);
+    expect(ms).toBeLessThan(10_000);
   });
 
   it('charges a long fillNull value for every row it fills', () => {

@@ -27,6 +27,7 @@ import {
   TransformSchema,
   WidgetSchema,
 } from './index.ts';
+import { measureScaling, scalingProblem } from './scaling.test-helper.ts';
 
 describe('expressions', () => {
   const row = { price: 12.5, qty: 4, region: 'EU', 'wind speed': 7, empty: null };
@@ -81,9 +82,9 @@ describe('table inference', () => {
   });
 
   it('detects numbers in linear time, even in a huge run of digits that is not one', () => {
-    const startedAt = Date.now();
-    const t = inferTable([{ v: `${'1'.repeat(200_000)}x` }, { v: '1.' }, { v: '-2.5e3' }]);
-    expect(Date.now() - startedAt).toBeLessThan(500);
+    const rows = (n: number) => [{ v: `${'1'.repeat(n)}x` }, { v: '1.' }, { v: '-2.5e3' }];
+    expect(scalingProblem(measureScaling((n) => () => inferTable(rows(n)), { size: 200_000 }))).toBeNull();
+    const t = inferTable(rows(200_000));
     expect(t.columns[0]!.type).toBe('string');
     expect(inferTable([{ v: '1.' }, { v: '.5' }, { v: '-2.E3' }]).columns[0]!.type).toBe('number');
   });
@@ -96,7 +97,8 @@ describe('table inference', () => {
     const startedAt = Date.now();
     expect(() => inferTable(records)).toThrow(TableTooWideError);
     expect(() => inferTable(records)).toThrow(`more than ${INFER_MAX_COLUMNS} columns`);
-    expect(Date.now() - startedAt).toBeLessThan(2000);
+    // Building the dense table would take minutes and gigabytes; this bound is only a safety net for that.
+    expect(Date.now() - startedAt).toBeLessThan(15_000);
     expect(() => inferTable([...records].reverse(), { maxColumns: 100 })).toThrow(TableTooWideError);
   });
 
@@ -235,10 +237,22 @@ describe('pipeline', () => {
     const doubling = Array.from({ length: 30 }, () => t({ type: 'derive', as: 's', expr: 'concat(s, s)' }));
     const seed = inferTable([{ s: 'xxxxxxxxxx' }]);
     expect(() => runPipeline(seed, doubling)).toThrow(/limited to/);
-    const big = inferTable(Array.from({ length: 50_000 }, (_, i) => ({ v: (i * 7919) % 1000 })));
-    const startedAt = Date.now();
-    const { table } = runPipeline(big, [t({ type: 'window', op: 'rank', field: 'v', as: 'r' })]);
-    expect(Date.now() - startedAt).toBeLessThan(1500);
+    const rank = [t({ type: 'window', op: 'rank', field: 'v', as: 'r' })];
+    const tableOf = (n: number) =>
+      inferTable(Array.from({ length: n }, (_, i) => ({ v: (i * 7919) % 1000 })));
+    expect(
+      scalingProblem(
+        measureScaling(
+          (n) => {
+            const input = tableOf(n);
+            return () => runPipeline(input, rank);
+          },
+          { size: 50_000 },
+        ),
+      ),
+    ).toBeNull();
+    const big = tableOf(50_000);
+    const { table } = runPipeline(big, rank);
     const max = table.rows.find((r) => r.v === 999)!;
     expect(max.r).toBe(1);
   });

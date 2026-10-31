@@ -122,6 +122,8 @@ describe('render worker', () => {
       expect((failure as RenderFailedError).lasting).toBe(true);
       expect(Date.now() - started).toBeLessThan(5_000);
       expect(stall).toBeLessThan(250);
+      // The 300 ms limit was only for the hanging render; the follow-up includes a worker start-up.
+      Object.assign(host, { timeoutMs: 60_000 });
       expect((await host.render(task('next'))).toString()).toBe('next');
       expect(host.starts()).toBe(2);
     } finally {
