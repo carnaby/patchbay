@@ -3,12 +3,15 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Bot, Check, Copy, ExternalLink, ImageOff, Play, Volume2, VolumeX } from 'lucide-react';
 import { type KeyboardEvent, useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { useNavigate } from 'react-router';
-import { Button, cx, toast } from '../components/ui.tsx';
+import { Button, buttonClass, cx, toast } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
 import { saveEditKey } from '../lib/edit-keys.ts';
+import { useTheme } from '../lib/hooks.ts';
 import { tabsReducer } from '../lib/use-case-tabs.ts';
 
 const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
+/** How long a tab without a video stays before the next one shows. */
+const SNAPSHOT_DWELL_MS = 9000;
 
 // Subscribed rather than read once, so toggling the OS setting takes effect without a reload.
 function usePrefersReducedMotion() {
@@ -24,6 +27,21 @@ function usePrefersReducedMotion() {
   );
 }
 
+/** True while the element is at least partly on screen. */
+function useOnScreen(ref: { current: Element | null }) {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof IntersectionObserver !== 'function') return;
+    const io = new IntersectionObserver(([entry]) => setVisible(Boolean(entry?.isIntersecting)), {
+      threshold: 0.4,
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [ref]);
+  return visible;
+}
+
 export function UseCases() {
   const { data } = useQuery({
     queryKey: ['use-cases'],
@@ -34,6 +52,7 @@ export function UseCases() {
   const [tabs, dispatch] = useReducer(tabsReducer, { active: 0, count: 0, interacted: false });
   useEffect(() => dispatch({ type: 'reset', count: list.length }), [list.length]);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const reduced = usePrefersReducedMotion();
   if (list.length === 0) return null; // self-hosted instances without use cases show nothing
   const current = list[tabs.active] ?? list[0]!;
 
@@ -118,22 +137,33 @@ export function UseCases() {
       <div
         role="tabpanel"
         id="use-case-panel"
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: the ARIA tabs pattern makes the panel reachable from its tab
+        tabIndex={0}
         aria-labelledby={`use-case-tab-${current.id}`}
         className="grid items-start gap-6 md:grid-cols-[3fr_2fr] md:gap-8"
       >
         <UseCaseVideo
           key={current.id}
           item={current}
-          loop={tabs.interacted}
+          // A single use case has nothing to advance to, so its video loops.
+          loop={tabs.interacted || list.length < 2}
+          // Never moves on its own under reduced motion, nor once the visitor has interacted or when alone.
+          auto={!reduced && !tabs.interacted && list.length > 1}
+          reduced={reduced}
           onEnded={() => dispatch({ type: 'ended' })}
+          onInteract={() => dispatch({ type: 'interact' })}
         />
-        <UseCaseText key={`t-${current.id}`} item={current} />
+        <UseCaseText
+          key={`t-${current.id}`}
+          item={current}
+          onInteract={() => dispatch({ type: 'interact' })}
+        />
       </div>
     </section>
   );
 }
 
-function UseCaseText({ item }: { item: UseCaseInfo }) {
+function UseCaseText({ item, onInteract }: { item: UseCaseInfo; onInteract: () => void }) {
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -143,6 +173,7 @@ function UseCaseText({ item }: { item: UseCaseInfo }) {
   }, [copied]);
 
   const copyPrompt = async () => {
+    onInteract();
     try {
       await navigator.clipboard.writeText(item.prompt);
       setCopied(true);
@@ -196,10 +227,9 @@ function UseCaseText({ item }: { item: UseCaseInfo }) {
 
       <div className="flex flex-col gap-2 sm:flex-row">
         {/* A plain anchor: /showcase/:id is a server redirect to the live dashboard, not a client route. */}
-        <a href={`/showcase/${item.id}`} className="sm:flex-1">
-          <Button variant="accent" className="w-full" icon={<ExternalLink className="size-4" />}>
-            Open live
-          </Button>
+        <a href={`/showcase/${item.id}`} className={buttonClass('accent', 'md', 'sm:flex-1')}>
+          <ExternalLink className="size-4" aria-hidden="true" />
+          Open live
         </a>
         <Button
           variant="secondary"
@@ -215,11 +245,25 @@ function UseCaseText({ item }: { item: UseCaseInfo }) {
   );
 }
 
-function UseCaseVideo({ item, loop, onEnded }: { item: UseCaseInfo; loop: boolean; onEnded: () => void }) {
+function UseCaseVideo({
+  item,
+  loop,
+  auto,
+  reduced,
+  onEnded,
+  onInteract,
+}: {
+  item: UseCaseInfo;
+  loop: boolean;
+  auto: boolean;
+  reduced: boolean;
+  onEnded: () => void;
+  onInteract: () => void;
+}) {
   const ref = useRef<HTMLVideoElement>(null);
   const [muted, setMuted] = useState(true);
+  const [playing, setPlaying] = useState(false);
   const [videoFailed, setVideoFailed] = useState(false);
-  const reduced = usePrefersReducedMotion();
   const hasVideo = Boolean(item.video) && !videoFailed;
 
   useEffect(() => {
@@ -237,7 +281,7 @@ function UseCaseVideo({ item, loop, onEnded }: { item: UseCaseInfo; loop: boolea
     return () => io.disconnect();
   }, [reduced, hasVideo]);
 
-  if (!hasVideo) return <Snapshot item={item} />;
+  if (!hasVideo) return <Snapshot item={item} auto={auto} onEnded={onEnded} />;
 
   return (
     <div className="relative">
@@ -250,16 +294,24 @@ function UseCaseVideo({ item, loop, onEnded }: { item: UseCaseInfo; loop: boolea
         playsInline
         preload="metadata"
         controls={reduced}
-        onEnded={onEnded}
+        onEnded={() => {
+          setPlaying(false);
+          if (auto) onEnded();
+        }}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
         onError={() => setVideoFailed(true)}
         aria-label={`${item.title}: screen recording of the agent building the dashboard`}
         className="aspect-video w-full rounded-xl border border-line bg-surface-2 object-cover"
       />
-      {reduced ? (
+      {reduced && !playing ? (
         <button
           type="button"
           aria-label="Play video"
-          onClick={() => void ref.current?.play()}
+          onClick={() => {
+            onInteract();
+            void ref.current?.play();
+          }}
           className="absolute top-1/2 left-1/2 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-ink/80 text-page backdrop-blur hover:bg-ink"
         >
           <Play className="size-6 translate-x-0.5" aria-hidden="true" />
@@ -269,7 +321,10 @@ function UseCaseVideo({ item, loop, onEnded }: { item: UseCaseInfo; loop: boolea
         type="button"
         aria-label={muted ? 'Turn sound on' : 'Turn sound off'}
         aria-pressed={!muted}
-        onClick={() => setMuted((m) => !m)}
+        onClick={() => {
+          onInteract();
+          setMuted((m) => !m);
+        }}
         className={cx(
           'absolute right-2 flex size-9 items-center justify-center rounded-full bg-ink/70 text-page backdrop-blur hover:bg-ink',
           // Native controls (reduced motion) occupy the bottom edge.
@@ -288,11 +343,26 @@ function UseCaseVideo({ item, loop, onEnded }: { item: UseCaseInfo; loop: boolea
 
 // No video yet: the live dashboard's server snapshot stands in. The endpoint is rate limited, so a failed
 // load degrades to a plain card instead of a broken image.
-function Snapshot({ item }: { item: UseCaseInfo }) {
+function Snapshot({ item, auto, onEnded }: { item: UseCaseInfo; auto: boolean; onEnded: () => void }) {
   const [failed, setFailed] = useState(false);
+  const theme = useTheme();
+  const box = useRef<HTMLDivElement>(null);
+  const visible = useOnScreen(box);
+  const advance = useRef(onEnded);
+  advance.current = onEnded;
+  // Only a video's end moves the tabs on, so a tab without one needs its own clock: it runs only while the section
+  // is on screen and is cleared on tab change or unmount.
+  useEffect(() => {
+    if (!auto || !visible) return;
+    const t = setTimeout(() => advance.current(), SNAPSHOT_DWELL_MS);
+    return () => clearTimeout(t);
+  }, [auto, visible]);
   if (failed) {
     return (
-      <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-xl border border-line bg-surface-2 p-6 text-center">
+      <div
+        ref={box}
+        className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-xl border border-line bg-surface-2 p-6 text-center"
+      >
         <ImageOff className="size-6 text-muted" aria-hidden="true" />
         <div className="font-medium">{item.title}</div>
         <div className="text-sm text-ink-2">Preview unavailable. Open the live dashboard instead.</div>
@@ -300,12 +370,14 @@ function Snapshot({ item }: { item: UseCaseInfo }) {
     );
   }
   return (
-    <img
-      src={`/api/dashboards/${item.dashboardId}/snapshot.png`}
-      alt={`${item.title}: snapshot of the live dashboard`}
-      loading="lazy"
-      onError={() => setFailed(true)}
-      className="aspect-video w-full rounded-xl border border-line bg-surface-2 object-cover"
-    />
+    <div ref={box}>
+      <img
+        src={`/api/dashboards/${item.dashboardId}/snapshot.png${theme === 'dark' ? '?theme=dark' : ''}`}
+        alt={`${item.title}: snapshot of the live dashboard`}
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="aspect-video w-full rounded-xl border border-line bg-surface-2 object-cover"
+      />
+    </div>
   );
 }

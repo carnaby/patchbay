@@ -13,6 +13,12 @@ describe('use case tabs', () => {
     expect(s).toEqual({ active: 2, count: 3, interacted: true });
     expect(tabsReducer(s, { type: 'ended' }).active).toBe(2);
   });
+  it('stops auto-advancing after any other interaction', () => {
+    const s = tabsReducer(start, { type: 'interact' });
+    expect(s).toEqual({ active: 0, count: 3, interacted: true });
+    expect(tabsReducer(s, { type: 'ended' }).active).toBe(0);
+    expect(tabsReducer(s, { type: 'interact' })).toBe(s);
+  });
   it('ignores out-of-range selections and clamps on reset', () => {
     expect(tabsReducer(start, { type: 'select', index: 7 })).toEqual(start);
     expect(tabsReducer({ ...start, active: 2 }, { type: 'reset', count: 1 }).active).toBe(0);

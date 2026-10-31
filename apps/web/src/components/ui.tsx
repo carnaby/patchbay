@@ -33,6 +33,22 @@ const variants: Record<Variant, string> = {
   danger: 'bg-surface text-bad border border-line hover:border-bad/60 hover:bg-bad/5',
 };
 
+/** The look of a Button, for a link that must stay an anchor (a button inside an anchor is invalid HTML). */
+export function buttonClass(
+  variant: Variant = 'secondary',
+  size: 'sm' | 'md' | 'lg' = 'md',
+  className?: string,
+) {
+  return clsx(
+    'inline-flex shrink-0 items-center justify-center gap-2 rounded-lg font-medium transition select-none disabled:pointer-events-none disabled:opacity-50',
+    size === 'sm' && 'h-8 px-2.5 text-[13px]',
+    size === 'md' && 'h-9 px-3.5 text-sm',
+    size === 'lg' && 'h-12 px-5 text-base',
+    variants[variant],
+    className,
+  );
+}
+
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
   size?: 'sm' | 'md' | 'lg';
@@ -49,14 +65,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       ref={ref}
       type="button"
       disabled={disabled || loading}
-      className={clsx(
-        'inline-flex shrink-0 items-center justify-center gap-2 rounded-lg font-medium transition select-none disabled:pointer-events-none disabled:opacity-50',
-        size === 'sm' && 'h-8 px-2.5 text-[13px]',
-        size === 'md' && 'h-9 px-3.5 text-sm',
-        size === 'lg' && 'h-12 px-5 text-base',
-        variants[variant],
-        className,
-      )}
+      className={buttonClass(variant, size, className)}
       {...rest}
     >
       {loading ? <Loader2 className="size-4 animate-spin" /> : icon}

@@ -6,6 +6,8 @@ export interface TabsState {
 }
 export type TabsAction =
   | { type: 'select'; index: number }
+  /** Any other deliberate act (sound, play, copy): the visitor is reading this tab, so it must stay. */
+  | { type: 'interact' }
   | { type: 'ended' }
   | { type: 'reset'; count: number };
 
@@ -14,6 +16,8 @@ export function tabsReducer(state: TabsState, action: TabsAction): TabsState {
     case 'select':
       if (action.index < 0 || action.index >= state.count) return state;
       return { ...state, active: action.index, interacted: true };
+    case 'interact':
+      return state.interacted ? state : { ...state, interacted: true };
     case 'ended':
       if (state.interacted || state.count < 2) return state;
       return { ...state, active: (state.active + 1) % state.count };
