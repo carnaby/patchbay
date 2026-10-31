@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bot, KeyRound, LockKeyhole, Plug, Terminal, Trash2 } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
-import { Navigate, useLocation } from 'react-router';
+import { Link, Navigate, useLocation } from 'react-router';
 import { PageContainer } from '../components/AppShell.tsx';
 import {
   Badge,
@@ -379,6 +379,11 @@ export default function Settings() {
           <SecretsManager list={secrets.data} />
         </Section>
       ) : null}
+      <p className="mt-10 text-center text-xs text-muted">
+        <Link to="/privacy" className="underline hover:text-ink">
+          Privacy: what is stored and how to delete it
+        </Link>
+      </p>
     </PageContainer>
   );
 }

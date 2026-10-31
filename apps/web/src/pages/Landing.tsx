@@ -543,6 +543,9 @@ function Footer() {
           >
             GitHub
           </a>
+          <Link to="/privacy" className="hover:text-ink">
+            Privacy
+          </Link>
           <span>MIT licensed</span>
         </div>
       </div>
