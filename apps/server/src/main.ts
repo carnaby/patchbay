@@ -24,6 +24,12 @@ const housekeeping = setInterval(async () => {
       });
       if (pruned.length) console.log(`[patchbay] pruned ${pruned.length} stale anonymous dashboards`);
     }
+    if (config.pruneBlankAnonymousAfterHours > 0) {
+      const pruned = await deps.dashboards.pruneUntouched({
+        olderThanHours: config.pruneBlankAnonymousAfterHours,
+      });
+      if (pruned.length) console.log(`[patchbay] pruned ${pruned.length} blank anonymous dashboards`);
+    }
   } catch (e) {
     console.error('[patchbay] housekeeping failed', e);
   }

@@ -142,9 +142,17 @@ export function apiRoutes(deps: Deps) {
     return c.json(created, 201);
   });
 
-  app.get('/dashboards/:id', async (c) =>
-    c.json(await dashboards.get(c.req.param('id'), c.get('principal'), { touch: true })),
-  );
+  app.get('/dashboards/:id', async (c) => {
+    const chunks = await dashboards.getJson(c.req.param('id'), c.get('principal'), { touch: true });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    const length = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+    return c.body(body, 200, { 'content-type': 'application/json', 'content-length': String(length) });
+  });
 
   app.put('/dashboards/:id', async (c) => {
     const body = z

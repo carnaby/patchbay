@@ -24,6 +24,11 @@ services:
       TRUST_PROXY: cloudflare
       # One worker keeps large inputs off the main thread on a 2-core CPU without doubling memory.
       PIPELINE_WORKERS: "1"
+      # Anyone can create anonymous dashboards here, so they expire: 60 days without a view, or 24 hours when
+      # still blank. The ceiling caps what they may take on the NAS disk in total (MB).
+      PRUNE_ANONYMOUS_AFTER_DAYS: "60"
+      PRUNE_BLANK_ANONYMOUS_AFTER_HOURS: "24"
+      ANONYMOUS_STORAGE_LIMIT_MB: "1024"
     volumes:
       - ./data:/data
     # Measured: ~120 MiB idle, ~250 MiB peak with a 5 MB upload in the worker. The limit leaves headroom.

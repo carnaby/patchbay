@@ -95,7 +95,10 @@ export interface UploadedFile {
   name: string;
   rows: number;
   columns: number;
+  /** Bytes of the file as uploaded. */
   size: number;
+  /** Bytes it takes on the server's disk once parsed; the storage limits count this, not `size`. */
+  storedBytes?: number;
   uploadedAt: string;
 }
 

@@ -60,9 +60,14 @@ data/
   dashboards/<id>/
     meta.json                  owner, visibility, edit-key hash, version, timestamps
     dashboard.json             the document
-    versions/<n>.json          last 50 versions, each with actor and change log
-    files/<fileId>.json        uploaded datasets, parsed once into typed tables
+    versions/<n>.json          last 50 versions (at most 10 MB), each with actor and change log
+    versions/index.json        actor, change log and size of each version, so listing never reads a document
+    files/<fileId>.json        uploaded datasets, parsed once into typed tables (rows as arrays)
 ```
+
+Files are compact JSON; folders from earlier releases are pretty-printed and read as they are (a missing
+`versions/index.json` is rebuilt from the header of each version file). A copy of a dashboard shares its upload files
+through hard links, so deleting either folder leaves the other intact.
 
 **The folder is the source of truth; SQLite is an index.** Listing "my dashboards" or the admin overview needs queries,
 so the index exists, but it can always be rebuilt from the folders (`DashboardIndex.reconcile`). It runs at startup,

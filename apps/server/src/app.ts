@@ -66,11 +66,14 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     const doc = meta ? await store.readDoc(id) : null;
     return meta && doc ? { doc, ownerId: meta.ownerId } : null;
   });
-  dashboards = new DashboardService(store, index, hub, connectors, {
-    store: secrets,
-    mode: config.secrets.mode,
-    users,
-  });
+  dashboards = new DashboardService(
+    store,
+    index,
+    hub,
+    connectors,
+    { store: secrets, mode: config.secrets.mode, users },
+    { anonymousStorageBytes: config.anonymousStorageBytes },
+  );
   return {
     config,
     db,

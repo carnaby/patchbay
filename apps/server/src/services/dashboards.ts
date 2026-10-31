@@ -19,6 +19,7 @@ import {
   docSecretIds,
   FEED_MIN_REFRESH_SEC,
   inferTable,
+  LIMITS,
   MAX_SECRETS_PER_USER,
   normalizeLayout,
   OpError,
@@ -94,8 +95,79 @@ const TOKEN_PUBLIC_EDIT =
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_FILES = 20;
+/**
+ * Uploaded data per dashboard, counted as stored on disk (parsed), not as uploaded. With the document limit and
+ * the version budget (MAX_VERSION_BYTES) this bounds what one dashboard can take: about 36 MB.
+ */
 export const MAX_DASHBOARD_BYTES = 25 * 1024 * 1024;
+export const MAX_DOCUMENT_BYTES = LIMITS.documentBytes;
 const TOUCH_INTERVAL_MS = 10 * 60_000;
+const ANONYMOUS_FULL =
+  'This server has no room for more anonymous dashboard data right now. Sign in to keep working (claiming this dashboard makes it yours), or try again later.';
+
+const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+const kb = (bytes: number) => `${Math.ceil(bytes / 1024)} KB`;
+const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+
+/** Says what to do about it, because the reader is often an agent that just added inline rows. */
+function documentTooLarge(doc: DashboardDoc, bytes: number): HttpError {
+  const inline = doc.datasets
+    .flatMap((d) => (d.source.kind === 'inline' ? [{ id: d.id, bytes: jsonBytes(d) }] : []))
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 3);
+  return badRequest(
+    `The dashboard would take ${kb(bytes)}; a dashboard document is limited to ${kb(MAX_DOCUMENT_BYTES)}. ` +
+      (inline.length
+        ? `Largest inline datasets: ${inline.map((d) => `"${d.id}" (${kb(d.bytes)})`).join(', ')}. `
+        : '') +
+      `Inline rows are for small tables you write yourself (at most ${LIMITS.inlineRows} rows, text values up to ${LIMITS.inlineText} characters). ` +
+      'Put larger data in a CSV or JSON upload (upload_data, or POST /api/dashboards/:id/files) and use a source of kind "upload", or remove datasets you no longer need.',
+    { code: 'DOCUMENT_TOO_LARGE', bytes, limitBytes: MAX_DOCUMENT_BYTES },
+  );
+}
+
+/**
+ * Long inline text and column names that `after` adds. Checked here on writes rather than in the document schema,
+ * which also reads stored documents: those saved before the limits keep loading and accept other edits, and values
+ * they already hold may stay (editing one row of such a dataset still saves).
+ */
+function inlineTextTooLong(before: DashboardDoc, after: DashboardDoc): HttpError | null {
+  const existing = new Map(before.datasets.map((d) => [d.id, d]));
+  for (const dataset of after.datasets) {
+    if (dataset.source.kind !== 'inline') continue;
+    const old = existing.get(dataset.id)?.source;
+    if (old === dataset.source) continue;
+    const known = new Set<string>();
+    if (old?.kind === 'inline') {
+      for (const row of old.rows) {
+        for (const [name, value] of Object.entries(row)) {
+          if (name.length > LIMITS.inlineColumnName) known.add(name);
+          if (typeof value === 'string' && value.length > LIMITS.inlineText) known.add(value);
+        }
+      }
+    }
+    for (const [index, row] of dataset.source.rows.entries()) {
+      for (const [name, value] of Object.entries(row)) {
+        const where = `Dataset "${dataset.id}", inline row ${index + 1}`;
+        const advice =
+          'Put longer text in a CSV or JSON upload (upload_data, or POST /api/dashboards/:id/files) and use a source of kind "upload", or in a text widget.';
+        if (name.length > LIMITS.inlineColumnName && !known.has(name)) {
+          return badRequest(
+            `${where}: column names in inline rows are limited to ${LIMITS.inlineColumnName} characters ("${name.slice(0, 40)}…" has ${name.length}). Use a shorter name.`,
+            { code: 'INLINE_VALUE_TOO_LONG' },
+          );
+        }
+        if (typeof value === 'string' && value.length > LIMITS.inlineText && !known.has(value)) {
+          return badRequest(
+            `${where}, column "${name.slice(0, 40)}": text values in inline rows are limited to ${LIMITS.inlineText} characters (this one has ${value.length}). ${advice}`,
+            { code: 'INLINE_VALUE_TOO_LONG' },
+          );
+        }
+      }
+    }
+  }
+  return null;
+}
 
 export class ConflictError extends HttpError {
   readonly current: DashboardEnvelope;
@@ -108,6 +180,15 @@ export class ConflictError extends HttpError {
 interface SecretWriteOptions extends PublicSecretsConfirmation {
   /** Restores skip the existence and binding checks; use time reports dead references instead. */
   restore?: boolean;
+}
+
+const storedBytes = (files: UploadedFile[]) => files.reduce((sum, f) => sum + (f.storedBytes ?? f.size), 0);
+
+function uploadsFull(adding: number, used: number): HttpError {
+  return badRequest(
+    `A dashboard can hold up to ${MAX_FILES} files and ${mb(MAX_DASHBOARD_BYTES)} of uploaded data as stored on the server` +
+      ` (${mb(used)} in use${adding ? `, this file needs ${mb(adding)}` : ''}). Delete unused files first.`,
+  );
 }
 
 function withoutSecrets(d: Dataset): Dataset {
@@ -146,6 +227,8 @@ export class DashboardService {
   private readonly secrets: Secrets;
   private readonly secretMode: SecretMode;
   private readonly users: Users;
+  /** Disk space all anonymous dashboards may take together; 0 = no limit. */
+  private readonly anonymousStorageBytes: number;
   /** Secret ids whose decryption failure was already logged; once per secret per process is enough. */
   private readonly undecryptableLogged = new Set<string>();
 
@@ -155,6 +238,7 @@ export class DashboardService {
     hub: LiveHub,
     connectors: ConnectorLookup,
     secrets: { store: Secrets; mode: SecretMode; users: Users },
+    limits: { anonymousStorageBytes?: number } = {},
   ) {
     this.store = store;
     this.index = index;
@@ -163,6 +247,34 @@ export class DashboardService {
     this.secrets = secrets.store;
     this.secretMode = secrets.mode;
     this.users = secrets.users;
+    this.anonymousStorageBytes = limits.anonymousStorageBytes ?? 0;
+  }
+
+  /**
+   * Refuses anonymous writes once anonymous dashboards together reach the configured ceiling. Anyone can create
+   * them, so without a ceiling a script could fill the disk; signed-in users stay unaffected.
+   */
+  private assertAnonymousRoom(adding: number) {
+    if (this.anonymousStorageBytes <= 0) return;
+    if (this.index.anonymousBytes() + adding <= this.anonymousStorageBytes) return;
+    throw new HttpError(507, ANONYMOUS_FULL, { code: 'ANONYMOUS_STORAGE_FULL' });
+  }
+
+  /**
+   * Size rules for writing `after` over `before` (null when creating). A document stored before the limit existed
+   * keeps loading and accepts edits that do not grow it, so it can be shrunk.
+   */
+  private checkSize(ownerId: string | null, before: DashboardDoc | null, after: DashboardDoc) {
+    const bytes = jsonBytes(after);
+    if (bytes > MAX_DOCUMENT_BYTES && (before === null || bytes > jsonBytes(before))) {
+      throw documentTooLarge(after, bytes);
+    }
+    // The document and its new version.
+    if (ownerId === null) this.assertAnonymousRoom(2 * bytes);
+  }
+
+  private async updateSize(id: string) {
+    this.index.setSize(id, await this.store.sizeOf(id));
   }
 
   /**
@@ -315,6 +427,16 @@ export class DashboardService {
     return this.envelope(meta, doc, p);
   }
 
+  /**
+   * `get` as response body chunks. The document part is the store's shared buffer, so a crowd of viewers costs one
+   * serialised copy of a large document rather than one per request.
+   */
+  async getJson(id: string, p: Principal, options: { touch?: boolean } = {}): Promise<Uint8Array[]> {
+    const { doc, ...rest } = await this.get(id, p, options);
+    const head = JSON.stringify(rest);
+    return [Buffer.from(`${head.slice(0, -1)},"doc":`), this.store.serializedDoc(doc), Buffer.from('}')];
+  }
+
   async create(
     p: Principal,
     input: {
@@ -334,6 +456,7 @@ export class DashboardService {
       if (input.visibility === 'public')
         this.assertMayShowSecrets(p, p.user.id, secretIds, input, TOKEN_PUBLISH);
     }
+    this.checkSize(p.user?.id ?? null, null, doc);
     const id = newDashboardId();
     const at = now();
     const editKey = p.user ? undefined : randomToken('pbk_', 24);
@@ -355,7 +478,11 @@ export class DashboardService {
       actorOf(p),
       input.changes ?? [input.template ? `Created from template "${input.template}"` : 'Created'],
     );
-    this.index.upsert(meta, { title: doc.title, widgets: doc.widgets.length });
+    this.index.upsert(meta, {
+      title: doc.title,
+      widgets: doc.widgets.length,
+      sizeBytes: await this.store.sizeOf(id),
+    });
     const principal = editKey ? { ...p, editKey } : p;
     return { envelope: this.envelope(meta, doc, principal), ...(editKey ? { editKey } : {}) };
   }
@@ -372,6 +499,10 @@ export class DashboardService {
       if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
       const next = mutate(doc, meta);
       this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
+      this.checkSize(meta.ownerId, doc, next.doc);
+      // A restore brings back what was stored before, like the secret checks above allow.
+      const inline = secretOptions.restore ? null : inlineTextTooLong(doc, next.doc);
+      if (inline) throw inline;
       const actor = actorOf(p);
       const updated: StoredMeta = {
         ...meta,
@@ -381,7 +512,11 @@ export class DashboardService {
         lastActor: actor,
       };
       await this.store.writeDoc(updated, next.doc, actor, next.changes);
-      this.index.upsert(updated, { title: next.doc.title, widgets: next.doc.widgets.length });
+      this.index.upsert(updated, {
+        title: next.doc.title,
+        widgets: next.doc.widgets.length,
+        sizeBytes: await this.store.sizeOf(id),
+      });
       return { meta: updated, doc: next.doc, changes: next.changes, actor };
     });
     await this.hub.docChanged(id, {
@@ -438,6 +573,9 @@ export class DashboardService {
       const result = this.raiseRefreshToMinimum(doc, applied);
       // A dry run answers exactly like the save would, so agents learn about secret rules before saving.
       this.checkSecretRefs(meta, doc, result.doc, p, options);
+      this.checkSize(meta.ownerId, doc, result.doc);
+      const inline = inlineTextTooLong(doc, result.doc);
+      if (inline) throw inline;
       return { envelope: this.envelope(meta, result.doc, p), changes: result.changes, dryRun: true };
     }
     return this.commit(
@@ -518,11 +656,15 @@ export class DashboardService {
       doc: { ...doc, datasets, title: `${doc.title} (copy)` },
       ...(strip ? { changes: ['Created', 'Removed secret references (secrets belong to their owner)'] } : {}),
     });
-    // Copy only files the copied datasets actually use: unreferenced uploads stay private to editors.
+    // Only files the copied datasets actually use: unreferenced uploads stay private to editors. Viewers may copy
+    // a public dashboard, so the copy shares the upload bytes (hard links) instead of duplicating them: copying
+    // made every two-byte request worth the dashboard's uploads in disk space.
     const used = new Set(doc.datasets.flatMap((d) => (d.source.kind === 'upload' ? [d.source.fileId] : [])));
-    for (const file of (await this.store.listFiles(id)).filter((f) => used.has(f.id))) {
-      const table = await this.store.readFileTable(id, file.id);
-      if (table) await this.store.saveFile(created.envelope.meta.id, { ...file, table });
+    const copyId = created.envelope.meta.id;
+    for (const fileId of used) await this.store.linkFile(id, copyId, fileId);
+    if (used.size) {
+      await this.updateSize(copyId);
+      await this.updateSize(id);
     }
     return created;
   }
@@ -572,12 +714,11 @@ export class DashboardService {
     if (!this.canEdit(meta, p)) throw forbidden('You cannot edit this dashboard');
     if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) throw badRequest('Files are limited to 5 MB');
     const existing = await this.store.listFiles(id);
-    const usedBytes = existing.reduce((sum, f) => sum + f.size, 0);
-    if (existing.length >= MAX_FILES || usedBytes + Buffer.byteLength(input.content) > MAX_DASHBOARD_BYTES) {
-      throw badRequest(
-        `A dashboard can hold up to ${MAX_FILES} files and ${MAX_DASHBOARD_BYTES / 1024 / 1024} MB of uploads. Delete unused files first.`,
-      );
+    if (existing.length >= MAX_FILES || storedBytes(existing) >= MAX_DASHBOARD_BYTES) {
+      throw uploadsFull(0, storedBytes(existing));
     }
+    // Before parsing: the stored file is rarely much smaller than the upload.
+    if (meta.ownerId === null) this.assertAnonymousRoom(Buffer.byteLength(input.content));
     const format =
       input.format ?? (/\.json$/i.test(input.name) || /^\s*[[{]/.test(input.content) ? 'json' : 'csv');
     let records: unknown[];
@@ -609,8 +750,19 @@ export class DashboardService {
       size: Buffer.byteLength(input.content),
       uploadedAt: now(),
     };
-    await this.store.saveFile(id, { ...file, table });
-    return file;
+    // The limits count bytes on disk, known only once serialised. Checked under the lock, so that concurrent
+    // uploads cannot both squeeze in.
+    const written = await this.store.withLock(id, async () => {
+      const files = await this.store.listFiles(id);
+      const used = storedBytes(files);
+      const bytes = await this.store.saveFile(id, { ...file, table }, (bytes) => {
+        if (files.length >= MAX_FILES || used + bytes > MAX_DASHBOARD_BYTES) throw uploadsFull(bytes, used);
+        if (meta.ownerId === null) this.assertAnonymousRoom(bytes);
+      });
+      await this.updateSize(id);
+      return bytes;
+    });
+    return { ...file, storedBytes: written };
   }
 
   /** Uploaded files are visible to editors only; viewers see data only through datasets. */
@@ -626,6 +778,7 @@ export class DashboardService {
     const users = doc.datasets.filter((d) => d.source.kind === 'upload' && d.source.fileId === fileId);
     if (users.length) throw badRequest(`File is used by dataset(s): ${users.map((d) => d.name).join(', ')}`);
     await this.store.deleteFile(id, fileId);
+    await this.updateSize(id);
   }
 
   /** The dashboard a stored dataset of `id` resolves against, after checking the caller may view it. */
@@ -913,6 +1066,31 @@ export class DashboardService {
       `Anyone who can view this dashboard will see the data fetched with ${names} (never the secrets themselves). Confirm to continue.`,
       { code: CONFIRM_PUBLIC_SECRETS, secrets },
     );
+  }
+
+  /**
+   * Deletes anonymous dashboards created more than `olderThanHours` ago and never changed since: still version 1,
+   * no data, no widgets. Viewing does not keep them, unlike `prune`: there is nothing in them to lose.
+   */
+  async pruneUntouched(options: { olderThanHours: number }): Promise<string[]> {
+    const cutoff = new Date(Date.now() - options.olderThanHours * 3_600_000).toISOString();
+    const pruned: string[] = [];
+    for (const id of this.index.untouchedAnonymousBefore(cutoff)) {
+      const removed = await this.store.withLock(id, async () => {
+        // The index may lag behind the folder; decide on the folder.
+        const meta = await this.store.readMeta(id);
+        const doc = meta ? await this.store.readDoc(id).catch(() => null) : null;
+        if (!meta || !doc || meta.ownerId !== null || meta.version !== 1) return false;
+        if (doc.datasets.length > 0 || doc.widgets.length > 0) return false;
+        await this.store.remove(id);
+        return true;
+      });
+      if (!removed) continue;
+      this.index.remove(id);
+      this.hub.deleted(id);
+      pruned.push(id);
+    }
+    return pruned;
   }
 
   async prune(options: { olderThanDays: number; onlyAnonymous: boolean }): Promise<string[]> {

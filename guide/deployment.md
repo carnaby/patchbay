@@ -16,7 +16,8 @@ cp .env.example .env
 #   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
 #   ADMIN_EMAILS=you@example.com
 #   DEV_LOGIN=0
-#   PRUNE_ANONYMOUS_AFTER_DAYS=60   (optional)
+#   PRUNE_ANONYMOUS_AFTER_DAYS=60   (optional, see "Anonymous dashboards and disk space")
+#   PRUNE_BLANK_ANONYMOUS_AFTER_HOURS=24
 #   SECRETS=off                     (default; see "Secrets for HTTP sources" before changing it)
 PATCHBAY_DOMAIN=dash.example.com docker compose up -d
 ```
@@ -89,6 +90,9 @@ docker compose up -d
 - `SECRETS` and `SECRETS_KEY` (in `patchbay.env`) decide whether users may store credentials for HTTP sources; leave
   `SECRETS=off` unless you mean it, and read "Secrets for HTTP sources" below first. If you set a key, keep
   `patchbay.env` out of the backup of `data/` (see Backups).
+- `PRUNE_ANONYMOUS_AFTER_DAYS=60`, `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS=24` and `ANONYMOUS_STORAGE_LIMIT_MB=1024` are
+  set in the compose file, because anyone can create anonymous dashboards on a public instance; see "Anonymous
+  dashboards and disk space".
 - `PIPELINE_WORKERS=1` and a 384 MB memory limit suit a 2-core machine. Measured: about 100–120 MB idle, about
   250 MB peak while a 5 MB upload is processed.
 - The tunnel token goes only to `cloudflared` (it is in `.env`, which the app container does not receive).
@@ -165,6 +169,32 @@ the value.
 decrypt. The credentials have to be revoked where they were issued. The admin page lists how many secrets each user
 stored (never names or values), so you know whom to tell.
 
+## Anonymous dashboards and disk space
+
+Anyone can create a dashboard without an account (it is public and editable with its edit key), so on a public
+instance strangers decide how much disk is used. Three settings bound it:
+
+- `ANONYMOUS_STORAGE_LIMIT_MB` (default `1024`, `0` = no limit) is the disk space all anonymous dashboards may take
+  together, counted from what is really on disk (documents, versions, parsed uploads). Above it, anonymous dashboards
+  cannot be created, edited or given uploads, and the API answers `507` asking people to sign in. Signed-in users
+  are never affected, and claiming an anonymous dashboard moves it out of the total. The limit is on by default
+  because it is the one setting that protects every instance's disk.
+- `PRUNE_ANONYMOUS_AFTER_DAYS` (default `0` = keep forever) deletes anonymous dashboards nobody opened for that many
+  days. Opening a dashboard counts, so it is a retention policy rather than a defence: a script can keep its own
+  dashboards alive by viewing them, which is what the storage limit is for.
+- `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS` (default `0` = keep) deletes anonymous dashboards still blank that many hours
+  after creation: never edited, no data, no widgets. Viewing does not keep them.
+
+Both pruning settings default to off: without Google sign-in every dashboard is anonymous, and a self-hosted instance
+should not start deleting its owner's work after an upgrade. Turn them on for a public instance; the NAS compose file
+does (60 days, 24 hours).
+
+Per dashboard, whoever owns it: the document is at most 1 MB as JSON (inline rows are for small tables; larger data
+goes into uploads), the version history at most 10 MB and 50 versions (the oldest are dropped first), and uploads at
+most 20 files and 25 MB as stored on the server (a parsed CSV can take more room than the file). Copies made with
+"Make a copy" share the upload files of the original (hard links) instead of copying them; on a file system without
+hard links they are copied, and the server says so once in its log.
+
 ## Operations checklist
 
 - `PUBLIC_URL` must be the exact public origin (scheme + host, no trailing slash). OAuth issuer and MCP resource URIs
@@ -175,8 +205,8 @@ stored (never names or values), so you know whom to tell.
   SQLite. Back up `SECRETS_KEY` separately, never in the same place.
 - `GET /healthz` is a liveness probe; the image defines a Docker `HEALTHCHECK`.
 - Logs go to stdout. The process handles `SIGTERM` gracefully.
-- Limits worth knowing: uploads ≤ 5 MB, ≤ 10,000 rows sent to the browser per dataset, ≤ 60 widgets and 30 datasets per
-  dashboard, last 50 versions kept.
+- Limits worth knowing: uploads ≤ 5 MB per file and ≤ 25 MB per dashboard as stored, documents ≤ 1 MB, ≤ 10,000 rows
+  sent to the browser per dataset, ≤ 60 widgets and 30 datasets per dashboard, last 50 versions (≤ 10 MB) kept.
 
 ## Scaling notes
 

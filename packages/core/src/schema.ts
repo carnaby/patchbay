@@ -19,10 +19,21 @@ export const LIMITS = {
   datasets: 30,
   widgets: 60,
   inlineRows: 2000,
+  /**
+   * Characters per inline text value and per inline column name. Checked on writes only (DashboardService), not in
+   * this schema, which also reads stored documents: those saved before the limits must keep loading.
+   */
+  inlineText: 1000,
+  inlineColumnName: 200,
   transforms: 40,
   markdown: 20_000,
   title: 120,
   description: 1000,
+  /**
+   * Serialised size of a whole document in bytes. Below the 1 MiB request body limit, so every document the server
+   * accepts can still be saved whole from the editor; larger data belongs in uploads, which are stored on their own.
+   */
+  documentBytes: 1_000_000,
 } as const;
 
 export const IdSchema = z
