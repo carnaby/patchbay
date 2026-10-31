@@ -60,3 +60,15 @@ export function searchUrl(config: SearchConfig, query: string): string | null {
     return null;
   }
 }
+
+/**
+ * The host a custom engine sends this query to, shown next to the field while typing: a template may point anywhere,
+ * so a widget titled "Google" must not hide that it searches somewhere else. Taken from the final URL because a
+ * template may put `{q}` into the host itself. Null for the built-in engines, whose label already names the real
+ * destination, and for an empty query.
+ */
+export function searchTargetHost(config: SearchConfig, query: string): string | null {
+  if (config.engine !== 'custom') return null;
+  const url = searchUrl(config, query);
+  return url ? new URL(url).hostname : null;
+}
