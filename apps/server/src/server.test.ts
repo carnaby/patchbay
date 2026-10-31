@@ -932,6 +932,39 @@ describe('MCP tools', () => {
     expect(end.rows.map((r: { v: number }) => r.v)).toEqual([7, 8, 9]);
   });
 
+  it('keeps get_data answers small when every row repeats long column names', async () => {
+    const id = JSON.parse(
+      text(await client.callTool({ name: 'create_dashboard', arguments: { title: 'Wide' } })),
+    ).dashboardId;
+    const names = Array.from({ length: 20 }, (_, i) => `${i}_${'n'.repeat(58)}`);
+    const csv = `${names.join(',')}\n${`${names.map((_, i) => i).join(',')}\n`.repeat(2_000)}`;
+    const uploaded = JSON.parse(
+      text(
+        await client.callTool({
+          name: 'upload_data',
+          arguments: { dashboardId: id, name: 'wide.csv', format: 'csv', content: csv },
+        }),
+      ),
+    );
+    await client.callTool({
+      name: 'apply_operations',
+      arguments: { dashboardId: id, operations: [uploaded.addDatasetOp] },
+    });
+    const answer = text(
+      await client.callTool({
+        name: 'get_data',
+        arguments: { dashboardId: id, datasetId: uploaded.addDatasetOp.dataset.id, limit: 500 },
+      }),
+    );
+    // 500 such rows are about 1.4 MB; the answer stops at what fits and says why.
+    expect(answer.length).toBeLessThan(400_000);
+    const read = JSON.parse(answer);
+    expect(read.rowCount).toBe(2_000);
+    expect(read.rows.length).toBeGreaterThan(50);
+    expect(read.rows.length).toBeLessThan(500);
+    expect(read.note).toMatch(/select fewer columns/);
+  });
+
   it('grows accumulate history without viewers only when the data is requested, and says so', async () => {
     // Own user: the clock jump below would otherwise skew the shared client's rate-limit bucket.
     const agent = await ownClient('iss-watcher@example.com');

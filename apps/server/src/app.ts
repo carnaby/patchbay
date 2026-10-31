@@ -21,6 +21,7 @@ import { oauthRoutes } from './routes/oauth.ts';
 import { DashboardService } from './services/dashboards.ts';
 import { DataService } from './services/data.ts';
 import { defaultPoolSize, InlineRunner, type PipelineRunner, WorkerPool } from './services/pipeline-pool.ts';
+import { ResultWire } from './services/result-wire.ts';
 import { DashboardIndex } from './store/dashboard-index.ts';
 import { FolderStore } from './store/folder-store.ts';
 import { HttpError, toHttpError } from './util/errors.ts';
@@ -100,6 +101,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     connectors,
     pipeline,
     data,
+    wire: new ResultWire(),
     hub,
     dashboards,
     limits: {

@@ -55,6 +55,7 @@ import { api, errorMessage } from '../lib/api.ts';
 import { useConnectors } from '../lib/hooks.ts';
 import { credentialErrorHint, introducedSecretIds, introducedSecretRefs } from '../lib/secrets.ts';
 import { useEditor } from '../state/editor.ts';
+import { fromWire } from '../state/sync.ts';
 import {
   type CredentialContext,
   CredentialsField,
@@ -91,6 +92,14 @@ interface PreviewResponse {
   result: DatasetResult;
   profile: TableProfile;
   suggestions: Suggestion[];
+}
+
+async function previewRequest(dashboardId: string, dataset: unknown): Promise<PreviewResponse> {
+  const res = await api<PreviewResponse>(`/api/dashboards/${dashboardId}/preview?rows=arrays`, {
+    body: { dataset },
+    dashboardId,
+  });
+  return { ...res, result: fromWire(res.result) };
 }
 
 function slug(text: string, taken: Set<string>) {
@@ -703,21 +712,13 @@ function DatasetEditor({
   const previewBody = { source: debounced.source, transforms: debounced.transforms };
   const preview = useQuery({
     queryKey: ['preview', dashboardId, JSON.stringify(previewBody)],
-    queryFn: () =>
-      api<PreviewResponse>(`/api/dashboards/${dashboardId}/preview`, {
-        body: { dataset: previewBody },
-        dashboardId,
-      }),
+    queryFn: () => previewRequest(dashboardId, previewBody),
     retry: false,
     enabled: previewable(debounced.source) && !previewBlocked,
   });
   const raw = useQuery({
     queryKey: ['preview', dashboardId, JSON.stringify({ source: debounced.source, transforms: [] })],
-    queryFn: () =>
-      api<PreviewResponse>(`/api/dashboards/${dashboardId}/preview`, {
-        body: { dataset: { source: debounced.source } },
-        dashboardId,
-      }),
+    queryFn: () => previewRequest(dashboardId, { source: debounced.source }),
     retry: false,
     enabled: previewable(debounced.source) && !previewBlocked,
   });

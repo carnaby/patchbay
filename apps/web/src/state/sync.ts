@@ -4,7 +4,13 @@
  * - live events over SSE (document changes by other clients, refreshed data),
  * - dataset results, kept in the TanStack Query cache.
  */
-import type { DashboardEnvelope, Dataset, DatasetResult, LiveEvent } from '@patchbay/core';
+import {
+  type DashboardEnvelope,
+  type Dataset,
+  type DatasetResult,
+  decodeTable,
+  type LiveEvent,
+} from '@patchbay/core';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
@@ -73,6 +79,12 @@ export function useAutosave() {
   }, []);
 }
 
+/** A result as the server sends it with `rows=arrays`, back to rows keyed by column name. */
+export const fromWire = (result: DatasetResult): DatasetResult => ({
+  ...result,
+  table: decodeTable(result.table),
+});
+
 export const datasetKey = (dashboardId: string, dataset: Dataset) =>
   ['data', dashboardId, dataset.id, JSON.stringify(dataset)] as const;
 
@@ -89,7 +101,8 @@ export function useLiveEvents(id: string | undefined) {
 
   useEffect(() => {
     if (!id) return;
-    const source = new EventSource(`/api/dashboards/${id}/events`, { withCredentials: true });
+    // Rows as arrays: column names once per result instead of once per row (see core wire.ts).
+    const source = new EventSource(`/api/dashboards/${id}/events?rows=arrays`, { withCredentials: true });
     let stopped = false;
     let greeted = false;
 
@@ -136,7 +149,7 @@ export function useLiveEvents(id: string | undefined) {
       if (event.type === 'data') {
         const doc = useEditor.getState().saved;
         const dataset = doc?.datasets.find((d) => d.id === event.result.datasetId);
-        if (dataset) qc.setQueryData(datasetKey(id, dataset), event.result);
+        if (dataset) qc.setQueryData(datasetKey(id, dataset), fromWire(event.result));
       } else if (event.type === 'doc') {
         void pullRemote(event);
       } else if (event.type === 'hello') {
@@ -191,7 +204,12 @@ export function useDatasetResult(dashboardId: string, dataset: Dataset | undefin
   const inSync = Boolean(dataset && savedDataset && JSON.stringify(savedDataset) === JSON.stringify(dataset));
   return useQuery({
     queryKey: dataset ? datasetKey(dashboardId, dataset) : ['data', dashboardId, 'none'],
-    queryFn: () => api<DatasetResult>(`/api/dashboards/${dashboardId}/data/${dataset!.id}`, { dashboardId }),
+    queryFn: async () =>
+      fromWire(
+        await api<DatasetResult>(`/api/dashboards/${dashboardId}/data/${dataset!.id}?rows=arrays`, {
+          dashboardId,
+        }),
+      ),
     enabled: Boolean(dataset) && inSync,
     placeholderData: keepPreviousData,
     staleTime: dataset && dataset.refreshSec > 0 ? dataset.refreshSec * 1000 : 5 * 60_000,

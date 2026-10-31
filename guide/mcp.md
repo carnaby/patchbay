@@ -97,6 +97,9 @@ The answer of `apply_operations`:
 - `dataChecks`: one entry per dataset the batch added or changed, loaded right away so a broken source surfaces at
   once: `rowCount` (rows after the whole pipeline), `columns` (`name:type`), `sampleRows` (the first 3 rows, a sample,
   not a count) and `error`. `truncated: true` means the result has more rows than the 10,000 that widgets receive.
+  A result larger than 4 MB as JSON comes back as an `error` with its columns and no rows, for every reader alike:
+  add `limit`, `select` or `aggregate` steps. Sample rows (here and in `get_data`, `preview_data`) stop at about
+  200,000 characters, with a `note` when fewer rows than asked for fit.
 - `warnings`, when there is something to fix that did not fail the batch (see "Secrets" and "Colour and formatting").
 
 Sound cues are spelled out in `changes` whenever an operation adds, changes or removes one (trigger, sound, volume and

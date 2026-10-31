@@ -16,6 +16,8 @@ import {
   formattingWarnings,
   OpSchema,
   profileTable,
+  type Row,
+  rowSize,
   SourceSchema,
   type Suggestion,
   suggestWidgets,
@@ -52,10 +54,39 @@ const DATA_CHECK_SAMPLE = 3;
 const ACCUMULATE_NOTE =
   'The accumulate history is kept in server memory. It gains a reading every refreshSec only while someone has the dashboard open; with nobody watching, only when the data is requested (get_data, render_snapshot, this check), so it has gaps. Never faster than the source updates (a connector minRefreshSec, http 30 s). A restart clears it.';
 
+/**
+ * Characters of sample rows in one tool result. Hundreds of rows of short values fit; rows repeat every column name,
+ * so with long names or long text fewer do, and the result says so instead of growing to megabytes.
+ */
+const SAMPLE_CHARS = 200_000;
+
+/** As many of `rows` as fit in `budget` characters (rows as objects, as tools return them). */
+function fitRows(table: DataTable, rows: Row[], budget: number, from: 'start' | 'end' = 'start') {
+  const ordered = from === 'end' ? [...rows].reverse() : rows;
+  let used = 0;
+  let n = 0;
+  for (const row of ordered) {
+    used += rowSize(table.columns, row, 'objects');
+    if (used > budget) break;
+    n++;
+  }
+  return n === rows.length ? rows : from === 'end' ? rows.slice(rows.length - n) : rows.slice(0, n);
+}
+
 /** A compact, model-friendly view of a table: columns + the first (or last) rows. */
 function sampleTable(table: DataTable, limit: number, from: 'start' | 'end' = 'start') {
-  const rows = from === 'end' ? table.rows.slice(-limit) : table.rows.slice(0, limit);
-  return { columns: table.columns, rowCount: table.rows.length, rows };
+  const wanted = from === 'end' ? table.rows.slice(-limit) : table.rows.slice(0, limit);
+  const rows = fitRows(table, wanted, SAMPLE_CHARS, from);
+  return {
+    columns: table.columns,
+    rowCount: table.rows.length,
+    rows,
+    ...(rows.length < wanted.length
+      ? {
+          note: `Only ${rows.length} of the ${wanted.length} rows asked for fit in one answer; select fewer columns or shorten long text to see more.`,
+        }
+      : {}),
+  };
 }
 
 let idCounter = 0;
@@ -349,7 +380,7 @@ export function createMcp(deps: Deps) {
                 rowCount: r.table.rows.length,
                 ...(r.truncated ? { truncated: true } : {}),
                 columns: r.table.columns.map((c) => `${c.name}:${c.type}`),
-                sampleRows: r.table.rows.slice(0, DATA_CHECK_SAMPLE),
+                sampleRows: fitRows(r.table, r.table.rows.slice(0, DATA_CHECK_SAMPLE), SAMPLE_CHARS / 30),
                 error: r.error,
                 ...(d.accumulate > 0 ? { note: ACCUMULATE_NOTE } : {}),
               };
@@ -509,7 +540,7 @@ export function createMcp(deps: Deps) {
             file,
             addDatasetOp: { op: 'addDataset', dataset },
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
-            sample: result.table.rows.slice(0, 5),
+            sample: fitRows(result.table, result.table.rows.slice(0, 5), SAMPLE_CHARS / 4),
             suggestions: suggestionOps(
               dataset,
               suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
