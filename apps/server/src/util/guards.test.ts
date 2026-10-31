@@ -1,6 +1,12 @@
 import { inferTable } from '@patchbay/core';
-import { describe, expect, it } from 'vitest';
-import { parseUpload, UploadError } from '../services/upload-parse.ts';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  jsonUploadProblem,
+  parseUpload,
+  UPLOAD_MAX_COLUMN_NAME,
+  UPLOAD_MAX_COLUMNS,
+  UploadError,
+} from '../services/upload-parse.ts';
 import { BusyError, Gate } from './gate.ts';
 import { approxTableBytes, ByteLru } from './lru.ts';
 import { OutboundLimiter } from './outbound.ts';
@@ -116,6 +122,56 @@ describe('parseUpload', () => {
       /500 rows × 3 columns/,
     );
     expect(parseUpload({ content: records, format: 'json', maxCells: 1500 }).rows).toHaveLength(500);
+  });
+
+  it('refuses long column names and too many columns, in CSV before reading rows and in JSON', () => {
+    const long = 'n'.repeat(UPLOAD_MAX_COLUMN_NAME + 1);
+    const longCsv = `id,${long}\n${'1,2\n'.repeat(10)}`;
+    expect(() => parseUpload({ content: longCsv, format: 'csv', maxCells: 1000 })).toThrow(
+      `Column names are limited to ${UPLOAD_MAX_COLUMN_NAME} characters`,
+    );
+    const longJson = JSON.stringify([{ id: 1, [long]: 2 }]);
+    expect(() => parseUpload({ content: longJson, format: 'json', maxCells: 1000 })).toThrow(
+      `limited to ${UPLOAD_MAX_COLUMN_NAME} characters`,
+    );
+    // Nested objects become dotted names, which count as a whole.
+    const nested = JSON.stringify([{ a: { [long.slice(2)]: 1 }, b: 2 }]);
+    expect(() => parseUpload({ content: nested, format: 'json', maxCells: 1000 })).toThrow(UploadError);
+    const okName = 'n'.repeat(UPLOAD_MAX_COLUMN_NAME);
+    expect(parseUpload({ content: `${okName}\n1\n`, format: 'csv', maxCells: 10 }).columns[0]!.name).toBe(
+      okName,
+    );
+    const wide = csv(1, UPLOAD_MAX_COLUMNS + 1);
+    expect(() => parseUpload({ content: wide, format: 'csv', maxCells: 100_000 })).toThrow(
+      `uploads are limited to ${UPLOAD_MAX_COLUMNS}`,
+    );
+    expect(
+      parseUpload({ content: csv(1, UPLOAD_MAX_COLUMNS), format: 'csv', maxCells: 100_000 }).columns,
+    ).toHaveLength(UPLOAD_MAX_COLUMNS);
+  });
+
+  it('refuses deeply nested or value-heavy JSON before parsing it', () => {
+    const bomb = '['.repeat(100_000) + ']'.repeat(100_000);
+    const parse = vi.spyOn(JSON, 'parse');
+    try {
+      expect(() => parseUpload({ content: bomb, format: 'json', maxCells: 1000 })).toThrow(
+        'nests deeper than 64',
+      );
+      const many = JSON.stringify(Array.from({ length: 3001 }, () => 0));
+      const err = (() => {
+        try {
+          parseUpload({ content: many, format: 'json', maxCells: 1000 });
+        } catch (e) {
+          return e as UploadError;
+        }
+      })();
+      expect(err?.message).toContain('more than 3,000 values');
+      expect(err?.tooLarge).toBe(true);
+      expect(parse).not.toHaveBeenCalled();
+    } finally {
+      parse.mockRestore();
+    }
+    expect(jsonUploadProblem(JSON.stringify([{ a: [1, 2, 3], b: { c: 'x' } }]), 10)).toBeNull();
   });
 
   it('keeps the old parsing rules: BOM, trimmed headers, invalid JSON', () => {

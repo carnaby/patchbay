@@ -25,6 +25,7 @@ import { DashboardIndex } from './store/dashboard-index.ts';
 import { FolderStore } from './store/folder-store.ts';
 import { HttpError, toHttpError } from './util/errors.ts';
 import { prepareIndexHtml } from './util/index-html.ts';
+import { checkedBody, isLargeBody, jsonBodyGuard, newLargeBodyGate } from './util/json-body.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { runAsClient } from './util/request-context.ts';
 import type { UpstreamTestSeam } from './util/safe-fetch.ts';
@@ -167,6 +168,13 @@ export function createApp(deps: Deps) {
   app.use('*', (c, next) =>
     c.req.path.endsWith('/files') || c.req.path === '/mcp' ? uploadLimit(c, next) : defaultLimit(c, next),
   );
+  // A few large bodies in memory at a time, across the server; the rest wait unread or get 503.
+  const largeBodies = newLargeBodyGate();
+  app.use('*', (c, next) =>
+    isLargeBody(c.req.raw) ? largeBodies.run(clientKey(c, config.trustProxy), next) : next(),
+  );
+  // After the size limit, before any route parses a body. /mcp checks its body itself, once the caller is known.
+  app.use('*', (c, next) => (c.req.path === '/mcp' ? next() : jsonBodyGuard(c, next)));
 
   app.get('/healthz', (c) => c.json({ ok: true }));
 
@@ -191,8 +199,14 @@ export function createApp(deps: Deps) {
               | { name: string }
               | undefined
           )?.name ?? 'MCP client');
+    // The SDK parses the body with JSON.parse on this thread; reading it here consumes the original request.
+    let request = c.req.raw;
+    const checked = await checkedBody(c);
+    if (checked && 'problem' in checked)
+      return c.json({ jsonrpc: '2.0', id: null, error: { code: -32600, message: checked.problem } }, 400);
+    if (checked) request = new Request(request, { body: checked.text });
     return runAsClient(`user:${token.userId}`, () =>
-      mcp.fetch(c.req.raw, {
+      mcp.fetch(request, {
         authInfo: {
           token: raw,
           clientId: token.clientId ?? token.tokenId,
