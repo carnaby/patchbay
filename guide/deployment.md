@@ -94,8 +94,8 @@ docker compose up -d
 - `PRUNE_ANONYMOUS_AFTER_DAYS=60`, `PRUNE_BLANK_ANONYMOUS_AFTER_HOURS=24` and `ANONYMOUS_STORAGE_LIMIT_MB=1024` are
   set in the compose file, because anyone can create anonymous dashboards on a public instance; see "Anonymous
   dashboards and disk space".
-- `PIPELINE_WORKERS=1` and a 384 MB memory limit suit a 2-core machine. Measured: about 100–120 MB idle, about
-  250 MB peak while a 5 MB upload is processed.
+- `PIPELINE_WORKERS=1` and a 512 MB memory limit suit a 2-core machine. 384 MB also holds thanks to the memory
+  guard, but it refuses heavy work much sooner under load; see "Memory budget" for the measurements at both sizes.
 - `URL_SOURCES=signed-in` is set in the compose file: the instance runs on a home connection, so only dashboards
   owned by a signed-in user can load http and feed sources, and strangers cannot make it fetch arbitrary addresses
   from your IP. See "Limits for a small public instance".
