@@ -35,6 +35,11 @@ The first public release.
   endpoint, and **news feeds** (RSS, Atom, JSON Feed) shown as headlines.
 - **Colours and formatting**: named colour tokens that adapt to light and dark themes, entity colours per dashboard,
   reference lines, KPI bands and table cell styling.
+- **Privacy and accounts**: a `/privacy` page that states the instance's real retention and whether analytics is on,
+  and self-service account deletion in Settings (dashboards with their files and versions, secrets, tokens, OAuth
+  grants and sessions).
+- **Data credits**: each widget and each dashboard snapshot names the sources its data comes from, as their licences
+  require (Open-Meteo and World Bank are CC BY 4.0).
 - **Secrets for HTTP sources** (off by default): API keys encrypted with AES-256-GCM, bound to an origin and path
   prefix, never readable again, usable but not readable by agents.
 - **Presentation mode** for wall screens (full screen, hidden cursor, Screen Wake Lock) and **sound cues** when live
