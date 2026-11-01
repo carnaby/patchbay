@@ -1,7 +1,15 @@
 import type { DashboardEnvelope, UseCaseInfo } from '@patchbay/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Bot, Check, Copy, ExternalLink } from 'lucide-react';
-import { type KeyboardEvent, type PointerEvent, useEffect, useReducer, useRef, useState } from 'react';
+import {
+  type KeyboardEvent,
+  type PointerEvent,
+  useEffect,
+  useLayoutEffect,
+  useReducer,
+  useRef,
+  useState,
+} from 'react';
 import { useNavigate } from 'react-router';
 import { Button, buttonClass, cx, toast } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
@@ -67,8 +75,10 @@ export function UseCases() {
 
   // The incoming tab slides in from the side it comes from, so a change reads as a move, not a blink. Animated in
   // place rather than by remounting the panel: the video element must survive a tab change (see UseCaseVideo).
+  // Before paint: an auto-advance (a video's `ended`) is not a discrete event, so a passive effect could run after
+  // the incoming tab was painted at full opacity for a frame.
   // biome-ignore lint/correctness/useExhaustiveDependencies: every new active tab replays the slide
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (reduced || tabs.dir === 0) return;
     slide.current?.animate(
       [
