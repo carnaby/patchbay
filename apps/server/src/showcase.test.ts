@@ -59,7 +59,9 @@ function fixtureUseCase(id: string): UseCase {
     doc: buildTemplate('blank'),
     dashboardId: useCaseDashboardId(id),
     video: null,
+    videoSquare: null,
     poster: null,
+    attachment: null,
   } as UseCase;
 }
 
@@ -293,6 +295,7 @@ describe('syncShowcase', () => {
 });
 
 describe('showcase routes', () => {
+  const CSV = 'day,units\n1,2\n2,3\n';
   let routeDir: string;
   let routeDeps: Deps;
   let app: ReturnType<typeof createApp>;
@@ -306,15 +309,25 @@ describe('showcase routes', () => {
     ] as const) {
       const base = join(showcaseDir, id);
       mkdirSync(base, { recursive: true });
+      const attachment = id === 'with-video' ? { attachment: 'sales.csv' } : {};
       writeFileSync(
         join(base, 'meta.json'),
-        JSON.stringify({ id, order, title: id, tab: 'Fixture', description: 'Fixture use case' }),
+        JSON.stringify({
+          id,
+          order,
+          title: id,
+          tab: 'Fixture',
+          description: 'Fixture use case',
+          ...attachment,
+        }),
       );
       writeFileSync(join(base, 'prompt.md'), 'Build a board');
       writeFileSync(join(base, 'dashboard.json'), JSON.stringify(buildTemplate('blank')));
     }
     writeFileSync(join(showcaseDir, 'with-video', 'video.mp4'), Buffer.from('0123456789'));
     writeFileSync(join(showcaseDir, 'with-video', 'poster.jpg'), Buffer.from('jpegdata'));
+    writeFileSync(join(showcaseDir, 'with-video', 'video-square.mp4'), Buffer.from('abcdefgh'));
+    writeFileSync(join(showcaseDir, 'with-video', 'sales.csv'), CSV);
     routeDeps = await createDeps(
       loadConfig({
         NODE_ENV: 'test',
@@ -341,7 +354,16 @@ describe('showcase routes', () => {
     const list = (await res.json()) as UseCaseInfo[];
     expect(list.map((u) => u.id)).toEqual(['with-video', 'no-video']);
     expect(list[0]!.video).toMatch(/^\/showcase\/with-video\/video\.mp4\?v=[a-f0-9]{16}$/);
-    expect(list[1]).toMatchObject({ video: null, poster: null, dashboardId: 'scnovideo' });
+    expect(list[0]!.videoSquare).toMatch(/^\/showcase\/with-video\/video-square\.mp4\?v=[a-f0-9]{16}$/);
+    expect(list[0]!.attachment).toMatchObject({ name: 'sales.csv', rows: 2, bytes: CSV.length });
+    expect(list[0]!.attachment!.url).toMatch(/^\/showcase\/with-video\/sales\.csv\?v=[a-f0-9]{16}$/);
+    expect(list[1]).toMatchObject({
+      video: null,
+      videoSquare: null,
+      poster: null,
+      attachment: null,
+      dashboardId: 'scnovideo',
+    });
   });
 
   it('redirects a slug to its dashboard and 404s unknown or odd slugs', async () => {
@@ -354,6 +376,14 @@ describe('showcase routes', () => {
       '/showcase/no-video/video.mp4',
       '/showcase/with-video/video.mp4/extra',
       '/showcase/no-video/poster.jpg',
+      '/showcase/no-video/video-square.mp4',
+      '/showcase/no-video/sales.csv',
+      // Only the declared attachment is served, never the folder's other files.
+      '/showcase/with-video/other.csv',
+      '/showcase/with-video/meta.json',
+      '/showcase/with-video/prompt.md',
+      '/showcase/with-video/dashboard.json',
+      '/showcase/with-video/sales.csv/extra',
     ])
       expect((await app.request(p)).status).toBe(404);
   });
@@ -364,6 +394,24 @@ describe('showcase routes', () => {
     expect(res.headers.get('content-type')).toBe('video/mp4');
     expect(res.headers.get('cache-control')).toBe('public, max-age=86400');
     expect(await res.text()).toBe('0123');
+  });
+
+  it('serves the square video with ranges', async () => {
+    const res = await app.request('/showcase/with-video/video-square.mp4', {
+      headers: { range: 'bytes=2-4' },
+    });
+    expect(res.status).toBe(206);
+    expect(res.headers.get('content-type')).toBe('video/mp4');
+    expect(await res.text()).toBe('cde');
+  });
+
+  it('serves the attachment as a CSV download', async () => {
+    const res = await app.request('/showcase/with-video/sales.csv');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="sales.csv"');
+    expect(res.headers.get('cache-control')).toBe('public, max-age=86400');
+    expect(await res.text()).toBe(CSV);
   });
 
   it('serves the poster', async () => {

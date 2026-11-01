@@ -23,6 +23,7 @@ export function mediaResponse(
   rangeHeader: string | undefined,
   ifNoneMatch: string | undefined,
   head = false,
+  extraHeaders: Record<string, string> = {},
 ): Response {
   // Size and etag come from startup; media files only change with a deploy (and a restart).
   const etag = `"${file.etag}"`;
@@ -31,6 +32,7 @@ export function mediaResponse(
     'accept-ranges': 'bytes',
     'cache-control': 'public, max-age=86400',
     etag,
+    ...extraHeaders,
   };
   if (etagMatches(ifNoneMatch, etag)) return new Response(null, { status: 304, headers: base });
   if (!rangeHeader) {

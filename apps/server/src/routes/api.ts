@@ -27,6 +27,7 @@ import { SnapshotCache, snapshotCache } from '../render/cache.ts';
 import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import { type Body, rowsFormat, streamBody } from '../services/result-wire.ts';
 import { listTemplates } from '../services/templates.ts';
+import { useCaseInfo } from '../showcase/info.ts';
 import { badRequest, forbidden, HttpError, notFound } from '../util/errors.ts';
 
 /** Live stream heartbeat while nothing else is sent. */
@@ -86,16 +87,7 @@ export function apiRoutes(deps: Deps) {
   const app = new Hono<Env>();
   const { dashboards, data, wire, hub, tokens, connectors, config } = deps;
 
-  const useCaseList: UseCaseInfo[] = deps.useCases.map((u) => ({
-    id: u.meta.id,
-    title: u.meta.title,
-    tab: u.meta.tab,
-    description: u.meta.description,
-    prompt: u.prompt,
-    dashboardId: u.dashboardId,
-    video: u.video ? `/showcase/${u.meta.id}/video.mp4?v=${u.video.etag}` : null,
-    poster: u.poster ? `/showcase/${u.meta.id}/poster.jpg?v=${u.poster.etag}` : null,
-  }));
+  const useCaseList: UseCaseInfo[] = deps.useCases.map(useCaseInfo);
 
   // Per-IP budget for all API traffic, plus a tighter one for writes.
   app.use('*', async (c, next) => {

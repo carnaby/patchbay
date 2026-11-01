@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   type DashboardDoc,
   docSecretIds,
+  parseCsv,
   parseDashboard,
   type UseCaseMeta,
   UseCaseMetaSchema,
@@ -14,6 +15,7 @@ import {
 export const MAX_VIDEO_BYTES = 5 * 1024 * 1024;
 export const MAX_POSTER_BYTES = 150 * 1024;
 export const MAX_PROMPT_CHARS = 4000;
+export const MAX_ATTACHMENT_BYTES = 200 * 1024;
 
 export interface MediaFile {
   path: string;
@@ -28,7 +30,16 @@ export interface UseCase {
   doc: DashboardDoc;
   dashboardId: string;
   video: MediaFile | null;
+  /** The 1:1 cut for narrow screens. */
+  videoSquare: MediaFile | null;
   poster: MediaFile | null;
+  attachment: Attachment | null;
+}
+
+export interface Attachment extends MediaFile {
+  name: string;
+  /** Data rows, without the header. */
+  rows: number;
 }
 
 function media(path: string, max: number, warn: (m: string) => void): MediaFile | null {
@@ -39,6 +50,34 @@ function media(path: string, max: number, warn: (m: string) => void): MediaFile 
     return null;
   }
   return { path, size, etag: hashFile(path) };
+}
+
+/**
+ * The file the prompt came with. A broken one is dropped with a warning and the use case stays: the prompt and the
+ * dashboard still make sense without it. It must be a rectangular CSV with a header and at least one row, because
+ * the landing page shows it as a table.
+ */
+function attachment(base: string, name: string, warn: (m: string) => void): Attachment | null {
+  const path = join(base, name);
+  const drop = (why: string) => {
+    warn(`[patchbay] showcase: ${path} ${why}; not served`);
+    return null;
+  };
+  if (!existsSync(path)) return drop('is declared in meta.json but missing');
+  const file = media(path, MAX_ATTACHMENT_BYTES, warn);
+  if (!file) return null;
+  let records: string[][];
+  try {
+    records = parseCsv(readFileSync(path, 'utf8'));
+  } catch (e) {
+    return drop(`is not valid CSV (${e instanceof Error ? e.message : String(e)})`);
+  }
+  const width = records[0]?.length ?? 0;
+  if (records.length < 2) return drop('needs a header and at least one row');
+  const ragged = records.findIndex((r) => r.length !== width);
+  if (ragged > 0)
+    return drop(`has ${records[ragged]!.length} fields on record ${ragged + 1}, the header has ${width}`);
+  return { ...file, name, rows: records.length - 1 };
 }
 
 /** Hashes in chunks so a video at the size limit is never held in memory whole. */
@@ -105,7 +144,9 @@ export function loadUseCases(dir: string, warn: (message: string) => void = cons
         doc,
         dashboardId,
         video: media(join(base, 'video.mp4'), MAX_VIDEO_BYTES, warn),
+        videoSquare: media(join(base, 'video-square.mp4'), MAX_VIDEO_BYTES, warn),
         poster: media(join(base, 'poster.jpg'), MAX_POSTER_BYTES, warn),
+        attachment: meta.attachment ? attachment(base, meta.attachment, warn) : null,
       });
     } catch (e) {
       warn(`[patchbay] showcase: skipped "${folder}": ${e instanceof Error ? e.message : String(e)}`);

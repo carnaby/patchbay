@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { buildTemplate } from '../services/templates.ts';
-import { loadUseCases, MAX_VIDEO_BYTES, trustedSourceUrls } from './load.ts';
+import { loadUseCases, MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES, trustedSourceUrls } from './load.ts';
 
 function useCase(root: string, slug: string, files: Record<string, string | Buffer>) {
   const dir = join(root, slug);
@@ -21,8 +21,8 @@ afterAll(() => {
   for (const r of roots) rmSync(r, { recursive: true, force: true });
 });
 
-const meta = (id: string, order = 1) =>
-  JSON.stringify({ id, order, title: `Title ${id}`, tab: 'Tab', description: 'Description.' });
+const meta = (id: string, order = 1, extra: object = {}) =>
+  JSON.stringify({ id, order, title: `Title ${id}`, tab: 'Tab', description: 'Description.', ...extra });
 const doc = (extra: object = {}) => JSON.stringify({ ...buildTemplate('blank', 'Showcase'), ...extra });
 
 describe('loadUseCases', () => {
@@ -81,6 +81,84 @@ describe('loadUseCases', () => {
     expect(video!.poster).toMatchObject({ size: 100 });
     expect(big!.video).toBeNull();
     expect(warnings.join()).toMatch(/video\.mp4/);
+  });
+
+  it('reads the square video like the wide one, with its own limit check', () => {
+    const root = tempRoot();
+    useCase(root, 'square', {
+      'meta.json': meta('square', 1),
+      'prompt.md': 'x',
+      'dashboard.json': doc(),
+      'video.mp4': Buffer.alloc(1000, 1),
+      'video-square.mp4': Buffer.alloc(800, 3),
+    });
+    useCase(root, 'square-big', {
+      'meta.json': meta('square-big', 2),
+      'prompt.md': 'x',
+      'dashboard.json': doc(),
+      'video-square.mp4': Buffer.alloc(MAX_VIDEO_BYTES + 1, 1),
+    });
+    useCase(root, 'wide-only', {
+      'meta.json': meta('wide-only', 3),
+      'prompt.md': 'x',
+      'dashboard.json': doc(),
+    });
+    const warnings: string[] = [];
+    const [square, big, wide] = loadUseCases(root, (m) => warnings.push(m));
+    expect(square!.videoSquare).toMatchObject({ size: 800 });
+    expect(square!.videoSquare!.etag).not.toBe(square!.video!.etag);
+    expect(big!.videoSquare).toBeNull();
+    expect(wide!.videoSquare).toBeNull();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/video-square\.mp4/);
+  });
+
+  it('reads a declared CSV attachment and counts its rows without the header', () => {
+    const root = tempRoot();
+    const csvText = 'date,note\r\n2026-09-07,"Smith, J."\r\n2026-09-08,"two\nlines"\r\n';
+    useCase(root, 'with-csv', {
+      'meta.json': meta('with-csv', 1, { attachment: 'sales.csv' }),
+      'prompt.md': 'Here is my export.',
+      'dashboard.json': doc(),
+      'sales.csv': csvText,
+    });
+    // A CSV that meta.json does not declare is not an attachment.
+    useCase(root, 'undeclared', {
+      'meta.json': meta('undeclared', 2),
+      'prompt.md': 'x',
+      'dashboard.json': doc(),
+      'sales.csv': 'a\n1\n',
+    });
+    const warnings: string[] = [];
+    const [csv, undeclared] = loadUseCases(root, (m) => warnings.push(m));
+    expect(warnings).toEqual([]);
+    expect(csv!.attachment).toMatchObject({ name: 'sales.csv', rows: 2, size: Buffer.byteLength(csvText) });
+    expect(csv!.attachment!.etag).toMatch(/^[a-f0-9]{16}$/);
+    expect(undeclared!.attachment).toBeNull();
+  });
+
+  it('keeps the use case but drops an attachment that is missing, too big, malformed or empty', () => {
+    const root = tempRoot();
+    const cases: Record<string, string | Buffer | null> = {
+      missing: null,
+      'too-big': Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, 0x61),
+      unterminated: 'a,b\n1,"2\n',
+      ragged: 'a,b\n1,2\n3\n',
+      'header-only': 'a,b\n',
+    };
+    for (const [slug, content] of Object.entries(cases))
+      useCase(root, slug, {
+        'meta.json': meta(slug, 1, { attachment: 'data.csv' }),
+        'prompt.md': 'x',
+        'dashboard.json': doc(),
+        ...(content === null ? {} : { 'data.csv': content }),
+      });
+    const warnings: string[] = [];
+    const loaded = loadUseCases(root, (m) => warnings.push(m));
+    expect(loaded).toHaveLength(5);
+    for (const u of loaded) expect(u.attachment, u.meta.id).toBeNull();
+    expect(warnings).toHaveLength(5);
+    for (const w of warnings) expect(w).toMatch(/data\.csv/);
   });
 
   it('returns nothing for a missing folder', () => {

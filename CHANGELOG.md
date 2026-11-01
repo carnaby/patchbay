@@ -6,6 +6,11 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Added
+
+- **Showcase format**: an optional `video-square.mp4` per use case for narrow screens, and one optional CSV
+  attachment declared in `meta.json`, served as a download and listed with its row count.
+
 ## [0.1.0] - 2026-10-31
 
 The first public release.
