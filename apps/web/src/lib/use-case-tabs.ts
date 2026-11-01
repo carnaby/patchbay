@@ -54,6 +54,30 @@ export function swipeStep(dx: number, dy: number): -1 | 0 | 1 {
   return dx < 0 ? 1 : -1;
 }
 
+export interface SwipePointer {
+  id: number;
+  x: number;
+  y: number;
+  /** False for a second finger on the screen. */
+  primary: boolean;
+}
+export type SwipeStartPoint = Omit<SwipePointer, 'primary'>;
+
+/**
+ * Where a swipe starts, or null when this touch cannot start one: a second finger means a pinch-zoom (and drops the
+ * gesture in progress), and `blocked` covers places with their own sideways drag, such as native video controls.
+ */
+export function swipeStart(p: SwipePointer, blocked: boolean): SwipeStartPoint | null {
+  if (!p.primary || blocked) return null;
+  return { id: p.id, x: p.x, y: p.y };
+}
+
+/** The tab step for a finger lifted at `p`: 1 next, -1 previous, 0 not a swipe. */
+export function swipeEnd(start: SwipeStartPoint | null, p: SwipePointer): -1 | 0 | 1 {
+  if (!start || start.id !== p.id) return 0;
+  return swipeStep(p.x - start.x, p.y - start.y);
+}
+
 /**
  * The scrollLeft that brings an item fully into a horizontally scrolling row, `margin` clear of its edges; positions
  * are in the row's scroll coordinates. Done by hand rather than with scrollIntoView, which may scroll the page too.

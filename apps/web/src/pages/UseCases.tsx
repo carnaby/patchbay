@@ -7,7 +7,15 @@ import { Button, buttonClass, cx, toast } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
 import { saveEditKey } from '../lib/edit-keys.ts';
 import { useMediaQuery } from '../lib/hooks.ts';
-import { revealScrollLeft, stepIndex, swipeStep, tabsReducer } from '../lib/use-case-tabs.ts';
+import {
+  revealScrollLeft,
+  type SwipeStartPoint,
+  stepIndex,
+  swipeEnd,
+  swipeStart,
+  tabsReducer,
+} from '../lib/use-case-tabs.ts';
+import { fullscreenElement } from '../lib/use-case-video.ts';
 import { Attachment } from './use-cases/Attachment.tsx';
 import { UseCaseVideo } from './use-cases/UseCaseVideo.tsx';
 
@@ -26,7 +34,7 @@ export function UseCases() {
   useEffect(() => dispatch({ type: 'reset', count: list.length }), [list.length]);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const tabRow = useRef<HTMLDivElement>(null);
-  const swipe = useRef<{ id: number; x: number; y: number } | null>(null);
+  const swipe = useRef<SwipeStartPoint | null>(null);
   const reduced = useMediaQuery(REDUCED_MOTION);
 
   // Every poster in the cache before its tab shows, so the incoming panel has a frame from the first paint.
@@ -69,22 +77,25 @@ export function UseCases() {
     e.preventDefault();
   };
 
-  // Touch only: a mouse drag selects text. The panel is `touch-action: pan-y`, so vertical scrolling stays with the
-  // browser (it cancels the pointer) and a sideways move reaches pointerup.
+  // Touch only: a mouse drag selects text. The panel is `touch-action: pan-y pinch-zoom`, so vertical scrolling and
+  // zooming stay with the browser (it cancels the pointer) and a sideways move reaches pointerup.
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    const target = e.target as Element;
     // React bubbles events out of portals, so the attachment dialog's own gestures land here too.
-    const inside = e.currentTarget.contains(e.target as Node);
-    swipe.current =
-      e.pointerType === 'touch' && e.isPrimary && inside
-        ? { id: e.pointerId, x: e.clientX, y: e.clientY }
-        : null;
+    if (e.pointerType !== 'touch' || !e.currentTarget.contains(target)) {
+      swipe.current = null;
+      return;
+    }
+    const pointer = { id: e.pointerId, x: e.clientX, y: e.clientY, primary: e.isPrimary };
+    // Native controls (reduced motion) have a seek bar that is dragged sideways.
+    swipe.current = swipeStart(pointer, target.closest('video[controls]') !== null);
   };
   const onPointerUp = (e: PointerEvent<HTMLDivElement>) => {
     const start = swipe.current;
     swipe.current = null;
     // In full screen the panel cannot change underneath: the new tab would drop the video out of full screen.
-    if (!start || start.id !== e.pointerId || list.length < 2 || document.fullscreenElement) return;
-    const step = swipeStep(e.clientX - start.x, e.clientY - start.y);
+    if (list.length < 2 || fullscreenElement()) return;
+    const step = swipeEnd(start, { id: e.pointerId, x: e.clientX, y: e.clientY, primary: e.isPrimary });
     if (step) select(stepIndex(tabs.active, step, list.length), step);
   };
 
@@ -149,7 +160,10 @@ export function UseCases() {
         // biome-ignore lint/a11y/noNoninteractiveTabindex: the ARIA tabs pattern makes the panel reachable from its tab
         tabIndex={0}
         aria-labelledby={`use-case-tab-${current.id}`}
-        className="touch-pan-y rounded-xl"
+        className="touch-pan-y touch-pinch-zoom rounded-xl"
+        // Focus inside (a keyboard user reading the buttons) means this tab must stay: auto-advance would remount
+        // the panel and drop the focus.
+        onFocus={interact}
         onPointerDown={onPointerDown}
         onPointerUp={onPointerUp}
         onPointerCancel={() => {

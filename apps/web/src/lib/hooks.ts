@@ -112,16 +112,18 @@ export function useTheme(): ThemeMode {
 
 /** Subscribed rather than read once, so resizing or toggling an OS setting takes effect without a reload. */
 export function useMediaQuery(query: string): boolean {
-  return useSyncExternalStore(
-    (notify) => {
+  // Stable per query, or React would unsubscribe and subscribe again on every render.
+  const subscribe = useCallback(
+    (notify: () => void) => {
       if (typeof matchMedia !== 'function') return () => {};
       const mq = matchMedia(query);
       mq.addEventListener('change', notify);
       return () => mq.removeEventListener('change', notify);
     },
-    () => typeof matchMedia === 'function' && matchMedia(query).matches,
-    () => false,
+    [query],
   );
+  const snapshot = useCallback(() => typeof matchMedia === 'function' && matchMedia(query).matches, [query]);
+  return useSyncExternalStore(subscribe, snapshot, () => false);
 }
 
 export function useDocumentTitle(title: string | undefined) {

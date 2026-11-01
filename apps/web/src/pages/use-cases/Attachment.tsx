@@ -53,13 +53,13 @@ export function Attachment({ attachment, onInteract }: { attachment: Info; onInt
         <p className="mb-3">
           The file the agent got with the prompt: <span className="whitespace-nowrap">{summary}</span>.
         </p>
-        <CsvTable url={attachment.url} />
+        <CsvTable url={attachment.url} name={attachment.name} />
       </Modal>
     </>
   );
 }
 
-function CsvTable({ url }: { url: string }) {
+function CsvTable({ url, name }: { url: string; name: string }) {
   const { data, isPending, isError } = useQuery({
     queryKey: ['use-case-attachment', url],
     queryFn: async () => {
@@ -82,9 +82,16 @@ function CsvTable({ url }: { url: string }) {
   // Numbers line up on the right, as in a spreadsheet.
   const numeric = header.map((_, c) => rows.every((r) => NUMBER.test(r[c] ?? '')));
   return (
-    // Its own scroller in both directions, so the header can stick while the rows scroll.
-    <div className="max-h-[min(55dvh,28rem)] overflow-auto overscroll-contain rounded-lg border border-line">
-      <table className="w-full border-collapse text-xs text-ink">
+    // Its own scroller in both directions, so the header can stick while the rows scroll. Focusable, so a keyboard
+    // can scroll it too; labelled, it is a region screen readers announce.
+    <section
+      // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable without a mouse
+      tabIndex={0}
+      aria-label={name}
+      className="max-h-[min(55dvh,28rem)] overflow-auto overscroll-contain rounded-lg border border-line focus-visible:outline-2 focus-visible:outline-accent"
+    >
+      {/* Separate borders: with collapsed ones the sticky header's bottom border scrolls away with the rows. */}
+      <table className="w-full border-separate border-spacing-0 text-xs text-ink">
         <thead>
           <tr>
             {header.map((h, c) => (
@@ -105,13 +112,13 @@ function CsvTable({ url }: { url: string }) {
         <tbody className="tabular-nums">
           {rows.map((r, i) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: a static file, rows never reorder
-            <tr key={i} className="border-b border-line last:border-0 even:bg-surface">
+            <tr key={i} className="even:bg-surface [&:last-child>td]:border-b-0">
               {header.map((_, c) => (
                 <td
                   // biome-ignore lint/suspicious/noArrayIndexKey: columns are positional and never reorder
                   key={c}
                   className={cx(
-                    'px-2.5 py-1.5 whitespace-nowrap sm:px-3',
+                    'border-b border-line px-2.5 py-1.5 whitespace-nowrap sm:px-3',
                     numeric[c] ? 'text-right' : 'text-left',
                   )}
                 >
@@ -122,6 +129,6 @@ function CsvTable({ url }: { url: string }) {
           ))}
         </tbody>
       </table>
-    </div>
+    </section>
   );
 }

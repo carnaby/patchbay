@@ -3,6 +3,7 @@ import { ImageOff, Maximize2, Minimize2, Play, Volume2, VolumeX } from 'lucide-r
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react';
 import { cx } from '../../components/ui.tsx';
 import { useMediaQuery, useTheme } from '../../lib/hooks.ts';
+import { chooseVideo, fullscreenElement, resumeAt, type VideoChoice } from '../../lib/use-case-video.ts';
 
 /** Tailwind's `md`: below it the square cut fills a phone screen better than 16:9. */
 const WIDE = '(min-width: 768px)';
@@ -11,14 +12,12 @@ const SNAPSHOT_DWELL_MS = 9000;
 
 type WebkitDocument = Document & {
   webkitFullscreenEnabled?: boolean;
-  webkitFullscreenElement?: Element | null;
   webkitExitFullscreen?: () => void;
 };
 type WebkitElement = HTMLElement & { webkitRequestFullscreen?: () => void };
 type WebkitVideo = HTMLVideoElement & { webkitEnterFullscreen?: () => void };
 
 const doc = () => document as WebkitDocument;
-const fullscreenElement = () => doc().fullscreenElement ?? doc().webkitFullscreenElement ?? null;
 
 /** True while the element is at least partly on screen. */
 function useOnScreen(ref: { current: Element | null }) {
@@ -116,20 +115,34 @@ export function UseCaseVideo({
   const fullscreenButton = useRef<HTMLButtonElement>(null);
   const [muted, setMuted] = useState(true);
   const [playing, setPlaying] = useState(false);
-  const [videoFailed, setVideoFailed] = useState(false);
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
   const wide = useMediaQuery(WIDE);
-  const square = !wide && Boolean(item.videoSquare);
-  const src = (square ? item.videoSquare : item.video) ?? undefined;
-  const hasVideo = Boolean(src) && !videoFailed;
+  const wanted = chooseVideo(item, !wide, failed);
+  const [shown, setShown] = useState<VideoChoice | null>(wanted);
+  const resume = useRef<{ time: number; play: boolean } | null>(null);
   const fullscreen = useFullscreen(wrap, ref, fullscreenButton);
   const toggleFullscreen = () => {
     // Entering is a deliberate act: the visitor is watching this one, so the tabs must not move on underneath.
     if (fullscreen.toggle()) onInteract();
   };
 
+  // Rotating a phone crosses the breakpoint. The other cut continues where this one was instead of restarting, and
+  // nothing changes under full screen (ours or the iPhone's player), where the box no longer follows the layout.
+  // A source that failed is replaced at once.
+  const src = shown?.src;
+  const wantedSrc = wanted?.src;
+  const wantedSquare = wanted?.square ?? false;
+  const shownFailed = src !== undefined && failed.has(src);
+  useEffect(() => {
+    if (wantedSrc === src || (fullscreen.active && !shownFailed)) return;
+    const v = ref.current;
+    resume.current = v && !shownFailed ? { time: v.currentTime, play: !v.paused } : null;
+    setShown(wantedSrc ? { src: wantedSrc, square: wantedSquare } : null);
+  }, [wantedSrc, wantedSquare, src, shownFailed, fullscreen.active]);
+
   useEffect(() => {
     const video = ref.current;
-    if (!video || reduced || !hasVideo || !src) return;
+    if (!video || reduced || !src) return;
     // Play only while on screen: off-screen videos cost bandwidth and battery for nothing. Observed again when the
     // source changes (crossing the md breakpoint), because a new source starts paused.
     const io = new IntersectionObserver(
@@ -141,18 +154,20 @@ export function UseCaseVideo({
     );
     io.observe(video);
     return () => io.disconnect();
-  }, [reduced, hasVideo, src]);
+  }, [reduced, src]);
 
-  if (!hasVideo) return <Snapshot item={item} auto={auto} onEnded={onEnded} />;
+  if (!shown) return <Snapshot item={item} auto={auto} onEnded={onEnded} />;
 
   const full = fullscreen.active;
+  const square = shown.square;
   return (
     <div
       ref={wrap}
       className={cx(
         'relative overflow-hidden bg-cover bg-center',
         full ? 'bg-black' : 'rounded-xl border border-line bg-surface-2',
-        full ? '' : square ? 'aspect-square' : 'aspect-video',
+        // The square box stays within the viewport's height (a phone held sideways), centred.
+        full ? '' : square ? 'mx-auto aspect-square w-full max-w-[80svh]' : 'aspect-video',
       )}
       // The poster stays behind the video, so a frame is always visible before the first one decodes (no blink on
       // a tab change). The 16:9 poster is cropped, never stretched, in the square box.
@@ -170,13 +185,21 @@ export function UseCaseVideo({
         preload="metadata"
         controls={reduced}
         onClick={reduced || full ? undefined : toggleFullscreen}
+        onLoadedMetadata={(e) => {
+          const r = resume.current;
+          if (!r) return;
+          resume.current = null;
+          e.currentTarget.currentTime = resumeAt(r.time, e.currentTarget.duration);
+          if (r.play) void e.currentTarget.play().catch(() => {});
+        }}
         onEnded={() => {
           setPlaying(false);
           if (auto) onEnded();
         }}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
-        onError={() => setVideoFailed(true)}
+        // Remembered per source: a broken square cut falls back to 16:9 before the snapshot.
+        onError={() => setFailed((f) => new Set(f).add(shown.src))}
         aria-label={`${item.title}: screen recording of the agent building the dashboard`}
         className={cx(
           'absolute inset-0 size-full',
@@ -199,12 +222,7 @@ export function UseCaseVideo({
       ) : null}
       {/* Native controls (reduced motion) occupy the bottom edge. */}
       <div className={cx('absolute right-2 flex gap-2', reduced ? 'top-2' : 'bottom-2')}>
-        <OverlayButton
-          ref={fullscreenButton}
-          label={full ? 'Exit full screen' : 'Full screen'}
-          pressed={full}
-          onClick={toggleFullscreen}
-        >
+        <OverlayButton ref={fullscreenButton} label="Full screen" pressed={full} onClick={toggleFullscreen}>
           {full ? (
             <Minimize2 className="size-4" aria-hidden="true" />
           ) : (
@@ -212,7 +230,7 @@ export function UseCaseVideo({
           )}
         </OverlayButton>
         <OverlayButton
-          label={muted ? 'Turn sound on' : 'Turn sound off'}
+          label="Sound"
           pressed={!muted}
           onClick={() => {
             onInteract();
@@ -251,8 +269,9 @@ function OverlayButton({
       aria-pressed={pressed}
       title={label}
       onClick={onClick}
-      // Fixed colours rather than theme ones: the buttons sit on the (light) recording or on full screen black.
-      className="flex size-9 items-center justify-center rounded-full bg-black/65 text-white ring-1 ring-white/25 backdrop-blur hover:bg-black/85 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
+      // Fixed colours rather than theme ones: the buttons sit on the (light) recording or on full screen black. The
+      // focus ring is two-tone for the same reason: white on a black halo shows on both.
+      className="flex size-9 items-center justify-center rounded-full bg-black/65 text-white ring-1 ring-white/25 backdrop-blur hover:bg-black/85 focus-visible:shadow-[0_0_0_5px_black] focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-white"
     >
       {children}
     </button>

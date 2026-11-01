@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { revealScrollLeft, stepIndex, swipeStep, tabsReducer } from './use-case-tabs.ts';
+import {
+  revealScrollLeft,
+  stepIndex,
+  swipeEnd,
+  swipeStart,
+  swipeStep,
+  tabsReducer,
+} from './use-case-tabs.ts';
 
 describe('use case tabs', () => {
   const start = { active: 0, count: 3, interacted: false, dir: 0 as const };
@@ -59,6 +66,28 @@ describe('swipeStep', () => {
     expect(swipeStep(-90, 60)).toBe(0);
     expect(swipeStep(-90, -61)).toBe(0);
     expect(swipeStep(-91, 60)).toBe(1);
+  });
+});
+
+describe('swipe tracking', () => {
+  const finger = (id: number, x: number, y: number, primary = true) => ({ id, x, y, primary });
+  it('turns one finger moving sideways into a step', () => {
+    const start = swipeStart(finger(1, 200, 300), false);
+    expect(swipeEnd(start, finger(1, 100, 305))).toBe(1);
+  });
+  it('drops the gesture when a second finger lands, so a pinch-zoom is never a swipe', () => {
+    const start = swipeStart(finger(1, 200, 300), false);
+    const pinch = swipeStart(finger(2, 260, 300, false), false);
+    expect(pinch).toBeNull();
+    expect(swipeEnd(pinch, finger(1, 60, 300))).toBe(0);
+    expect(start).not.toBeNull();
+  });
+  it('ignores a gesture that starts on a blocked element, such as native video controls', () => {
+    expect(swipeStart(finger(1, 200, 300), true)).toBeNull();
+  });
+  it('ignores the end of another pointer', () => {
+    const start = swipeStart(finger(1, 200, 300), false);
+    expect(swipeEnd(start, finger(3, 60, 300))).toBe(0);
   });
 });
 
