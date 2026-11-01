@@ -136,7 +136,8 @@ export function UseCaseVideo({
   useEffect(() => {
     if (wantedSrc === src || (fullscreen.active && !shownFailed)) return;
     const v = ref.current;
-    resume.current = v && !shownFailed ? { time: v.currentTime, play: !v.paused } : null;
+    // An ended video restarts from the beginning on its next Play, so the other cut should too.
+    resume.current = v && !shownFailed ? { time: v.ended ? 0 : v.currentTime, play: !v.paused } : null;
     setShown(wantedSrc ? { src: wantedSrc, square: wantedSquare } : null);
   }, [wantedSrc, wantedSquare, src, shownFailed, fullscreen.active]);
 

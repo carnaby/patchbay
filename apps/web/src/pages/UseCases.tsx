@@ -82,7 +82,9 @@ export function UseCases() {
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     const target = e.target as Element;
     // React bubbles events out of portals, so the attachment dialog's own gestures land here too.
-    if (e.pointerType !== 'touch' || !e.currentTarget.contains(target)) {
+    // Zoomed in, a sideways drag is the visitor panning the page, which `pan-y` hands to us instead of the browser.
+    const zoomed = (window.visualViewport?.scale ?? 1) > 1.01;
+    if (e.pointerType !== 'touch' || zoomed || !e.currentTarget.contains(target)) {
       swipe.current = null;
       return;
     }
