@@ -96,7 +96,7 @@ const TEMPLATES: Template[] = [
           title: 'How this works',
           config: {
             markdown:
-              'Each dataset refreshes every **second** on the server and is pushed to every open browser over Server-Sent Events. Only changed data is sent.',
+              'Each dataset refreshes every **second** on the server and is pushed to every open browser over Server-Sent Events, only when the data has changed.',
           },
         },
         position: { w: 3, h: 3 },
