@@ -37,6 +37,7 @@ export function UseCases() {
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const tabRow = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
+  const slide = useRef<HTMLDivElement>(null);
   const swipe = useRef<SwipeStartPoint | null>(null);
   const reduced = useMediaQuery(REDUCED_MOTION);
   // One setting for the whole section, in memory only: a fresh page load cannot autoplay with sound anyway.
@@ -64,6 +65,20 @@ export function UseCases() {
     if (left !== row.scrollLeft) row.scrollTo({ left, behavior: reduced ? 'auto' : 'smooth' });
   }, [tabs.active, reduced]);
 
+  // The incoming tab slides in from the side it comes from, so a change reads as a move, not a blink. Animated in
+  // place rather than by remounting the panel: the video element must survive a tab change (see UseCaseVideo).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: every new active tab replays the slide
+  useEffect(() => {
+    if (reduced || tabs.dir === 0) return;
+    slide.current?.animate(
+      [
+        { opacity: 0, transform: `translateX(${tabs.dir * 16}px)` },
+        { opacity: 1, transform: 'none' },
+      ],
+      { duration: 200, easing: 'ease-out' },
+    );
+  }, [tabs.active, tabs.dir, reduced]);
+
   if (list.length === 0) return null; // self-hosted instances without use cases show nothing
   const current = list[tabs.active] ?? list[0]!;
 
@@ -75,6 +90,8 @@ export function UseCases() {
         reduced,
         fullscreen: fullscreen || fullscreenElement() !== null,
         dialogOpen: dialogOpen.current,
+        // The tabs count too: moving on under a keyboard user there would leave focus on a tab that is no longer
+        // selected and so out of the Tab order (roving tabindex).
         keyboardFocus: keyboardFocusWithin(document.activeElement, [tabRow.current, panel.current]),
       }) === 'next';
     if (next) dispatch({ type: 'ended' });
@@ -191,14 +208,7 @@ export function UseCases() {
           swipe.current = null;
         }}
       >
-        {/* Keyed on the tab, so the slide-in restarts on every change; the first view does not move. */}
-        <div
-          key={current.id}
-          className={cx(
-            !reduced && tabs.dir === 1 && 'pb-from-right',
-            !reduced && tabs.dir === -1 && 'pb-from-left',
-          )}
-        >
+        <div ref={slide}>
           <UseCaseVideo
             item={current}
             intro={tabs.dir === 0}

@@ -44,12 +44,15 @@ const refusedByPolicy = (e: unknown) => (e as { name?: unknown } | null)?.name =
 
 /**
  * Starts the video. With sound on, a browser may refuse to play without a fresh tap (autoplay policy): the video then
- * plays muted and `onMuted` runs, so the shared sound button stays truthful. 'blocked' means it will not play on its
- * own even muted (iOS Low Power Mode); 'interrupted' is a pause or a new source that cut the start short.
+ * plays muted and `onMuted` runs, so the shared sound button stays truthful. That retry happens only while
+ * `stillWanted` says the video should still play: scrolled away in the meantime, it stays paused. 'blocked' means it
+ * will not play on its own even muted (iOS Low Power Mode); 'interrupted' is a pause or a new source that cut the
+ * start short.
  */
 export async function playVideo(
   video: Pick<HTMLMediaElement, 'muted' | 'play'>,
   onMuted: () => void,
+  stillWanted: () => boolean,
 ): Promise<PlayResult> {
   try {
     await video.play();
@@ -57,6 +60,7 @@ export async function playVideo(
   } catch (e) {
     if (!refusedByPolicy(e)) return 'interrupted';
     if (video.muted) return 'blocked';
+    if (!stillWanted()) return 'interrupted';
   }
   video.muted = true;
   onMuted();
@@ -66,4 +70,21 @@ export async function playVideo(
   } catch (e) {
     return refusedByPolicy(e) ? 'blocked' : 'interrupted';
   }
+}
+
+/**
+ * The poster stays where the visitor would otherwise see nothing move: the section's first view, reduced motion and
+ * a browser that will not autoplay. After a tab change it would flash the finished dashboard, while every recording
+ * opens on an empty page, so there the video is hidden until its first frame instead.
+ */
+export function videoLook(s: {
+  intro: boolean;
+  reduced: boolean;
+  blocked: boolean;
+  /** The first frame has decoded. */
+  ready: boolean;
+  poster: string | null;
+}): { poster: string | null; hidden: boolean } {
+  const poster = (s.intro || s.reduced || s.blocked) && s.poster ? s.poster : null;
+  return { poster, hidden: !poster && !s.ready };
 }

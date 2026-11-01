@@ -1,6 +1,6 @@
 import type { UseCaseInfo } from '@patchbay/core';
 import { ImageOff, Maximize2, Minimize2, Play, Volume2, VolumeX } from 'lucide-react';
-import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react';
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from 'react';
 import { cx } from '../../components/ui.tsx';
 import { useMediaQuery, useTheme } from '../../lib/hooks.ts';
 import {
@@ -9,6 +9,7 @@ import {
   playVideo,
   resumeAt,
   type VideoChoice,
+  videoLook,
 } from '../../lib/use-case-video.ts';
 
 /** Tailwind's `md`: below it the square cut fills a phone screen better than 16:9. */
@@ -129,7 +130,7 @@ export function UseCaseVideo({
   const ref = useRef<HTMLVideoElement>(null);
   const fullscreenButton = useRef<HTMLButtonElement>(null);
   const [playing, setPlaying] = useState(false);
-  /** The first frame is on screen, so the video can fade in over the box. */
+  /** The first frame has decoded, so the video can fade in over the box. */
   const [ready, setReady] = useState(false);
   /** The browser will not start it on its own (iOS Low Power Mode): the poster says what this tab is. */
   const [blocked, setBlocked] = useState(false);
@@ -137,16 +138,35 @@ export function UseCaseVideo({
   const wide = useMediaQuery(WIDE);
   const wanted = chooseVideo(item, !wide, failed);
   const [shown, setShown] = useState<VideoChoice | null>(wanted);
-  const resume = useRef<{ time: number; play: boolean } | null>(null);
+  // A tab change keeps this component and its <video>, which Safari would otherwise make muted again (see the
+  // render below), so the per-tab state starts over here instead of through a remount.
+  const [shownItem, setShownItem] = useState(item.id);
+  if (shownItem !== item.id) {
+    setShownItem(item.id);
+    setShown(wanted);
+    setReady(false);
+    setBlocked(false);
+    setPlaying(false);
+  }
+  /** Where the other cut continues after a rotation; tied to its source, so a tab change in between drops it. */
+  const resume = useRef<{ src: string; time: number; play: boolean } | null>(null);
+  const onScreen = useRef(false);
   const fullscreen = useFullscreen(wrap, ref, fullscreenButton);
   const toggleFullscreen = () => {
     fullscreen.toggle();
   };
-  const start = (video: HTMLVideoElement) => {
-    void playVideo(video, () => onMutedChange(true)).then((r) => {
-      if (r === 'blocked') setBlocked(true);
-    });
-  };
+  const start = useCallback(
+    (video: HTMLVideoElement) => {
+      void playVideo(
+        video,
+        () => onMutedChange(true),
+        () => onScreen.current,
+      ).then((r) => {
+        if (r === 'blocked') setBlocked(true);
+      });
+    },
+    [onMutedChange],
+  );
 
   // Rotating a phone crosses the breakpoint. The other cut continues where this one was instead of restarting, and
   // nothing changes under full screen (ours or the iPhone's player), where the box no longer follows the layout.
@@ -159,119 +179,148 @@ export function UseCaseVideo({
     if (wantedSrc === src || (fullscreen.active && !shownFailed)) return;
     const v = ref.current;
     // An ended video restarts from the beginning on its next Play, so the other cut should too.
-    resume.current = v && !shownFailed ? { time: v.ended ? 0 : v.currentTime, play: !v.paused } : null;
+    resume.current =
+      v && wantedSrc && !shownFailed
+        ? { src: wantedSrc, time: v.ended ? 0 : v.currentTime, play: !v.paused }
+        : null;
     setShown(wantedSrc ? { src: wantedSrc, square: wantedSquare } : null);
   }, [wantedSrc, wantedSquare, src, shownFailed, fullscreen.active]);
 
   useEffect(() => {
     const video = ref.current;
-    if (!video || reduced || !src) return;
+    if (!video || !src) return;
     // Play only while on screen: off-screen videos cost bandwidth and battery for nothing. Observed again when the
-    // source changes (crossing the md breakpoint), because a new source starts paused.
+    // source changes (a tab change or the md breakpoint), because a new source starts paused. Under reduced motion
+    // nothing starts on its own, but whether the video is on screen still matters to `playVideo`.
     const io = new IntersectionObserver(
       ([entry]) => {
-        if (!entry?.isIntersecting) return video.pause();
-        void playVideo(video, () => onMutedChange(true)).then((r) => {
-          if (r === 'blocked') setBlocked(true);
-        });
+        onScreen.current = Boolean(entry?.isIntersecting);
+        if (reduced) return;
+        if (onScreen.current) start(video);
+        else video.pause();
       },
       { threshold: 0.4 },
     );
     io.observe(video);
     return () => io.disconnect();
-  }, [reduced, src, onMutedChange]);
-
-  if (!shown) return <Snapshot item={item} reduced={reduced} onEnded={() => onEnded(false)} />;
+  }, [reduced, src, start]);
 
   const full = fullscreen.active;
-  const square = shown.square;
-  // Without autoplay the poster is what the visitor sees, so it stays; after a tab change it would flash.
-  const poster = (intro || reduced || blocked) && item.poster ? item.poster : null;
+  const square = shown?.square ?? false;
+  const look = videoLook({ intro, reduced, blocked, ready, poster: item.poster ?? null });
   return (
-    <div
-      ref={wrap}
-      className={cx(
-        'relative overflow-hidden bg-cover bg-center',
-        full ? 'bg-black' : 'rounded-xl border border-line bg-surface-2',
-        // The square box stays within the viewport's height (a phone held sideways), centred.
-        full ? '' : square ? 'mx-auto aspect-square w-full max-w-[80svh]' : 'aspect-video',
-      )}
-      // The poster stays behind the video until its first frame decodes; the 16:9 poster is cropped, never
-      // stretched, in the square box. Without one, the recording's own background colour stands in.
-      style={
-        full
-          ? undefined
-          : poster
-            ? { backgroundImage: `url("${poster}")` }
-            : { backgroundColor: RECORDING_BG }
-      }
-    >
-      {/* A click on the video is a mouse and touch shortcut; the full screen button is the keyboard path. */}
-      <video
-        ref={ref}
-        src={src}
-        // The square box shows the 16:9 poster as its background (cropped); as a poster it would be letterboxed.
-        poster={square ? undefined : (poster ?? undefined)}
-        muted={muted}
-        playsInline
-        preload="metadata"
-        controls={reduced}
-        onClick={reduced || full ? undefined : toggleFullscreen}
-        onLoadedMetadata={(e) => {
-          const r = resume.current;
-          if (!r) return;
-          resume.current = null;
-          e.currentTarget.currentTime = resumeAt(r.time, e.currentTarget.duration);
-          if (r.play) start(e.currentTarget);
-        }}
-        onEnded={(e) => {
-          // Not the `loop` attribute: whether to stay is decided at the end, from what the visitor is doing then.
-          if (!onEnded(fullscreen.active)) start(e.currentTarget);
-        }}
-        onPlay={() => setPlaying(true)}
-        onPlaying={() => setReady(true)}
-        onPause={() => setPlaying(false)}
-        // Remembered per source: a broken square cut falls back to 16:9 before the snapshot.
-        onError={() => setFailed((f) => new Set(f).add(shown.src))}
-        aria-label={`${item.title}: screen recording of the agent building the dashboard`}
+    <>
+      {/* Keyed on the tab, so two tabs without a video in a row each get their own clock. */}
+      {shown ? null : <Snapshot key={item.id} item={item} reduced={reduced} onEnded={() => onEnded(false)} />}
+      {/* Mounted for good, hidden behind a snapshot: Safari lets a <video> that has played with sound play with
+          sound again after its source changes, while a new element needs a fresh tap. So sound turned on stays on
+          from tab to tab. */}
+      <div
+        ref={wrap}
+        hidden={!shown}
         className={cx(
-          'absolute inset-0 size-full transition-opacity duration-200',
-          full ? 'object-contain' : 'object-cover',
-          !reduced && !full && 'cursor-zoom-in',
-          // An incoming video fades in on its first frame, so the box never blinks black or empty.
-          !poster && !ready && 'opacity-0',
+          'relative overflow-hidden bg-cover bg-center',
+          full ? 'bg-black' : 'rounded-xl border border-line bg-surface-2',
+          // The square box stays within the viewport's height (a phone held sideways), centred.
+          full ? '' : square ? 'mx-auto aspect-square w-full max-w-[80svh]' : 'aspect-video',
         )}
-      />
-      {reduced && !playing ? (
-        <button
-          type="button"
-          aria-label="Play video"
-          onClick={() => {
-            if (ref.current) start(ref.current);
+        // The poster stays behind the video until its first frame decodes; the 16:9 poster is cropped, never
+        // stretched, in the square box. Without one, the recording's own background colour stands in.
+        style={
+          full
+            ? undefined
+            : look.poster
+              ? { backgroundImage: `url("${look.poster}")` }
+              : { backgroundColor: RECORDING_BG }
+        }
+      >
+        {/* A click on the video is a mouse and touch shortcut; the full screen button is the keyboard path. */}
+        <video
+          ref={ref}
+          src={src}
+          // The square box shows the 16:9 poster as its background (cropped); as a poster it would be letterboxed.
+          poster={square ? undefined : (look.poster ?? undefined)}
+          muted={muted}
+          playsInline
+          preload="metadata"
+          controls={reduced}
+          onClick={reduced || full ? undefined : toggleFullscreen}
+          onLoadedMetadata={(e) => {
+            const r = resume.current;
+            resume.current = null;
+            if (!r || r.src !== e.currentTarget.getAttribute('src')) return;
+            e.currentTarget.currentTime = resumeAt(r.time, e.currentTarget.duration);
+            if (r.play) start(e.currentTarget);
           }}
-          className="absolute top-1/2 left-1/2 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-ink/80 text-page backdrop-blur hover:bg-ink"
-        >
-          <Play className="size-6 translate-x-0.5" aria-hidden="true" />
-        </button>
-      ) : null}
-      {/* Native controls (reduced motion) occupy the bottom edge. */}
-      <div className={cx('absolute right-2 flex gap-2', reduced ? 'top-2' : 'bottom-2')}>
-        <OverlayButton ref={fullscreenButton} label="Full screen" pressed={full} onClick={toggleFullscreen}>
-          {full ? (
-            <Minimize2 className="size-4" aria-hidden="true" />
-          ) : (
-            <Maximize2 className="size-4" aria-hidden="true" />
+          onLoadedData={() => setReady(true)}
+          onEnded={(e) => {
+            setPlaying(false);
+            // Not the `loop` attribute: whether to stay is decided at the end, from what the visitor is doing then.
+            // Under reduced motion a video the visitor started rests on its last frame instead of starting over.
+            if (!onEnded(fullscreen.active) && !reduced) start(e.currentTarget);
+          }}
+          onPlay={() => setPlaying(true)}
+          onPlaying={() => setReady(true)}
+          onPause={() => setPlaying(false)}
+          // Remembered per source: a broken square cut falls back to 16:9 before the snapshot.
+          onError={(e) => {
+            const failedSrc = e.currentTarget.getAttribute('src');
+            if (failedSrc) setFailed((f) => new Set(f).add(failedSrc));
+          }}
+          aria-label={`${item.title}: screen recording of the agent building the dashboard`}
+          className={cx(
+            'absolute inset-0 size-full',
+            full ? 'object-contain' : 'object-cover',
+            !reduced && !full && 'cursor-zoom-in',
+            // An incoming video fades in on its first frame, so the box never blinks black or shows the previous
+            // tab's last frame. Hiding is instant; only the fade-in is animated.
+            look.hidden ? 'opacity-0' : 'transition-opacity duration-200',
           )}
-        </OverlayButton>
-        <OverlayButton label="Sound" pressed={!muted} onClick={() => onMutedChange(!muted)}>
-          {muted ? (
-            <VolumeX className="size-4" aria-hidden="true" />
-          ) : (
-            <Volume2 className="size-4" aria-hidden="true" />
-          )}
-        </OverlayButton>
+        />
+        {reduced && !playing ? (
+          <button
+            type="button"
+            aria-label="Play video"
+            onClick={() => {
+              if (ref.current) start(ref.current);
+            }}
+            className="absolute top-1/2 left-1/2 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-ink/80 text-page backdrop-blur hover:bg-ink"
+          >
+            <Play className="size-6 translate-x-0.5" aria-hidden="true" />
+          </button>
+        ) : null}
+        {/* Native controls (reduced motion) occupy the bottom edge. */}
+        <div className={cx('absolute right-2 flex gap-2', reduced ? 'top-2' : 'bottom-2')}>
+          <OverlayButton ref={fullscreenButton} label="Full screen" pressed={full} onClick={toggleFullscreen}>
+            {full ? (
+              <Minimize2 className="size-4" aria-hidden="true" />
+            ) : (
+              <Maximize2 className="size-4" aria-hidden="true" />
+            )}
+          </OverlayButton>
+          <OverlayButton
+            label="Sound"
+            pressed={!muted}
+            onClick={() => {
+              const v = ref.current;
+              // Unmuted and played inside the tap itself: that is what lets Safari keep the sound on this element
+              // for the next tabs. Playing an already playing video changes nothing else.
+              if (v) {
+                v.muted = !muted;
+                if (muted && !v.paused) void v.play().catch(() => {});
+              }
+              onMutedChange(!muted);
+            }}
+          >
+            {muted ? (
+              <VolumeX className="size-4" aria-hidden="true" />
+            ) : (
+              <Volume2 className="size-4" aria-hidden="true" />
+            )}
+          </OverlayButton>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
 
