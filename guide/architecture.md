@@ -262,11 +262,23 @@ the wire but a runtime dependency on both sides for a file that is cached anyway
 
 The landing page can present ready-made use cases. Each one is a folder `showcase/<id>/` with `meta.json` (strict:
 `id` equal to the folder name, lowercase words joined by single hyphens and at least 4 letters or digits, `order`,
-`title` up to 60 characters, `tab` up to 24, `description` up to 200), `prompt.md` (1-4000 characters), `dashboard.json`
-(a `DashboardDoc`) and optionally `video.mp4` (16:9 H.264, at most 5 MB) and `poster.jpg` (at most 150 KB).
-`budget.test.ts` fails when committed media exceed those sizes. A broken folder is skipped with a warning; when two
-folders carry the same dashboard id, the one that sorts first wins. The slug is at most 40 characters and the
-dashboard id is cut to 32, so two long slugs that differ only after that point collide.
+`title` up to 60 characters, `tab` up to 24, `description` up to 200, optional `attachment`), `prompt.md` (1-4000
+characters) and `dashboard.json` (a `DashboardDoc` within the 1 MB document limit, `LIMITS.documentBytes`, measured
+as `DashboardService` measures every write, since every visitor's copy is such a write). Optional files:
+
+- `video.mp4` (16:9 H.264, at most 5 MB) and `poster.jpg` (at most 150 KB), shown before the first frame of either
+  video.
+- `video-square.mp4` (1:1 H.264, at most 5 MB), the same recording for screens narrower than 768 px; without it they
+  get the 16:9 video.
+- One CSV attachment, the file the prompt came with, declared in `meta.json` as `"attachment": "<name>.csv"`
+  (lowercase, at most 60 characters, in the same folder). It must be at most 200 KB and a rectangular CSV with a
+  header and at least one row; the landing page shows it as a table and offers it as a download.
+
+`budget.test.ts` fails when committed media or attachments exceed those sizes. A broken folder (a missing or invalid
+`meta.json`, `prompt.md` or `dashboard.json`, or a document over the limit) is skipped with a warning; when two folders
+carry the same dashboard id, the one that sorts first wins. The slug is at most 40 characters and the dashboard id is
+cut to 32, so two long slugs that differ only after that point collide. An oversized video or poster, or an attachment
+that is missing, too large or not valid CSV, is left out with a warning and the use case stays.
 
 A use case's data must work for the owner `system` and in anonymous copies, so `dashboard.json` may not use `upload`
 sources or reference stored secrets: such a folder is skipped with a warning. Use `inline` rows (at most
@@ -276,16 +288,26 @@ At startup the server reads `SHOWCASE_DIR` and syncs one public dashboard per us
 `sc<slug without hyphens>`, owned by `system`. These dashboards are read-only for everyone, admins included, never
 pruned and not counted in the anonymous storage limit. A changed `dashboard.json` becomes a new version; an id owned
 by anyone else is never touched. Anyone can make an editable copy. With `URL_SOURCES=signed-in`, the exact http and
-feed URLs used by showcase dashboards are trusted (exact match, no prefixes), so anonymous copies keep working. A use case whose sync fails (a corrupt stored dashboard, an id owned by someone else)
-is left out of the list and the routes; a failed sync never keeps the server from starting. An admin can delete a
-showcase dashboard, but it comes back at the next restart.
+feed URLs used by showcase dashboards are trusted (exact match, no prefixes), so anonymous copies keep working. A use
+case whose sync fails (a corrupt stored dashboard, an id owned by someone else) is left out of the list and the
+routes; a failed sync never keeps the server from starting. An admin can delete a showcase dashboard, but it comes
+back at the next restart.
 
-`GET /api/use-cases` lists them (`public, max-age=300`). `GET /showcase/<id>` redirects to the dashboard, and
-`/showcase/<id>/video.mp4` and `/poster.jpg` support single byte ranges, an ETag (content hash) and
-`public, max-age=86400`. The service worker does not cache them. The videos are produced outside this repository; only
-the final MP4 and poster are committed. Size and ETag are read at startup, so restart after changing media files.
-The media routes sit outside the API rate limiter; that is fine behind a CDN, and self-hosters who expose the
-server directly may want a limit in their reverse proxy.
+Routes:
+
+- `GET /api/use-cases` lists them (`public, max-age=300`), with media and attachment URLs that carry the content hash
+  as `?v=`, so a deploy that changes a file changes its URL.
+- `GET /showcase/<id>` redirects (302) to the dashboard.
+- `/showcase/<id>/video.mp4`, `/video-square.mp4`, `/poster.jpg` and `/<name>.csv` (the declared attachment only,
+  matched by name and never used as a path, sent as `text/csv` with `Content-Disposition: attachment`) answer GET and
+  HEAD with single byte ranges (multiple or unsatisfiable ranges get 416), an ETag (content hash) that turns
+  `If-None-Match` into 304, and `public, max-age=86400`.
+- Anything else under `/showcase/` is a 404, never the app shell.
+
+The service worker does not cache these files. The videos are produced outside this repository; only the final MP4
+and poster are committed. Sizes and ETags are read at startup, so restart after changing media files. The media
+routes sit outside the API rate limiter; that is fine behind a CDN, and self-hosters who expose the server directly
+may want a limit in their reverse proxy.
 
 ## 9. Known limits and next steps
 

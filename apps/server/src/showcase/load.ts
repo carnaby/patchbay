@@ -10,6 +10,7 @@ import {
   UseCaseMetaSchema,
   useCaseDashboardId,
 } from '@patchbay/core';
+import { documentBytes, MAX_DOCUMENT_BYTES } from '../services/dashboards.ts';
 
 /** The landing page loads these over the visitor's connection; the limits keep the repo and the image small too. */
 export const MAX_VIDEO_BYTES = 5 * 1024 * 1024;
@@ -134,6 +135,13 @@ export function loadUseCases(dir: string, warn: (message: string) => void = cons
         throw new Error(`prompt.md must have 1–${MAX_PROMPT_CHARS} characters`);
       const doc = parseDashboard(JSON.parse(readFileSync(join(base, 'dashboard.json'), 'utf8')));
       assertPortable(doc);
+      // Checked here because the sync writes the showcase directly: an oversized document would be served, and
+      // every visitor's copy of it refused.
+      const bytes = documentBytes(doc);
+      if (bytes > MAX_DOCUMENT_BYTES)
+        throw new Error(
+          `dashboard.json takes ${bytes} bytes, more than the ${MAX_DOCUMENT_BYTES} a dashboard may`,
+        );
       const dashboardId = useCaseDashboardId(meta.id);
       const clash = ids.get(dashboardId);
       if (clash) throw new Error(`maps to the same dashboard id as "${clash}"`);

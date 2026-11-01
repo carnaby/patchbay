@@ -204,7 +204,8 @@ function cartesianOption(
       s.lineStyle = { width: 2 };
       s.sampling = 'lttb';
       s.connectNulls = false;
-      if (config.kind === 'area') s.areaStyle = { opacity: multi && !config.stacked ? 0.12 : 0.2 };
+      // Line and area share the series type, so switching an area to a line merges into it; null drops the fill.
+      s.areaStyle = config.kind === 'area' ? { opacity: multi && !config.stacked ? 0.12 : 0.2 } : null;
     }
     if (markType === 'bar') {
       s.barMaxWidth = 36;
@@ -216,7 +217,9 @@ function cartesianOption(
       };
     }
     if (markType === 'scatter') s.itemStyle = { borderColor: theme.surface, borderWidth: 1, opacity: 0.85 };
-    if (config.stacked && markType !== 'scatter') s.stack = 'total';
+    // Off values are explicit: the web app merges an update of the same series into the old option, which would
+    // keep a stack or value labels the author has since turned off.
+    s.stack = config.stacked && markType !== 'scatter' ? 'total' : null;
     if (labelled) {
       s.label = {
         show: true,
@@ -227,6 +230,8 @@ function cartesianOption(
           return typeof v === 'number' ? formatNumber(v, config.format) : '';
         },
       };
+    } else {
+      s.label = { show: false };
     }
     // Set per series rather than through `option.color`, so the colour belongs to the entity, not the rank.
     s.itemStyle = { ...(s.itemStyle as object), color: colors[idx] };

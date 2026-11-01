@@ -124,6 +124,25 @@ const ANONYMOUS_FULL =
 const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 const kb = (bytes: number) => `${Math.ceil(bytes / 1024)} KB`;
 const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+/** How a document is measured against MAX_DOCUMENT_BYTES, here and by the showcase loader. */
+export const documentBytes = (doc: DashboardDoc) => jsonBytes(doc);
+
+const COPY_SUFFIX = ' (copy)';
+
+/**
+ * The title of a copy. A long title is shortened so the suffix still fits the schema's limit, which counts UTF-16
+ * units: cutting by code points keeps an emoji from being split into half a surrogate pair.
+ */
+function copyTitle(title: string): string {
+  const room = LIMITS.title - COPY_SUFFIX.length;
+  if (title.length <= room) return `${title}${COPY_SUFFIX}`;
+  let kept = '';
+  for (const ch of title) {
+    if (kept.length + ch.length > room) break;
+    kept += ch;
+  }
+  return `${kept.trimEnd()}${COPY_SUFFIX}`;
+}
 
 /** Says what to do about it, because the reader is often an agent that just added inline rows. */
 function documentTooLarge(doc: DashboardDoc, bytes: number): HttpError {
@@ -382,8 +401,8 @@ export class DashboardService {
    * keeps loading and accepts edits that do not grow it, so it can be shrunk.
    */
   private checkSize(ownerId: string | null, before: DashboardDoc | null, after: DashboardDoc) {
-    const bytes = jsonBytes(after);
-    const beforeBytes = before === null ? null : jsonBytes(before);
+    const bytes = documentBytes(after);
+    const beforeBytes = before === null ? null : documentBytes(before);
     if (bytes > MAX_DOCUMENT_BYTES && (beforeBytes === null || bytes > beforeBytes)) {
       throw documentTooLarge(after, bytes);
     }
@@ -834,7 +853,7 @@ export class DashboardService {
       this.assertUserRoom(p.user.id, 2 * jsonBytes(doc) + storedBytes(files));
     }
     const created = await this.create(p, {
-      doc: { ...doc, datasets, title: `${doc.title} (copy)` },
+      doc: { ...doc, datasets, title: copyTitle(doc.title) },
       ...(strip ? { changes: ['Created', 'Removed secret references (secrets belong to their owner)'] } : {}),
     });
     // Only files the copied datasets actually use: unreferenced uploads stay private to editors. Viewers may copy

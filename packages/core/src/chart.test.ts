@@ -171,6 +171,43 @@ describe('value labels in snapshots', () => {
   });
 });
 
+// The web app merges an update whose series keep their type and name into the previous option, so a key that is
+// only left out when a setting is off would keep its old value on a live chart.
+describe('settings turned off in a live chart', () => {
+  const sales = inferTable([
+    { month: 'Jan', revenue: 120, cost: 80 },
+    { month: 'Feb', revenue: 95, cost: 70 },
+  ]);
+  type Built = { series: { label: { show: boolean }; stack: unknown; areaStyle?: unknown }[] };
+  const build = (config: Record<string, unknown>, opts = {}) =>
+    buildChartOption(
+      ChartConfigSchema.parse({ x: 'month', y: ['revenue', 'cost'], ...config }),
+      sales,
+      THEMES.light,
+      opts,
+    ) as unknown as Built;
+
+  it.each(['bar', 'line', 'area', 'scatter'])('switches %s value labels off explicitly', (kind) => {
+    for (const s of build({ kind, showLabels: false }).series) expect(s.label).toEqual({ show: false });
+    for (const s of build({ kind }).series) expect(s.label).toEqual({ show: false });
+  });
+
+  it('switches snapshot value labels off explicitly when showLabels is false', () => {
+    const series = build({ kind: 'bar', y: ['revenue'], showLabels: false }, { static: true }).series;
+    expect(series[0]!.label).toEqual({ show: false });
+  });
+
+  it.each(['bar', 'line', 'area'])('unstacks a %s chart explicitly', (kind) => {
+    expect(build({ kind, stacked: true }).series.map((s) => s.stack)).toEqual(['total', 'total']);
+    expect(build({ kind, stacked: false }).series.map((s) => s.stack)).toEqual([null, null]);
+  });
+
+  it('drops the fill explicitly when an area becomes a line, which keeps the series type', () => {
+    expect(build({ kind: 'area' }).series[0]!.areaStyle).toMatchObject({ opacity: 0.12 });
+    expect(build({ kind: 'line' }).series[0]!.areaStyle).toBeNull();
+  });
+});
+
 describe('tooltips', () => {
   const sales = inferTable([
     { region: 'North', month: 'Jan', revenue: 120, cost: 80 },

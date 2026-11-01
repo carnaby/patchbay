@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { LIMITS } from '@patchbay/core';
 import { afterAll, describe, expect, it } from 'vitest';
 import { buildTemplate } from '../services/templates.ts';
 import { loadUseCases, MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES, trustedSourceUrls } from './load.ts';
@@ -47,6 +48,34 @@ describe('loadUseCases', () => {
     expect(loaded[0]!.prompt).toBe('Build A');
     expect(loaded[0]!.dashboardId).toBe('scfirst');
     expect(warnings).toHaveLength(3);
+  });
+
+  it('skips a dashboard.json over the document size limit, which every copy of it would hit', () => {
+    const text = 'x'.repeat(LIMITS.inlineText - 20);
+    const inline = (id: string, kb: number) => ({
+      id,
+      name: id,
+      source: {
+        kind: 'inline',
+        rows: Array.from({ length: Math.ceil((kb * 1024) / (text.length + 20)) }, (_, i) => ({ i, text })),
+      },
+    });
+    const root = tempRoot();
+    useCase(root, 'fits', {
+      'meta.json': meta('fits', 1),
+      'prompt.md': 'x',
+      'dashboard.json': doc({ datasets: [inline('a', 600)] }),
+    });
+    useCase(root, 'too-large', {
+      'meta.json': meta('too-large', 2),
+      'prompt.md': 'x',
+      'dashboard.json': doc({ datasets: [inline('a', 600), inline('b', 600)] }),
+    });
+    const warnings: string[] = [];
+    const loaded = loadUseCases(root, (m) => warnings.push(m));
+    expect(loaded.map((u) => u.meta.id)).toEqual(['fits']);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/skipped "too-large".*more than the 1000000 a dashboard may/);
   });
 
   it('skips the second of two slugs that map to the same dashboard id', () => {
