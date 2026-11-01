@@ -8,6 +8,7 @@
       "!**/data",
       "!apps/web/public",
       "!docs",
+      "!.superpowers",
       "!packages/core/geo/world-110m.json",
       "!pnpm-lock.yaml"
     ]
