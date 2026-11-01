@@ -1,11 +1,21 @@
 import type { UseCaseInfo } from '@patchbay/core';
 import { ImageOff, Maximize2, Minimize2, Play, Volume2, VolumeX } from 'lucide-react';
-import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  type ReactNode,
+  type RefObject,
+  type SyntheticEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import { cx } from '../../components/ui.tsx';
 import { useMediaQuery, useTheme } from '../../lib/hooks.ts';
 import {
   chooseVideo,
   fullscreenElement,
+  isCurrentMediaEvent,
   playVideo,
   resumeAt,
   type VideoChoice,
@@ -186,6 +196,16 @@ export function UseCaseVideo({
     setShown(wantedSrc ? { src: wantedSrc, square: wantedSquare } : null);
   }, [wantedSrc, wantedSquare, src, shownFailed, fullscreen.active]);
 
+  // Without a source (a tab that shows its snapshot) removing the attribute does not unload the previous recording,
+  // which would play on hidden, with sound if it was on. Paused before paint, not unloaded: an unload could cost
+  // the element Safari's permission to play with sound.
+  useLayoutEffect(() => {
+    if (!src) ref.current?.pause();
+  }, [src]);
+  /** Events of the previous recording behind a snapshot are ignored (see `isCurrentMediaEvent`). */
+  const current = (e: SyntheticEvent<HTMLVideoElement>) =>
+    isCurrentMediaEvent(src, e.currentTarget.getAttribute('src'));
+
   useEffect(() => {
     const video = ref.current;
     if (!video || !src) return;
@@ -252,15 +272,20 @@ export function UseCaseVideo({
             e.currentTarget.currentTime = resumeAt(r.time, e.currentTarget.duration);
             if (r.play) start(e.currentTarget);
           }}
-          onLoadedData={() => setReady(true)}
+          onLoadedData={(e) => {
+            if (current(e)) setReady(true);
+          }}
           onEnded={(e) => {
             setPlaying(false);
+            if (!current(e)) return;
             // Not the `loop` attribute: whether to stay is decided at the end, from what the visitor is doing then.
             // Under reduced motion a video the visitor started rests on its last frame instead of starting over.
             if (!onEnded(fullscreen.active) && !reduced) start(e.currentTarget);
           }}
           onPlay={() => setPlaying(true)}
-          onPlaying={() => setReady(true)}
+          onPlaying={(e) => {
+            if (current(e)) setReady(true);
+          }}
           onPause={() => setPlaying(false)}
           // Remembered per source: a broken square cut falls back to 16:9 before the snapshot.
           onError={(e) => {

@@ -88,3 +88,12 @@ export function videoLook(s: {
   const poster = (s.intro || s.reduced || s.blocked) && s.poster ? s.poster : null;
   return { poster, hidden: !poster && !s.ready };
 }
+
+/**
+ * Whether an event of the persistent <video> belongs to the recording on show. On a tab that shows its snapshot the
+ * element still holds the previous recording (paused, not unloaded), whose `ended`, `playing` or `loadeddata` must
+ * neither move the tabs on nor start it again.
+ */
+export function isCurrentMediaEvent(shownSrc: string | undefined, elementSrc: string | null): boolean {
+  return shownSrc !== undefined && elementSrc === shownSrc;
+}

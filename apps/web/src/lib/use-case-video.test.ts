@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseVideo, playVideo, resumeAt, videoLook } from './use-case-video.ts';
+import { chooseVideo, isCurrentMediaEvent, playVideo, resumeAt, videoLook } from './use-case-video.ts';
 
 const both = { video: '/v.mp4', videoSquare: '/sq.mp4' };
 const none = new Set<string>();
@@ -120,5 +120,17 @@ describe('videoLook', () => {
   });
   it('waits for the first frame when there is no poster to show', () => {
     expect(videoLook({ ...calm, intro: true, poster: null })).toEqual({ poster: null, hidden: true });
+  });
+});
+
+describe('isCurrentMediaEvent', () => {
+  it('accepts events from the recording on show', () => {
+    expect(isCurrentMediaEvent('/a.mp4', '/a.mp4')).toBe(true);
+  });
+  it('ignores the previous recording while a snapshot shows, so it neither moves the tabs on nor starts again', () => {
+    expect(isCurrentMediaEvent(undefined, null)).toBe(false);
+  });
+  it('ignores an event that belongs to another source than the one on show', () => {
+    expect(isCurrentMediaEvent('/b.mp4', '/a.mp4')).toBe(false);
   });
 });
