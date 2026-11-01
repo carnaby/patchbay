@@ -173,6 +173,9 @@ export const WidgetFrame = memo(function WidgetFrame({
         flashing && 'pb-flash',
       )}
       aria-label={widget.title ?? widget.id}
+      // Live values (clock, KPIs, "updated 5 min ago") would freeze under a page translator, which detaches the
+      // text nodes React updates. Editor chrome around the widgets stays translatable.
+      translate="no"
     >
       <header
         className={cx(

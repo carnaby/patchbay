@@ -110,6 +110,22 @@ export function useTheme(): ThemeMode {
 
 /* ---------- misc ---------- */
 
+/** Subscribed rather than read once, so resizing or toggling an OS setting takes effect without a reload. */
+export function useMediaQuery(query: string): boolean {
+  // Stable per query, or React would unsubscribe and subscribe again on every render.
+  const subscribe = useCallback(
+    (notify: () => void) => {
+      if (typeof matchMedia !== 'function') return () => {};
+      const mq = matchMedia(query);
+      mq.addEventListener('change', notify);
+      return () => mq.removeEventListener('change', notify);
+    },
+    [query],
+  );
+  const snapshot = useCallback(() => typeof matchMedia === 'function' && matchMedia(query).matches, [query]);
+  return useSyncExternalStore(subscribe, snapshot, () => false);
+}
+
 export function useDocumentTitle(title: string | undefined) {
   useEffect(() => {
     if (title) document.title = `${title} · Patchbay`;

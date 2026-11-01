@@ -238,11 +238,12 @@ function Editor({ id }: { id: string }) {
             <div className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
               <VisibilityBadge visibility={meta.visibility} onClick={() => setPanel('share')} />
               <span aria-hidden="true">·</span>
-              <span className="min-w-0 truncate">
+              {/* Changes every minute: a translator would freeze it (see translator-guard.ts). */}
+              <span translate="no" className="min-w-0 truncate">
                 {access.canEdit ? status : `Updated ${relativeTime(meta.updatedAt)}`}
               </span>
               {lastRemote ? (
-                <span className="hidden min-w-0 truncate md:inline">
+                <span translate="no" className="hidden min-w-0 truncate md:inline">
                   · {lastRemote.actor.label} {relativeTime(new Date(lastRemote.at).toISOString())}
                 </span>
               ) : null}

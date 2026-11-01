@@ -1,46 +1,27 @@
 import type { DashboardEnvelope, UseCaseInfo } from '@patchbay/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { Bot, Check, Copy, ExternalLink, ImageOff, Play, Volume2, VolumeX } from 'lucide-react';
-import { type KeyboardEvent, useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { Bot, Check, Copy, ExternalLink } from 'lucide-react';
+import { type KeyboardEvent, type PointerEvent, useEffect, useReducer, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Button, buttonClass, cx, toast } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
 import { saveEditKey } from '../lib/edit-keys.ts';
-import { useTheme } from '../lib/hooks.ts';
-import { tabsReducer } from '../lib/use-case-tabs.ts';
+import { useMediaQuery } from '../lib/hooks.ts';
+import {
+  revealScrollLeft,
+  type SwipeStartPoint,
+  stepIndex,
+  swipeEnd,
+  swipeStart,
+  tabsReducer,
+} from '../lib/use-case-tabs.ts';
+import { fullscreenElement } from '../lib/use-case-video.ts';
+import { Attachment } from './use-cases/Attachment.tsx';
+import { UseCaseVideo } from './use-cases/UseCaseVideo.tsx';
 
 const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
-/** How long a tab without a video stays before the next one shows. */
-const SNAPSHOT_DWELL_MS = 9000;
-
-// Subscribed rather than read once, so toggling the OS setting takes effect without a reload.
-function usePrefersReducedMotion() {
-  return useSyncExternalStore(
-    (notify) => {
-      if (typeof matchMedia !== 'function') return () => {};
-      const mq = matchMedia(REDUCED_MOTION);
-      mq.addEventListener('change', notify);
-      return () => mq.removeEventListener('change', notify);
-    },
-    () => typeof matchMedia === 'function' && matchMedia(REDUCED_MOTION).matches,
-    () => false,
-  );
-}
-
-/** True while the element is at least partly on screen. */
-function useOnScreen(ref: { current: Element | null }) {
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || typeof IntersectionObserver !== 'function') return;
-    const io = new IntersectionObserver(([entry]) => setVisible(Boolean(entry?.isIntersecting)), {
-      threshold: 0.4,
-    });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [ref]);
-  return visible;
-}
+/** Room left beside a tab scrolled into view, so it never sits flush against the row's edge. */
+const TAB_MARGIN = 16;
 
 export function UseCases() {
   const { data } = useQuery({
@@ -49,34 +30,75 @@ export function UseCases() {
     staleTime: 300_000,
   });
   const list = data ?? [];
-  const [tabs, dispatch] = useReducer(tabsReducer, { active: 0, count: 0, interacted: false });
+  const [tabs, dispatch] = useReducer(tabsReducer, { active: 0, count: 0, interacted: false, dir: 0 });
   useEffect(() => dispatch({ type: 'reset', count: list.length }), [list.length]);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const reduced = usePrefersReducedMotion();
+  const tabRow = useRef<HTMLDivElement>(null);
+  const swipe = useRef<SwipeStartPoint | null>(null);
+  const reduced = useMediaQuery(REDUCED_MOTION);
+
+  // Every poster in the cache before its tab shows, so the incoming panel has a frame from the first paint.
+  useEffect(() => {
+    for (const u of data ?? []) if (u.poster) new Image().src = u.poster;
+  }, [data]);
+
+  // Whatever changed the tab (a swipe, the end of a video, a key), its button must be visible in the row, which
+  // scrolls sideways on narrow screens. Only the row scrolls, never the page.
+  useEffect(() => {
+    const row = tabRow.current;
+    const tab = tabRefs.current[tabs.active];
+    if (!row || !tab) return;
+    const start = tab.getBoundingClientRect().left - row.getBoundingClientRect().left + row.scrollLeft;
+    const left = revealScrollLeft(
+      { scrollLeft: row.scrollLeft, width: row.clientWidth },
+      { start, width: tab.offsetWidth },
+      TAB_MARGIN,
+    );
+    if (left !== row.scrollLeft) row.scrollTo({ left, behavior: reduced ? 'auto' : 'smooth' });
+  }, [tabs.active, reduced]);
+
   if (list.length === 0) return null; // self-hosted instances without use cases show nothing
   const current = list[tabs.active] ?? list[0]!;
+  const interact = () => dispatch({ type: 'interact' });
 
-  const select = (index: number, focus = false) => {
-    dispatch({ type: 'select', index });
+  const select = (index: number, dir?: -1 | 1, focus = false) => {
+    dispatch({ type: 'select', index, dir });
     if (focus) tabRefs.current[index]?.focus();
   };
   // Roving tabindex with arrow keys, as the ARIA tabs pattern expects.
   const onKeyDown = (e: KeyboardEvent) => {
     const n = list.length;
     const i = tabs.active;
-    const next =
-      e.key === 'ArrowRight'
-        ? (i + 1) % n
-        : e.key === 'ArrowLeft'
-          ? (i - 1 + n) % n
-          : e.key === 'Home'
-            ? 0
-            : e.key === 'End'
-              ? n - 1
-              : -1;
-    if (next < 0) return;
+    if (e.key === 'ArrowRight') select(stepIndex(i, 1, n), 1, true);
+    else if (e.key === 'ArrowLeft') select(stepIndex(i, -1, n), -1, true);
+    else if (e.key === 'Home') select(0, undefined, true);
+    else if (e.key === 'End') select(n - 1, undefined, true);
+    else return;
     e.preventDefault();
-    select(next, true);
+  };
+
+  // Touch only: a mouse drag selects text. The panel is `touch-action: pan-y pinch-zoom`, so vertical scrolling and
+  // zooming stay with the browser (it cancels the pointer) and a sideways move reaches pointerup.
+  const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    const target = e.target as Element;
+    // React bubbles events out of portals, so the attachment dialog's own gestures land here too.
+    // Zoomed in, a sideways drag is the visitor panning the page, which `pan-y` hands to us instead of the browser.
+    const zoomed = (window.visualViewport?.scale ?? 1) > 1.01;
+    if (e.pointerType !== 'touch' || zoomed || !e.currentTarget.contains(target)) {
+      swipe.current = null;
+      return;
+    }
+    const pointer = { id: e.pointerId, x: e.clientX, y: e.clientY, primary: e.isPrimary };
+    // Native controls (reduced motion) have a seek bar that is dragged sideways.
+    swipe.current = swipeStart(pointer, target.closest('video[controls]') !== null);
+  };
+  const onPointerUp = (e: PointerEvent<HTMLDivElement>) => {
+    const start = swipe.current;
+    swipe.current = null;
+    // In full screen the panel cannot change underneath: the new tab would drop the video out of full screen.
+    if (list.length < 2 || fullscreenElement()) return;
+    const step = swipeEnd(start, { id: e.pointerId, x: e.clientX, y: e.clientY, primary: e.isPrimary });
+    if (step) select(stepIndex(tabs.active, step, list.length), step);
   };
 
   return (
@@ -100,7 +122,7 @@ export function UseCases() {
       </div>
 
       {/* The row scrolls sideways on narrow screens instead of wrapping into several lines. */}
-      <div className="-mx-4 mb-6 overflow-x-auto px-4 pb-1">
+      <div ref={tabRow} className="-mx-4 mb-6 overflow-x-auto px-4 pb-1 [scrollbar-width:none]">
         <div
           role="tablist"
           aria-label="Use cases"
@@ -140,30 +162,56 @@ export function UseCases() {
         // biome-ignore lint/a11y/noNoninteractiveTabindex: the ARIA tabs pattern makes the panel reachable from its tab
         tabIndex={0}
         aria-labelledby={`use-case-tab-${current.id}`}
-        className="grid items-start gap-6 md:grid-cols-[3fr_2fr] md:gap-8"
+        className="touch-pan-y touch-pinch-zoom rounded-xl"
+        // Focus inside (a keyboard user reading the buttons) means this tab must stay: auto-advance would remount
+        // the panel and drop the focus.
+        onFocus={interact}
+        onPointerDown={onPointerDown}
+        onPointerUp={onPointerUp}
+        onPointerCancel={() => {
+          swipe.current = null;
+        }}
       >
-        <UseCaseVideo
+        {/* Keyed on the tab, so the slide-in restarts on every change; the first view does not move. */}
+        <div
           key={current.id}
-          item={current}
-          // A single use case has nothing to advance to, so its video loops.
-          loop={tabs.interacted || list.length < 2}
-          // Never moves on its own under reduced motion, nor once the visitor has interacted or when alone.
-          auto={!reduced && !tabs.interacted && list.length > 1}
-          reduced={reduced}
-          onEnded={() => dispatch({ type: 'ended' })}
-          onInteract={() => dispatch({ type: 'interact' })}
-        />
-        <UseCaseText
-          key={`t-${current.id}`}
-          item={current}
-          onInteract={() => dispatch({ type: 'interact' })}
-        />
+          className={cx(
+            !reduced && tabs.dir === 1 && 'pb-from-right',
+            !reduced && tabs.dir === -1 && 'pb-from-left',
+          )}
+        >
+          <UseCaseVideo
+            item={current}
+            // A single use case has nothing to advance to, so its video loops.
+            loop={tabs.interacted || list.length < 2}
+            // Never moves on its own under reduced motion, nor once the visitor has interacted or when alone.
+            auto={!reduced && !tabs.interacted && list.length > 1}
+            reduced={reduced}
+            onEnded={() => dispatch({ type: 'ended' })}
+            onInteract={interact}
+          />
+          {/* Every tab's text in one grid cell, only the active one visible: the cell is as tall as the longest,
+              so the page below does not jump when the tabs change. */}
+          <div className="mt-6 grid md:mt-8">
+            {list.map((u) => (
+              <UseCaseText key={u.id} item={u} active={u.id === current.id} onInteract={interact} />
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );
 }
 
-function UseCaseText({ item, onInteract }: { item: UseCaseInfo; onInteract: () => void }) {
+function UseCaseText({
+  item,
+  active,
+  onInteract,
+}: {
+  item: UseCaseInfo;
+  active: boolean;
+  onInteract: () => void;
+}) {
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
   useEffect(() => {
@@ -198,19 +246,28 @@ function UseCaseText({ item, onInteract }: { item: UseCaseInfo; onInteract: () =
   });
 
   return (
-    <div className="flex flex-col gap-5">
-      <div>
+    <div
+      // Inactive tabs only hold the cell's height: invisible, out of the tab order and the accessibility tree.
+      inert={!active}
+      aria-hidden={active ? undefined : true}
+      className={cx(
+        'col-start-1 row-start-1 grid content-start gap-6 md:grid-cols-2 md:grid-rows-[auto_1fr] md:gap-x-10',
+        !active && 'invisible',
+      )}
+    >
+      <div className="md:col-start-1 md:row-start-1">
         <h3 className="text-lg font-semibold tracking-tight">{item.title}</h3>
         <p className="mt-1.5 text-ink-2 text-pretty">{item.description}</p>
       </div>
 
-      <figure>
+      <figure className="md:col-start-2 md:row-span-2 md:row-start-1">
         <figcaption className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted">
           <Bot className="size-3.5" aria-hidden="true" /> The prompt the agent got
         </figcaption>
         <blockquote className="rounded-2xl rounded-bl-md bg-ink px-4 py-3 text-sm leading-relaxed text-page">
           {item.prompt}
         </blockquote>
+        {item.attachment ? <Attachment attachment={item.attachment} onInteract={onInteract} /> : null}
         <Button
           variant="ghost"
           size="sm"
@@ -225,7 +282,7 @@ function UseCaseText({ item, onInteract }: { item: UseCaseInfo; onInteract: () =
         </span>
       </figure>
 
-      <div className="flex flex-col gap-2 sm:flex-row">
+      <div className="flex flex-col gap-2 sm:flex-row md:col-start-1 md:row-start-2 md:self-start">
         {/* A plain anchor: /showcase/:id is a server redirect to the live dashboard, not a client route. */}
         <a href={`/showcase/${item.id}`} className={buttonClass('accent', 'md', 'sm:flex-1')}>
           <ExternalLink className="size-4" aria-hidden="true" />
@@ -241,140 +298,6 @@ function UseCaseText({ item, onInteract }: { item: UseCaseInfo; onInteract: () =
           Make your own copy
         </Button>
       </div>
-    </div>
-  );
-}
-
-function UseCaseVideo({
-  item,
-  loop,
-  auto,
-  reduced,
-  onEnded,
-  onInteract,
-}: {
-  item: UseCaseInfo;
-  loop: boolean;
-  auto: boolean;
-  reduced: boolean;
-  onEnded: () => void;
-  onInteract: () => void;
-}) {
-  const ref = useRef<HTMLVideoElement>(null);
-  const [muted, setMuted] = useState(true);
-  const [playing, setPlaying] = useState(false);
-  const [videoFailed, setVideoFailed] = useState(false);
-  const hasVideo = Boolean(item.video) && !videoFailed;
-
-  useEffect(() => {
-    const video = ref.current;
-    if (!video || reduced || !hasVideo) return;
-    // Play only while on screen: off-screen videos cost bandwidth and battery for nothing.
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        if (entry?.isIntersecting) void video.play().catch(() => {});
-        else video.pause();
-      },
-      { threshold: 0.4 },
-    );
-    io.observe(video);
-    return () => io.disconnect();
-  }, [reduced, hasVideo]);
-
-  if (!hasVideo) return <Snapshot item={item} auto={auto} onEnded={onEnded} />;
-
-  return (
-    <div className="relative">
-      <video
-        ref={ref}
-        src={item.video ?? undefined}
-        poster={item.poster ?? undefined}
-        muted={muted}
-        loop={loop}
-        playsInline
-        preload="metadata"
-        controls={reduced}
-        onEnded={() => {
-          setPlaying(false);
-          if (auto) onEnded();
-        }}
-        onPlay={() => setPlaying(true)}
-        onPause={() => setPlaying(false)}
-        onError={() => setVideoFailed(true)}
-        aria-label={`${item.title}: screen recording of the agent building the dashboard`}
-        className="aspect-video w-full rounded-xl border border-line bg-surface-2 object-cover"
-      />
-      {reduced && !playing ? (
-        <button
-          type="button"
-          aria-label="Play video"
-          onClick={() => {
-            onInteract();
-            void ref.current?.play();
-          }}
-          className="absolute top-1/2 left-1/2 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-ink/80 text-page backdrop-blur hover:bg-ink"
-        >
-          <Play className="size-6 translate-x-0.5" aria-hidden="true" />
-        </button>
-      ) : null}
-      <button
-        type="button"
-        aria-label={muted ? 'Turn sound on' : 'Turn sound off'}
-        aria-pressed={!muted}
-        onClick={() => {
-          onInteract();
-          setMuted((m) => !m);
-        }}
-        className={cx(
-          'absolute right-2 flex size-9 items-center justify-center rounded-full bg-ink/70 text-page backdrop-blur hover:bg-ink',
-          // Native controls (reduced motion) occupy the bottom edge.
-          reduced ? 'top-2' : 'bottom-2',
-        )}
-      >
-        {muted ? (
-          <VolumeX className="size-4" aria-hidden="true" />
-        ) : (
-          <Volume2 className="size-4" aria-hidden="true" />
-        )}
-      </button>
-    </div>
-  );
-}
-
-// No video yet: the live dashboard's server snapshot stands in. The endpoint is rate limited, so a failed
-// load degrades to a plain card instead of a broken image.
-function Snapshot({ item, auto, onEnded }: { item: UseCaseInfo; auto: boolean; onEnded: () => void }) {
-  const [failed, setFailed] = useState(false);
-  const theme = useTheme();
-  const box = useRef<HTMLDivElement>(null);
-  const visible = useOnScreen(box);
-  const advance = useRef(onEnded);
-  advance.current = onEnded;
-  // Only a video's end moves the tabs on, so a tab without one needs its own clock: it runs only while the section
-  // is on screen and is cleared on tab change or unmount.
-  useEffect(() => {
-    if (!auto || !visible) return;
-    const t = setTimeout(() => advance.current(), SNAPSHOT_DWELL_MS);
-    return () => clearTimeout(t);
-  }, [auto, visible]);
-  // One outer element for both states: the visibility observer must not be left watching a removed node.
-  return (
-    <div ref={box}>
-      {failed ? (
-        <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 rounded-xl border border-line bg-surface-2 p-6 text-center">
-          <ImageOff className="size-6 text-muted" aria-hidden="true" />
-          <div className="font-medium">{item.title}</div>
-          <div className="text-sm text-ink-2">Preview unavailable. Open the live dashboard instead.</div>
-        </div>
-      ) : (
-        <img
-          src={`/api/dashboards/${item.dashboardId}/snapshot.png${theme === 'dark' ? '?theme=dark' : ''}`}
-          alt={`${item.title}: snapshot of the live dashboard`}
-          loading="lazy"
-          onError={() => setFailed(true)}
-          className="aspect-video w-full rounded-xl border border-line bg-surface-2 object-cover"
-        />
-      )}
     </div>
   );
 }

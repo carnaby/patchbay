@@ -38,6 +38,14 @@ describe('use cases', () => {
     expect(useCaseDashboardId('a'.repeat(40))).toHaveLength(32);
   });
 
+  it('accepts a CSV file name in the same folder as the attachment and nothing else', () => {
+    const base = { id: 'own-data', order: 1, title: 'T', tab: 'T', description: 'D' };
+    for (const attachment of ['sales.csv', 'sales-2026_q3.csv'])
+      expect(UseCaseMetaSchema.parse({ ...base, attachment }).attachment).toBe(attachment);
+    for (const attachment of ['../sales.csv', 'a/b.csv', 'sales.json', '.csv', 'Sales.CSV', 'video.mp4', ''])
+      expect(() => UseCaseMetaSchema.parse({ ...base, attachment }), attachment).toThrow();
+  });
+
   it('uses a reserved owner id no real user can have', () => {
     expect(SHOWCASE_OWNER_ID).toBe('system');
   });

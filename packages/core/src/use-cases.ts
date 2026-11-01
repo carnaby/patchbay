@@ -16,6 +16,13 @@ export const UseCaseMetaSchema = z.strictObject({
   title: z.string().min(1).max(60),
   tab: z.string().min(1).max(24),
   description: z.string().min(1).max(200),
+  // A file next to meta.json the prompt refers to, such as the CSV a visitor would paste. Lowercase words, CSV only:
+  // the server serves it under the use case's URL, so the name must never reach outside the folder.
+  attachment: z
+    .string()
+    .max(60)
+    .regex(/^[a-z0-9]+(?:[-_.][a-z0-9]+)*\.csv$/)
+    .optional(),
 });
 export type UseCaseMeta = z.infer<typeof UseCaseMetaSchema>;
 
@@ -40,5 +47,9 @@ export interface UseCaseInfo {
   dashboardId: string;
   /** URL with a content-hash cache key, or null when the use case has no video yet. */
   video: string | null;
+  /** The same recording cut to 1:1 for narrow screens; null when the use case has none. */
+  videoSquare: string | null;
   poster: string | null;
+  /** The file the prompt came with; `rows` excludes the header. */
+  attachment: { name: string; url: string; rows: number; bytes: number } | null;
 }
