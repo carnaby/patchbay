@@ -475,6 +475,26 @@ describe('uploads', () => {
 });
 
 describe('copies', () => {
+  // The schema counts UTF-16 units: 112 letters and an emoji fill 114 of them, past the 113 left beside " (copy)".
+  it.each([
+    ['a title at the limit', 'T'.repeat(LIMITS.title), `${'T'.repeat(113)} (copy)`],
+    ['an emoji at the cut', `${'a'.repeat(112)}😀${'b'.repeat(6)}`, `${'a'.repeat(112)} (copy)`],
+    ['spaces at the cut', `${'a'.repeat(100)}${' '.repeat(20)}`, `${'a'.repeat(100)} (copy)`],
+  ])('copies a dashboard with %s, shortening the title so the copy fits', async (_, title, expected) => {
+    const cookie = await login('long-title@example.com');
+    const id = (await call('/api/dashboards', { body: { title }, cookie })).json.envelope.meta.id;
+    const op = { ops: [{ op: 'setMeta', title }] };
+    expect((await call(`/api/dashboards/${id}/ops`, { body: op, cookie })).status).toBe(200);
+    expect((await call(`/api/dashboards/${id}`, { cookie })).json.doc.title).toBe(title);
+
+    const copy = await call(`/api/dashboards/${id}/duplicate`, { body: {}, cookie });
+    expect(copy.status).toBe(201);
+    const copied: string = copy.json.envelope.doc.title;
+    expect(copied).toBe(expected);
+    expect(copied.length).toBeLessThanOrEqual(LIMITS.title);
+    expect(copied.endsWith(' (copy)')).toBe(true);
+  });
+
   it('let viewers copy a public dashboard; the copy shares upload bytes and outlives the original', async () => {
     const cookie = await login('origin@example.com');
     const id = (await call('/api/dashboards', { body: { visibility: 'public' }, cookie })).json.envelope.meta
