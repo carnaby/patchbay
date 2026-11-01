@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { guardAgainstTranslators } from './translator-guard.ts';
 
 /**
@@ -35,6 +35,22 @@ const tree = () => {
 };
 
 describe('guardAgainstTranslators', () => {
+  let warn: { mock: { calls: unknown[][] } };
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('warns in development when it swallows a call, so the cause can still be found', () => {
+    const { parent, child } = tree();
+    new GuardedNode().insertBefore(parent.removeChild(child), null);
+    parent.removeChild(child);
+    parent.insertBefore(new GuardedNode(), child);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(String(warn.mock.calls[0]![0])).toMatch(/removeChild/);
+    expect(String(warn.mock.calls[1]![0])).toMatch(/insertBefore/);
+  });
+
   it('still removes and inserts real children', () => {
     const { parent, child } = tree();
     const other = new GuardedNode();
