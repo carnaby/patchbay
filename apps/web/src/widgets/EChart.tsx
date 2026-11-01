@@ -46,7 +46,30 @@ export function EChart({
     chart.current = instance;
     const ro = new ResizeObserver(() => instance.resize());
     ro.observe(el.current);
+    // A tapped tooltip stays until the next tap, so scrolling would carry it along over the page. A mouse moves it
+    // anyway. Capturing on window catches every scroller, also the dashboard's own.
+    let touch = false;
+    let tip = false;
+    const onPointerDown = (e: PointerEvent) => {
+      touch = e.pointerType === 'touch';
+    };
+    const onScroll = () => {
+      if (!touch || !tip) return;
+      tip = false;
+      instance.dispatchAction({ type: 'hideTip' });
+    };
+    instance.on('showTip', () => {
+      tip = true;
+    });
+    instance.on('hideTip', () => {
+      tip = false;
+    });
+    const node = el.current;
+    node.addEventListener('pointerdown', onPointerDown, { passive: true });
+    window.addEventListener('scroll', onScroll, { capture: true, passive: true });
     return () => {
+      node.removeEventListener('pointerdown', onPointerDown);
+      window.removeEventListener('scroll', onScroll, { capture: true });
       ro.disconnect();
       instance.dispose();
       chart.current = null;
@@ -71,5 +94,7 @@ export function EChart({
     instance.setOption(option, { notMerge: replace, lazyUpdate: true });
   }, [option]);
 
-  return <div ref={el} className={className ?? 'h-full w-full'} role="img" aria-label={label} />;
+  // `isolate`: ECharts gives its tooltip a huge z-index, and without a stacking context of its own the tooltip would
+  // rise above the sticky header and open dialogs.
+  return <div ref={el} className={`isolate ${className ?? 'h-full w-full'}`} role="img" aria-label={label} />;
 }

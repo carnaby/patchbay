@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildChartOption, ChartConfigSchema, inferTable, THEMES } from './index.ts';
+import { buildChartOption, CHART_KINDS, ChartConfigSchema, inferTable, THEMES } from './index.ts';
 
 type Axis = { type: string; min?: number; max?: number };
 
@@ -168,5 +168,26 @@ describe('value labels in snapshots', () => {
 
   it('shows labels everywhere when showLabels is true', () => {
     expect(labelled({ showLabels: true }, { static: false })).toBe(true);
+  });
+});
+
+describe('tooltips', () => {
+  const sales = inferTable([
+    { region: 'North', month: 'Jan', revenue: 120, cost: 80 },
+    { region: 'South', month: 'Feb', revenue: 95, cost: 70 },
+    { region: 'East', month: 'Mar', revenue: 140, cost: 90 },
+  ]);
+
+  // The web app isolates each chart's stacking context, so the header and dialogs stay above its tooltip; a tooltip
+  // that left the chart would be cut off by the widget frame or drawn under the widget beside it.
+  it.each(CHART_KINDS)('keeps the %s tooltip inside the chart', (kind) => {
+    const config = ChartConfigSchema.parse({
+      kind,
+      x: kind === 'heatmap' ? 'month' : 'region',
+      y: kind === 'heatmap' ? ['revenue'] : ['revenue', 'cost'].slice(0, kind === 'radar' ? 2 : 1),
+      ...(kind === 'heatmap' ? { series: 'region' } : {}),
+    });
+    const option = buildChartOption(config, sales, THEMES.light) as { tooltip?: { confine?: boolean } };
+    expect(option.tooltip?.confine).toBe(true);
   });
 });

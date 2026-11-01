@@ -478,6 +478,7 @@ function proportionOption(
     ...base,
     tooltip: {
       trigger: 'item',
+      confine: true,
       backgroundColor: theme.surface,
       borderColor: theme.axis,
       textStyle: { color: theme.textPrimary },
@@ -518,6 +519,7 @@ function heatmapOption(config: ChartConfig, table: DataTable, theme: ChartTheme,
     ...base,
     tooltip: {
       position: 'top',
+      confine: true,
       backgroundColor: theme.surface,
       borderColor: theme.axis,
       textStyle: { color: theme.textPrimary },
@@ -565,6 +567,7 @@ function radarOption(
     ...base,
     tooltip: {
       trigger: 'item',
+      confine: true,
       backgroundColor: theme.surface,
       borderColor: theme.axis,
       textStyle: { color: theme.textPrimary },

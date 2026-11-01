@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseVideo, resumeAt } from './use-case-video.ts';
+import { chooseVideo, isCurrentMediaEvent, playVideo, resumeAt, videoLook } from './use-case-video.ts';
 
 const both = { video: '/v.mp4', videoSquare: '/sq.mp4' };
 const none = new Set<string>();
@@ -39,5 +39,98 @@ describe('resumeAt', () => {
   it('trusts the position while the duration is unknown', () => {
     expect(resumeAt(8, Number.NaN)).toBe(8);
     expect(resumeAt(8, Number.POSITIVE_INFINITY)).toBe(8);
+  });
+});
+
+describe('playVideo', () => {
+  const wanted = () => true;
+  const refused = (name: string) => Object.assign(new Error(name), { name });
+  /** A video whose play() answers from `results` in turn and records whether it was muted at each call. */
+  const fakeVideo = (muted: boolean, results: (Error | null)[]) => {
+    const calls: boolean[] = [];
+    const video = {
+      muted,
+      play() {
+        calls.push(this.muted);
+        const r = results.shift() ?? null;
+        return r ? Promise.reject(r) : Promise.resolve();
+      },
+    };
+    return { video, calls };
+  };
+
+  it('plays as it is when the browser allows it', async () => {
+    const { video, calls } = fakeVideo(false, [null]);
+    let muted = 0;
+    expect(await playVideo(video, () => muted++, wanted)).toBe('playing');
+    expect(calls).toEqual([false]);
+    expect(muted).toBe(0);
+  });
+
+  it('falls back to muted when sound is refused, and says so', async () => {
+    const { video, calls } = fakeVideo(false, [refused('NotAllowedError'), null]);
+    let muted = 0;
+    expect(await playVideo(video, () => muted++, wanted)).toBe('playing');
+    expect(calls).toEqual([false, true]);
+    expect(video.muted).toBe(true);
+    expect(muted).toBe(1);
+  });
+
+  it('reports a muted video the browser will not play on its own (iOS Low Power Mode)', async () => {
+    const { video } = fakeVideo(true, [refused('NotAllowedError')]);
+    expect(await playVideo(video, () => {}, wanted)).toBe('blocked');
+    const unmuted = fakeVideo(false, [refused('NotAllowedError'), refused('NotAllowedError')]);
+    expect(await playVideo(unmuted.video, () => {}, wanted)).toBe('blocked');
+  });
+
+  it('leaves the sound alone when the play was only interrupted', async () => {
+    const { video, calls } = fakeVideo(false, [refused('AbortError')]);
+    let muted = 0;
+    expect(await playVideo(video, () => muted++, wanted)).toBe('interrupted');
+    expect(calls).toEqual([false]);
+    expect(video.muted).toBe(false);
+    expect(muted).toBe(0);
+  });
+
+  it('does not retry muted once the video is no longer meant to play (scrolled away meanwhile)', async () => {
+    const { video, calls } = fakeVideo(false, [refused('NotAllowedError'), null]);
+    let muted = 0;
+    expect(
+      await playVideo(
+        video,
+        () => muted++,
+        () => false,
+      ),
+    ).toBe('interrupted');
+    expect(calls).toEqual([false]);
+    expect(video.muted).toBe(false);
+    expect(muted).toBe(0);
+  });
+});
+
+describe('videoLook', () => {
+  const calm = { intro: false, reduced: false, blocked: false, ready: false, poster: '/p.jpg' };
+  it('hides an incoming video without a poster until its first frame, so the finished dashboard never flashes', () => {
+    expect(videoLook(calm)).toEqual({ poster: null, hidden: true });
+    expect(videoLook({ ...calm, ready: true })).toEqual({ poster: null, hidden: false });
+  });
+  it('keeps the poster on the first view, under reduced motion and when autoplay is blocked', () => {
+    for (const k of ['intro', 'reduced', 'blocked'] as const)
+      expect(videoLook({ ...calm, [k]: true })).toEqual({ poster: '/p.jpg', hidden: false });
+  });
+  it('waits for the first frame when there is no poster to show', () => {
+    expect(videoLook({ ...calm, intro: true, poster: null })).toEqual({ poster: null, hidden: true });
+  });
+});
+
+describe('isCurrentMediaEvent', () => {
+  it('accepts events from the recording on show', () => {
+    expect(isCurrentMediaEvent('/a.mp4', '/a.mp4')).toBe(true);
+  });
+  it('ignores the previous recording while a snapshot shows, so it neither moves the tabs on nor starts again', () => {
+    expect(isCurrentMediaEvent(undefined, null)).toBe(false);
+  });
+  it('ignores an event that belongs to another source than the one on show', () => {
+    expect(isCurrentMediaEvent('/b.mp4', '/a.mp4')).toBe(false);
   });
 });
