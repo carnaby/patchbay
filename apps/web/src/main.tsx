@@ -8,6 +8,7 @@ import { AppShell } from './components/AppShell.tsx';
 import { Spinner, Toaster, toast } from './components/ui.tsx';
 import { ApiError } from './lib/api.ts';
 import { registerServiceWorker } from './lib/pwa.ts';
+import { guardAgainstTranslators } from './lib/translator-guard.ts';
 import './styles.css';
 
 const Landing = lazy(() => import('./pages/Landing.tsx'));
@@ -60,6 +61,8 @@ const router = createBrowserRouter([
   },
 ]);
 
+// Before the first render: a translated page must not crash React (see the module).
+guardAgainstTranslators();
 registerServiceWorker();
 
 createRoot(document.getElementById('root')!).render(

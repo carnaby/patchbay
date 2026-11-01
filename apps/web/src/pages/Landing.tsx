@@ -114,7 +114,10 @@ function DemoCard({
           </span>
         ) : null}
       </div>
-      <div className="min-h-0 flex-1">{children}</div>
+      {/* Live values: a page translator would freeze them (see translator-guard.ts). */}
+      <div translate="no" className="min-h-0 flex-1">
+        {children}
+      </div>
     </div>
   );
 }
