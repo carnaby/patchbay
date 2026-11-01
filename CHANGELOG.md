@@ -11,6 +11,12 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 - **Showcase format**: an optional `video-square.mp4` per use case for narrow screens, and one optional CSV
   attachment declared in `meta.json`, served as a download and listed with its row count.
 
+### Changed
+
+- **Landing page use cases**: the video spans the section width and opens full screen (button or click), phones
+  get the square cut and can swipe between tabs, tab changes slide in over the poster instead of blinking, and the
+  CSV the agent got is an attachment with a table preview and a download instead of text in the prompt.
+
 ### Fixed
 
 - A page translated by the browser (Google Translate and similar) no longer crashes with a `removeChild`

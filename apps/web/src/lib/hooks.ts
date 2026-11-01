@@ -110,6 +110,20 @@ export function useTheme(): ThemeMode {
 
 /* ---------- misc ---------- */
 
+/** Subscribed rather than read once, so resizing or toggling an OS setting takes effect without a reload. */
+export function useMediaQuery(query: string): boolean {
+  return useSyncExternalStore(
+    (notify) => {
+      if (typeof matchMedia !== 'function') return () => {};
+      const mq = matchMedia(query);
+      mq.addEventListener('change', notify);
+      return () => mq.removeEventListener('change', notify);
+    },
+    () => typeof matchMedia === 'function' && matchMedia(query).matches,
+    () => false,
+  );
+}
+
 export function useDocumentTitle(title: string | undefined) {
   useEffect(() => {
     if (title) document.title = `${title} · Patchbay`;

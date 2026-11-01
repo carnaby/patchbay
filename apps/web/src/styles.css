@@ -125,9 +125,31 @@ body {
   animation: pb-dash 1.2s linear infinite;
 }
 
+/* The incoming use case slides in from the side it comes from, so a tab change reads as a move, not a blink. */
+@keyframes pb-from-right {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+}
+@keyframes pb-from-left {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+}
+.pb-from-right {
+  animation: pb-from-right 200ms ease-out;
+}
+.pb-from-left {
+  animation: pb-from-left 200ms ease-out;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pb-flash,
-  .pb-cable {
+  .pb-cable,
+  .pb-from-right,
+  .pb-from-left {
     animation: none;
   }
 }
