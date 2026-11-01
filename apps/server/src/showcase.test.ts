@@ -411,7 +411,27 @@ describe('showcase routes', () => {
     expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
     expect(res.headers.get('content-disposition')).toBe('attachment; filename="sales.csv"');
     expect(res.headers.get('cache-control')).toBe('public, max-age=86400');
+    // A browser must never sniff it into something it would render.
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
     expect(await res.text()).toBe(CSV);
+  });
+
+  it('answers HEAD on the attachment without a body', async () => {
+    const res = await app.request('/showcase/with-video/sales.csv', { method: 'HEAD' });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-length')).toBe(String(CSV.length));
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="sales.csv"');
+    expect(await res.text()).toBe('');
+  });
+
+  it('matches the attachment name exactly, never as a path or case-insensitively', async () => {
+    for (const p of [
+      '/showcase/with-video/..%2Fmeta.json',
+      '/showcase/with-video/..%2Fwith-video%2Fsales.csv',
+      '/showcase/with-video/SALES.csv',
+      '/showcase/with-video/sales.CSV',
+    ])
+      expect((await app.request(p)).status, p).toBe(404);
   });
 
   it('serves the poster', async () => {
