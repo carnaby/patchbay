@@ -16,7 +16,8 @@ optionally:
 The server turns each use case into a read-only public dashboard at `/showcase/<id>`; visitors can make an
 editable copy.
 
-The data must work for the owner `system` and in anonymous copies: use `inline` rows (at most 2000), built-in
-connectors or public URLs. A `dashboard.json` with `upload` sources or secret references is skipped with a warning
-at startup; a broken file (too large, or an attachment that is missing or not valid CSV) is left out with a warning
-and the use case stays. Restart the server after changing files.
+The data must work for the owner `system` and in anonymous copies: use `inline` rows (at most 2000), built-in connectors
+or public URLs. A `dashboard.json` with `upload` sources or secret references, or larger than the 1 MB every dashboard
+document is limited to (visitors' copies would be refused), is skipped with a warning at startup; a broken file (too
+large, or an attachment that is missing or not valid CSV) is left out with a warning and the use case stays. Restart the
+server after changing files.

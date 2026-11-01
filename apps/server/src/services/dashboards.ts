@@ -124,6 +124,8 @@ const ANONYMOUS_FULL =
 const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 const kb = (bytes: number) => `${Math.ceil(bytes / 1024)} KB`;
 const jsonBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+/** How a document is measured against MAX_DOCUMENT_BYTES, here and by the showcase loader. */
+export const documentBytes = (doc: DashboardDoc) => jsonBytes(doc);
 
 const COPY_SUFFIX = ' (copy)';
 
@@ -399,8 +401,8 @@ export class DashboardService {
    * keeps loading and accepts edits that do not grow it, so it can be shrunk.
    */
   private checkSize(ownerId: string | null, before: DashboardDoc | null, after: DashboardDoc) {
-    const bytes = jsonBytes(after);
-    const beforeBytes = before === null ? null : jsonBytes(before);
+    const bytes = documentBytes(after);
+    const beforeBytes = before === null ? null : documentBytes(before);
     if (bytes > MAX_DOCUMENT_BYTES && (beforeBytes === null || bytes > beforeBytes)) {
       throw documentTooLarge(after, bytes);
     }
