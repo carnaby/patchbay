@@ -7,8 +7,8 @@ import {
   Database,
   FileSpreadsheet,
   History,
+  KeyRound,
   LayoutGrid,
-  Lock,
   type LucideIcon,
   Radio,
   ShieldCheck,
@@ -205,8 +205,8 @@ function Hero() {
             Patch any data into a <span className="text-accent">live dashboard</span>.
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-[clamp(1rem,2vw,1.2rem)] text-pretty text-ink-2">
-            Public APIs, your own CSVs, updates in real time. Wire it up by hand, or tell your AI agent what
-            you want and watch it build the dashboard over MCP.
+            Public APIs, your own files, private APIs behind a key, all updating in real time. Wire it up by
+            hand, or tell your AI agent what you want and watch it build the dashboard over MCP.
           </p>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row sm:flex-wrap">
             <Link to="/new" className="w-full sm:w-auto">
@@ -265,7 +265,7 @@ const STEPS: { icon: LucideIcon; title: string; body: string; example: string }[
   {
     icon: Database,
     title: 'Plug in a source',
-    body: 'Pick one of 14 free public APIs, upload a CSV or JSON file, or point at any public HTTPS endpoint.',
+    body: 'Pick one of 14 built-in public sources, upload a CSV or JSON file, or point at any HTTPS JSON API or news feed. If the API needs a key, save it once as a secret: the dataset and your agent refer to it by name and never see the value.',
     example: 'weather.forecast · city: "Bratislava"',
   },
   {
@@ -277,7 +277,7 @@ const STEPS: { icon: LucideIcon; title: string; body: string; example: string }[
   {
     icon: Radio,
     title: 'Watch it live',
-    body: 'Datasets refresh on their own interval and stream to every open browser. Only changed data is sent.',
+    body: 'Datasets refresh on their own interval and stream to every open browser, only when the data has changed.',
     example: 'refresh every 60 s · pushed via SSE',
   },
 ];
@@ -391,7 +391,8 @@ function McpSection() {
               'Every edit is a small, validated operation, applied atomically.',
               'Every change is a version: undo the agent with one click.',
               'Changes stream into your open browser in real time.',
-              'OAuth 2.1 with your Google account. Agents only get the scopes you approve.',
+              'Keys for private APIs stay with Patchbay: the agent can use them by name, never read them.',
+              'OAuth 2.1 with your Google account. Agents only get the access you approve.',
             ].map((t) => (
               <li key={t} className="flex gap-2.5">
                 <ShieldCheck className="mt-0.5 size-4 shrink-0 text-good" />
@@ -435,27 +436,27 @@ const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
   {
     icon: History,
     title: 'Undo, redo, versions',
-    body: 'Undo every edit in the editor, and roll back to any of the last 50 saved versions, including the agent’s.',
+    body: 'Undo every edit in the editor, and roll back to an earlier saved version (up to the last 50), including the agent’s.',
   },
   {
     icon: Database,
-    title: '14 public sources',
-    body: 'Open-Meteo, CoinGecko, ECB rates, USGS earthquakes, World Bank, Wikipedia, Hacker News, GitHub, npm and more. No API keys.',
+    title: '14 built-in sources',
+    body: 'Open-Meteo, CoinGecko, ECB rates, USGS earthquakes, the ISS, World Bank, Wikipedia, Hacker News, GitHub and npm. No sign-up or key needed.',
   },
   {
     icon: FileSpreadsheet,
     title: 'Your own data',
-    body: 'Upload CSV or JSON. Patchbay profiles the columns and suggests how to process and chart them.',
+    body: 'Upload CSV or JSON, paste a table, or read any HTTPS JSON API or news feed. Patchbay profiles the columns and suggests charts.',
   },
   {
-    icon: Lock,
-    title: 'Public or private',
-    body: 'Build without an account (always public), or sign in with Google to keep dashboards private.',
+    icon: KeyRound,
+    title: 'Private APIs, kept private',
+    body: 'Save an API key once; datasets and agents use it by name and never see it. Encrypted, sent only to the address you allow. Sign in to keep dashboards private.',
   },
   {
     icon: ShieldCheck,
     title: 'Safe by design',
-    body: 'Validated operations, a sandboxed expression language with no eval, SSRF-guarded fetching and rate limits.',
+    body: 'Validated operations, an expression language with no eval, rate limits, and a URL guard that keeps user-supplied addresses off your private network.',
   },
   {
     icon: Camera,
@@ -473,7 +474,8 @@ function Features() {
   return (
     <section className="mx-auto max-w-6xl px-4 py-20">
       <SectionTitle eyebrow="Everything included" title="All the dashboard features. No paywall.">
-        Every feature is free for everyone. There is no pro plan and no hidden limit.
+        Every feature is free for everyone. There is no pro plan, and the limits are the same for all and
+        documented.
       </SectionTitle>
       <div className="grid grid-cols-1 gap-px overflow-hidden rounded-2xl border border-line bg-line sm:grid-cols-2 lg:grid-cols-4">
         {FEATURES.map((f) => (
@@ -497,8 +499,8 @@ function OpenSource() {
           Open source. One process, one folder per dashboard. Host it anywhere.
         </h2>
         <p className="mt-3 max-w-xl text-sm opacity-75">
-          TypeScript end to end, SQLite only for accounts, a single Docker image. Delete a dashboard’s folder
-          and it is gone.
+          TypeScript end to end, SQLite only for accounts and the index, one Docker image for amd64 and arm64.
+          Delete a dashboard’s folder and it is gone.
         </p>
         <div className="mt-8 flex flex-col gap-3 sm:flex-row">
           <Link to="/new">
@@ -557,7 +559,7 @@ function Footer() {
 }
 
 export default function Landing() {
-  useDocumentTitle('Live dashboards your AI can build');
+  useDocumentTitle('Live dashboards your AI agent builds');
   const [params] = useSearchParams();
   return (
     <>

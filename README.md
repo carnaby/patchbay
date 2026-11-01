@@ -6,8 +6,10 @@
 
 **Patch any data into a live dashboard. Your AI agent does the wiring.**
 
-Public APIs and your own CSVs, processed by declarative rules, rendered as real-time dashboards,
-and built either by hand or by an AI agent over the [Model Context Protocol](https://modelcontextprotocol.io).
+Public APIs, your own CSV and JSON files, news feeds and private APIs that need a key, processed by declarative
+rules, rendered as real-time dashboards, and built either by hand or by an AI agent over the
+[Model Context Protocol](https://modelcontextprotocol.io). Keys are saved once, encrypted; the agent uses them by
+name and never sees them.
 
 ### [Try it live → patchbay.me.uk](https://patchbay.me.uk)
 
@@ -38,7 +40,8 @@ interface is an MCP server that lets an agent such as Claude create dashboards, 
 how to process it, apply the changes, and then **look at a rendered image of the result** to fix what it got
 wrong. Everything the agent can do, a person can do in the editor as well, with undo/redo.
 
-It is free, needs no API keys, and runs as a single process you can host anywhere.
+It is free, needs no LLM or API keys of its own (your agent brings the model, the built-in sources are keyless),
+and runs as a single process you can host anywhere.
 
 ## Highlights
 
@@ -51,6 +54,13 @@ It is free, needs no API keys, and runs as a single process you can host anywher
 - 🧪 **Declarative processing.** Filter, derive, group/aggregate, time buckets, rolling windows and more, with a small
   sandboxed expression language (no `eval`, ever). The same pipeline runs for the browser, the agent and the renderer,
   in worker threads when the data is large.
+- 🔑 **Private APIs too.** Save an API key or token once under Settings → Secrets and point a JSON URL dataset at
+  the API. The key is encrypted at rest (AES-256-GCM), sent only to the origin and path it is bound to, as a bearer
+  token, a header or a query parameter, and never shown again. Agents pick a key by name with `list_secrets`; they
+  cannot read, create or change it, and cannot make its data public. Needs a signed-in account. On a self-hosted
+  server this is off by default: set `SECRETS=users` (everyone who signs in) or `SECRETS=admins` (only
+  `ADMIN_EMAILS`) and a `SECRETS_KEY` (see [deployment](guide/deployment.md)). The operator can technically decrypt
+  stored keys, so self-host for sensitive ones.
 - ↩️ **Undo everything.** Undo/redo in the editor, a version for every save, one-click restore. When an agent changes
   a dashboard you have open, the change appears live, highlighted, with an _Undo_ button.
 - 🏠 **Wall screens and start pages.** Maps, clocks, news feeds and a search box next to the charts. Presentation mode
@@ -78,10 +88,7 @@ It is free, needs no API keys, and runs as a single process you can host anywher
   Deliberately not offline-first, since live data needs the network; the service worker only caches the immutable
   build assets and shows a friendly offline page.
 - 🔐 **Yours.** Sign in with Google; dashboards are private or public. Anyone can build a public dashboard without an
-  account and claim it later.
-- 🔑 **Private APIs, when the operator allows it.** Save an API key once under Settings → Secrets and let a JSON URL
-  dataset use it. Encrypted at rest, only ever sent to the address it was saved for, never readable again, not even by
-  agents. Off by default (`SECRETS`); self-host for sensitive data, because the operator can technically read it.
+  account and claim it later. Deleting your account removes your dashboards, uploads, secrets and tokens at once.
 - 🗂️ **Boring storage.** One folder per dashboard. Delete the folder and the dashboard is gone. SQLite only indexes.
 - 🎬 **Use cases on the landing page.** Tabs with a short video, the prompt that built the dashboard, a live
   read-only example and a one-click editable copy. Add your own by dropping a folder into `showcase/`.
@@ -205,7 +212,7 @@ flowchart LR
   end
   FS[("data/dashboards/#lt;id#gt;/<br/>one folder each")]
   DB[("SQLite<br/>users · tokens · index")]
-  EXT[("Public APIs")]
+  EXT[("Public APIs<br/>your endpoints · feeds")]
 
   B -- "edits, undo/redo" --> API
   A -- "tools" --> MCP
@@ -260,12 +267,18 @@ request. The editor names each connector's data source next to its parameters.
 | `npm.downloads`                                              | Daily npm downloads                                                                        | 6 h        |
 | `demo.signal`, `demo.sales`                                  | Synthetic live signal and sales data (always offline)                                      | 1 s        |
 
-Plus your own data: **CSV/JSON uploads** (stored in the dashboard's folder), **inline rows**, **any HTTPS JSON
-endpoint** (behind an SSRF guard), and **any public news feed** (RSS, Atom or JSON Feed; a site's home page is enough
-when it announces one), fetched at most every 5 minutes per address. Endpoints that need a key use a **secret** saved under
-Settings → Secrets, sent as a bearer token, a header or a query parameter, and only to the origin and path prefix it is bound to; the instance
-switch `SECRETS` decides who may store them. Adding a connector is one file: parameters, a `fetch`, and a `sample` for
-offline mode. See `apps/server/src/connectors/`.
+Plus your own data:
+
+- **Files:** CSV or JSON uploads (up to 5 MB, stored in the dashboard's folder), or a table pasted as inline rows.
+- **Any HTTPS JSON endpoint**, public or your own, fetched through an SSRF guard.
+- **Private APIs:** an endpoint that needs a key uses a **secret** saved under Settings → Secrets. It is sent as a
+  bearer token, a header or a query parameter, only to the origin and path prefix it is bound to, and its value never
+  reaches the browser, the dashboard document or the agent. The instance switch `SECRETS` decides who may store them.
+- **News feeds:** any public RSS, Atom or JSON Feed (a site's home page is enough when it announces one), fetched at
+  most every 5 minutes per address.
+
+Adding a connector is one file: parameters, a `fetch`, and a `sample` for offline mode. See
+`apps/server/src/connectors/`.
 
 ## Processing rules
 

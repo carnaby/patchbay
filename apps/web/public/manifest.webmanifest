@@ -1,7 +1,7 @@
 {
   "name": "Patchbay",
   "short_name": "Patchbay",
-  "description": "Live dashboards your AI can build.",
+  "description": "Live dashboards your AI agent builds, from public APIs, your own files and private APIs.",
   "id": "/",
   "start_url": "/me",
   "scope": "/",
