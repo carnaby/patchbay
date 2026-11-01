@@ -8,6 +8,8 @@ import { api } from '../lib/api.ts';
 import { saveEditKey } from '../lib/edit-keys.ts';
 import { useMediaQuery } from '../lib/hooks.ts';
 import {
+  afterEnd,
+  keyboardFocusWithin,
   revealScrollLeft,
   type SwipeStartPoint,
   stepIndex,
@@ -30,17 +32,22 @@ export function UseCases() {
     staleTime: 300_000,
   });
   const list = data ?? [];
-  const [tabs, dispatch] = useReducer(tabsReducer, { active: 0, count: 0, interacted: false, dir: 0 });
+  const [tabs, dispatch] = useReducer(tabsReducer, { active: 0, count: 0, dir: 0 });
   useEffect(() => dispatch({ type: 'reset', count: list.length }), [list.length]);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const tabRow = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
   const swipe = useRef<SwipeStartPoint | null>(null);
   const reduced = useMediaQuery(REDUCED_MOTION);
+  // One setting for the whole section, in memory only: a fresh page load cannot autoplay with sound anyway.
+  const [muted, setMuted] = useState(true);
+  const dialogOpen = useRef(false);
 
-  // Every poster in the cache before its tab shows, so the incoming panel has a frame from the first paint.
+  // Under reduced motion every tab shows its poster, so each is in the cache before its tab does. Otherwise only the
+  // first view shows one, which loads with it.
   useEffect(() => {
-    for (const u of data ?? []) if (u.poster) new Image().src = u.poster;
-  }, [data]);
+    if (reduced) for (const u of data ?? []) if (u.poster) new Image().src = u.poster;
+  }, [data, reduced]);
 
   // Whatever changed the tab (a swipe, the end of a video, a key), its button must be visible in the row, which
   // scrolls sideways on narrow screens. Only the row scrolls, never the page.
@@ -59,7 +66,20 @@ export function UseCases() {
 
   if (list.length === 0) return null; // self-hosted instances without use cases show nothing
   const current = list[tabs.active] ?? list[0]!;
-  const interact = () => dispatch({ type: 'interact' });
+
+  /** The active tab's video or snapshot ended: true when the section moves on, false when it stays. */
+  const endOfTab = (fullscreen: boolean) => {
+    const next =
+      afterEnd({
+        count: list.length,
+        reduced,
+        fullscreen: fullscreen || fullscreenElement() !== null,
+        dialogOpen: dialogOpen.current,
+        keyboardFocus: keyboardFocusWithin(document.activeElement, [tabRow.current, panel.current]),
+      }) === 'next';
+    if (next) dispatch({ type: 'ended' });
+    return next;
+  };
 
   const select = (index: number, dir?: -1 | 1, focus = false) => {
     dispatch({ type: 'select', index, dir });
@@ -158,15 +178,13 @@ export function UseCases() {
       </div>
 
       <div
+        ref={panel}
         role="tabpanel"
         id="use-case-panel"
         // biome-ignore lint/a11y/noNoninteractiveTabindex: the ARIA tabs pattern makes the panel reachable from its tab
         tabIndex={0}
         aria-labelledby={`use-case-tab-${current.id}`}
         className="touch-pan-y touch-pinch-zoom rounded-xl"
-        // Focus inside (a keyboard user reading the buttons) means this tab must stay: auto-advance would remount
-        // the panel and drop the focus.
-        onFocus={interact}
         onPointerDown={onPointerDown}
         onPointerUp={onPointerUp}
         onPointerCancel={() => {
@@ -183,19 +201,24 @@ export function UseCases() {
         >
           <UseCaseVideo
             item={current}
-            // A single use case has nothing to advance to, so its video loops.
-            loop={tabs.interacted || list.length < 2}
-            // Never moves on its own under reduced motion, nor once the visitor has interacted or when alone.
-            auto={!reduced && !tabs.interacted && list.length > 1}
+            intro={tabs.dir === 0}
             reduced={reduced}
-            onEnded={() => dispatch({ type: 'ended' })}
-            onInteract={interact}
+            muted={muted}
+            onMutedChange={setMuted}
+            onEnded={endOfTab}
           />
           {/* Every tab's text in one grid cell, only the active one visible: the cell is as tall as the longest,
               so the page below does not jump when the tabs change. */}
           <div className="mt-6 grid md:mt-8">
             {list.map((u) => (
-              <UseCaseText key={u.id} item={u} active={u.id === current.id} onInteract={interact} />
+              <UseCaseText
+                key={u.id}
+                item={u}
+                active={u.id === current.id}
+                onDialogChange={(open) => {
+                  dialogOpen.current = open;
+                }}
+              />
             ))}
           </div>
         </div>
@@ -207,11 +230,11 @@ export function UseCases() {
 function UseCaseText({
   item,
   active,
-  onInteract,
+  onDialogChange,
 }: {
   item: UseCaseInfo;
   active: boolean;
-  onInteract: () => void;
+  onDialogChange: (open: boolean) => void;
 }) {
   const navigate = useNavigate();
   const [copied, setCopied] = useState(false);
@@ -222,7 +245,6 @@ function UseCaseText({
   }, [copied]);
 
   const copyPrompt = async () => {
-    onInteract();
     try {
       await navigator.clipboard.writeText(item.prompt);
       setCopied(true);
@@ -268,7 +290,7 @@ function UseCaseText({
         <blockquote className="rounded-2xl rounded-bl-md bg-ink px-4 py-3 text-sm leading-relaxed text-page">
           {item.prompt}
         </blockquote>
-        {item.attachment ? <Attachment attachment={item.attachment} onInteract={onInteract} /> : null}
+        {item.attachment ? <Attachment attachment={item.attachment} onOpenChange={onDialogChange} /> : null}
         <Button
           variant="ghost"
           size="sm"

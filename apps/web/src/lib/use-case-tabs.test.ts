@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  afterEnd,
+  keyboardFocusWithin,
   revealScrollLeft,
   stepIndex,
   swipeEnd,
@@ -9,8 +11,8 @@ import {
 } from './use-case-tabs.ts';
 
 describe('use case tabs', () => {
-  const start = { active: 0, count: 3, interacted: false, dir: 0 as const };
-  it('advances on video end and wraps around until the visitor interacts', () => {
+  const start = { active: 0, count: 3, dir: 0 as const };
+  it('advances when a tab ends and wraps around to the first', () => {
     const a = tabsReducer(start, { type: 'ended' });
     expect(a.active).toBe(1);
     expect(a.dir).toBe(1);
@@ -19,10 +21,10 @@ describe('use case tabs', () => {
     // Wrapping to the first tab is still "next", so it slides in from the same side.
     expect(wrapped.dir).toBe(1);
   });
-  it('stops auto-advancing after a manual selection', () => {
+  it('keeps advancing after a manual selection', () => {
     const s = tabsReducer(start, { type: 'select', index: 2 });
-    expect(s).toEqual({ active: 2, count: 3, interacted: true, dir: 1 });
-    expect(tabsReducer(s, { type: 'ended' }).active).toBe(2);
+    expect(s).toEqual({ active: 2, count: 3, dir: 1 });
+    expect(tabsReducer(s, { type: 'ended' }).active).toBe(0);
   });
   it('takes the direction from the selection, or from the order of the tabs', () => {
     expect(tabsReducer({ ...start, active: 2 }, { type: 'select', index: 0 }).dir).toBe(-1);
@@ -33,15 +35,61 @@ describe('use case tabs', () => {
     const s = tabsReducer(start, { type: 'select', index: 1 });
     expect(tabsReducer(s, { type: 'select', index: 1 })).toBe(s);
   });
-  it('stops auto-advancing after any other interaction', () => {
-    const s = tabsReducer(start, { type: 'interact' });
-    expect(s).toEqual({ active: 0, count: 3, interacted: true, dir: 0 });
-    expect(tabsReducer(s, { type: 'ended' }).active).toBe(0);
-    expect(tabsReducer(s, { type: 'interact' })).toBe(s);
+  it('stays on a single tab', () => {
+    const one = { active: 0, count: 1, dir: 0 as const };
+    expect(tabsReducer(one, { type: 'ended' })).toBe(one);
   });
   it('ignores out-of-range selections and clamps on reset', () => {
     expect(tabsReducer(start, { type: 'select', index: 7 })).toEqual(start);
     expect(tabsReducer({ ...start, active: 2 }, { type: 'reset', count: 1 }).active).toBe(0);
+  });
+});
+
+describe('afterEnd', () => {
+  const calm = { count: 4, reduced: false, fullscreen: false, dialogOpen: false, keyboardFocus: false };
+  it('moves on to the next tab, whatever the visitor clicked before', () => {
+    expect(afterEnd(calm)).toBe('next');
+  });
+  it('plays the same tab again when there is nothing to move on to', () => {
+    expect(afterEnd({ ...calm, count: 1 })).toBe('again');
+  });
+  it('never moves on its own under reduced motion', () => {
+    expect(afterEnd({ ...calm, reduced: true })).toBe('again');
+  });
+  it('stays in full screen, which a new tab would leave', () => {
+    expect(afterEnd({ ...calm, fullscreen: true })).toBe('again');
+  });
+  it('stays while the attachment dialog is open', () => {
+    expect(afterEnd({ ...calm, dialogOpen: true })).toBe('again');
+  });
+  it('stays while a keyboard user is inside the section, whose focus a new tab would drop', () => {
+    expect(afterEnd({ ...calm, keyboardFocus: true })).toBe('again');
+  });
+});
+
+describe('keyboardFocusWithin', () => {
+  const el = (focusVisible: boolean | 'unsupported') => ({
+    matches: (selector: string) => {
+      if (focusVisible === 'unsupported') throw new SyntaxError(`unknown selector ${selector}`);
+      return selector === ':focus-visible' && focusVisible;
+    },
+  });
+  const root = (...inside: unknown[]) => ({ contains: (node: unknown) => inside.includes(node) });
+  it('is true for keyboard focus inside one of the roots', () => {
+    const button = el(true);
+    expect(keyboardFocusWithin(button, [root(), root(button)])).toBe(true);
+  });
+  it('ignores focus a mouse click or a tap left behind', () => {
+    const panel = el(false);
+    expect(keyboardFocusWithin(panel, [root(panel)])).toBe(false);
+  });
+  it('ignores keyboard focus elsewhere on the page and missing roots', () => {
+    expect(keyboardFocusWithin(el(true), [root(), null])).toBe(false);
+    expect(keyboardFocusWithin(null, [root()])).toBe(false);
+  });
+  it('treats a browser without :focus-visible as no keyboard focus', () => {
+    const button = el('unsupported');
+    expect(keyboardFocusWithin(button, [root(button)])).toBe(false);
   });
 });
 

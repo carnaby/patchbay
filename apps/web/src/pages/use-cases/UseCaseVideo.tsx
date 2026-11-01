@@ -3,12 +3,24 @@ import { ImageOff, Maximize2, Minimize2, Play, Volume2, VolumeX } from 'lucide-r
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react';
 import { cx } from '../../components/ui.tsx';
 import { useMediaQuery, useTheme } from '../../lib/hooks.ts';
-import { chooseVideo, fullscreenElement, resumeAt, type VideoChoice } from '../../lib/use-case-video.ts';
+import {
+  chooseVideo,
+  fullscreenElement,
+  playVideo,
+  resumeAt,
+  type VideoChoice,
+} from '../../lib/use-case-video.ts';
 
 /** Tailwind's `md`: below it the square cut fills a phone screen better than 16:9. */
 const WIDE = '(min-width: 768px)';
 /** How long a tab without a video stays before the next one shows. */
 const SNAPSHOT_DWELL_MS = 9000;
+/**
+ * The page colour baked into every recording, which opens on an empty chat and an empty grid. Behind an incoming
+ * video it makes the fade-in seamless, where the poster would flash the finished dashboard first. Fixed in both
+ * themes, like the recordings.
+ */
+const RECORDING_BG = '#f9f9f7';
 
 type WebkitDocument = Document & {
   webkitFullscreenEnabled?: boolean;
@@ -97,24 +109,30 @@ function useFullscreen(
 
 export function UseCaseVideo({
   item,
-  loop,
-  auto,
+  intro,
   reduced,
+  muted,
+  onMutedChange,
   onEnded,
-  onInteract,
 }: {
   item: UseCaseInfo;
-  loop: boolean;
-  auto: boolean;
+  /** The section's first view, before any tab change: the poster shows until the first frame decodes. */
+  intro: boolean;
   reduced: boolean;
-  onEnded: () => void;
-  onInteract: () => void;
+  /** Shared by every tab: sound turned on stays on for the next one. */
+  muted: boolean;
+  onMutedChange: (muted: boolean) => void;
+  /** The recording ended; false when the section stays on this tab, which then plays again. */
+  onEnded: (fullscreen: boolean) => boolean;
 }) {
   const wrap = useRef<HTMLDivElement>(null);
   const ref = useRef<HTMLVideoElement>(null);
   const fullscreenButton = useRef<HTMLButtonElement>(null);
-  const [muted, setMuted] = useState(true);
   const [playing, setPlaying] = useState(false);
+  /** The first frame is on screen, so the video can fade in over the box. */
+  const [ready, setReady] = useState(false);
+  /** The browser will not start it on its own (iOS Low Power Mode): the poster says what this tab is. */
+  const [blocked, setBlocked] = useState(false);
   const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
   const wide = useMediaQuery(WIDE);
   const wanted = chooseVideo(item, !wide, failed);
@@ -122,8 +140,12 @@ export function UseCaseVideo({
   const resume = useRef<{ time: number; play: boolean } | null>(null);
   const fullscreen = useFullscreen(wrap, ref, fullscreenButton);
   const toggleFullscreen = () => {
-    // Entering is a deliberate act: the visitor is watching this one, so the tabs must not move on underneath.
-    if (fullscreen.toggle()) onInteract();
+    fullscreen.toggle();
+  };
+  const start = (video: HTMLVideoElement) => {
+    void playVideo(video, () => onMutedChange(true)).then((r) => {
+      if (r === 'blocked') setBlocked(true);
+    });
   };
 
   // Rotating a phone crosses the breakpoint. The other cut continues where this one was instead of restarting, and
@@ -148,19 +170,23 @@ export function UseCaseVideo({
     // source changes (crossing the md breakpoint), because a new source starts paused.
     const io = new IntersectionObserver(
       ([entry]) => {
-        if (entry?.isIntersecting) void video.play().catch(() => {});
-        else video.pause();
+        if (!entry?.isIntersecting) return video.pause();
+        void playVideo(video, () => onMutedChange(true)).then((r) => {
+          if (r === 'blocked') setBlocked(true);
+        });
       },
       { threshold: 0.4 },
     );
     io.observe(video);
     return () => io.disconnect();
-  }, [reduced, src]);
+  }, [reduced, src, onMutedChange]);
 
-  if (!shown) return <Snapshot item={item} auto={auto} onEnded={onEnded} />;
+  if (!shown) return <Snapshot item={item} reduced={reduced} onEnded={() => onEnded(false)} />;
 
   const full = fullscreen.active;
   const square = shown.square;
+  // Without autoplay the poster is what the visitor sees, so it stays; after a tab change it would flash.
+  const poster = (intro || reduced || blocked) && item.poster ? item.poster : null;
   return (
     <div
       ref={wrap}
@@ -170,18 +196,23 @@ export function UseCaseVideo({
         // The square box stays within the viewport's height (a phone held sideways), centred.
         full ? '' : square ? 'mx-auto aspect-square w-full max-w-[80svh]' : 'aspect-video',
       )}
-      // The poster stays behind the video, so a frame is always visible before the first one decodes (no blink on
-      // a tab change). The 16:9 poster is cropped, never stretched, in the square box.
-      style={!full && item.poster ? { backgroundImage: `url("${item.poster}")` } : undefined}
+      // The poster stays behind the video until its first frame decodes; the 16:9 poster is cropped, never
+      // stretched, in the square box. Without one, the recording's own background colour stands in.
+      style={
+        full
+          ? undefined
+          : poster
+            ? { backgroundImage: `url("${poster}")` }
+            : { backgroundColor: RECORDING_BG }
+      }
     >
       {/* A click on the video is a mouse and touch shortcut; the full screen button is the keyboard path. */}
       <video
         ref={ref}
         src={src}
         // The square box shows the 16:9 poster as its background (cropped); as a poster it would be letterboxed.
-        poster={square ? undefined : (item.poster ?? undefined)}
+        poster={square ? undefined : (poster ?? undefined)}
         muted={muted}
-        loop={loop}
         playsInline
         preload="metadata"
         controls={reduced}
@@ -191,21 +222,24 @@ export function UseCaseVideo({
           if (!r) return;
           resume.current = null;
           e.currentTarget.currentTime = resumeAt(r.time, e.currentTarget.duration);
-          if (r.play) void e.currentTarget.play().catch(() => {});
+          if (r.play) start(e.currentTarget);
         }}
-        onEnded={() => {
-          setPlaying(false);
-          if (auto) onEnded();
+        onEnded={(e) => {
+          // Not the `loop` attribute: whether to stay is decided at the end, from what the visitor is doing then.
+          if (!onEnded(fullscreen.active)) start(e.currentTarget);
         }}
         onPlay={() => setPlaying(true)}
+        onPlaying={() => setReady(true)}
         onPause={() => setPlaying(false)}
         // Remembered per source: a broken square cut falls back to 16:9 before the snapshot.
         onError={() => setFailed((f) => new Set(f).add(shown.src))}
         aria-label={`${item.title}: screen recording of the agent building the dashboard`}
         className={cx(
-          'absolute inset-0 size-full',
+          'absolute inset-0 size-full transition-opacity duration-200',
           full ? 'object-contain' : 'object-cover',
           !reduced && !full && 'cursor-zoom-in',
+          // An incoming video fades in on its first frame, so the box never blinks black or empty.
+          !poster && !ready && 'opacity-0',
         )}
       />
       {reduced && !playing ? (
@@ -213,8 +247,7 @@ export function UseCaseVideo({
           type="button"
           aria-label="Play video"
           onClick={() => {
-            onInteract();
-            void ref.current?.play();
+            if (ref.current) start(ref.current);
           }}
           className="absolute top-1/2 left-1/2 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-ink/80 text-page backdrop-blur hover:bg-ink"
         >
@@ -230,14 +263,7 @@ export function UseCaseVideo({
             <Maximize2 className="size-4" aria-hidden="true" />
           )}
         </OverlayButton>
-        <OverlayButton
-          label="Sound"
-          pressed={!muted}
-          onClick={() => {
-            onInteract();
-            setMuted((m) => !m);
-          }}
-        >
+        <OverlayButton label="Sound" pressed={!muted} onClick={() => onMutedChange(!muted)}>
           {muted ? (
             <VolumeX className="size-4" aria-hidden="true" />
           ) : (
@@ -281,20 +307,33 @@ function OverlayButton({
 
 // No video yet: the live dashboard's server snapshot stands in. The endpoint is rate limited, so a failed
 // load degrades to a plain card instead of a broken image.
-function Snapshot({ item, auto, onEnded }: { item: UseCaseInfo; auto: boolean; onEnded: () => void }) {
+function Snapshot({
+  item,
+  reduced,
+  onEnded,
+}: {
+  item: UseCaseInfo;
+  reduced: boolean;
+  onEnded: () => boolean;
+}) {
   const [failed, setFailed] = useState(false);
   const theme = useTheme();
   const box = useRef<HTMLDivElement>(null);
   const visible = useOnScreen(box);
   const advance = useRef(onEnded);
   advance.current = onEnded;
+  /** Bumped when a dwell ends but the section stays on this tab, which starts the next dwell. */
+  const [round, setRound] = useState(0);
   // Only a video's end moves the tabs on, so a tab without one needs its own clock: it runs only while the section
-  // is on screen and is cleared on tab change or unmount.
+  // is on screen and is cleared on tab change or unmount. Under reduced motion nothing moves on its own.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `round` restarts the clock
   useEffect(() => {
-    if (!auto || !visible) return;
-    const t = setTimeout(() => advance.current(), SNAPSHOT_DWELL_MS);
+    if (reduced || !visible) return;
+    const t = setTimeout(() => {
+      if (!advance.current()) setRound((r) => r + 1);
+    }, SNAPSHOT_DWELL_MS);
     return () => clearTimeout(t);
-  }, [auto, visible]);
+  }, [reduced, visible, round]);
   // One outer element for both states: the visibility observer must not be left watching a removed node.
   return (
     <div ref={box}>

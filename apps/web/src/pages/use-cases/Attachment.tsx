@@ -1,7 +1,7 @@
 import { parseCsv, type UseCaseInfo } from '@patchbay/core';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronRight, Download, FileSpreadsheet } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { buttonClass, cx, Modal, Spinner } from '../../components/ui.tsx';
 import { formatBytes } from '../_shared.tsx';
 
@@ -10,19 +10,30 @@ type Info = NonNullable<UseCaseInfo['attachment']>;
 const NUMBER = /^-?\d+(?:\.\d+)?$/;
 
 /** The file the agent got with the prompt, shown the way a chat shows an attached file. */
-export function Attachment({ attachment, onInteract }: { attachment: Info; onInteract: () => void }) {
+export function Attachment({
+  attachment,
+  onOpenChange,
+}: {
+  attachment: Info;
+  onOpenChange: (open: boolean) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const report = useRef(onOpenChange);
+  report.current = onOpenChange;
+  // Reading the data is reading this tab: the section must not move on behind the dialog. The cleanup also covers
+  // the dialog unmounting while open.
+  useEffect(() => {
+    if (!open) return;
+    report.current(true);
+    return () => report.current(false);
+  }, [open]);
   const summary = `${attachment.rows} rows · ${formatBytes(attachment.bytes)}`;
   return (
     <>
       <button
         type="button"
         aria-haspopup="dialog"
-        onClick={() => {
-          // Reading the data is reading this tab: the section must not move on behind the dialog.
-          onInteract();
-          setOpen(true);
-        }}
+        onClick={() => setOpen(true)}
         className="group mt-2 flex w-full max-w-xs items-center gap-3 rounded-xl border border-line bg-surface py-2 pr-2 pl-2.5 text-left transition hover:border-line-strong hover:bg-surface-2"
       >
         <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-good/10 text-good">

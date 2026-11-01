@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseVideo, resumeAt } from './use-case-video.ts';
+import { chooseVideo, playVideo, resumeAt } from './use-case-video.ts';
 
 const both = { video: '/v.mp4', videoSquare: '/sq.mp4' };
 const none = new Set<string>();
@@ -39,5 +39,55 @@ describe('resumeAt', () => {
   it('trusts the position while the duration is unknown', () => {
     expect(resumeAt(8, Number.NaN)).toBe(8);
     expect(resumeAt(8, Number.POSITIVE_INFINITY)).toBe(8);
+  });
+});
+
+describe('playVideo', () => {
+  const refused = (name: string) => Object.assign(new Error(name), { name });
+  /** A video whose play() answers from `results` in turn and records whether it was muted at each call. */
+  const fakeVideo = (muted: boolean, results: (Error | null)[]) => {
+    const calls: boolean[] = [];
+    const video = {
+      muted,
+      play() {
+        calls.push(this.muted);
+        const r = results.shift() ?? null;
+        return r ? Promise.reject(r) : Promise.resolve();
+      },
+    };
+    return { video, calls };
+  };
+
+  it('plays as it is when the browser allows it', async () => {
+    const { video, calls } = fakeVideo(false, [null]);
+    let muted = 0;
+    expect(await playVideo(video, () => muted++)).toBe('playing');
+    expect(calls).toEqual([false]);
+    expect(muted).toBe(0);
+  });
+
+  it('falls back to muted when sound is refused, and says so', async () => {
+    const { video, calls } = fakeVideo(false, [refused('NotAllowedError'), null]);
+    let muted = 0;
+    expect(await playVideo(video, () => muted++)).toBe('playing');
+    expect(calls).toEqual([false, true]);
+    expect(video.muted).toBe(true);
+    expect(muted).toBe(1);
+  });
+
+  it('reports a muted video the browser will not play on its own (iOS Low Power Mode)', async () => {
+    const { video } = fakeVideo(true, [refused('NotAllowedError')]);
+    expect(await playVideo(video, () => {})).toBe('blocked');
+    const unmuted = fakeVideo(false, [refused('NotAllowedError'), refused('NotAllowedError')]);
+    expect(await playVideo(unmuted.video, () => {})).toBe('blocked');
+  });
+
+  it('leaves the sound alone when the play was only interrupted', async () => {
+    const { video, calls } = fakeVideo(false, [refused('AbortError')]);
+    let muted = 0;
+    expect(await playVideo(video, () => muted++)).toBe('interrupted');
+    expect(calls).toEqual([false]);
+    expect(video.muted).toBe(false);
+    expect(muted).toBe(0);
   });
 });

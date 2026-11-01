@@ -37,3 +37,33 @@ export function fullscreenElement(): Element | null {
   const doc = document as WebkitDocument;
   return doc.fullscreenElement ?? doc.webkitFullscreenElement ?? null;
 }
+
+export type PlayResult = 'playing' | 'blocked' | 'interrupted';
+
+const refusedByPolicy = (e: unknown) => (e as { name?: unknown } | null)?.name === 'NotAllowedError';
+
+/**
+ * Starts the video. With sound on, a browser may refuse to play without a fresh tap (autoplay policy): the video then
+ * plays muted and `onMuted` runs, so the shared sound button stays truthful. 'blocked' means it will not play on its
+ * own even muted (iOS Low Power Mode); 'interrupted' is a pause or a new source that cut the start short.
+ */
+export async function playVideo(
+  video: Pick<HTMLMediaElement, 'muted' | 'play'>,
+  onMuted: () => void,
+): Promise<PlayResult> {
+  try {
+    await video.play();
+    return 'playing';
+  } catch (e) {
+    if (!refusedByPolicy(e)) return 'interrupted';
+    if (video.muted) return 'blocked';
+  }
+  video.muted = true;
+  onMuted();
+  try {
+    await video.play();
+    return 'playing';
+  } catch (e) {
+    return refusedByPolicy(e) ? 'blocked' : 'interrupted';
+  }
+}
