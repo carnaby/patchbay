@@ -146,7 +146,8 @@ export function UseCases() {
                 onKeyDown={onKeyDown}
                 className={cx(
                   'h-9 rounded-lg px-3.5 text-sm font-medium whitespace-nowrap transition',
-                  active ? 'bg-surface text-ink shadow-sm' : 'text-ink-2 hover:text-ink',
+                  // The prompt bubble's pairing: unmistakable in both themes.
+                  active ? 'bg-ink text-page shadow-sm' : 'text-ink-2 hover:text-ink',
                 )}
               >
                 {u.tab}
