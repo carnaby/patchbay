@@ -620,7 +620,11 @@ function ChartFields({
         {['line', 'area'].includes(c.kind) ? (
           <Toggle label="Smooth" checked={c.smooth} onChange={(v) => setConfig({ smooth: v })} />
         ) : null}
-        <Toggle label="Value labels" checked={c.showLabels} onChange={(v) => setConfig({ showLabels: v })} />
+        <Toggle
+          label="Value labels"
+          checked={c.showLabels ?? false}
+          onChange={(v) => setConfig({ showLabels: v })}
+        />
         {!proportion ? (
           <Toggle label="Log scale" checked={c.logScale} onChange={(v) => setConfig({ logScale: v })} />
         ) : null}

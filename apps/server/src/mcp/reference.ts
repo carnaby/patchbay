@@ -120,9 +120,11 @@ is at most ${MAX_STRING.toLocaleString('en')} characters (use substr to shorten)
 ${fns}
 
 ## Widgets
-- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors?, referenceLines? }
+- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels?, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors?, referenceLines? }
   kinds: ${CHART_KINDS.join(', ')}. "series" splits long-format data (one row per time+category) into lines/bars.
   xMin/xMax fix the x axis of a scatter with a numeric x.
+  showLabels puts the value on each mark. Unset, the browser shows none and snapshots label single-series bar charts
+  of up to 12 bars; false turns them off in snapshots too.
   pie/donut: x = label, y[0] = value (aggregate first; at most 6 slices are kept). heatmap: x, series = y-axis category, y[0] = value.
 - kpi { field?, agg, compare: none|previous|first, goodWhen: up|down|neutral, sparkline, format?, bands? }   aggs: ${KPI_AGGS.join(', ')}
 - gauge { field?, agg, min, max, bands?: [{ upTo, color }], format? }

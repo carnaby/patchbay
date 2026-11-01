@@ -95,3 +95,78 @@ describe('labels near the value axis end', () => {
     expect(build({ kind: 'bar', horizontal: true }, { static: false }).grid.right).toBe(16);
   });
 });
+
+describe('time axis of dated buckets', () => {
+  const DAY = 86_400_000;
+  const days = (from: string, values: number[]) =>
+    inferTable(
+      values.map((quakes, i) => ({ day: new Date(Date.parse(from) + i * DAY).toISOString(), quakes })),
+    );
+  type Built = { useUTC?: boolean; xAxis: { type: string; boundaryGap?: unknown } };
+  const build = (kind: string, table = days('2026-10-25', [41, 38, 52, 47, 35, 44]), x = 'day') =>
+    buildChartOption(ChartConfigSchema.parse({ kind, x, y: ['quakes'] }), table, THEMES.light, {
+      static: true,
+    }) as unknown as Built;
+
+  // Day buckets are UTC midnights. ECharts places time ticks at the viewer's local midnight, so east of UTC the
+  // first bucket's tick fell before the axis start and its label went missing ("", 26, 27 …), and west of UTC the
+  // last one did. In UTC every bucket's midnight is a tick, labelled "25" or "Nov" by ECharts' own time format.
+  it('lays out a bar chart of daily buckets in UTC, so the first bucket keeps its label', () => {
+    const option = build('bar');
+    expect(option.xAxis.type).toBe('time');
+    expect(option.useUTC).toBe(true);
+  });
+
+  it('does the same for a line of daily values', () => {
+    expect(build('line').useUTC).toBe(true);
+  });
+
+  it('keeps local time for timestamps within the day, such as an hourly line', () => {
+    const hourly = inferTable(
+      Array.from({ length: 48 }, (_, i) => ({
+        time: new Date(Date.parse('2026-10-31') + i * 3_600_000).toISOString(),
+        quakes: i,
+      })),
+    );
+    const option = build('line', hourly, 'time');
+    expect(option.xAxis.type).toBe('time');
+    expect(option.useUTC).toBe(false);
+  });
+
+  it('asks no category boundary gap of a time axis, where ECharts ignores it with a warning', () => {
+    expect(build('bar').xAxis.boundaryGap).toBe(false);
+  });
+});
+
+describe('value labels in snapshots', () => {
+  const sales = inferTable([
+    { region: 'North', units: 120 },
+    { region: 'South', units: 95 },
+    { region: 'West', units: 143 },
+  ]);
+  type Built = { series: { label?: { show: boolean } }[] };
+  const labelled = (config: Record<string, unknown>, opts = { static: true }) =>
+    Boolean(
+      (
+        buildChartOption(
+          ChartConfigSchema.parse({ kind: 'bar', x: 'region', y: ['units'], ...config }),
+          sales,
+          THEMES.light,
+          opts,
+        ) as unknown as Built
+      ).series[0]!.label?.show,
+    );
+
+  it('labels a few single-series bars in a snapshot when the author left showLabels unset', () => {
+    expect(labelled({})).toBe(true);
+    expect(labelled({}, { static: false })).toBe(false);
+  });
+
+  it('respects an explicit showLabels: false in a snapshot', () => {
+    expect(labelled({ showLabels: false })).toBe(false);
+  });
+
+  it('shows labels everywhere when showLabels is true', () => {
+    expect(labelled({ showLabels: true }, { static: false })).toBe(true);
+  });
+});
