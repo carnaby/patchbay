@@ -160,7 +160,7 @@ export function UseCases() {
           id="use-cases-title"
           className="text-[clamp(1.6rem,4vw,2.3rem)] leading-tight font-semibold tracking-tight text-balance"
         >
-          One sentence to your agent. A live dashboard.
+          One prompt to your agent. A live dashboard.
         </h2>
         <p className="mt-3 text-ink-2 text-pretty">
           Real dashboards, each built by an AI agent from the prompt shown. Open them live or copy one and

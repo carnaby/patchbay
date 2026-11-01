@@ -140,7 +140,7 @@ instances.
 - **Accumulate** turns "current value" sources (current weather, a spot price, the ISS position) into rolling time
   series by appending each new reading with a `fetched_at` column. The buffer is in memory by design; it is a live view,
   not a database.
-- **Secrets for HTTP sources** (design record kept by the maintainer). A dataset holds only secret ids;
+- **Secrets for HTTP sources.** A dataset holds only secret ids;
   `DataService` asks `DashboardService.credentialsFor` for the values, resolved against the **dashboard owner's**
   secrets (never the viewer's, the editor's or the agent's), and gets an `HttpError` with a generic message when they
   cannot be used. A dataset whose secrets cannot all be resolved is never fetched without them. `safeFetchJson` keeps
