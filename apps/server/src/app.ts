@@ -159,6 +159,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       creates: new RateLimiter(20, 1),
       // A few images at once (a dashboard and some of its widgets), then one every two seconds.
       snapshots: new RateLimiter(4, 30),
+      // A backup script exporting every dashboard in a row, at one every two seconds after the first ten.
+      exports: new RateLimiter(10, 30),
     },
   };
 }

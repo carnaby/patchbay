@@ -4,6 +4,7 @@ import { Globe, LayoutGrid, Lock, MonitorSmartphone, Plus, Trash2 } from 'lucide
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { PageContainer } from '../components/AppShell.tsx';
+import { ImportDashboardButton } from '../components/ImportDashboard.tsx';
 import { Badge, Button, Card, EmptyState, IconButton, Modal, Spinner, toast } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
 import { forgetEditKey, listEditKeys } from '../lib/edit-keys.ts';
@@ -119,11 +120,14 @@ export default function MyDashboards() {
       <PageHeader
         title="My dashboards"
         actions={
-          <Link to="/new">
-            <Button variant="primary" icon={<Plus className="size-4" />}>
-              New dashboard
-            </Button>
-          </Link>
+          <div className="flex gap-2">
+            <ImportDashboardButton />
+            <Link to="/new">
+              <Button variant="primary" icon={<Plus className="size-4" />}>
+                New dashboard
+              </Button>
+            </Link>
+          </div>
         }
       />
 

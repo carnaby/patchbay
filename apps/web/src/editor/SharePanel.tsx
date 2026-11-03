@@ -1,6 +1,6 @@
 import { type DashboardEnvelope, docSecretIds } from '@patchbay/core';
 import { useMutation } from '@tanstack/react-query';
-import { Copy, Download, Globe, KeyRound, Lock, Trash2, UserCheck } from 'lucide-react';
+import { Copy, Download, FileDown, Globe, KeyRound, Lock, Trash2, UserCheck } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { Button, Card, cx, Drawer, Modal, Spinner, toast } from '../components/ui.tsx';
@@ -9,6 +9,7 @@ import { forgetEditKey, saveEditKey } from '../lib/edit-keys.ts';
 import { useMe } from '../lib/hooks.ts';
 import { useEditor } from '../state/editor.ts';
 import { DetailsCard } from './DetailsFields.tsx';
+import { ExportDialog } from './ExportDialog.tsx';
 import { EntityColorsCard } from './FormattingFields.tsx';
 import { withPublicSecretsConfirmation } from './public-secrets.tsx';
 
@@ -27,6 +28,7 @@ export function SharePanel({
   const { data: me } = useMe();
   const navigate = useNavigate();
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const url = `${window.location.origin}/d/${dashboardId}`;
 
   const secretCount = useEditor((s) => (s.saved ? docSecretIds(s.saved).length : 0));
@@ -185,6 +187,9 @@ export function SharePanel({
             >
               Make a copy
             </Button>
+            <Button icon={<FileDown className="size-4" />} onClick={() => setExporting(true)}>
+              Export file
+            </Button>
             <a href={`/api/dashboards/${dashboardId}/snapshot.png`} target="_blank" rel="noreferrer">
               <Button icon={<Download className="size-4" />}>PNG snapshot</Button>
             </a>
@@ -223,6 +228,7 @@ export function SharePanel({
       >
         The dashboard folder, its uploaded files and its version history are removed. This cannot be undone.
       </Modal>
+      <ExportDialog open={exporting} onClose={() => setExporting(false)} dashboardId={dashboardId} />
     </Drawer>
   );
 }

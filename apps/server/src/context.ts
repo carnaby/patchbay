@@ -49,6 +49,8 @@ export interface Deps {
     creates: RateLimiter;
     /** Snapshots that have to be drawn (not cache hits), per client; see chargeSnapshot in render/gate.ts. */
     snapshots: RateLimiter;
+    /** Dashboard exports, per client: each streams a document and maybe megabytes of tables (routes/api.ts). */
+    exports: RateLimiter;
   };
 }
 

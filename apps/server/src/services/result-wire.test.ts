@@ -1,9 +1,9 @@
 import type { DatasetResult, DataTable, LiveEvent } from '@patchbay/core';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ByteBudget } from '../util/byte-budget.ts';
 import { BusyError } from '../util/gate.ts';
 import { runAsClient } from '../util/request-context.ts';
-import { MAX_RESULT_BYTES, ResultWire, streamBody } from './result-wire.ts';
+import { type Body, MAX_RESULT_BYTES, ResultWire, streamBodies, streamBody } from './result-wire.ts';
 
 const result = (table: DataTable, datasetId = 'd'): DatasetResult => ({
   datasetId,
@@ -158,6 +158,96 @@ describe('ResultWire', () => {
     second.release();
     running.release();
     expect(wire.budget.stats()).toEqual({ bytes: 0, bodies: 0, waiting: 0, waitingBytes: 0 });
+  });
+});
+
+describe('streamBodies', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A body of `bytes` bytes whose release is counted. */
+  const body = (bytes: number, released: string[], name: string): Body => ({
+    chunks: [Buffer.alloc(bytes, 'a')],
+    bytes,
+    release: () => released.push(name),
+  });
+
+  it('builds the next body only once the previous one has been read, and gives each back then', async () => {
+    const released: string[] = [];
+    const built: string[] = [];
+    const queue = [body(10, released, 'b'), body(70 * 1024, released, 'c')];
+    const stream = streamBodies(
+      body(100 * 1024, released, 'a'),
+      async () => {
+        const next = queue.shift() ?? null;
+        if (next) built.push(String(next.bytes));
+        return next;
+      },
+      () => {},
+    );
+    const reader = stream.getReader();
+    const sizes: number[] = [];
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sizes.push(value.byteLength);
+      // 'a' is still being read: nothing after it exists yet.
+      if (sizes.length === 1) expect(built).toEqual([]);
+    }
+    expect(sizes).toEqual([64 * 1024, 36 * 1024, 10, 64 * 1024, 6 * 1024]);
+    expect(released).toEqual(['a', 'b', 'c']);
+  });
+
+  it('ends a response that is not read within the hold time and gives its body back', async () => {
+    vi.useFakeTimers();
+    const released: string[] = [];
+    const stream = streamBodies(
+      body(200 * 1024, released, 'a'),
+      async () => null,
+      () => {},
+    );
+    const reader = stream.getReader();
+    await reader.read();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(released).toEqual(['a']);
+    await expect(reader.read()).rejects.toThrow(/too slowly/);
+  });
+
+  it('reports a body that fails to build, ends the response and holds nothing', async () => {
+    const released: string[] = [];
+    const errors: unknown[] = [];
+    const stream = streamBodies(
+      body(10, released, 'a'),
+      async () => {
+        throw new Error('disk gone');
+      },
+      (e) => errors.push(e),
+    );
+    const reader = stream.getReader();
+    await reader.read();
+    await expect(reader.read()).rejects.toThrow('disk gone');
+    expect(errors).toHaveLength(1);
+    expect(released).toEqual(['a']);
+  });
+
+  it('gives back a body that was being built when the client went away', async () => {
+    const released: string[] = [];
+    let finish: (b: Body) => void = () => {};
+    const stream = streamBodies(
+      body(10, released, 'a'),
+      () => new Promise<Body>((resolve) => (finish = resolve)),
+      () => {},
+    );
+    const reader = stream.getReader();
+    await reader.read();
+    const pending = reader.read();
+    await new Promise((r) => setTimeout(r, 0));
+    void reader.cancel();
+    finish(body(10, released, 'late'));
+    await pending.catch(() => {});
+    await new Promise((r) => setTimeout(r, 0));
+    expect(released).toEqual(['a', 'late']);
   });
 });
 

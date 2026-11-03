@@ -8,6 +8,11 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ### Added
 
+- **Export and import**: _Export file_ in a dashboard's Details and sharing panel downloads the dashboard and its
+  uploaded data as one `.patchbay.json` file; _Import file_ on the New dashboard page (and _Import_ on My dashboards)
+  turns such a file into a new dashboard on any server. Stored secrets, the owner, sharing and history are never
+  exported. New endpoints: `GET /api/dashboards/:id/export`, `POST /api/dashboards/import`; uploads accept
+  `format: "table"` and a `fileId` the document references.
 - **Home network sources** (`ALLOW_PRIVATE_HOSTS`, `PRIVATE_HOSTS_FOR`): a self-hosted instance can let http and feed
   sources, and secrets, reach chosen hosts on its own network, also over plain `http://` and on any port;
   administrators' dashboards only by default. Off unless set: a public instance behaves as before, except that an

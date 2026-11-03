@@ -145,6 +145,15 @@ and `patchbay.env` somewhere safe as well; they hold the tunnel token and the OA
 `SECRETS_KEY`, **never back it up together with `data/`**: a backup that holds both can decrypt every stored secret.
 Keep it in a password manager or a separate secret store instead.
 
+To keep or move a single dashboard, export it from the web app (_Details and sharing → Export file_) or with a
+personal access token; a read-only token is enough:
+`curl -fsS -H "Authorization: Bearer $PATCHBAY_TOKEN" https://dash.example.com/api/dashboards/<id>/export -o board.patchbay.json`
+(`-f` makes curl exit with an error instead of saving an error answer as the file; a download cut short also exits
+with an error, so keep the file only when curl succeeded). A script that exports many dashboards gets ten at once and
+then one every two seconds.
+The file holds the document and the uploaded tables, never stored secrets or version history (see
+[architecture](architecture.md#3a-export-and-import)).
+
 ## Secrets for HTTP sources
 
 Users can save API keys and tokens under Settings → Secrets and let a JSON URL dataset send them, encrypted at rest
@@ -239,8 +248,11 @@ save and at every load:
 | `everyone`          | Every dashboard, anonymous ones included. Only for a server nobody outside your network can reach.  |
 
 The startup log says what is open and to whom, and warns when the setting has no effect (for example `admins`
-without Google sign-in). Everyone who can view a dashboard sees what its sources load: a public dashboard over Home
-Assistant shows your home to the internet. Keep such dashboards private.
+without Google sign-in). An imported dashboard is checked like a save, by its new owner: an export whose sources
+use the list imports only where the importer may use it, and on an instance without the list an `http://` source
+refuses the whole import. Restoring an older version is not refused for private hosts; the load decides. Everyone
+who can view a dashboard sees what its sources load: a public dashboard over Home Assistant shows your home to the
+internet. Keep such dashboards private.
 
 Agents (MCP) act as the dashboard's editor, and `get_reference` tells them which addresses their dashboards may load.
 An editor's preview runs with the owner's rights, so editors of an administrator's dashboard can preview listed
@@ -345,7 +357,11 @@ skip a beat, instead of the process running out of memory. Live refresh never ru
 change only when edited) and at most every 30 s for HTTP sources. A dataset's result is sent only up to 4 MB as JSON
 (larger ones show an error asking for limit, select or aggregate steps); each result is serialised once and shared by
 everyone reading it, and response bodies still being read take at most 12 MB together (6 MB per client), with at most 4
-MB more waiting for room up to 10 s; further large reads get a 503 at once.
+MB more waiting for room up to 10 s; further large reads get a 503 at once. Exports (`/api/dashboards/:id/export`)
+are sent within the same budget: the document is the one shared copy every reader of it gets, and uploaded tables go
+out in parts of 1 MB, each built only once the previous one has been read and given back once read. A part not read
+within 60 s ends the download. Each client may start ten exports at once and then one every two seconds (`429` with
+`Retry-After` beyond that); an export with tables is refused under memory pressure like other heavy work.
 
 ### Showcase use cases
 
@@ -418,8 +434,8 @@ cgroup's charge without the page cache the kernel can drop (cgroup v2: `memory.c
 compares it with the container's limit:
 
 - **Soft** (`MEMORY_SOFT_FRACTION`): new heavy work gets `503` with `Retry-After: 5`: snapshots that are not cached,
-  uploads and other bodies over 256 KB, the heavy jobs above, pipelines over 20,000 cells and results over 512 KB
-  that are not serialised already. One exception: on a resting server, where no heavy work has run for 30 s and 112
+  uploads and other bodies over 256 KB, the heavy jobs above, pipelines over 20,000 cells, results over 512 KB
+  that are not serialised already and exports that include uploaded tables. One exception: on a resting server, where no heavy work has run for 30 s and 112
   MB are still free (up to 272 MB at 384 MB), one job may start; the 30 s start again when it ends. A burst gets at
   most one job every 30 s through it; a visitor after the burst gets served. A large body counts as running from
   the moment it is admitted, while it still arrives, so slow uploads cannot all pass that one admission.

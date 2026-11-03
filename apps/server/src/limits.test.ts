@@ -42,6 +42,7 @@ beforeAll(async () => {
       mcp: generous(),
       creates: generous(),
       snapshots: generous(),
+      exports: generous(),
     },
   });
 });

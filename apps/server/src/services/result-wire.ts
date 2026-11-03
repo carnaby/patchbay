@@ -106,6 +106,9 @@ export class ResultWire {
   readonly budget: ByteBudget;
   private readonly maxBytes: number;
   private previews = 0;
+  private readonly sharedIds = new WeakMap<object, number>();
+  private nextSharedId = 1;
+  private ownBodies = 0;
 
   constructor(options: { budget?: ByteBudget; maxBytes?: number } = {}) {
     this.budget = options.budget ?? new ByteBudget(RESPONSE_BUDGET);
@@ -169,6 +172,26 @@ export class ResultWire {
       bytes,
     );
     return { chunks, bytes, release };
+  }
+
+  /**
+   * A body built elsewhere (a part of an export), within the same budget as the data bodies. `shared` is the buffer
+   * of these bytes that other responses send too (a document's cached serialisation): its readers are counted once.
+   * Throws a BusyError like `dataBody`.
+   */
+  async held(chunks: Uint8Array[], shared?: object): Promise<Body> {
+    const bytes = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+    if (bytes < SMALL_BODY_BYTES) return { chunks, bytes, release: () => {} };
+    let key = `own|${++this.ownBodies}`;
+    if (shared) {
+      let id = this.sharedIds.get(shared);
+      if (id === undefined) {
+        id = this.nextSharedId++;
+        this.sharedIds.set(shared, id);
+      }
+      key = `shared|${id}`;
+    }
+    return { chunks, bytes, release: await this.budget.acquire(currentClient(), key, bytes) };
   }
 
   /**
@@ -275,6 +298,96 @@ export function streamBody(body: Body): ReadableStream<Uint8Array> {
       },
       cancel() {
         done();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+}
+
+/**
+ * `streamBody` for a response made of bodies built one after another (an export, a part of a table at a time). The
+ * next body is built only once the socket has taken the whole previous one, which gives its budget back then, so a
+ * slow reader holds one body at a time. A body not read to its end within MAX_HOLD_MS ends the connection, as does a
+ * reader that stops asking for more. The status has been sent by then, so a failure can only cut the response:
+ * `onError` hears about it.
+ */
+export function streamBodies(
+  first: Body,
+  next: () => Promise<Body | null>,
+  onError: (e: unknown) => void,
+): ReadableStream<Uint8Array> {
+  let current: Body | null = first;
+  let chunk = 0;
+  let offset = 0;
+  let closed = false;
+  let timer: NodeJS.Timeout | undefined;
+  const stop = () => {
+    closed = true;
+    if (timer) clearTimeout(timer);
+    current?.release();
+    current = null;
+  };
+  const arm = (controller: ReadableStreamDefaultController<Uint8Array>) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (closed) return;
+      stop();
+      controller.error(new Error('The client read the response too slowly'));
+    }, MAX_HOLD_MS);
+    timer.unref();
+  };
+  return new ReadableStream<Uint8Array>(
+    {
+      start(controller) {
+        arm(controller);
+      },
+      async pull(controller) {
+        try {
+          for (;;) {
+            if (!current) {
+              // Building the next body is the server's time, not the reader's.
+              if (timer) clearTimeout(timer);
+              const body = await next();
+              if (closed) {
+                body?.release();
+                return;
+              }
+              if (!body) {
+                stop();
+                controller.close();
+                return;
+              }
+              current = body;
+              chunk = 0;
+              offset = 0;
+              arm(controller);
+            }
+            const piece: Uint8Array | undefined = current.chunks[chunk];
+            if (!piece) {
+              current.release();
+              current = null;
+              continue;
+            }
+            if (offset >= piece.byteLength) {
+              chunk++;
+              offset = 0;
+              continue;
+            }
+            const end = Math.min(piece.byteLength, offset + CHUNK_BYTES);
+            // A view, not a copy: every reader of a shared body reads the same memory.
+            controller.enqueue(piece.subarray(offset, end));
+            offset = end;
+            return;
+          }
+        } catch (e) {
+          if (closed) return;
+          stop();
+          onError(e);
+          controller.error(e);
+        }
+      },
+      cancel() {
+        stop();
       },
     },
     { highWaterMark: 0 },

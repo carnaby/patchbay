@@ -16,18 +16,22 @@ import {
   type DashboardMeta,
   type Dataset,
   type DataTable,
+  DocumentError,
   describePlacement,
   docSecretIds,
+  emptyDashboard,
   FEED_MIN_REFRESH_SEC,
   HTTP_MIN_REFRESH_SEC,
   isStaticSource,
   LIMITS,
   MAX_SECRETS_PER_USER,
+  MAX_TABLE_FILE_BYTES,
   normalizeLayout,
   OpError,
   parseBinding,
   parseDashboard,
   placementConflict,
+  portability,
   type SecretInfo,
   type SecretMode,
   type SecretPlacement,
@@ -36,6 +40,7 @@ import {
   secretRefChanges,
   secretValueIssue,
   sourceSecretIds,
+  stripSecretRefs,
   type UploadedFile,
   type VersionInfo,
   type Visibility,
@@ -58,7 +63,15 @@ import { type Credential, checkUrl, URL_MESSAGES } from '../util/safe-fetch.ts';
 import type { DashboardTarget } from './data.ts';
 import { PipelineError } from './pipeline-pool.ts';
 import { buildTemplate } from './templates.ts';
-import { jsonUploadProblem, parseUpload, UploadError, type UploadInput } from './upload-parse.ts';
+import {
+  columnCountProblem,
+  jsonUploadProblem,
+  parseUpload,
+  tooLarge,
+  UploadError,
+  type UploadFormat,
+  type UploadInput,
+} from './upload-parse.ts';
 
 export interface Principal {
   user: UserRow | null;
@@ -277,10 +290,32 @@ function uploadsFull(adding: number, used: number): HttpError {
   );
 }
 
-function withoutSecrets(d: Dataset): Dataset {
-  if (d.source.kind !== 'http' || !d.source.secrets) return d;
-  const { secrets: _removed, ...source } = d.source;
-  return { ...d, source };
+/** The refusal for a packed table over its size limit; uploads and the declarations of an import both use it. */
+const tableTooLarge = (name: string, bytes: number) =>
+  badRequest(
+    `The file "${name}" in this export is too large to import (${mb(bytes)}; at most ${mb(MAX_TABLE_FILE_BYTES)} per file).`,
+    { code: 'IMPORT_FILE_TOO_LARGE' },
+  );
+
+/** What an import says about each file it will upload next, checked before the dashboard is created. */
+export interface DeclaredFile {
+  id: string;
+  name: string;
+  rows: number;
+  columns: number;
+  /** Bytes of the packed table that will be uploaded. */
+  bytes: number;
+}
+
+const fileExists = (fileId: string) =>
+  new HttpError(409, `This dashboard already has file "${fileId}"`, { code: 'FILE_EXISTS' });
+
+export interface ExportPlan {
+  target: DashboardTarget;
+  doc: DashboardDoc;
+  /** Uploaded files to include: only those a dataset uses, and only for editors. */
+  files: UploadedFile[];
+  secretsRemovedFrom: string[];
 }
 
 function secretName(raw: string): string {
@@ -363,6 +398,11 @@ export class DashboardService {
   private readonly privateHosts: PrivateHosts | null;
   private readonly privateHostsMode: PrivateHostsFor;
   private readonly uploadGate: Gate;
+  /**
+   * The export form of each stored document, made once: the store shares a parsed document among its readers, so
+   * concurrent exports of it share one stripped document and therefore one serialisation (FolderStore.serializedDoc).
+   */
+  private readonly exportDocs = new WeakMap<DashboardDoc, ReturnType<typeof stripSecretRefs>>();
 
   constructor(
     store: FolderStore,
@@ -595,8 +635,8 @@ export class DashboardService {
 
   /**
    * The rules on the URL sources a write adds or changes. Every write that takes a document from a caller passes
-   * through here (ops, full saves, dry runs), so a new write path gets them by calling this one function. A restore
-   * keeps only the URL_SOURCES rule: it brings back what was stored, and the fetch decides about private hosts.
+   * through here by way of checkWriteRules (ops, full saves, dry runs, imports). A restore keeps only the URL_SOURCES
+   * rule: it brings back what was stored, and the fetch decides about private hosts.
    */
   private checkUrlSources(
     ownerId: string | null,
@@ -781,6 +821,31 @@ export class DashboardService {
     return { envelope: this.envelope(meta, doc, principal), ...(editKey ? { editKey } : {}) };
   }
 
+  /**
+   * The rules every write of a document passes, whichever way it arrives: a commit (operations, a full save, a
+   * restore), the dry run that answers like one, and an import, which writes a new dashboard (`before` is null). A
+   * rule added here reaches all of them; one added beside a single caller would let the others write around it.
+   */
+  private checkWriteRules(
+    target: Pick<StoredMeta, 'ownerId' | 'visibility'>,
+    before: DashboardDoc | null,
+    after: DashboardDoc,
+    p: Principal,
+    options: SecretWriteOptions = {},
+  ) {
+    // Nothing before a new dashboard: every dataset counts as added.
+    const previous = before ?? emptyDashboard(after.title);
+    this.checkUrlSources(target.ownerId, previous, after, { restore: options.restore === true });
+    this.checkSecretRefs(target, previous, after, p, options);
+    // Null, not the empty document: a new dashboard pays for all of its bytes and cannot be an old one kept loading.
+    this.checkSize(target.ownerId, before, after);
+    // A restore brings back what was stored before, like the secret checks above allow.
+    const inline = options.restore
+      ? null
+      : (inlineTooWide(previous, after) ?? inlineTextTooLong(previous, after));
+    if (inline) throw inline;
+  }
+
   /** Writes a new version under the lock; `mutate` receives the latest document. */
   private async commit(
     id: string,
@@ -792,14 +857,7 @@ export class DashboardService {
       const { meta, doc } = await this.load(id);
       this.assertCanEdit(meta, p);
       const next = mutate(doc, meta);
-      this.checkUrlSources(meta.ownerId, doc, next.doc, { restore: secretOptions.restore === true });
-      this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
-      this.checkSize(meta.ownerId, doc, next.doc);
-      // A restore brings back what was stored before, like the secret checks above allow.
-      const inline = secretOptions.restore
-        ? null
-        : (inlineTooWide(doc, next.doc) ?? inlineTextTooLong(doc, next.doc));
-      if (inline) throw inline;
+      this.checkWriteRules(meta, doc, next.doc, p, secretOptions);
       const actor = actorOf(p);
       const updated: StoredMeta = {
         ...meta,
@@ -869,11 +927,7 @@ export class DashboardService {
       this.checkOpsConnectors(doc, applied.doc, ops);
       const result = this.raiseRefreshToMinimum(doc, applied);
       // A dry run answers exactly like the save would, so agents learn about secret rules before saving.
-      this.checkUrlSources(meta.ownerId, doc, result.doc);
-      this.checkSecretRefs(meta, doc, result.doc, p, options);
-      this.checkSize(meta.ownerId, doc, result.doc);
-      const inline = inlineTooWide(doc, result.doc) ?? inlineTextTooLong(doc, result.doc);
-      if (inline) throw inline;
+      this.checkWriteRules(meta, doc, result.doc, p, options);
       return { envelope: this.envelope(meta, result.doc, p), changes: result.changes, dryRun: true };
     }
     return this.commit(
@@ -954,8 +1008,9 @@ export class DashboardService {
     const { meta, doc } = await this.loadViewable(id, p);
     // Secrets belong to the dashboard's owner. Anyone else's copy would hold dead references (or be rejected, when
     // anonymous), so they are removed and the copy loads its URLs without credentials.
-    const strip = !(p.user && meta.ownerId === p.user.id) && docSecretIds(doc).length > 0;
-    const datasets = strip ? doc.datasets.map(withoutSecrets) : doc.datasets;
+    const stripped = stripSecretRefs(doc);
+    const strip = !(p.user && meta.ownerId === p.user.id) && stripped.datasetIds.length > 0;
+    const copied = strip ? stripped.doc : doc;
     const used = new Set(doc.datasets.flatMap((d) => (d.source.kind === 'upload' ? [d.source.fileId] : [])));
     // The copy's uploads share the original's bytes on disk, but they count towards the copy's owner in full: the
     // original may be deleted, and the index measures each dashboard on its own.
@@ -964,7 +1019,7 @@ export class DashboardService {
       this.assertUserRoom(p.user.id, 2 * jsonBytes(doc) + storedBytes(files));
     }
     const created = await this.create(p, {
-      doc: { ...doc, datasets, title: copyTitle(doc.title) },
+      doc: { ...copied, title: copyTitle(doc.title) },
       ...(strip ? { changes: ['Created', 'Removed secret references (secrets belong to their owner)'] } : {}),
     });
     // Only files the copied datasets actually use: unreferenced uploads stay private to editors. Viewers may copy
@@ -977,6 +1032,31 @@ export class DashboardService {
       await this.updateSize(id);
     }
     return created;
+  }
+
+  /**
+   * What an export of `id` may hold for `p`. Anyone who can view gets the document, which they can read anyway, with
+   * secret references removed: those name one account's secrets on one server. Uploaded tables only for editors, the
+   * people who can list and preview them already; viewers see data only through datasets.
+   */
+  async exportPlan(id: string, p: Principal): Promise<ExportPlan> {
+    const { meta, doc } = await this.loadViewable(id, p);
+    let stripped = this.exportDocs.get(doc);
+    if (!stripped) {
+      stripped = stripSecretRefs(doc);
+      this.exportDocs.set(doc, stripped);
+    }
+    const used = new Set(portability(doc).uploads.map((u) => u.fileId));
+    const files =
+      used.size > 0 && this.canEdit(meta, p)
+        ? (await this.store.listFiles(id)).filter((f) => used.has(f.id))
+        : [];
+    return {
+      target: { id, ownerId: meta.ownerId },
+      doc: stripped.doc,
+      files,
+      secretsRemovedFrom: stripped.datasetIds,
+    };
   }
 
   async delete(id: string, p: Principal) {
@@ -1064,32 +1144,116 @@ export class DashboardService {
     return this.index.listByOwner(p.user.id);
   }
 
+  /**
+   * A new dashboard from the document of an export file (packages/core/src/export.ts). The document is untrusted, so
+   * it passes the rules a save does (checkWriteRules, like commit); secret references are always removed,
+   * because they name one account's secrets on one server. Ids stay as they are, upload file ids included: the files
+   * follow as uploads that name their id (uploadFile with fileId), so nothing in the document is rewritten. What
+   * those files will need is checked here first, so an import that cannot fit is refused before anything exists.
+   */
+  async importDashboard(
+    p: Principal,
+    input: { doc: unknown; files?: DeclaredFile[] | undefined; visibility?: Visibility | undefined },
+  ): Promise<{ envelope: DashboardEnvelope; editKey?: string; notes: string[] }> {
+    let parsed: DashboardDoc;
+    try {
+      parsed = parseDashboard(input.doc);
+    } catch (e) {
+      if (e instanceof DocumentError)
+        throw badRequest(`The dashboard in this file is not valid: ${e.issues.slice(0, 3).join('; ')}`, {
+          issues: e.issues,
+        });
+      throw e;
+    }
+    const stripped = stripSecretRefs(parsed);
+    // A new dashboard has nothing before it, so every dataset counts as added.
+    const before = emptyDashboard(parsed.title);
+    // The layout clean-up of every write; applyOps with no operations only normalises and re-validates.
+    const normalized = applyOps(stripped.doc, []).doc;
+    const [bad] = this.unknownConnectors(before, normalized);
+    if (bad) throw badRequest(`Dataset "${bad.datasetId}": ${unknownConnectorMessage(bad.connector)}`);
+    const { doc, changes } = this.raiseRefreshToMinimum(before, { doc: normalized, changes: [] });
+    const ownerId = p.user?.id ?? null;
+    // What create will store; create refuses a private anonymous dashboard itself.
+    const visibility: Visibility = p.user ? (input.visibility ?? 'private') : 'public';
+    this.checkWriteRules({ ownerId, visibility }, null, doc, p);
+    this.checkDeclaredFiles(ownerId, doc, input.files ?? []);
+    const names = stripped.datasetIds.map((id) => `"${doc.datasets.find((d) => d.id === id)?.name ?? id}"`);
+    const notes = [
+      ...(names.length
+        ? [
+            `Removed secret references from ${names.join(', ')}: secrets belong to their owner. Add your own under Credentials.`,
+          ]
+        : []),
+      ...changes,
+    ];
+    const created = await this.create(p, {
+      doc,
+      visibility: input.visibility,
+      changes: ['Imported from a Patchbay export file', ...notes],
+    });
+    return { ...created, notes };
+  }
+
+  /**
+   * The declared files against the upload limits of the dashboard's future owner, with the messages of the real
+   * uploads. Those are checked again for real, so a wrong declaration only fails later; this is for refusing early
+   * and whole.
+   */
+  private checkDeclaredFiles(ownerId: string | null, doc: DashboardDoc, files: DeclaredFile[]) {
+    if (files.length > MAX_FILES) throw uploadsFull(0, 0);
+    const used = new Set(portability(doc).uploads.map((u) => u.fileId));
+    const maxCells = ownerId === null ? this.uploadMaxCellsAnonymous : this.uploadMaxCells;
+    const seen = new Set<string>();
+    let total = 0;
+    for (const f of files) {
+      const label = `File "${f.name.slice(0, 120)}"`;
+      if (seen.has(f.id)) throw badRequest(`${label} is listed twice`);
+      seen.add(f.id);
+      if (!used.has(f.id))
+        throw badRequest(`${label} is not used by any dataset of this dashboard`, {
+          code: 'FILE_NOT_REFERENCED',
+        });
+      if (f.bytes > MAX_TABLE_FILE_BYTES) throw tableTooLarge(f.name.slice(0, 120), f.bytes);
+      // An export holds up to MAX_FILES tables: the refusal says which one.
+      const columns = columnCountProblem(f.columns);
+      if (columns) throw badRequest(`${label}: ${columns.message}`);
+      if (f.rows * f.columns > maxCells)
+        throw badRequest(
+          `${label}: ${tooLarge(f.rows, f.columns, maxCells, false).message}${this.cellsHint(ownerId)}`,
+        );
+      total += f.bytes;
+    }
+    // A stored table takes about the bytes of the packed text it comes from.
+    if (total > MAX_DASHBOARD_BYTES) throw uploadsFull(total, 0);
+    this.assertRoom(ownerId, total + 2 * documentBytes(doc));
+  }
+
   async uploadFile(
     id: string,
     p: Principal,
-    input: { name: string; content: string; format?: 'csv' | 'json' | undefined },
+    input: { name: string; content: string; format?: UploadFormat | undefined; fileId?: string | undefined },
   ): Promise<UploadedFile> {
-    const { meta } = await this.load(id);
+    const { meta, doc } = await this.load(id);
     this.assertCanEdit(meta, p);
-    if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) throw badRequest('Files are limited to 5 MB');
+    const bytes = Buffer.byteLength(input.content);
+    if (input.format === 'table') {
+      if (bytes > MAX_TABLE_FILE_BYTES) throw tableTooLarge(input.name, bytes);
+    } else if (bytes > MAX_FILE_BYTES) throw badRequest('Files are limited to 5 MB');
+    if (input.fileId !== undefined) await this.assertFileSlot(id, doc, input.fileId);
     const existing = await this.store.listFiles(id);
     if (existing.length >= MAX_FILES || storedBytes(existing) >= MAX_DASHBOARD_BYTES) {
       throw uploadsFull(0, storedBytes(existing));
     }
     // Before parsing: the stored file is rarely much smaller than the upload.
     this.assertRoom(meta.ownerId, Buffer.byteLength(input.content));
-    const format =
+    const format: UploadFormat =
       input.format ?? (/\.json$/i.test(input.name) || /^\s*[[{]/.test(input.content) ? 'json' : 'csv');
     const maxCells = meta.ownerId === null ? this.uploadMaxCellsAnonymous : this.uploadMaxCells;
-    const refused = (e: UploadError) => {
-      const hint =
-        e.tooLarge && meta.ownerId === null && maxCells < this.uploadMaxCells
-          ? ` Dashboards of signed-in users accept up to ${this.uploadMaxCells.toLocaleString('en-US')} cells.`
-          : '';
-      return badRequest(e.message + hint);
-    };
+    const refused = (e: UploadError) =>
+      badRequest(e.message + (e.tooLarge ? this.cellsHint(meta.ownerId) : ''));
     // Here, not only in the worker: a hostile document is refused in milliseconds without taking a queue place.
-    if (format === 'json') {
+    if (format === 'json' || format === 'table') {
       const problem = jsonUploadProblem(input.content, maxCells);
       if (problem) throw refused(problem);
     }
@@ -1100,11 +1264,32 @@ export class DashboardService {
     );
   }
 
+  /** What to tell an anonymous owner whose file hit the cell limit: signed-in users have a higher one. */
+  private cellsHint(ownerId: string | null) {
+    return ownerId === null && this.uploadMaxCellsAnonymous < this.uploadMaxCells
+      ? ` Dashboards of signed-in users accept up to ${this.uploadMaxCells.toLocaleString('en-US')} cells.`
+      : '';
+  }
+
+  /**
+   * An upload may name its file id only to supply a file the document uses and the dashboard does not have: what an
+   * import does, so the document keeps its ids. It never replaces a stored file, which copies may share through hard
+   * links; a retried upload whose first attempt landed gets FILE_EXISTS.
+   */
+  private async assertFileSlot(id: string, doc: DashboardDoc, fileId: string) {
+    if (!doc.datasets.some((d) => d.source.kind === 'upload' && d.source.fileId === fileId))
+      throw badRequest(
+        `No dataset of this dashboard uses file "${fileId}". Upload without fileId to add a new file.`,
+        { code: 'FILE_NOT_REFERENCED' },
+      );
+    if (await this.store.fileStamp(id, fileId)) throw fileExists(fileId);
+  }
+
   private async parseAndSave(
     id: string,
     meta: StoredMeta,
-    input: { name: string; content: string },
-    format: 'csv' | 'json',
+    input: { name: string; content: string; fileId?: string | undefined },
+    format: UploadFormat,
     maxCells: number,
     refused: (e: UploadError) => HttpError,
   ): Promise<UploadedFile> {
@@ -1117,7 +1302,7 @@ export class DashboardService {
       throw e;
     }
     const file = {
-      id: `f_${newId()}`.slice(0, 20),
+      id: input.fileId ?? `f_${newId()}`.slice(0, 20),
       name: input.name.slice(0, 120),
       rows: table.rows.length,
       columns: table.columns.length,
@@ -1127,6 +1312,9 @@ export class DashboardService {
     // The limits count bytes on disk, known only once serialised. Checked under the lock, so that concurrent
     // uploads cannot both squeeze in.
     const written = await this.store.withLock(id, async () => {
+      // Again under the lock: two uploads of the same imported file must not both be stored.
+      if (input.fileId !== undefined && (await this.store.fileStamp(id, input.fileId)))
+        throw fileExists(input.fileId);
       const files = await this.store.listFiles(id);
       const used = storedBytes(files);
       const bytes = await this.store.saveFile(id, { ...file, table }, (bytes) => {
@@ -1389,7 +1577,7 @@ export class DashboardService {
    * blocks unrelated edits or autosave.
    */
   private checkSecretRefs(
-    meta: StoredMeta,
+    meta: Pick<StoredMeta, 'ownerId' | 'visibility'>,
     before: DashboardDoc,
     after: DashboardDoc,
     p: Principal,

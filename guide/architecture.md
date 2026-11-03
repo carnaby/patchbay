@@ -88,6 +88,51 @@ inside SQLite (loses the "a dashboard is a folder" property and easy inspection)
 data directory, so scaling is vertical. A Postgres-backed index plus object storage would be the path to multiple
 instances.
 
+## 3a. Export and import
+
+A dashboard can leave its server as one `.patchbay.json` file (_Details and sharing → Export file_) and come back as
+a new dashboard on any server (_New dashboard → Import file_, or _Import_ on _My dashboards_):
+
+```json
+{
+  "format": "patchbay-dashboard",
+  "version": 1,
+  "exportedAt": "2026-11-03T10:00:00.000Z",
+  "secretsRemovedFrom": ["orders"],
+  "doc": { "schemaVersion": 1, "title": "…", "datasets": [], "widgets": [], "layout": [] },
+  "files": [
+    {
+      "id": "f_x1y2z3",
+      "name": "sales.csv",
+      "columns": [{ "name": "date", "type": "time" }],
+      "data": [[1767225600000]]
+    }
+  ]
+}
+```
+
+- The document is carried whole: dataset, step, widget, layout and file ids are never rewritten, so every reference
+  inside it stays valid. Uploaded files travel as the typed tables the server stores (times as epoch milliseconds),
+  so column types survive exactly; only files a dataset uses are included.
+- Never in the file: stored secrets and secret references (they name one account's secrets on one server; the
+  importer adds their own under Credentials), the owner, sharing settings, edit keys, version history and accumulated
+  live history. A key someone typed straight into a dataset URL is part of the document and does travel; the export
+  dialog warns about such URLs.
+- Anyone who can view a dashboard can export its document, a read-only token included. Uploaded files are included
+  only for its editors, the people who can already list and preview them.
+- Limits: a file up to 32 MB, at most 20 files, 7 MB per table. A stored upload can take more than 7 MB as a table
+  (packed, CSV values gain quotes and brackets and dates become 13-digit numbers), so the export dialog warns when an
+  included table is near or over that limit: it is exported, but no Patchbay server imports it again. Anonymous
+  imports are public, with the edit key kept in the importing browser; signed-in imports are private to the importer.
+- `GET /api/dashboards/:id/export` streams the file within the response budget, a part of a table at a time (see
+  [deployment](deployment.md#memory-budget)). An import is `POST /api/dashboards/import` with
+  `{ doc, files: [{ id, name, rows, columns, bytes }] }`, which runs every rule a save runs and checks what the
+  files will need before anything is created, then one `POST /api/dashboards/:id/files` per file with
+  `{ name, format: "table", fileId, content }`. An upload may name its `fileId` only when a dataset uses that id and
+  the dashboard does not have the file yet; a stored file is never replaced (`409 FILE_EXISTS`).
+- A reader accepts every `version` up to its own and refuses newer files with a clear message; any change to the
+  envelope's shape bumps `version`. Import also accepts a bare document and the answer of `GET /api/dashboards/:id`.
+
 ## 4. Data: connectors, pipelines, live updates
 
 `DataService.resolve(dataset)` = load source → (optionally) accumulate → run pipeline → cap rows.

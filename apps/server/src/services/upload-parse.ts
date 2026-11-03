@@ -10,13 +10,23 @@
  * Column names and the number of columns are bounded too: every row of a data response repeats the names, so a
  * small file with very long names becomes a very large response.
  */
-import { type DataTable, inferTableCapped, LIMITS, TableTooWideError } from '@patchbay/core';
+import {
+  type DataTable,
+  ExportFormatError,
+  inferTableCapped,
+  LIMITS,
+  TableTooWideError,
+  tableFromPacked,
+} from '@patchbay/core';
 import Papa from 'papaparse';
 import { jsonShapeProblem, MAX_JSON_DEPTH } from '../util/json-shape.ts';
 
+/** csv and json are inferred; table is a packed table from an export file, typed already. */
+export type UploadFormat = 'csv' | 'json' | 'table';
+
 export interface UploadInput {
   content: string;
-  format: 'csv' | 'json';
+  format: UploadFormat;
   maxCells: number;
 }
 
@@ -44,19 +54,25 @@ export const maxUploadValues = (maxCells: number) => maxCells * 3;
 
 const fmt = (n: number) => n.toLocaleString('en-US');
 
-function tooLarge(rows: number, columns: number, maxCells: number, atLeast: boolean): UploadError {
+export function tooLarge(rows: number, columns: number, maxCells: number, atLeast: boolean): UploadError {
   return new UploadError(
     `The file has ${atLeast ? 'more than ' : ''}${fmt(rows)} rows × ${fmt(columns)} columns; this dashboard accepts files of up to ${fmt(maxCells)} cells (rows × columns). Remove rows or columns you do not need.`,
     true,
   );
 }
 
+/** The refusal for a file with too many columns, or null. */
+export function columnCountProblem(count: number): UploadError | null {
+  if (count <= UPLOAD_MAX_COLUMNS) return null;
+  return new UploadError(
+    `The file has ${fmt(count)} columns; uploads are limited to ${fmt(UPLOAD_MAX_COLUMNS)}. Remove columns you do not need.`,
+  );
+}
+
 /** Why these column names cannot be stored, or null. */
-function columnsProblem(names: readonly string[]): UploadError | null {
-  if (names.length > UPLOAD_MAX_COLUMNS)
-    return new UploadError(
-      `The file has ${fmt(names.length)} columns; uploads are limited to ${fmt(UPLOAD_MAX_COLUMNS)}. Remove columns you do not need.`,
-    );
+export function columnsProblem(names: readonly string[]): UploadError | null {
+  const count = columnCountProblem(names.length);
+  if (count) return count;
   const long = names.find((name) => name.length > UPLOAD_MAX_COLUMN_NAME);
   if (long !== undefined)
     return new UploadError(
@@ -169,7 +185,36 @@ function parseJson(content: string, maxCells: number): DataTable {
   return limitedTable(records, maxCells);
 }
 
+/**
+ * A packed table from a .patchbay.json export (packages/core/src/export.ts). Its column types travel with it, so
+ * nothing is inferred and a boolean column stays boolean. Measured before rows are built, like JSON uploads.
+ */
+function parseTable(content: string, maxCells: number): DataTable {
+  const problem = jsonUploadProblem(content, maxCells);
+  if (problem) throw problem;
+  let json: unknown;
+  try {
+    json = JSON.parse(content);
+  } catch {
+    throw new UploadError('The table is not valid JSON');
+  }
+  const shape = json as { columns?: unknown; data?: unknown } | null;
+  if (Array.isArray(shape?.columns) && Array.isArray(shape?.data)) {
+    const columns = Math.max(shape.columns.length, 1);
+    if (shape.data.length * columns > maxCells) throw tooLarge(shape.data.length, columns, maxCells, false);
+  }
+  let table: DataTable;
+  try {
+    table = tableFromPacked(json);
+  } catch (e) {
+    if (e instanceof ExportFormatError) throw new UploadError(e.message);
+    throw e;
+  }
+  return check(table, maxCells);
+}
+
 export function parseUpload(input: UploadInput): DataTable {
+  if (input.format === 'table') return parseTable(input.content, input.maxCells);
   return input.format === 'json'
     ? parseJson(input.content, input.maxCells)
     : parseCsv(input.content, input.maxCells);

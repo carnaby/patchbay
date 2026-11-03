@@ -84,6 +84,7 @@ async function instance(env: Record<string, string>) {
       mcp: generous(),
       creates: generous(),
       snapshots: generous(),
+      exports: generous(),
     },
   });
   const call = async (path: string, init: Init = {}) => {
@@ -184,6 +185,15 @@ describe('a public instance (ALLOW_PRIVATE_HOSTS empty)', () => {
     );
     expect(pub.deps.dashboards.networkAccess(admin.ownerId)).toEqual({ kind: 'public' });
   });
+
+  it('refuses to import a document with an http:// source, as a save would', async () => {
+    const res = await pub.call('/api/dashboards/import', {
+      body: { doc: { schemaVersion: 1, title: 'Home', datasets: [home(states())] } },
+      headers: await pub.login(ADMIN),
+    });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toContain(`Dataset "home": ${URL_MESSAGES.httpOff}`);
+  });
 });
 
 describe('a self-hosted instance with ALLOW_PRIVATE_HOSTS=127.0.0.1', () => {
@@ -232,13 +242,55 @@ describe('a self-hosted instance with ALLOW_PRIVATE_HOSTS=127.0.0.1', () => {
       ['Saved before'],
     );
     expect((await lan.data(other)).json.error).toContain('only dashboards owned by an administrator');
-    // A restore brings back what was stored and leaves the decision to the load.
+    // After a restore the load still refuses it (the restore exemption itself is pinned by its own test).
     const restored = await lan.call(`/api/dashboards/${other.id}/versions/${meta.version + 1}/restore`, {
       body: {},
       headers: other.headers,
     });
     expect(restored.status).toBe(200);
     expect((await lan.data(other)).json.error).toContain('only dashboards owned by an administrator');
+  });
+
+  it('restores an older version with a source the owner may no longer save, and leaves it to the load', async () => {
+    const other = await lan.dashboard('restorer@example.com');
+    const meta = (await lan.deps.store.readMeta(other.id))!;
+    const doc = (await lan.deps.store.readDoc(other.id))!;
+    // Saved while the owner could use the list (an administrator then, or PRIVATE_HOSTS_FOR=signed-in).
+    await lan.deps.store.writeDoc(
+      { ...meta, version: meta.version + 1 },
+      { ...doc, datasets: [{ ...home(states()), transforms: [], refreshSec: 0, accumulate: 0 }] } as never,
+      { kind: 'anonymous', label: 'test' },
+      ['Saved before'],
+    );
+    const removed = await lan.call(`/api/dashboards/${other.id}/ops`, {
+      body: { ops: [{ op: 'removeDataset', id: 'home' }] },
+      headers: other.headers,
+    });
+    expect(removed.status).toBe(200);
+    // The restore adds the source back, which a save would refuse; a restore brings back what was stored.
+    const restored = await lan.call(`/api/dashboards/${other.id}/versions/${meta.version + 1}/restore`, {
+      body: {},
+      headers: other.headers,
+    });
+    expect(restored.status).toBe(200);
+    expect((await lan.data(other)).json.error).toContain('only dashboards owned by an administrator');
+  });
+
+  it("checks an imported document's sources like a save: only an administrator's import keeps the listed host", async () => {
+    const doc = { schemaVersion: 1, title: 'Home', datasets: [home(states())] };
+    for (const headers of [{}, await lan.login('someone@example.com')]) {
+      const res = await lan.call('/api/dashboards/import', { body: { doc }, headers });
+      expect(res.status).toBe(400);
+      expect(res.json.error).toContain('Dataset "home": ');
+      expect(res.json.error).toContain('only dashboards owned by an administrator');
+    }
+    const admin = await lan.login(ADMIN);
+    const imported = await lan.call('/api/dashboards/import', { body: { doc }, headers: admin });
+    expect(imported.status).toBe(201);
+    const id = imported.json.envelope.meta.id as string;
+    const loaded = await lan.call(`/api/dashboards/${id}/data/home`, { headers: admin });
+    expect(loaded.json.error ?? null).toBeNull();
+    expect(loaded.json.table.rows).toHaveLength(1);
   });
 
   it("never lends an administrator's private hosts to a viewer of the dashboard", async () => {
