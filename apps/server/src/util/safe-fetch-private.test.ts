@@ -82,6 +82,11 @@ describe('URL checks', () => {
     expect(checkUrl('https://example.com/x').mode).toBe('public');
   });
 
+  it('keeps the https-only text for plain http with credentials on a public instance', () => {
+    expect(() => checkUrl('http://user:pw@example.com/x')).toThrow(URL_MESSAGES.httpOff);
+    expect(() => checkUrl('https://user:pw@example.com/x')).toThrow(/credentials/);
+  });
+
   it('classifies hops when a list is passed', () => {
     expect(checkUrl('http://homeassistant.lan:8123/api/states', hosts).mode).toBe('lan');
     expect(checkUrl('https://proxmox.home.arpa:8006/', hosts).mode).toBe('lan');
@@ -111,6 +116,12 @@ describe('URL checks', () => {
       /not covered/,
     );
     expect(checkUrl('http://169.254.169.254/', parsePrivateHosts('169.254.169.254')).mode).toBe('lan');
+  });
+
+  it('refuses a malformed redirect location with a 502', () => {
+    expect(() => redirectTarget(new URL('http://192.168.1.10/a'), 'http://[', hosts)).toThrow(
+      'Invalid redirect',
+    );
   });
 
   it('refuses a redirect from https:// down to http://, even into the list', () => {
@@ -153,7 +164,11 @@ describe('fetching from a listed address for real', () => {
         res.end();
       }
     });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    // Dual stack, so "localhost" works whichever family the OS resolves it to; IPv4 only where IPv6 is missing.
+    await new Promise<void>((resolve) => {
+      server.once('error', () => server.listen(0, '127.0.0.1', resolve));
+      server.listen(0, '::', resolve);
+    });
     port = (server.address() as { port: number }).port;
     base = `http://127.0.0.1:${port}`;
   });
@@ -176,6 +191,16 @@ describe('fetching from a listed address for real', () => {
     await expect(safeFetchJson(`${base}/to-metadata`, { privateHosts: local })).rejects.toThrow(
       URL_MESSAGES.notListed('169.254.169.254'),
     );
+  });
+
+  it('checks the addresses of a name inside the socket lookup of the lan agent', async () => {
+    await expect(
+      safeFetchJson(`http://localhost:${port}/data`, { privateHosts: parsePrivateHosts('10.0.0.1')! }),
+    ).rejects.toThrow(URL_MESSAGES.notListed('localhost'));
+    const loopback = parsePrivateHosts('127.0.0.1, ::1')!;
+    expect(await safeFetchJson(`http://localhost:${port}/data`, { privateHosts: loopback })).toEqual([
+      { a: 1 },
+    ]);
   });
 
   it('stays strict for every caller that does not pass the list (OAuth client documents)', async () => {

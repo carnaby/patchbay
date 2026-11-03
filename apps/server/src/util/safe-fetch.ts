@@ -110,11 +110,12 @@ export function checkUrl(raw: string, privateHosts: PrivateHosts | null = null):
   }
   const plain = url.protocol === 'http:';
   if (url.protocol !== 'https:' && !plain) throw new HttpError(400, 'Only https:// URLs are allowed');
+  // Before the credentials check, so a public instance keeps answering plain http:// with the https-only text.
+  if (!privateHosts && plain) throw new HttpError(400, URL_MESSAGES.httpOff);
   if (url.username || url.password) throw new HttpError(400, 'URLs with credentials are not allowed');
   const host = url.hostname.replace(/^\[|\]$/g, '');
   const otherPort = url.port !== '' && url.port !== '443';
   if (!privateHosts) {
-    if (plain) throw new HttpError(400, URL_MESSAGES.httpOff);
     if (otherPort) throw new HttpError(400, URL_MESSAGES.portOff);
     if (isIP(host) && isPrivateAddress(host)) throw new HttpError(400, URL_MESSAGES.privateOff);
     return { url, mode: 'public' };
@@ -133,7 +134,13 @@ export function redirectTarget(
   location: string,
   privateHosts: PrivateHosts | null = null,
 ): { url: URL; mode: HopMode } {
-  const next = checkUrl(new URL(location, from).toString(), privateHosts);
+  let target: string;
+  try {
+    target = new URL(location, from).toString();
+  } catch {
+    throw new HttpError(502, 'Invalid redirect');
+  }
+  const next = checkUrl(target, privateHosts);
   if (from.protocol === 'https:' && next.url.protocol === 'http:')
     throw new HttpError(502, URL_MESSAGES.downgrade);
   return next;
@@ -276,7 +283,7 @@ export interface SafeFetchOptions {
 
 /**
  * Tests only, never read from the environment: `dispatcher` routes requests to a local server (production always
- * uses `guardedAgent`, so its DNS-level address check always applies; the URL-level checks run either way), and
+ * uses the guarded agents, so its DNS-level address check always applies; the URL-level checks run either way), and
  * `timeoutMs` shortens the request timeout.
  */
 export interface UpstreamTestSeam {
