@@ -1,4 +1,4 @@
-/** The parts of an export body: one table read across parts. */
+/** The parts of an export body: one table read across parts, and their size. */
 
 import type { DataTable } from '@patchbay/core';
 import { readExport } from '@patchbay/core';
@@ -75,6 +75,24 @@ describe('exportBodies', () => {
     };
     const bodies = await drain(deps, plan());
     expect(bodies.length).toBeGreaterThan(3);
+    const exp = readExport(JSON.parse(Buffer.concat(bodies).toString('utf8')));
+    expect(exp.files[0]!.data).toHaveLength(rows.length);
+  });
+
+  it('measures parts in bytes, so text outside ASCII keeps them near the part size', async () => {
+    // Three bytes per character in UTF-8, one UTF-16 code unit: counted as characters, a part would be 3 MB.
+    const row = '€'.repeat(1000);
+    const rows = Array.from({ length: Math.ceil((EXPORT_PART_BYTES * 3) / row.length) }, () => row);
+    const deps: ExportBodyDeps = {
+      wire: { held },
+      serializedDoc,
+      data: { uploadTable: async () => ({ table: tableOf(rows), stamp: 'upload:1:1@1:10' }) },
+    };
+    const bodies = await drain(deps, plan());
+    const parts = bodies.slice(1, -1);
+    expect(parts.length).toBeGreaterThan(2);
+    const rowBytes = Buffer.byteLength(JSON.stringify([row])) + 1;
+    for (const part of parts) expect(part.byteLength).toBeLessThan(EXPORT_PART_BYTES + rowBytes + 200);
     const exp = readExport(JSON.parse(Buffer.concat(bodies).toString('utf8')));
     expect(exp.files[0]!.data).toHaveLength(rows.length);
   });

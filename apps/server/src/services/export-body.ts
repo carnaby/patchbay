@@ -74,7 +74,8 @@ export async function exportBodies(
     while (row < table.rows.length && size < EXPORT_PART_BYTES) {
       const text = JSON.stringify(exportedRow(table.columns, table.rows[row]!));
       parts.push(row > 0 ? `,${text}` : text);
-      size += text.length + 1;
+      // Bytes, not UTF-16 code units: text outside ASCII takes up to three bytes per unit on the wire.
+      size += Buffer.byteLength(text) + 1;
       row++;
     }
     if (row >= table.rows.length) {
