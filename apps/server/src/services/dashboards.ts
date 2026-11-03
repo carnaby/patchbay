@@ -1181,16 +1181,22 @@ export class DashboardService {
         'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.',
       );
     }
+    const meta = dashboardId ? (await this.loadViewable(dashboardId, p)).meta : null;
+    // The owner's network rights (ALLOW_PRIVATE_HOSTS) stay with the owner: a viewer's preview of a URL of the
+    // viewer's choosing runs with the viewer's own rights.
+    const ownerId = meta && this.canEdit(meta, p) ? meta.ownerId : (p.user?.id ?? null);
     // Reaching the operator's network is a use as well: it runs requests the token's owner could not otherwise make.
+    // Only for someone who may use the list, though: the refusal depends on the list's entries, so it would let
+    // every signed-in user probe them.
     const url = dataset.source.kind === 'http' || dataset.source.kind === 'feed' ? dataset.source.url : null;
-    if (p.readOnly && url !== null && this.needsPrivateHosts(url)) throw forbidden(PREVIEW_PRIVATE_READ_ONLY);
+    if (p.readOnly && url !== null && this.privateHostsFor(ownerId) !== null && this.needsPrivateHosts(url))
+      throw forbidden(PREVIEW_PRIVATE_READ_ONLY);
     const publicOnly = p.readOnly ? { publicOnly: true } : {};
-    if (!dashboardId) {
+    if (!dashboardId || !meta) {
       if (upload) throw badRequest('Uploaded files need dashboardId');
       if (!p.user) throw unauthorized();
       return { id: 'preview00', ownerId: p.user.id, ...publicOnly };
     }
-    const { meta } = await this.loadViewable(dashboardId, p);
     const needsEdit = options.requireEdit || upload || sourceSecretIds(dataset.source).length > 0;
     if (needsEdit && !this.canEdit(meta, p)) {
       if (options.requireEdit) throw forbidden('You cannot edit this dashboard');
@@ -1200,10 +1206,7 @@ export class DashboardService {
           : 'Only editors of this dashboard can preview sources that use secrets',
       );
     }
-    // The owner's network rights (ALLOW_PRIVATE_HOSTS) stay with the owner: a viewer's preview of a URL of the
-    // viewer's choosing runs with the viewer's own rights. Secrets and uploads need an editor (above), so nothing
-    // else the target carries changes meaning for a viewer.
-    const ownerId = this.canEdit(meta, p) ? meta.ownerId : (p.user?.id ?? null);
+    // Secrets and uploads need an editor (above), so nothing else the target carries changes meaning for a viewer.
     return { id: dashboardId, ownerId, ...publicOnly };
   }
 
