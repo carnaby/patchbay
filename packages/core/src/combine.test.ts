@@ -88,6 +88,17 @@ describe('join', () => {
     ]);
   });
 
+  it('never matches NaN keys, and a left join keeps the row', () => {
+    const left = inferTable([{ k: Number.NaN, a: 1 }]);
+    const right = inferTable([{ k: Number.NaN, b: 2 }]);
+    const { table } = runPipeline(
+      left,
+      steps([{ type: 'join', with: 'right', on: ['k'] }]),
+      inputs({ right }),
+    );
+    expect(table.rows).toEqual([{ k: null, a: 1, b: null }]);
+  });
+
   it('produces one row per match when a key repeats on the other side', () => {
     const two = inferTable([
       { country: 'SK', region: 'Central' },
@@ -227,6 +238,22 @@ describe('union', () => {
     expect(() =>
       runPipeline(big, steps([{ type: 'union', with: ['other'] }]), inputs({ other: big }, self)),
     ).toThrow('Step 1: The union produced more than 100,000 rows; filter or aggregate the datasets first.');
+  });
+
+  it('refuses an origin column that only a joined dataset has', () => {
+    const other = inferTable([{ time: 1, city: 'x' }], { types: { time: 'time' } });
+    expect(() =>
+      runPipeline(ba, steps([{ type: 'union', with: ['other'], origin: 'city' }]), inputs({ other }, self)),
+    ).toThrow('Step 1: Column "city" already exists; name the origin column differently');
+  });
+
+  it('does not read labels from the prototype for ids like constructor', () => {
+    const { table } = runPipeline(
+      ba,
+      steps([{ type: 'union', with: ['constructor'], origin: 'city', labels: { ba: 'BA' } }]),
+      inputs({ constructor: brno }, self),
+    );
+    expect(table.rows.map((r) => r.city)).toEqual(['BA', 'Constructor']);
   });
 
   it('accepts one to four datasets', () => {

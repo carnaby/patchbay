@@ -674,7 +674,9 @@ function applyStep(
       // A null key is an unknown value, never equal to another: as in SQL, it matches nothing.
       const keyOf = (row: Row, side: 'left' | 'right') => {
         const values = keys.map((k) => row[k[side]] ?? null);
-        return values.includes(null) ? null : JSON.stringify(values);
+        return values.some((v) => v === null || (typeof v === 'number' && Number.isNaN(v)))
+          ? null
+          : JSON.stringify(values);
       };
       const index = new Map<string, Row[]>();
       for (const r of other.rows) {
@@ -732,6 +734,12 @@ function applyStep(
         );
       }
       const names = unionColumns(sources.map((s) => s.table.columns.map((c) => c.name)));
+      if (t.origin && names.includes(t.origin)) {
+        throw new TransformError(
+          `Column "${t.origin}" already exists; name the origin column differently`,
+          step,
+        );
+      }
       const seen = new Map<string, Set<ColumnType>>();
       for (const s of sources) {
         for (const c of s.table.columns) {
@@ -751,7 +759,11 @@ function applyStep(
       budget.size = 0;
       const rows: Row[] = [];
       for (const s of sources) {
-        const label = t.origin ? (t.labels?.[s.key] ?? s.name) : null;
+        const label = t.origin
+          ? t.labels && Object.hasOwn(t.labels, s.key)
+            ? t.labels[s.key]
+            : s.name
+          : null;
         const types = typesOf(s.table);
         for (const r of s.table.rows) {
           const out: Row = {};
