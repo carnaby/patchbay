@@ -710,6 +710,31 @@ export class DashboardService {
     return { envelope: this.envelope(meta, doc, principal), ...(editKey ? { editKey } : {}) };
   }
 
+  /**
+   * The rules every write of a document passes, whichever way it arrives: a commit (operations, a full save, a
+   * restore), the dry run that answers like one, and an import, which writes a new dashboard (`before` is null). A
+   * rule added here reaches all of them; one added beside a single caller would let the others write around it.
+   */
+  private checkWriteRules(
+    target: Pick<StoredMeta, 'ownerId' | 'visibility'>,
+    before: DashboardDoc | null,
+    after: DashboardDoc,
+    p: Principal,
+    options: SecretWriteOptions = {},
+  ) {
+    // Nothing before a new dashboard: every dataset counts as added.
+    const previous = before ?? emptyDashboard(after.title);
+    this.checkUrlSources(target.ownerId, previous, after);
+    this.checkSecretRefs(target, previous, after, p, options);
+    // Null, not the empty document: a new dashboard pays for all of its bytes and cannot be an old one kept loading.
+    this.checkSize(target.ownerId, before, after);
+    // A restore brings back what was stored before, like the secret checks above allow.
+    const inline = options.restore
+      ? null
+      : (inlineTooWide(previous, after) ?? inlineTextTooLong(previous, after));
+    if (inline) throw inline;
+  }
+
   /** Writes a new version under the lock; `mutate` receives the latest document. */
   private async commit(
     id: string,
@@ -721,14 +746,7 @@ export class DashboardService {
       const { meta, doc } = await this.load(id);
       this.assertCanEdit(meta, p);
       const next = mutate(doc, meta);
-      this.checkUrlSources(meta.ownerId, doc, next.doc);
-      this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
-      this.checkSize(meta.ownerId, doc, next.doc);
-      // A restore brings back what was stored before, like the secret checks above allow.
-      const inline = secretOptions.restore
-        ? null
-        : (inlineTooWide(doc, next.doc) ?? inlineTextTooLong(doc, next.doc));
-      if (inline) throw inline;
+      this.checkWriteRules(meta, doc, next.doc, p, secretOptions);
       const actor = actorOf(p);
       const updated: StoredMeta = {
         ...meta,
@@ -798,11 +816,7 @@ export class DashboardService {
       this.checkOpsConnectors(doc, applied.doc, ops);
       const result = this.raiseRefreshToMinimum(doc, applied);
       // A dry run answers exactly like the save would, so agents learn about secret rules before saving.
-      this.checkUrlSources(meta.ownerId, doc, result.doc);
-      this.checkSecretRefs(meta, doc, result.doc, p, options);
-      this.checkSize(meta.ownerId, doc, result.doc);
-      const inline = inlineTooWide(doc, result.doc) ?? inlineTextTooLong(doc, result.doc);
-      if (inline) throw inline;
+      this.checkWriteRules(meta, doc, result.doc, p, options);
       return { envelope: this.envelope(meta, result.doc, p), changes: result.changes, dryRun: true };
     }
     return this.commit(
@@ -1021,7 +1035,7 @@ export class DashboardService {
 
   /**
    * A new dashboard from the document of an export file (packages/core/src/export.ts). The document is untrusted, so
-   * it passes the rules a save does (the same helpers as commit and save); secret references are always removed,
+   * it passes the rules a save does (checkWriteRules, like commit); secret references are always removed,
    * because they name one account's secrets on one server. Ids stay as they are, upload file ids included: the files
    * follow as uploads that name their id (uploadFile with fileId), so nothing in the document is rewritten. What
    * those files will need is checked here first, so an import that cannot fit is refused before anything exists.
@@ -1049,9 +1063,9 @@ export class DashboardService {
     if (bad) throw badRequest(`Dataset "${bad.datasetId}": ${unknownConnectorMessage(bad.connector)}`);
     const { doc, changes } = this.raiseRefreshToMinimum(before, { doc: normalized, changes: [] });
     const ownerId = p.user?.id ?? null;
-    this.checkUrlSources(ownerId, before, doc);
-    const inline = inlineTooWide(before, doc) ?? inlineTextTooLong(before, doc);
-    if (inline) throw inline;
+    // What create will store; create refuses a private anonymous dashboard itself.
+    const visibility: Visibility = p.user ? (input.visibility ?? 'private') : 'public';
+    this.checkWriteRules({ ownerId, visibility }, null, doc, p);
     this.checkDeclaredFiles(ownerId, doc, input.files ?? []);
     const names = stripped.datasetIds.map((id) => `"${doc.datasets.find((d) => d.id === id)?.name ?? id}"`);
     const notes = [
@@ -1429,7 +1443,7 @@ export class DashboardService {
    * blocks unrelated edits or autosave.
    */
   private checkSecretRefs(
-    meta: StoredMeta,
+    meta: Pick<StoredMeta, 'ownerId' | 'visibility'>,
     before: DashboardDoc,
     after: DashboardDoc,
     p: Principal,

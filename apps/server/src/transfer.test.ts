@@ -696,6 +696,40 @@ describe('import', () => {
     expect(folders()).toBe(before);
   });
 
+  it('refuses a document by the same rules and with the same answer as operations that would build it', async () => {
+    const cookie = await login('same-rules@example.com');
+    const inline = (id: string, rows: unknown[]) => ({ id, name: id, source: { kind: 'inline', rows } });
+    const wide = Object.fromEntries(Array.from({ length: 201 }, (_, i) => [`c${i}`, i]));
+    // Half of a document over 1,000,000 bytes each: a request body is limited to 1 MB.
+    const half = Array.from({ length: 510 }, (_, i) => ({ a: `${i}`.padEnd(990) }));
+    const cases = [
+      { code: 'INLINE_TOO_WIDE', datasets: [inline('x', [wide])] },
+      { code: 'INLINE_VALUE_TOO_LONG', datasets: [inline('x', [{ a: 'x'.repeat(5000) }])] },
+      { code: 'DOCUMENT_TOO_LARGE', datasets: [inline('x', half), inline('y', half)] },
+    ];
+    for (const { code, datasets } of cases) {
+      const created = await call('/api/dashboards', { body: { title: 'Rules' }, cookie });
+      const id = created.json.envelope.meta.id as string;
+      let byOps: Awaited<ReturnType<typeof call>> | undefined;
+      for (const dataset of datasets) {
+        byOps = await call(`/api/dashboards/${id}/ops`, {
+          body: { ops: [{ op: 'addDataset', dataset }] },
+          cookie,
+        });
+      }
+      const before = folders();
+      const byImport = await call('/api/dashboards/import', {
+        body: { doc: { ...created.json.envelope.doc, datasets } },
+        cookie,
+      });
+      expect(byOps!.json.code).toBe(code);
+      expect(byImport.status).toBe(byOps!.status);
+      expect(byImport.json.code).toBe(code);
+      expect(byImport.json.error).toBe(byOps!.json.error);
+      expect(folders()).toBe(before);
+    }
+  });
+
   it('raises a refresh below the source minimum, like a save', async () => {
     const res = await call('/api/dashboards/import', {
       body: {
@@ -709,5 +743,65 @@ describe('import', () => {
     expect(res.status).toBe(201);
     expect(res.json.envelope.doc.datasets[0].refreshSec).toBe(0);
     expect(res.json.notes.join(' ')).toContain('Turned off live refresh');
+  });
+});
+
+describe('import on a server that fetches URLs only for signed-in owners', () => {
+  let urlDir: string;
+  let urlDeps: Deps;
+  let urlApp: ReturnType<typeof createApp>;
+
+  beforeAll(async () => {
+    urlDir = mkdtempSync(join(tmpdir(), 'patchbay-transfer-urls-'));
+    urlDeps = await createDeps(
+      loadConfig({
+        NODE_ENV: 'test',
+        DATA_DIR: urlDir,
+        OFFLINE: '1',
+        PUBLIC_URL: BASE,
+        URL_SOURCES: 'signed-in',
+      }),
+    );
+    urlApp = createApp(urlDeps);
+  });
+
+  afterAll(async () => {
+    urlDeps.hub.close();
+    await urlDeps.pipeline.close();
+    urlDeps.db.close();
+    rmSync(urlDir, { recursive: true, force: true });
+  });
+
+  const post = async (path: string, body: unknown, key?: string) => {
+    const res = await urlApp.request(`${BASE}${path}`, {
+      method: 'POST',
+      headers: { origin: BASE, 'content-type': 'application/json', ...(key ? { 'x-edit-key': key } : {}) },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, json: (await res.json()) as any };
+  };
+
+  it('refuses an anonymous import with an http source like a save, and creates nothing', async () => {
+    const dataset = {
+      id: 'api',
+      name: 'API',
+      source: { kind: 'http', url: 'https://api.example.com/data.json' },
+    };
+    const created = await post('/api/dashboards', {});
+    expect(created.status).toBe(201);
+    const byOps = await post(
+      `/api/dashboards/${created.json.envelope.meta.id}/ops`,
+      { ops: [{ op: 'addDataset', dataset }] },
+      created.json.editKey,
+    );
+    expect(byOps.status).toBe(400);
+    const count = readdirSync(join(urlDir, 'dashboards')).length;
+    const byImport = await post('/api/dashboards/import', {
+      doc: { schemaVersion: 1, title: 'API', datasets: [dataset] },
+    });
+    expect(byImport.status).toBe(400);
+    expect(byImport.json.error).toBe(byOps.json.error);
+    expect(byImport.json.error).toMatch(/^This server loads data from URLs/);
+    expect(readdirSync(join(urlDir, 'dashboards')).length).toBe(count);
   });
 });
