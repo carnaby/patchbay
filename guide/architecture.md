@@ -149,6 +149,12 @@ instances.
   Errors quote the document's URL, never the request. The HTTP cache key includes the owner, secret id and revision,
   so a public dataset never gets a secret-backed response, two users never share one, and replacing a value
   invalidates at once. Values are decrypted per request and never reach pipeline workers, which only see rows.
+- **Private hosts.** `ALLOW_PRIVATE_HOSTS` is parsed once (`util/private-hosts.ts`) into a policy object. There is no
+  global: `DashboardService.assertMayFetchUrl` returns it for a dashboard whose owner `PRIVATE_HOSTS_FOR` names, and
+  `DataService` passes it to `safeFetchJson` and, through `FeedService`, to `safeFetchText`. safe-fetch classifies each
+  hop (public; https on 443 with the list: public or listed; plain http or another port: listed only) and checks every
+  resolved address inside the socket's lookup, as for public addresses. Responses fetched with the list are cached
+  under separate keys, so a dashboard without it never receives one. OAuth client documents never get the list.
 
 **Live updates.** `LiveHub` keeps a "room" per dashboard while at least one browser is subscribed over SSE. Each live
 dataset gets its own interval; results are hashed and pushed only when the hash changed. N viewers share one refresh

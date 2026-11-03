@@ -15,6 +15,7 @@ import {
   introducedSecretIds,
   introducedSecretRefs,
   joinNames,
+  plainHttpWarning,
   publicSecretsRequest,
   type SecretListItem,
   secretRefNames,
@@ -193,8 +194,20 @@ describe('Settings section', () => {
 describe('moving a key out of the URL', () => {
   it('suggests the origin as the address', () => {
     expect(suggestedSendTo('https://api.example.com/v1/x?key=1')).toBe('https://api.example.com/');
-    expect(suggestedSendTo('http://api.example.com/')).toBe('');
+    expect(suggestedSendTo('http://api.example.com/')).toBe('http://api.example.com/');
     expect(suggestedSendTo('nonsense')).toBe('');
+  });
+
+  it('suggests http:// origins with their port (the server decides whether they may be bound)', () => {
+    expect(suggestedSendTo('http://192.168.1.20:8123/api/states')).toBe('http://192.168.1.20:8123/');
+  });
+
+  it('warns before a value goes over plain http', () => {
+    expect(plainHttpWarning({ origin: 'http://192.168.1.20:8123', pathPrefix: '/api/' })).toMatch(
+      /unencrypted/,
+    );
+    expect(plainHttpWarning({ origin: 'https://api.example.com', pathPrefix: '/' })).toBeNull();
+    expect(plainHttpWarning(null)).toBeNull();
   });
 
   it('removes the parameter and returns its value', () => {

@@ -123,6 +123,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       anonymousStorageBytes: config.anonymousStorageBytes,
       userStorageBytes: config.userStorageBytes,
       trustedUrls: trustedSourceUrls(useCases),
+      privateHosts: config.privateHosts,
+      privateHostsFor: config.privateHostsFor,
     },
   );
   const wire = new ResultWire();

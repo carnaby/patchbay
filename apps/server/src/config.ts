@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import type { SecretMode } from '@patchbay/core';
 import { z } from 'zod';
 import { parseSecretKey, SecretKeyring } from './util/crypto.ts';
+import { parsePrivateHosts } from './util/private-hosts.ts';
 
 const bool = z
   .enum(['1', '0', 'true', 'false', 'yes', 'no', ''])
@@ -84,6 +85,14 @@ const EnvSchema = z.object({
   MEMORY_HARD_FRACTION: optional(z.coerce.number().gt(0).max(1)),
   /** everyone: any dashboard may load http and feed sources. signed-in: only dashboards with an owner. */
   URL_SOURCES: z.enum(['everyone', 'signed-in']).default('everyone'),
+  /**
+   * Hosts on the operator's own network that http and feed sources may reach, also over http:// and on any port:
+   * comma-separated names (homeassistant.lan, *.lan), IP addresses and CIDR ranges. Empty: none, as on a public
+   * instance. Parsed (and refused when unusable) by util/private-hosts.ts.
+   */
+  ALLOW_PRIVATE_HOSTS: z.string().default(''),
+  /** Whose dashboards may use ALLOW_PRIVATE_HOSTS, by owner: admins (default), signed-in or everyone. */
+  PRIVATE_HOSTS_FOR: optional(z.enum(['admins', 'signed-in', 'everyone'])),
   /** Who may store credentials for HTTP sources. Off unless the operator decides otherwise, see proposal 0003. */
   SECRETS: z.enum(['off', 'admins', 'users']).default('off'),
   /** 32 random bytes, base64. Seals secret values; required unless SECRETS=off. */
@@ -207,6 +216,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       hard: parsed.MEMORY_HARD_FRACTION,
     },
     urlSources: parsed.URL_SOURCES,
+    privateHosts: parsePrivateHosts(parsed.ALLOW_PRIVATE_HOSTS),
+    privateHostsFor: parsed.PRIVATE_HOSTS_FOR ?? 'admins',
     secrets: { mode: parsed.SECRETS as SecretMode, keyring: secretKeys(parsed) },
     analytics: analytics(parsed),
   };

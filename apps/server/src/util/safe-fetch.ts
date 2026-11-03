@@ -1,16 +1,18 @@
 /**
  * Outbound HTTP for user-supplied URLs.
  *
- * Guards against SSRF: HTTPS only, every resolved address must be public,
- * redirects are followed manually and re-checked, and both time and response
- * size are capped. Connector hosts are fixed in code and use `fetchJson` directly.
+ * Guards against SSRF: https:// on port 443 to public addresses only, unless the caller passes the operator's
+ * ALLOW_PRIVATE_HOSTS (util/private-hosts.ts) for a dashboard that may use it (DashboardService decides). Every
+ * resolved address is checked inside the socket's DNS lookup, redirects are followed manually and re-checked, and
+ * both time and response size are capped. Connector hosts are fixed in code and use `fetchJson` directly.
  */
-import { lookup as dnsLookup, type LookupAddress } from 'node:dns';
-import { BlockList, isIP } from 'node:net';
+import { lookup as dnsLookup, type LookupAddress, type LookupAllOptions } from 'node:dns';
+import { BlockList, isIP, type LookupFunction } from 'node:net';
 import { bindingLabel, bindingMatches, type SecretPlacement } from '@patchbay/core';
 import { Agent, type Dispatcher, fetch as undiciFetch } from 'undici';
 import { HttpError } from './errors.ts';
 import { jsonShapeProblem, MAX_JSON_DEPTH } from './json-shape.ts';
+import type { PrivateHosts } from './private-hosts.ts';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const TIMEOUT_MS = 10_000;
@@ -76,43 +78,132 @@ export function isPrivateAddress(raw: string): boolean {
   return !GLOBAL_UNICAST.check(ip, 'ipv6') || BLOCKED.check(ip, 'ipv6');
 }
 
-async function assertPublicUrl(raw: string): Promise<URL> {
+/** What the guard tells the user. The http and port texts name the setting, so a self-hoster knows what to change. */
+export const URL_MESSAGES = {
+  httpOff:
+    'Only https:// URLs are allowed. Plain http:// works only on a self-hosted Patchbay, for hosts its operator lists in ALLOW_PRIVATE_HOSTS.',
+  portOff:
+    'Only the default HTTPS port is allowed. Other ports work only on a self-hosted Patchbay, for hosts its operator lists in ALLOW_PRIVATE_HOSTS.',
+  privateOff: 'URLs pointing to private or local networks are not allowed',
+  notListed: (host: string) =>
+    `${host} is not covered by this server's ALLOW_PRIVATE_HOSTS. Private addresses, plain http:// and ports other than 443 work only for the hosts listed there.`,
+  downgrade: 'The address redirected from https:// to http://, so the request was stopped.',
+} as const;
+
+/**
+ * How a hop may connect. public: every address public (the only mode without a list). mixed (https on 443 with a
+ * list): each address public or allowed by the list. lan (plain http or another port): each address allowed by the
+ * list, so plain http never reaches a public address the list does not cover.
+ */
+export type HopMode = 'public' | 'mixed' | 'lan';
+
+/**
+ * The checks on a URL before any connection, and the mode of its hop. An IP literal is decided here (no DNS lookup
+ * happens for it); a name is decided by the lookup (`guardedLookup`).
+ */
+export function checkUrl(raw: string, privateHosts: PrivateHosts | null = null): { url: URL; mode: HopMode } {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
     throw new HttpError(400, 'Invalid URL');
   }
-  if (url.protocol !== 'https:') throw new HttpError(400, 'Only https:// URLs are allowed');
+  const plain = url.protocol === 'http:';
+  if (url.protocol !== 'https:' && !plain) throw new HttpError(400, 'Only https:// URLs are allowed');
+  // Before the credentials check, so a public instance keeps answering plain http:// with the https-only text.
+  if (!privateHosts && plain) throw new HttpError(400, URL_MESSAGES.httpOff);
   if (url.username || url.password) throw new HttpError(400, 'URLs with credentials are not allowed');
-  if (url.port && url.port !== '443') throw new HttpError(400, 'Only the default HTTPS port is allowed');
   const host = url.hostname.replace(/^\[|\]$/g, '');
-  if (isIP(host) && isPrivateAddress(host)) {
-    throw new HttpError(400, 'URLs pointing to private or local networks are not allowed');
+  const otherPort = url.port !== '' && url.port !== '443';
+  if (!privateHosts) {
+    if (otherPort) throw new HttpError(400, URL_MESSAGES.portOff);
+    if (isIP(host) && isPrivateAddress(host)) throw new HttpError(400, URL_MESSAGES.privateOff);
+    return { url, mode: 'public' };
   }
-  return url;
+  if (isIP(host)) {
+    if (privateHosts.listsHost(host)) return { url, mode: 'lan' };
+    if (plain || otherPort || isPrivateAddress(host)) throw new HttpError(400, URL_MESSAGES.notListed(host));
+    return { url, mode: 'public' };
+  }
+  return { url, mode: plain || otherPort ? 'lan' : 'mixed' };
+}
+
+/** The next hop of a redirect: the same checks as the first one, and never from https:// down to http://. */
+export function redirectTarget(
+  from: URL,
+  location: string,
+  privateHosts: PrivateHosts | null = null,
+): { url: URL; mode: HopMode } {
+  let target: string;
+  try {
+    target = new URL(location, from).toString();
+  } catch {
+    throw new HttpError(502, 'Invalid redirect');
+  }
+  const next = checkUrl(target, privateHosts);
+  if (from.protocol === 'https:' && next.url.protocol === 'http:')
+    throw new HttpError(502, URL_MESSAGES.downgrade);
+  return next;
+}
+
+/** DNS answers for the guard; tests pass a fake. */
+export type Resolver = (
+  hostname: string,
+  options: LookupAllOptions,
+  callback: (err: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void,
+) => void;
+
+const systemResolver: Resolver = (hostname, options, callback) => dnsLookup(hostname, options, callback);
+
+/** Whether a hop of this mode may connect to `ip`, which `hostname` resolved to. */
+export function addressAllowed(
+  mode: HopMode,
+  privateHosts: PrivateHosts | null,
+  hostname: string,
+  ip: string,
+): boolean {
+  if (mode === 'public' || !privateHosts) return !isPrivateAddress(ip);
+  if (privateHosts.allowsAddress(hostname, ip)) return true;
+  return mode === 'mixed' && !isPrivateAddress(ip);
 }
 
 /**
- * The address check runs inside the socket's DNS lookup, so the IP that is
- * validated is exactly the IP that is connected to (no DNS-rebinding window).
+ * The socket's DNS lookup with the address check inside, so the IP that is validated is exactly the IP that is
+ * connected to (no DNS-rebinding window). One disallowed address blocks the whole answer.
  */
-const guardedAgent = new Agent({
-  connect: {
-    lookup(hostname, options, callback) {
-      dnsLookup(hostname, { ...options, all: true }, (err, addresses) => {
-        if (err) return callback(err, '', 0);
-        const list = addresses as LookupAddress[];
-        if (list.length === 0 || list.some((a) => isPrivateAddress(a.address))) {
-          return callback(Object.assign(new Error('Blocked private address'), { code: 'EBLOCKED' }), '', 0);
-        }
-        if ((options as { all?: boolean }).all)
-          return (callback as unknown as (e: null, a: LookupAddress[]) => void)(null, list);
-        callback(null, list[0]!.address, list[0]!.family);
-      });
-    },
-  },
-});
+export function guardedLookup(
+  mode: HopMode,
+  privateHosts: PrivateHosts | null,
+  resolve: Resolver = systemResolver,
+): LookupFunction {
+  return (hostname, options, callback) => {
+    resolve(hostname, { ...options, all: true }, (err, list) => {
+      if (err) return callback(err, '', 0);
+      if (list.length === 0 || list.some((a) => !addressAllowed(mode, privateHosts, hostname, a.address))) {
+        return callback(Object.assign(new Error('Blocked address'), { code: 'EBLOCKED' }), '', 0);
+      }
+      if (options.all) return callback(null, list);
+      callback(null, list[0]!.address, list[0]!.family);
+    });
+  };
+}
+
+const guardedAgent = new Agent({ connect: { lookup: guardedLookup('public', null) } });
+/** One pair of agents per policy object (one per server; tests build several). */
+const policyAgents = new WeakMap<PrivateHosts, { mixed: Agent; lan: Agent }>();
+
+function dispatcherFor(mode: HopMode, privateHosts: PrivateHosts | null): Dispatcher {
+  if (mode === 'public' || !privateHosts) return guardedAgent;
+  let agents = policyAgents.get(privateHosts);
+  if (!agents) {
+    agents = {
+      mixed: new Agent({ connect: { lookup: guardedLookup('mixed', privateHosts) } }),
+      lan: new Agent({ connect: { lookup: guardedLookup('lan', privateHosts) } }),
+    };
+    policyAgents.set(privateHosts, agents);
+  }
+  return agents[mode];
+}
 
 const sizeLabel = (bytes: number) =>
   bytes >= 1024 * 1024 ? `${bytes / 1024 / 1024} MB` : `${Math.round(bytes / 1024)} KB`;
@@ -174,6 +265,11 @@ export interface Credential {
 export interface SafeFetchOptions {
   /** Sent only on hops whose URL matches every credential's binding. */
   credentials?: Credential[];
+  /**
+   * The operator's ALLOW_PRIVATE_HOSTS, passed only for a dashboard that may use it (DashboardService decides).
+   * Absent or null: public addresses over https:// on port 443 only, whatever the server is configured with.
+   */
+  privateHosts?: PrivateHosts | null;
   redirects?: number;
   /** A smaller body limit than the default 5 MB, for documents that are small by nature. */
   maxBytes?: number;
@@ -187,7 +283,7 @@ export interface SafeFetchOptions {
 
 /**
  * Tests only, never read from the environment: `dispatcher` routes requests to a local server (production always
- * uses `guardedAgent`, so its DNS-level address check always applies; the URL-level checks run either way), and
+ * uses the guarded agents, so its DNS-level address check always applies; the URL-level checks run either way), and
  * `timeoutMs` shortens the request timeout.
  */
 export interface UpstreamTestSeam {
@@ -395,13 +491,18 @@ export interface FetchedText {
 
 /**
  * Fetches text (feeds, the HTML page that announces a feed) from an untrusted, user-supplied URL, with the same SSRF
- * protection, limits and redirect checks as JSON. Never with credentials.
+ * protection, limits and redirect checks as JSON. Never with credentials; private hosts only when passed.
  */
 export async function safeFetchText(
   raw: string,
-  options: { accept: string; test?: UpstreamTestSeam | undefined },
+  options: { accept: string; test?: UpstreamTestSeam | undefined; privateHosts?: PrivateHosts | null },
 ): Promise<FetchedText> {
-  return fetchHops(raw, [], options.test ? { test: options.test } : {}, options.accept);
+  return fetchHops(
+    raw,
+    [],
+    { ...(options.test ? { test: options.test } : {}), privateHosts: options.privateHosts ?? null },
+    options.accept,
+  );
 }
 
 async function fetchHops(
@@ -411,7 +512,8 @@ async function fetchHops(
   accept: string,
 ): Promise<FetchedText> {
   const redirects = options.redirects ?? 3;
-  let url = await assertPublicUrl(raw);
+  const privateHosts = options.privateHosts ?? null;
+  let { url, mode } = checkUrl(raw, privateHosts);
   for (let hop = 0; hop <= redirects; hop++) {
     for (const c of credentials) {
       if (bindingMatches(c, url.href).ok) continue;
@@ -426,13 +528,16 @@ async function fetchHops(
     const { target, headers } = attach(url, credentials, accept);
     const res = await undiciFetch(target, {
       redirect: 'manual',
-      dispatcher: options.test?.dispatcher ?? guardedAgent,
+      dispatcher: options.test?.dispatcher ?? dispatcherFor(mode, privateHosts),
       headers,
       signal: AbortSignal.timeout(options.test?.timeoutMs ?? options.timeoutMs ?? TIMEOUT_MS),
     }).catch((e: unknown) => {
       const cause = (e as { cause?: { code?: string } }).cause;
       if (cause?.code === 'EBLOCKED')
-        throw new HttpError(400, 'URLs pointing to private or local networks are not allowed');
+        throw new HttpError(
+          400,
+          mode === 'public' ? URL_MESSAGES.privateOff : URL_MESSAGES.notListed(url.hostname),
+        );
       // Client errors can describe the request; with credentials, say only what kind of failure it was.
       if (credentials.length) {
         throw new HttpError(
@@ -445,8 +550,9 @@ async function fetchHops(
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
       await res.body?.cancel().catch(() => {});
       // Resolved against the document's URL, never against the request URL that carried a query secret.
-      url = await assertPublicUrl(new URL(res.headers.get('location')!, url).toString());
-      url = withoutOwnQuerySecrets(url, credentials);
+      const next = redirectTarget(url, res.headers.get('location')!, privateHosts);
+      url = withoutOwnQuerySecrets(next.url, credentials);
+      mode = next.mode;
       continue;
     }
     if (!res.ok) {

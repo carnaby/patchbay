@@ -5,6 +5,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { HttpError } from '../util/errors.ts';
 import { FakeWorker, settle } from '../util/fake-worker.test-helper.ts';
 import { OutboundLimiter } from '../util/outbound.ts';
+import { parsePrivateHosts } from '../util/private-hosts.ts';
+import { URL_MESSAGES } from '../util/safe-fetch.ts';
 import { measureScaling, scalingProblem } from '../util/scaling.test-helper.ts';
 import { discoverFeed } from './discover.ts';
 import { looksLikeHtml, parseFeed, plainText, safeLink } from './parse.ts';
@@ -184,6 +186,18 @@ describe('discoverFeed', () => {
       <link href='/rss?x=1&amp;y=2' type="application/rss+xml" rel="alternate" title="News">
     </head></html>`;
     expect(discoverFeed(html, 'https://site.example/news/')).toBe('https://site.example/rss?x=1&y=2');
+  });
+
+  it('keeps an http link on a page that came over http (a host in ALLOW_PRIVATE_HOSTS)', () => {
+    expect(
+      discoverFeed('<link rel="alternate" type="application/rss+xml" href="/rss">', 'http://freshrss.lan/'),
+    ).toBe('http://freshrss.lan/rss');
+    expect(
+      discoverFeed(
+        '<link rel="alternate" type="application/rss+xml" href="http://freshrss.lan/rss">',
+        'http://freshrss.lan/',
+      ),
+    ).toBe('http://freshrss.lan/rss');
   });
 
   it('upgrades http, takes Atom and ignores other alternates', () => {
@@ -513,6 +527,26 @@ describe('FeedService', () => {
     expect(feed.feedUrl).toBe('https://site.example/feed.xml');
     expect(feed.table.rows).toHaveLength(3);
     expect(hits).toEqual(['https://site.example/news', 'https://site.example/feed.xml']);
+  });
+
+  it('keeps feeds read with the private hosts apart from the others', async () => {
+    const feeds = service();
+    const lan = parsePrivateHosts('site.example')!;
+    await feeds.load('https://site.example/feed.xml');
+    await feeds.load('https://site.example/feed.xml', lan);
+    expect(hits).toHaveLength(2);
+    await expect(feeds.load('http://site.example/feed.xml')).rejects.toThrow(URL_MESSAGES.httpOff);
+    expect((await feeds.load('http://site.example/feed.xml', lan)).table.rows).toHaveLength(3);
+  });
+
+  it('does not share a concurrent read between the private hosts and none', async () => {
+    const feeds = service();
+    const lan = parsePrivateHosts('site.example')!;
+    await Promise.all([
+      feeds.load('https://site.example/feed.xml'),
+      feeds.load('https://site.example/feed.xml', lan),
+    ]);
+    expect(hits).toHaveLength(2);
   });
 
   it('asks each address at most every five minutes, honouring a longer ttl', async () => {

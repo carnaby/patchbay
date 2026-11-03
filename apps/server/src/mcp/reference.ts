@@ -1,4 +1,5 @@
 /** The authoring guide agents read before building. Generated from code so it never drifts. */
+
 import {
   AGGREGATE_OPS,
   CHART_KINDS,
@@ -22,6 +23,7 @@ import {
 import { MAX_RESULT_BYTES } from '../services/result-wire.ts';
 import { UPLOAD_MAX_COLUMN_NAME, UPLOAD_MAX_COLUMNS } from '../services/upload-parse.ts';
 import { MAX_JSON_DEPTH } from '../util/json-shape.ts';
+import type { NetworkAccess } from '../util/private-hosts.ts';
 
 export const SERVER_INSTRUCTIONS = `Patchbay builds live data dashboards. You edit them with small, validated operations.
 
@@ -37,7 +39,24 @@ sees your changes live in the browser. Prefer few, meaningful widgets over many.
 different scale on one chart; make two charts instead. Read get_reference for the full schema. Private APIs: see
 list_secrets.`;
 
-export function referenceText(publicUrl = '<PUBLIC_URL>'): string {
+/** http:// only works where the caller may use the operator's list, so no one else is shown it as an option. */
+function urlExample(network: NetworkAccess): string {
+  return network.kind === 'private' ? 'https://... or http://...' : 'https://...';
+}
+
+/** Which addresses http and feed sources may use on this server, for this user: agents should not try in vain. */
+export function addressesLine(network: NetworkAccess): string {
+  if (network.kind === 'private')
+    return `- Addresses: https:// on the default port for public hosts. Your dashboards may also load from these hosts on the user's own network (ALLOW_PRIVATE_HOSTS), over http:// or https:// on any port: ${network.entries.join(', ')}. A name not listed works when it resolves into a listed range. A redirect from https:// to http:// is refused, and a secret bound to an http:// address crosses that network unencrypted. Previews of addresses that need ALLOW_PRIVATE_HOSTS require a token with the dashboards:write scope.`;
+  if (network.kind === 'not-yours')
+    return '- Addresses: https:// on the default port, public hosts only. On this server only dashboards owned by an administrator may load from the private hosts it allows (ALLOW_PRIVATE_HOSTS).';
+  return "- Addresses: https:// on the default port, public hosts only. This server reaches no private network, so services on the user's home network (Home Assistant, Pi-hole, Prometheus) cannot be loaded here: say so instead of trying. A self-hosted Patchbay can allow them (ALLOW_PRIVATE_HOSTS).";
+}
+
+export function referenceText(
+  publicUrl = '<PUBLIC_URL>',
+  network: NetworkAccess = { kind: 'public' },
+): string {
   const fns = Object.entries(FUNCTIONS)
     .map(([name, f]) => `- ${name}(${f.args}): ${f.doc}`)
     .join('\n');
@@ -56,13 +75,14 @@ ${UPLOAD_MAX_COLUMNS} columns with names of up to ${UPLOAD_MAX_COLUMN_NAME} char
 - source.kind "connector": { connector: "<id from list_connectors>", params: {...} }
 - source.kind "upload": { fileId } (from upload_data)
 - source.kind "inline": { rows: [{...}, ...] } (small data you create yourself)
-- source.kind "http": { url: "https://...", path?: "data.items", secrets?: ["sec_..."] } (JSON APIs; see Secrets)
-- source.kind "feed": { url: "https://...", limit?: 30 } reads RSS, Atom or JSON Feed: news sites, blogs, YouTube
+- source.kind "http": { url: "${urlExample(network)}", path?: "data.items", secrets?: ["sec_..."] } (JSON APIs; see Secrets)
+- source.kind "feed": { url: "${urlExample(network)}", limit?: 30 } reads RSS, Atom or JSON Feed: news sites, blogs, YouTube
   channels, subreddits (".../.rss"), GitHub releases (".../releases.atom"). A site's home page works when it
   announces a feed. Columns: id, title, link, published (time), summary, author, source, image; newest first.
   Fetched at most every ${FEED_MIN_REFRESH_SEC / 60} minutes (a lower refreshSec is raised). No secrets: only public feeds.
   Show it as a table with style "list" and columns [{ "field": "title", "link": "link" }, "source", "published"].
   For a sound per new item: sound.trigger { kind: "newRows", key: "id" }.
+${addressesLine(network)}
 - refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers. Below the
   source's minimum (a connector's minRefreshSec from list_connectors, ${HTTP_MIN_REFRESH_SEC} s for http, ${FEED_MIN_REFRESH_SEC} s for feeds) it is
   raised to that minimum when saved, and \`changes\` says so. Upload and inline sources only change when edited:

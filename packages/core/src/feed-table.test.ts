@@ -19,11 +19,18 @@ describe('feed source schema', () => {
     });
     expect(d.source).toEqual({ kind: 'feed', url: 'https://x.example/rss', limit: 30 });
     const bad = (source: unknown) => DatasetSchema.safeParse({ id: 'n', name: 'N', source }).success;
-    expect(bad({ kind: 'feed', url: 'http://x.example/rss' })).toBe(false);
     expect(bad({ kind: 'feed', url: 'https://x.example/rss', limit: 500 })).toBe(false);
     expect(bad({ kind: 'feed', url: 'https://x.example/rss', secrets: ['sec_aaaaaaaaaaaaaaaa'] })).toBe(
       false,
     );
+  });
+
+  it('leaves http:// to the server (ALLOW_PRIVATE_HOSTS) and refuses other schemes', () => {
+    const ok = (source: unknown) => DatasetSchema.safeParse({ id: 'n', name: 'N', source }).success;
+    expect(ok({ kind: 'http', url: 'http://192.168.1.20:8123/api/states' })).toBe(true);
+    expect(ok({ kind: 'feed', url: 'http://nas.lan/rss' })).toBe(true);
+    for (const url of ['ftp://nas.lan/x', 'file:///etc/passwd', 'javascript:alert(1)'])
+      expect(ok({ kind: 'http', url }), url).toBe(false);
   });
 });
 

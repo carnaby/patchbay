@@ -304,3 +304,5 @@ const { content } = await client.callTool({
 - Requests are rate limited per user; write tools cost more than read tools.
 - Every change is a version with the agent's name on it, visible and restorable in the UI.
 - Secret values are never readable through MCP, and agents cannot store, change or publish them (see "Secrets").
+- Sources reach only public `https://` addresses unless the operator lists hosts of their own network in
+  `ALLOW_PRIVATE_HOSTS`; `get_reference` tells each user which, if any, their dashboards may use.

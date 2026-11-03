@@ -65,8 +65,12 @@ export class BindingError extends Error {
 /**
  * Parses the "Only send to" field. The result is what the secret is bound to forever: changing where a value may be
  * sent is the one change that could leak it, so it is not an operation (create a new secret instead).
+ *
+ * `privateHosts`: the server found that this user may bind secrets to hosts in its ALLOW_PRIVATE_HOSTS, so plain
+ * http:// and other ports pass here; the server then checks the host itself (DashboardService.createSecret). The web
+ * dialog passes what /api/me says, the server decides.
  */
-export function parseBinding(input: string): SecretBinding {
+export function parseBinding(input: string, options: { privateHosts?: boolean } = {}): SecretBinding {
   const raw = input.trim();
   let url: URL;
   try {
@@ -74,14 +78,17 @@ export function parseBinding(input: string): SecretBinding {
   } catch {
     throw new BindingError('Enter a full address, e.g. https://api.example.com/v1/');
   }
-  if (url.protocol !== 'https:') throw new BindingError('Secrets are only sent to https:// addresses');
+  const local = options.privateHosts === true;
+  if (url.protocol !== 'https:' && !(local && url.protocol === 'http:'))
+    throw new BindingError('Secrets are only sent to https:// addresses');
   if (url.username || url.password)
     throw new BindingError('The address must not contain a user name or password');
   // An empty "?" or "#" leaves search/hash empty, so look at the input as well.
   if (url.search || url.hash || /[?#]/.test(raw))
     throw new BindingError('The address must not have a query or fragment');
-  // Data sources may only use the default port (see safe-fetch), so a binding with another port could never be used.
-  if (url.port) throw new BindingError('Only the default HTTPS port is supported');
+  // Without private hosts, data sources may only use the default port (see safe-fetch), so a binding with another
+  // port could never be used.
+  if (url.port && !local) throw new BindingError('Only the default HTTPS port is supported');
   if (unsafePath(url.pathname)) {
     throw new BindingError(
       'The path must not contain encoded slashes, backslashes, percent signs or semicolons, invalid escapes or look-alike dots and slashes',

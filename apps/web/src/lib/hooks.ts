@@ -9,6 +9,8 @@ interface MeResponse {
   /** The instance switch for secrets, and whether this user may store and use them. */
   secrets: SecretMode;
   canUseSecrets: boolean;
+  /** Whether this user's dashboards may use the server's ALLOW_PRIVATE_HOSTS (http:// and other ports there). */
+  privateHosts?: boolean;
 }
 
 const meQuery = {
@@ -25,7 +27,11 @@ export function useMe() {
 export function useSecretsStatus() {
   return useQuery({
     ...meQuery,
-    select: (r: MeResponse) => ({ mode: r.secrets ?? 'off', canUseSecrets: Boolean(r.canUseSecrets) }),
+    select: (r: MeResponse) => ({
+      mode: r.secrets ?? 'off',
+      canUseSecrets: Boolean(r.canUseSecrets),
+      privateHosts: Boolean(r.privateHosts),
+    }),
   });
 }
 

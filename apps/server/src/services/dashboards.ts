@@ -52,8 +52,9 @@ import { newDashboardId, newId, randomToken, safeEqual, sha256 } from '../util/c
 import { badRequest, forbidden, HttpError, notFound, unauthorized } from '../util/errors.ts';
 import { Gate } from '../util/gate.ts';
 import { heavyWork } from '../util/heavy.ts';
+import type { NetworkAccess, PrivateHosts, PrivateHostsFor } from '../util/private-hosts.ts';
 import { currentClient } from '../util/request-context.ts';
-import type { Credential } from '../util/safe-fetch.ts';
+import { type Credential, checkUrl, URL_MESSAGES } from '../util/safe-fetch.ts';
 import type { DashboardTarget } from './data.ts';
 import { PipelineError } from './pipeline-pool.ts';
 import { buildTemplate } from './templates.ts';
@@ -100,6 +101,8 @@ const TOKEN_PUBLISH =
   'Make it public in the web app; it would show data fetched with your secrets to anyone. Tokens cannot do this.';
 const URL_SOURCES_SIGNED_IN =
   'This server loads data from URLs (http and feed sources) only for dashboards with an owner. Sign in and claim this dashboard first.';
+const PREVIEW_PRIVATE_READ_ONLY =
+  "Previewing plain http://, another port or a private host (ALLOW_PRIVATE_HOSTS) needs the dashboards:write scope, because it reaches the server operator's network. Reconnect with write access.";
 const TOKEN_PUBLIC_EDIT =
   'This dashboard is public and shows data fetched with secrets, so agents and tokens cannot change it: a person has to make this change in the Patchbay web app. Ask the user to do it there, or to make the dashboard private first.';
 
@@ -143,6 +146,23 @@ function copyTitle(title: string): string {
   }
   return `${kept.trimEnd()}${COPY_SUFFIX}`;
 }
+
+const parsedUrl = (url: string): URL | null => {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Plain http:// or a port other than the default: what only ALLOW_PRIVATE_HOSTS opens, so a dashboard whose owner
+ * may not use the list hears that, not the public instance's advice to ask the operator.
+ */
+const needsList = (url: string) => {
+  const parsed = parsedUrl(url);
+  return parsed !== null && (parsed.protocol === 'http:' || parsed.port !== '');
+};
 
 /** Says what to do about it, because the reader is often an agent that just added inline rows. */
 function documentTooLarge(doc: DashboardDoc, bytes: number): HttpError {
@@ -301,6 +321,10 @@ export interface DashboardServiceOptions {
   urlSources?: UrlSourcesMode;
   /** Exact source URLs from the repository's showcase; URL_SOURCES=signed-in lets these through. */
   trustedUrls?: ReadonlySet<string>;
+  /** ALLOW_PRIVATE_HOSTS, parsed; null when the operator listed none. */
+  privateHosts?: PrivateHosts | null;
+  /** PRIVATE_HOSTS_FOR: whose dashboards may use them. */
+  privateHostsFor?: PrivateHostsFor;
   /** Disk space all anonymous dashboards may take together; 0 = no limit. */
   anonymousStorageBytes?: number;
   /** Disk space one signed-in user's dashboards may take; 0 = no limit. Administrators are exempt. */
@@ -336,6 +360,8 @@ export class DashboardService {
   private readonly uploadMaxCellsAnonymous: number;
   private readonly urlSources: UrlSourcesMode;
   private readonly trustedUrls: ReadonlySet<string>;
+  private readonly privateHosts: PrivateHosts | null;
+  private readonly privateHostsMode: PrivateHostsFor;
   private readonly uploadGate: Gate;
 
   constructor(
@@ -351,6 +377,8 @@ export class DashboardService {
     this.uploadMaxCellsAnonymous = options.uploadMaxCellsAnonymous ?? DEFAULT_UPLOAD_MAX_CELLS_ANONYMOUS;
     this.urlSources = options.urlSources ?? 'everyone';
     this.trustedUrls = options.trustedUrls ?? new Set();
+    this.privateHosts = options.privateHosts ?? null;
+    this.privateHostsMode = options.privateHostsFor ?? 'admins';
     this.uploadGate = options.uploadGate ?? newUploadGate();
     this.store = store;
     this.index = index;
@@ -510,23 +538,106 @@ export class DashboardService {
    * on its operator's connection must not fetch arbitrary addresses for strangers. Checked at use time (DataService
    * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
    * exception is a URL that appears verbatim in the repository's showcase, so anonymous copies of a use case work;
-   * matching is exact (no normalising), so a variant of a trusted URL is still refused.
+   * matching is exact (no normalising), so a variant of a trusted URL is still refused. Returns the private hosts
+   * the dashboard's sources may reach (null: public addresses only), decided by its owner, never by the viewer.
    */
-  assertMayFetchUrl(target: DashboardTarget, url: string) {
+  assertMayFetchUrl(target: DashboardTarget, url: string): PrivateHosts | null {
     if (this.urlSources === 'signed-in' && target.ownerId === null && !this.trustedUrls.has(url))
       throw forbidden(URL_SOURCES_SIGNED_IN);
+    const hosts = target.publicOnly ? null : this.privateHostsFor(target.ownerId);
+    // Without this, the dashboard would get the public instance's answer, which tells it to ask the operator.
+    if (!hosts && this.privateHosts && needsList(url))
+      throw forbidden(target.publicOnly ? PREVIEW_PRIVATE_READ_ONLY : this.privateHostsRefusal());
+    return hosts;
   }
 
-  private checkUrlSources(meta: StoredMeta, before: DashboardDoc, after: DashboardDoc) {
-    if (this.urlSources !== 'signed-in' || meta.ownerId !== null) return;
+  /**
+   * Whether a URL loads only with the operator's list: http://, another port, a listed host, or an address the
+   * public rules refuse (safe-fetch's `checkUrl` says which). A name that merely resolves into a listed range cannot
+   * be told apart here; a read-only preview's fetch refuses it (`publicOnly`).
+   */
+  private needsPrivateHosts(url: string): boolean {
+    const parsed = parsedUrl(url);
+    if (!this.privateHosts || !parsed) return false;
+    if (needsList(url) || this.privateHosts.listsHost(parsed.hostname)) return true;
+    try {
+      checkUrl(url, null);
+      return false;
+    } catch (e) {
+      return e instanceof HttpError && e.message === URL_MESSAGES.privateOff;
+    }
+  }
+
+  /**
+   * The operator's private hosts for the owners PRIVATE_HOSTS_FOR names, null for everyone else. Applied at use time,
+   * so a change of the setting or of ADMIN_EMAILS takes effect at once, also for documents saved before.
+   */
+  privateHostsFor(ownerId: string | null): PrivateHosts | null {
+    if (!this.privateHosts) return null;
+    if (this.privateHostsMode === 'everyone') return this.privateHosts;
+    if (!ownerId) return null;
+    if (this.privateHostsMode === 'signed-in') return this.privateHosts;
+    return this.users.isAdmin(this.users.byId(ownerId)) ? this.privateHosts : null;
+  }
+
+  /** For the MCP reference: what this user's dashboards may reach. Entries only to users who may use them. */
+  networkAccess(userId: string | null): NetworkAccess {
+    if (!this.privateHosts) return { kind: 'public' };
+    const hosts = this.privateHostsFor(userId);
+    return hosts ? { kind: 'private', entries: hosts.entries } : { kind: 'not-yours' };
+  }
+
+  private privateHostsRefusal(): string {
+    return this.privateHostsMode === 'admins'
+      ? 'On this server, only dashboards owned by an administrator can load from private hosts (ALLOW_PRIVATE_HOSTS).'
+      : 'On this server, only dashboards with an owner can load from private hosts (ALLOW_PRIVATE_HOSTS). Sign in and claim this dashboard first.';
+  }
+
+  /**
+   * The rules on the URL sources a write adds or changes. Every write that takes a document from a caller passes
+   * through here (ops, full saves, dry runs), so a new write path gets them by calling this one function. A restore
+   * keeps only the URL_SOURCES rule: it brings back what was stored, and the fetch decides about private hosts.
+   */
+  private checkUrlSources(
+    ownerId: string | null,
+    before: DashboardDoc,
+    after: DashboardDoc,
+    options: { restore?: boolean } = {},
+  ) {
     const previous = new Map(before.datasets.map((d) => [d.id, JSON.stringify(d.source)]));
-    const added = after.datasets.some(
-      (d) =>
-        (d.source.kind === 'http' || d.source.kind === 'feed') &&
-        previous.get(d.id) !== JSON.stringify(d.source) &&
-        !this.trustedUrls.has(d.source.url),
+    const changed = after.datasets.flatMap((d) =>
+      (d.source.kind === 'http' || d.source.kind === 'feed') &&
+      previous.get(d.id) !== JSON.stringify(d.source)
+        ? [{ id: d.id, url: d.source.url }]
+        : [],
     );
-    if (added) throw badRequest(URL_SOURCES_SIGNED_IN);
+    if (
+      this.urlSources === 'signed-in' &&
+      ownerId === null &&
+      changed.some((s) => !this.trustedUrls.has(s.url))
+    )
+      throw badRequest(URL_SOURCES_SIGNED_IN);
+    if (!options.restore) for (const s of changed) this.checkPrivateHosts(ownerId, s.id, s.url);
+  }
+
+  /**
+   * http:// and other ports are saved only where they can load: an early, readable answer for the editor and agents.
+   * The fetch (safe-fetch) is the boundary and its `checkUrl` the rule, so this only spares a dataset that can never
+   * load. A host name not in the list passes, because it may resolve into a listed range: the fetch decides.
+   */
+  private checkPrivateHosts(ownerId: string | null, datasetId: string, url: string) {
+    if (!needsList(url)) return;
+    // Without a list only http:// is refused here, as the schema did before; another port is left to the fetch.
+    if (!this.privateHosts && parsedUrl(url)?.protocol !== 'http:') return;
+    const hosts = this.privateHostsFor(ownerId);
+    if (this.privateHosts && !hosts)
+      throw badRequest(`Dataset "${datasetId}": ${this.privateHostsRefusal()}`);
+    try {
+      checkUrl(url, hosts);
+    } catch (e) {
+      if (e instanceof HttpError) throw badRequest(`Dataset "${datasetId}": ${e.message}`);
+      throw e;
+    }
   }
 
   private publicMeta(m: StoredMeta, title: string): DashboardMeta {
@@ -681,7 +792,7 @@ export class DashboardService {
       const { meta, doc } = await this.load(id);
       this.assertCanEdit(meta, p);
       const next = mutate(doc, meta);
-      this.checkUrlSources(meta, doc, next.doc);
+      this.checkUrlSources(meta.ownerId, doc, next.doc, { restore: secretOptions.restore === true });
       this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
       this.checkSize(meta.ownerId, doc, next.doc);
       // A restore brings back what was stored before, like the secret checks above allow.
@@ -758,7 +869,7 @@ export class DashboardService {
       this.checkOpsConnectors(doc, applied.doc, ops);
       const result = this.raiseRefreshToMinimum(doc, applied);
       // A dry run answers exactly like the save would, so agents learn about secret rules before saving.
-      this.checkUrlSources(meta, doc, result.doc);
+      this.checkUrlSources(meta.ownerId, doc, result.doc);
       this.checkSecretRefs(meta, doc, result.doc, p, options);
       this.checkSize(meta.ownerId, doc, result.doc);
       const inline = inlineTooWide(doc, result.doc) ?? inlineTextTooLong(doc, result.doc);
@@ -1070,12 +1181,22 @@ export class DashboardService {
         'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.',
       );
     }
-    if (!dashboardId) {
+    const meta = dashboardId ? (await this.loadViewable(dashboardId, p)).meta : null;
+    // The owner's network rights (ALLOW_PRIVATE_HOSTS) stay with the owner: a viewer's preview of a URL of the
+    // viewer's choosing runs with the viewer's own rights.
+    const ownerId = meta && this.canEdit(meta, p) ? meta.ownerId : (p.user?.id ?? null);
+    // Reaching the operator's network is a use as well: it runs requests the token's owner could not otherwise make.
+    // Only for someone who may use the list, though: the refusal depends on the list's entries, so it would let
+    // every signed-in user probe them.
+    const url = dataset.source.kind === 'http' || dataset.source.kind === 'feed' ? dataset.source.url : null;
+    if (p.readOnly && url !== null && this.privateHostsFor(ownerId) !== null && this.needsPrivateHosts(url))
+      throw forbidden(PREVIEW_PRIVATE_READ_ONLY);
+    const publicOnly = p.readOnly ? { publicOnly: true } : {};
+    if (!dashboardId || !meta) {
       if (upload) throw badRequest('Uploaded files need dashboardId');
       if (!p.user) throw unauthorized();
-      return { id: 'preview00', ownerId: p.user.id };
+      return { id: 'preview00', ownerId: p.user.id, ...publicOnly };
     }
-    const { meta } = await this.loadViewable(dashboardId, p);
     const needsEdit = options.requireEdit || upload || sourceSecretIds(dataset.source).length > 0;
     if (needsEdit && !this.canEdit(meta, p)) {
       if (options.requireEdit) throw forbidden('You cannot edit this dashboard');
@@ -1085,7 +1206,8 @@ export class DashboardService {
           : 'Only editors of this dashboard can preview sources that use secrets',
       );
     }
-    return { id: dashboardId, ownerId: meta.ownerId };
+    // Secrets and uploads need an editor (above), so nothing else the target carries changes meaning for a viewer.
+    return { id: dashboardId, ownerId, ...publicOnly };
   }
 
   // Secrets ------------------------------------------------------------------------------------------------------
@@ -1170,13 +1292,22 @@ export class DashboardService {
   ): SecretInfo {
     const user = this.secretsWriter(p);
     const name = secretName(input.name);
+    // The operator's private hosts, if this user's dashboards may use them: plain http:// and other ports then pass
+    // the binding's syntax, and the host is checked below.
+    const hosts = this.privateHostsFor(user.id);
     let binding: { origin: string; pathPrefix: string };
     try {
-      binding = parseBinding(input.sendTo);
+      binding = parseBinding(input.sendTo, { privateHosts: hosts !== null });
     } catch (e) {
       if (e instanceof BindingError) throw badRequest(e.message);
       throw e;
     }
+    // A binding is permanent, so it must name a host the list names itself, not one that resolves into it today.
+    const origin = new URL(binding.origin);
+    if ((origin.protocol === 'http:' || origin.port !== '') && !hosts?.listsHost(origin.hostname))
+      throw badRequest(
+        `Secrets go over http:// or to another port only for hosts listed in ALLOW_PRIVATE_HOSTS by name or address; ${origin.hostname} is not.`,
+      );
     const paramName = input.paramName?.trim() || null;
     const paramIssue = secretParamIssue(input.placement, paramName);
     if (paramIssue) throw badRequest(paramIssue);

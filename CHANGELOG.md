@@ -8,6 +8,12 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ### Added
 
+- **Home network sources** (`ALLOW_PRIVATE_HOSTS`, `PRIVATE_HOSTS_FOR`): a self-hosted instance can let http and feed
+  sources, and secrets, reach chosen hosts on its own network, also over plain `http://` and on any port;
+  administrators' dashboards only by default. Off unless set: a public instance behaves as before, except that an
+  `http://` address now gets a message explaining why instead of `Invalid URL`, a URL with another port says that
+  only the default HTTPS port works (instead of the private-network text), and a malformed redirect answers
+  `502 Invalid redirect`.
 - **Showcase format**: an optional `video-square.mp4` per use case for narrow screens, and one optional CSV
   attachment declared in `meta.json`, served as a download and listed with its row count.
 
