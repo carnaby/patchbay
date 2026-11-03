@@ -21,6 +21,8 @@ import {
 } from '@patchbay/core';
 import { HttpError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
+import { HEAVY_PIPELINE_CELLS } from '../util/heavy.ts';
+import { memoryGuard } from '../util/memory-pressure.ts';
 import type { DashboardTarget, DataService } from './data.ts';
 
 export const SCOPE_DEADLINE_MS = 20_000;
@@ -70,6 +72,22 @@ export function errorResult(datasetId: string, e: unknown): DatasetResult {
 }
 
 const rows = (n: number) => n.toLocaleString('en-US');
+
+/**
+ * Builds a chain with large inputs as one heavy job, admitted by the memory guard once, when it starts. Its runs take
+ * their turns one by one, and a child's turn often comes after its parent's run has raised memory past the soft
+ * line: refused then, the chain had done its expensive part and was turned away before its result, and every reader
+ * of that dataset was refused alike while memory stayed up. Admitted at the start, the chain is work already running,
+ * which the guard lets finish; a chain that starts under pressure is still refused before it does anything.
+ */
+async function asOneJob<T>(work: () => Promise<T>): Promise<T> {
+  const job = memoryGuard.reserveHeavy();
+  try {
+    return await job.run(work);
+  } finally {
+    job.release();
+  }
+}
 const isTimeout = (e: unknown) => e instanceof HttpError && e.message === SCOPE_TIMEOUT_MESSAGE;
 
 /**
@@ -193,11 +211,13 @@ export class ResolveScope {
           ...(error ? { error } : {}),
         };
       };
-      const key = same ? await this.finalKey(dataset.id, options.maxRows) : undefined;
-      if (!key) return await build();
+      const shared = same ? await this.finalKey(dataset.id, options.maxRows) : undefined;
+      if (!shared) return await build();
+      const { key, heavy } = shared;
+      const run = heavy ? () => asOneJob(build) : build;
       for (;;) {
         try {
-          return await this.within(() => this.data.sharedFinal(key, build));
+          return await this.within(() => this.data.sharedFinal(key, run));
         } catch (e) {
           // A build this scope joined runs against the deadline of the scope that started it. When that one ran out
           // and this one has time left, it builds again under its own: the loads and runs still in flight are
@@ -220,17 +240,22 @@ export class ResolveScope {
    * (their loads are their own) and seeded scopes (the live hub, whose inputs are the room's tables and which keeps
    * the full tables it settles), and histories, which are a new table on every read.
    */
-  private async finalKey(id: string, maxRows: number | undefined): Promise<string | undefined> {
+  private async finalKey(
+    id: string,
+    maxRows: number | undefined,
+  ): Promise<{ key: string; heavy: boolean } | undefined> {
     if (this.target.preview || this.seed) return undefined;
-    const roots = lineageDatasets(this.doc, id).filter((d) => d.source.kind !== 'dataset');
+    const lineage = lineageDatasets(this.doc, id);
+    const roots = lineage.filter((d) => d.source.kind !== 'dataset');
     if (roots.some((d) => d.accumulate > 0)) return undefined;
-    let readings: (string | undefined)[];
+    let inputs: Awaited<ReturnType<DataService['loadInput']>>[];
     try {
-      readings = await Promise.all(roots.map(async (d) => (await this.within(() => this.load(d))).reading));
+      inputs = await Promise.all(roots.map((d) => this.within(() => this.load(d))));
     } catch {
       // Resolved without the cache, which reports the failure where it belongs (the dataset or its upstream).
       return undefined;
     }
+    const readings = inputs.map((i) => i.reading);
     if (readings.some((r) => r === undefined)) return undefined;
     const { ownerId, publicOnly } = this.target;
     const parts = [
@@ -241,7 +266,11 @@ export class ResolveScope {
       lineageKey(this.doc, id),
       readings,
     ];
-    return `final|${createHash('sha256').update(JSON.stringify(parts)).digest('base64url')}`;
+    // An estimate before anything runs: a large root and a step somewhere in the lineage mean heavy runs.
+    const heavy =
+      lineage.some((d) => d.transforms.length > 0) &&
+      inputs.some((i) => i.table.rows.length * i.table.columns.length >= HEAVY_PIPELINE_CELLS);
+    return { key: `final|${createHash('sha256').update(JSON.stringify(parts)).digest('base64url')}`, heavy };
   }
 
   /** A stored dataset's source, loaded once per scope; a draft that is not the stored object loads its own. */

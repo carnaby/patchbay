@@ -14,6 +14,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { ConnectorService } from '../connectors/registry.ts';
 import { FolderStore } from '../store/folder-store.ts';
 import { HEAVY_PIPELINE_CELLS, heavyWork } from '../util/heavy.ts';
+import { MemoryPressureError, memoryGuard } from '../util/memory-pressure.ts';
 
 const fetchMock = vi.hoisted(() => vi.fn<(url: string) => Promise<unknown>>());
 vi.mock('../util/safe-fetch.ts', async (original) => ({
@@ -547,6 +548,50 @@ describe('final results across scopes', () => {
     expect(h.error).toBe(SCOPE_TIMEOUT_MESSAGE);
     expect(p.error).toBeUndefined();
     expect(p.table.rows).toHaveLength(1);
+  });
+
+  it('finishes a large chain admitted before memory rose, and refuses one that starts under pressure', async () => {
+    const limit = 384 * 1024 * 1024;
+    let fraction = 0.3;
+    memoryGuard.configure({
+      reader: () => ({ usedBytes: fraction * limit, limitBytes: limit, source: 'cgroup v2' }),
+      sampleMs: 0,
+      collect: () => {},
+      log: () => {},
+    });
+    try {
+      // The parent's run fills memory past the soft line, as a cold burst does before its children get their turn.
+      class Filling extends InlineRunner {
+        override async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs) {
+          const r = await super.run(table, transforms, inputs);
+          fraction = 0.75;
+          return r;
+        }
+      }
+      const data = new DataService(connectors, store, new Filling());
+      const big = inferTable(
+        Array.from({ length: HEAVY_PIPELINE_CELLS / 2 }, (_, i) => ({ a: i, b: i % 7 })),
+      );
+      vi.spyOn(data, 'loadSource').mockImplementation(async () => ({
+        table: big,
+        fetchedAt: 1,
+        credentialKey: '',
+      }));
+      const d = doc(
+        inline('w', cities, { transforms: [{ type: 'derive', as: 'c2', expr: 'b * 2' }] }),
+        from('c', 'w', {
+          transforms: [{ type: 'aggregate', groupBy: ['b'], metrics: [{ op: 'count', as: 'n' }] }],
+        }),
+        from('e', 'w', { transforms: [{ type: 'filter', expr: 'b > 3' }] }),
+      );
+      const child = await data.scope(target, d).resolve(byId(d, 'c'));
+      expect(child.error).toBeUndefined();
+      expect(child.table.rows).toHaveLength(7);
+      await expect(data.scope(target, d).resolve(byId(d, 'e'))).rejects.toBeInstanceOf(MemoryPressureError);
+      expect(memoryGuard.heavyRunning()).toBe(0);
+    } finally {
+      memoryGuard.configure({ reader: null });
+    }
   });
 
   it('forgets final results when the memory guard drops the caches', async () => {
