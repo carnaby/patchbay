@@ -218,8 +218,9 @@ once, however many datasets read it.
 
 **Live updates.** `LiveHub` keeps a "room" per dashboard while at least one browser is subscribed over SSE. Each live
 dataset gets its own interval; a tick also re-runs every dataset that reads the one that ticked, parents first, taking
-everything else from the room's latest tables, so a static sibling is never fetched again (an input that has no
-timer of its own, a secret-backed `http` source included, is reused from those tables until the dashboard changes).
+everything else from the room's latest tables, so a static sibling is not fetched again (an input that has no timer
+of its own, `http`, `feed` and connector sources included, is reused from those tables until the dashboard changes;
+a room keeps at most 8, drops them all when memory runs short, and loads any other through the data caches).
 Live datasets that share a dataset refresh together, one round at a time, so a viewer never sees a child built from an
 older reading than its parent: a slow member paces the chains of its own group, while unrelated live chains refresh
 independently. Results are hashed and pushed only when the hash changed. N viewers share one refresh

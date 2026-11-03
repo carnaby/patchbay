@@ -225,15 +225,19 @@ everything built on it stays in sync.
   `Source dataset "brno" failed: …`.
 - While somebody watches, a live source refreshes every dataset built on it together with it; datasets that share a
   source refresh in the same round (a slow one paces the others of its group), and unrelated live datasets refresh
-  independently. A source with no timer of its own that the chain reads (an upload, or a secret-backed `http` source)
-  is taken from the tables the server already holds until the dashboard changes. A preview never adds to a dataset's
+  independently. A dataset the chain reads that is not built on the source that ticked (an upload, inline rows, or an
+  `http`, `feed` or connector source without a timer of its own) is taken from the table the server kept from an
+  earlier refresh until the dashboard changes: at most 8 per watched dashboard, all dropped when the server runs
+  short of memory, and loaded again (through the usual caches) when not kept. A preview never adds to a dataset's
   kept history (`accumulate`).
 - `preview_data` of a `dataset` source or of join/union steps needs `dashboardId` and reads the saved datasets.
   Previewing anything whose lineage uses secrets needs the `dashboards:write` scope, as previewing the secret-backed
-  source itself does; so does previewing one that needs a host allowed by `ALLOW_PRIVATE_HOSTS`, and a caller who
-  can only view the dashboard previews with their own network rights, so a saved root on a private host fails for
-  them. Only editors' previews use the dashboard's secrets and uploads: for anyone else a lineage with a secret or
-  an uploaded file is refused, and the saved roots of a viewer's derived preview load with the viewer's own rights.
+  source itself does. On a server that sets `ALLOW_PRIVATE_HOSTS`, so does previewing a lineage with an address only
+  that list opens (plain `http://`, a port other than the default, or a private host) whenever the list applies to
+  the preview: an editor's previews use the owner's network rights, anyone else's their own, so a saved root on a
+  private host fails for a viewer without the list. Only editors' previews use the dashboard's secrets and uploads:
+  for anyone else a lineage with a secret or an uploaded file is refused, and the saved roots of a viewer's derived
+  preview load with the viewer's own rights.
 
 ## Maps
 
