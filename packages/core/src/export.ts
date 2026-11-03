@@ -42,9 +42,9 @@ export const EXPORT_MAX_FILES = 20;
  */
 export const MAX_EXPORT_FILE_BYTES = 32 * 1024 * 1024;
 /**
- * The largest packed table one import upload may carry. Uploads are limited to 5 MB of CSV or JSON; the same table as
- * packed JSON adds quotes around text values, so a file accepted once still fits, and the 8 MB upload body still
- * holds it after JSON escaping.
+ * The largest packed table one import upload may carry, measured on the packed text. The upload body is limited too,
+ * after JSON escaping, and escaping can make a table under this size exceed it, so the web import also measures the
+ * escaped size before uploading.
  */
 export const MAX_TABLE_FILE_BYTES = 7 * 1024 * 1024;
 
