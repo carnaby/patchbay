@@ -369,7 +369,7 @@ export function apiRoutes(deps: Deps) {
     const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
     const dataset = doc.datasets.find((d) => d.id === c.req.param('datasetId'));
     if (!dataset) throw notFound('Dataset not found');
-    const result = await data.resolve({ id, ownerId: meta.ownerId }, dataset);
+    const result = await data.scope({ id, ownerId: meta.ownerId }, doc).resolve(dataset);
     return sendBody(c, await wire.dataBody(result, rowsFormat(c.req.query('rows'))));
   });
 
@@ -407,7 +407,7 @@ export function apiRoutes(deps: Deps) {
     const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
     const dataset = doc.datasets.find((d) => d.id === c.req.param('datasetId'));
     if (!dataset) throw notFound('Dataset not found');
-    const result = await data.resolve({ id, ownerId: meta.ownerId }, dataset);
+    const result = await data.scope({ id, ownerId: meta.ownerId }, doc).resolve(dataset);
     const profile = profileTable(result.table);
     return c.json({
       profile,
@@ -521,9 +521,11 @@ export function apiRoutes(deps: Deps) {
     const target = { id, ownerId: meta.ownerId };
     const theme: ThemeMode = c.req.query('theme') === 'dark' ? 'dark' : 'light';
     const widgetId = c.req.query('widget');
+    // One scope for the whole picture: a parent read by several widgets' datasets is loaded and processed once.
+    const scope = data.scope(target, doc);
     const resolveAll = async (datasets: Dataset[]) => {
       const map = new Map<string, DatasetResult>();
-      await Promise.all(datasets.map(async (d) => map.set(d.id, await data.resolve(target, d))));
+      await Promise.all(datasets.map(async (d) => map.set(d.id, await scope.resolve(d))));
       return map;
     };
     const widget = widgetId ? doc.widgets.find((w) => w.id === widgetId) : undefined;
@@ -537,7 +539,7 @@ export function apiRoutes(deps: Deps) {
         if (widget) {
           const dataset =
             'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
-          const result = dataset ? await data.resolve(target, dataset) : undefined;
+          const result = dataset ? await scope.resolve(dataset) : undefined;
           return draw({ kind: 'widget', widget, result, options: { theme, entityColors: doc.colors } });
         }
         const results = await resolveAll(doc.datasets);

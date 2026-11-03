@@ -432,6 +432,66 @@ describe('dashboards over REST', () => {
   });
 });
 
+describe('derived datasets over REST', () => {
+  const rows = [
+    { city: 'A', temp: 1 },
+    { city: 'B', temp: 3 },
+  ];
+  // Task 7's preview test reuses this dashboard: the `creates` limiter allows 20 creates per client in this file.
+  let derivedCookie = '';
+  let derivedId = '';
+  async function derivedDashboard(cookie: string) {
+    const { envelope } = (await call('/api/dashboards', { body: {}, cookie })).json;
+    const id = envelope.meta.id as string;
+    const res = await call(`/api/dashboards/${id}/ops`, {
+      cookie,
+      body: {
+        ops: [
+          { op: 'addDataset', dataset: { id: 'root', name: 'Root', source: { kind: 'inline', rows } } },
+          ...['c1', 'c2', 'c3'].map((c, i) => ({
+            op: 'addDataset',
+            dataset: {
+              id: c,
+              name: c,
+              source: { kind: 'dataset', id: 'root' },
+              transforms: [{ type: 'derive', as: 'k', expr: `temp * ${i + 1}` }],
+            },
+          })),
+          ...['c1', 'c2', 'c3'].map((c) => ({
+            op: 'addWidget',
+            widget: { id: `w-${c}`, type: 'table', datasetId: c, config: {} },
+          })),
+        ],
+      },
+    });
+    expect(res.status).toBe(200);
+    return id;
+  }
+  const rootLoads = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.filter((c) => (c[1] as { id: string }).id === 'root').length;
+
+  it('serves a derived dataset and loads its parent once per snapshot', async () => {
+    derivedCookie = await login('derived-rest@example.com');
+    derivedId = await derivedDashboard(derivedCookie);
+    const cookie = derivedCookie;
+    const id = derivedId;
+    const data = await call(`/api/dashboards/${id}/data/c3`, { cookie });
+    expect(data.status).toBe(200);
+    expect(data.json.table.rows.map((r: { k: number }) => r.k)).toEqual([3, 9]);
+    const suggest = await call(`/api/dashboards/${id}/suggest/c3`, { cookie });
+    expect(suggest.status).toBe(200);
+    expect(suggest.json.profile.rows).toBe(2);
+    const spy = vi.spyOn(deps.data, 'loadSource');
+    try {
+      const png = await app.request(`${BASE}/api/dashboards/${id}/snapshot.png`, { headers: { cookie } });
+      expect(png.status).toBe(200);
+      expect(rootLoads(spy)).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 function pkce() {
   const verifier = randomBytes(32).toString('base64url');
   return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
@@ -634,6 +694,53 @@ describe('MCP tools', () => {
 
   const text = (r: { content?: unknown }) =>
     (r.content as { type: string; text?: string }[]).find((c) => c.type === 'text')!.text!;
+
+  it('renders derived datasets with one load of their parent, and checks dependents of a changed parent', async () => {
+    const agent = await ownClient('derived-agent@example.com');
+    const created = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'D' } })),
+    );
+    const dashboardId = created.dashboardId as string;
+    const apply = async (operations: unknown[]) =>
+      JSON.parse(
+        text(await agent.callTool({ name: 'apply_operations', arguments: { dashboardId, operations } })),
+      );
+    await apply([
+      {
+        op: 'addDataset',
+        dataset: { id: 'root', name: 'Root', source: { kind: 'inline', rows: [{ temp: 1 }, { temp: 3 }] } },
+      },
+      {
+        op: 'addDataset',
+        dataset: {
+          id: 'kids',
+          name: 'Kids',
+          source: { kind: 'dataset', id: 'root' },
+          transforms: [{ type: 'filter', expr: 'temp > 2' }],
+        },
+      },
+      { op: 'addWidget', widget: { id: 'w1', type: 'table', datasetId: 'root', config: {} } },
+      { op: 'addWidget', widget: { id: 'w2', type: 'table', datasetId: 'kids', config: {} } },
+    ]);
+    const spy = vi.spyOn(deps.data, 'loadSource');
+    try {
+      const shot = await agent.callTool({ name: 'render_snapshot', arguments: { dashboardId } });
+      expect(shot.isError).toBeFalsy();
+      expect(spy.mock.calls.filter((c) => (c[1] as { id: string }).id === 'root')).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+    const got = JSON.parse(
+      text(await agent.callTool({ name: 'get_data', arguments: { dashboardId, datasetId: 'kids' } })),
+    );
+    expect(got.sample ?? got.rows).toBeDefined();
+    // Renaming the parent's column through a step op breaks the child: the same answer says so.
+    const result = await apply([
+      { op: 'addStep', datasetId: 'root', step: { type: 'rename', map: { temp: 'celsius' } } },
+    ]);
+    const kids = result.dataChecks.find((c: { datasetId: string }) => c.datasetId === 'kids');
+    expect(kids.error).toMatch(/Unknown column "temp"/);
+  });
 
   it('lists the tools and the reference', async () => {
     const { tools } = await client.listTools();

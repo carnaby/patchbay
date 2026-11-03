@@ -13,6 +13,7 @@ import {
   type DatasetResult,
   DatasetSchema,
   type DataTable,
+  dependentsOf,
   formattingWarnings,
   OpSchema,
   profileTable,
@@ -338,13 +339,26 @@ export function createMcp(deps: Deps) {
           if (args.baseVersion !== undefined) options.baseVersion = args.baseVersion;
           const result = await dashboards.applyOps(args.dashboardId, p, args.operations, options);
           const target = { id: args.dashboardId, ownerId: result.envelope.meta.ownerId };
-          // Check every dataset the batch touched, so broken sources surface immediately.
+          // Check every dataset the batch touched and everything built on them, so a change that breaks a derived
+          // dataset (a renamed column, a removed step) surfaces in the same answer.
+          type DataOp = { op: string; dataset?: { id: string }; id?: string; datasetId?: string };
+          const STEP_OPS = new Set(['addStep', 'updateStep', 'removeStep', 'moveStep']);
           const touched = new Set(
-            (args.operations as { op: string; dataset?: { id: string }; id?: string }[])
-              .filter((o) => o.op === 'addDataset' || o.op === 'updateDataset')
-              .map((o) => o.dataset?.id ?? o.id!),
+            (args.operations as DataOp[]).flatMap((o) =>
+              o.op === 'addDataset' || o.op === 'updateDataset'
+                ? [o.dataset?.id ?? o.id!]
+                : STEP_OPS.has(o.op)
+                  ? [o.datasetId!]
+                  : [],
+            ),
           );
-          const touchedDatasets = result.envelope.doc.datasets.filter((d) => touched.has(d.id));
+          const doc = result.envelope.doc;
+          // Credential warnings are about what this batch wrote; dependents only join the data checks.
+          const touchedDatasets = doc.datasets.filter((d) => touched.has(d.id));
+          const checked = new Set(touched);
+          for (const id of touched) for (const d of dependentsOf(doc, id)) checked.add(d);
+          const checkedDatasets = doc.datasets.filter((d) => checked.has(d.id));
+          const scope = data.scope(target, doc);
           // Keys pasted into URLs end up in every version and every get_dashboard answer: point to secrets instead.
           const warnings = touchedDatasets.flatMap((d) => {
             const params =
@@ -376,8 +390,8 @@ export function createMcp(deps: Deps) {
           // rowCount is the full result and sampleRows a few of its rows, named apart: a bare `rows: 5` read like a
           // row count when it was the sample size.
           const dataChecks = await Promise.all(
-            touchedDatasets.map(async (d) => {
-              const r = await data.resolve(target, d);
+            checkedDatasets.map(async (d) => {
+              const r = await scope.resolve(d);
               return {
                 datasetId: d.id,
                 rowCount: r.table.rows.length,
@@ -470,7 +484,9 @@ export function createMcp(deps: Deps) {
             return fail(
               `No dataset "${args.datasetId}". Datasets: ${doc.datasets.map((d) => d.id).join(', ') || 'none'}`,
             );
-          const result = await data.resolve({ id: args.dashboardId, ownerId: meta.ownerId }, dataset);
+          const result = await data
+            .scope({ id: args.dashboardId, ownerId: meta.ownerId }, doc)
+            .resolve(dataset);
           const profile = profileTable(result.table);
           return json({
             ...sampleTable(result.table, args.limit, args.from),
@@ -500,7 +516,9 @@ export function createMcp(deps: Deps) {
         const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
         const dataset = doc.datasets.find((d) => d.id === args.datasetId);
         if (!dataset) return fail(`No dataset "${args.datasetId}"`);
-        const result = await data.resolve({ id: args.dashboardId, ownerId: meta.ownerId }, dataset);
+        const result = await data
+          .scope({ id: args.dashboardId, ownerId: meta.ownerId }, doc)
+          .resolve(dataset);
         const profile = profileTable(result.table);
         return json({
           rows: profile.rows,
@@ -579,11 +597,12 @@ export function createMcp(deps: Deps) {
           const widget = needed[0];
           // Shares the REST endpoint's gate and per-client budget: snapshots from either side count against both.
           chargeSnapshot(deps.limits.snapshots, `user:${userId}`);
+          const scope = data.scope(target, doc);
           const png = await snapshotGate.run(async (draw) => {
             await Promise.all(
               doc.datasets
                 .filter((d) => ids.has(d.id))
-                .map(async (d) => results.set(d.id, await data.resolve(target, d))),
+                .map(async (d) => results.set(d.id, await scope.resolve(d))),
             );
             return draw(
               args.widgetId && widget
