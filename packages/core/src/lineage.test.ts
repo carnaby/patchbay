@@ -3,6 +3,7 @@ import {
   dependentsOf,
   effectiveRefreshSec,
   hasLineage,
+  lineageCycles,
   lineageDepth,
   lineageIssues,
   lineageKey,
@@ -28,6 +29,17 @@ const doc = (...datasets: unknown[]): DashboardDoc =>
   DashboardDocSchema.parse({ schemaVersion: 1, title: 't', datasets });
 
 describe('the dataset graph', () => {
+  it('lists each cycle once as a closed path, without self references', () => {
+    const d = doc(
+      from('a', 'b'),
+      from('b', 'a'),
+      from('c', 'b'),
+      root('s', { transforms: [{ type: 'union', with: ['s'] }] }),
+    );
+    expect(lineageCycles(d)).toEqual([['a', 'b', 'a']]);
+    expect(lineageCycles(doc(root('a'), from('b', 'a')))).toEqual([]);
+  });
+
   it('lists what a dataset reads: its source, then join and union datasets, once', () => {
     const d = doc(
       root('a'),

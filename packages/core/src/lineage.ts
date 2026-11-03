@@ -174,6 +174,14 @@ function findCycles(map: Map<string, LineageDataset>): string[][] {
 }
 
 /**
+ * Every cycle of the graph as a closed path ("a", "b", "a"), each once; a dataset reading itself is not listed here.
+ * The server checks a document with it before resolving, in case one reaches it without validation.
+ */
+export function lineageCycles(doc: LineageDoc): string[][] {
+  return findCycles(byId(doc));
+}
+
+/**
  * Problems of the graph: unknown and self references, cycles, the depth and input limits, and an interval or a
  * history on a derived dataset (two loops on one chain would fetch the same thing twice, and a child could run ahead
  * of its parent).

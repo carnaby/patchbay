@@ -260,6 +260,35 @@ describe('resolution scopes', () => {
     expect((await data.scope(target, own).resolve(self)).error).toBe('Dataset "s" reads itself');
   });
 
+  it('fails every dataset on a cycle at once, also when both ends are resolved together', async () => {
+    const data = new DataService(connectors, store);
+    const valid = doc(inline('a', cities), from('b', 'a'), from('r', 'b'));
+    const cyclic = {
+      ...valid,
+      datasets: [DatasetSchema.parse(from('a', 'b')), byId(valid, 'b'), byId(valid, 'r')],
+    };
+    const scope = data.scope(target, cyclic, { deadlineMs: 1_000 });
+    const started = Date.now();
+    const results = await Promise.all(cyclic.datasets.map((x) => scope.resolve(x)));
+    expect(results.map((r) => r.error)).toEqual(Array(3).fill('Datasets "a" → "b" → "a" form a cycle'));
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it('turns a seed that throws into the dataset error and leaves no deadline armed', async () => {
+    const data = new DataService(connectors, store);
+    const d = doc(inline('w', cities), from('c', 'w'));
+    const scope = data.scope(target, d, {
+      deadlineMs: 30,
+      seed: (id) => {
+        if (id === 'c') throw new Error('seed broke');
+        return undefined;
+      },
+    });
+    expect((await scope.resolve(byId(d, 'c'))).error).toBe('seed broke');
+    // A deadline timer left armed would reject here with nobody listening and fail this file.
+    await new Promise((r) => setTimeout(r, 60));
+  });
+
   it('refuses a dataset that reads others when resolved without its document', async () => {
     const data = new DataService(connectors, store);
     const d = doc(inline('w', cities), from('c', 'w'));

@@ -9,6 +9,7 @@ import {
   type DatasetResult,
   type DataTable,
   hasLineage,
+  lineageCycles,
   PIPELINE_LIMITS,
   type PipelineInputs,
   type PipelineResult,
@@ -74,12 +75,23 @@ const rows = (n: number) => n.toLocaleString('en-US');
 class CycleError extends Error {
   constructor(path: readonly string[]) {
     super(
-      path.length === 2
+      path.length === 2 && path[0] === path[1]
         ? `Dataset "${path[0]}" reads itself`
         : `Datasets ${path.map((id) => `"${id}"`).join(' → ')} form a cycle`,
     );
     this.name = 'CycleError';
   }
+}
+
+/**
+ * For each dataset of `doc` on a cycle, the cycle. Checked up front because two callers entering a cycle from both
+ * ends would each wait for the other's memoised promise, which no chain of waiting datasets can see.
+ */
+function cyclesIn(doc: DashboardDoc): Map<string, string[]> {
+  const on = new Map<string, string[]>();
+  for (const d of doc.datasets) if (upstreamOf(d).includes(d.id)) on.set(d.id, [d.id, d.id]);
+  for (const cycle of lineageCycles(doc)) for (const id of cycle) if (!on.has(id)) on.set(id, cycle);
+  return on;
 }
 
 export class ResolveScope {
@@ -90,6 +102,7 @@ export class ResolveScope {
   private readonly deadline: number;
   private readonly memo = new Map<string, Promise<FullResult>>();
   private readonly done = new Map<string, FullResult>();
+  private cycles: Map<string, string[]> | undefined;
 
   constructor(data: DataService, target: DashboardTarget, doc: DashboardDoc, options: ScopeOptions = {}) {
     this.data = data;
@@ -104,6 +117,10 @@ export class ResolveScope {
    * datasets waiting for this one: meeting `id` on it again means a cycle, which would otherwise wait for itself.
    */
   full(id: string, path: readonly string[] = []): Promise<FullResult> {
+    this.cycles ??= cyclesIn(this.doc);
+    const cycle = this.cycles.get(id);
+    if (cycle) return Promise.reject(new CycleError(cycle));
+    // A draft outside `doc` can still close a cycle through it.
     const at = path.indexOf(id);
     if (at >= 0) return Promise.reject(new CycleError([...path.slice(at), id]));
     let pending = this.memo.get(id);
@@ -224,12 +241,19 @@ export class ResolveScope {
   private within<T>(work: () => Promise<T>): Promise<T> {
     const left = this.deadline - Date.now();
     if (left <= 0) return Promise.reject(new HttpError(504, SCOPE_TIMEOUT_MESSAGE));
+    // Started before the timer, and a synchronous throw becomes a rejection: no timer is ever left armed for it.
+    let started: Promise<T>;
+    try {
+      started = work();
+    } catch (e) {
+      return Promise.reject(e);
+    }
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new HttpError(504, SCOPE_TIMEOUT_MESSAGE)), left);
       timer.unref();
     });
     // The race handles a rejection of `work` that comes after the deadline.
-    return Promise.race([work(), late]).finally(() => clearTimeout(timer));
+    return Promise.race([started, late]).finally(() => clearTimeout(timer));
   }
 }
