@@ -8,6 +8,11 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ### Added
 
+- **Export and import**: _Export file_ in a dashboard's Details and sharing panel downloads the dashboard and its
+  uploaded data as one `.patchbay.json` file; _Import file_ on the New dashboard page (and _Import_ on My dashboards)
+  turns such a file into a new dashboard on any server. Stored secrets, the owner, sharing and history are never
+  exported. New endpoints: `GET /api/dashboards/:id/export`, `POST /api/dashboards/import`; uploads accept
+  `format: "table"` and a `fileId` the document references.
 - **Showcase format**: an optional `video-square.mp4` per use case for narrow screens, and one optional CSV
   attachment declared in `meta.json`, served as a download and listed with its row count.
 

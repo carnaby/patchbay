@@ -142,6 +142,12 @@ and `patchbay.env` somewhere safe as well; they hold the tunnel token and the OA
 `SECRETS_KEY`, **never back it up together with `data/`**: a backup that holds both can decrypt every stored secret.
 Keep it in a password manager or a separate secret store instead.
 
+To keep or move a single dashboard, export it from the web app (_Details and sharing → Export file_) or with a
+personal access token; a read-only token is enough:
+`curl -H "Authorization: Bearer $PATCHBAY_TOKEN" https://dash.example.com/api/dashboards/<id>/export -o board.patchbay.json`.
+The file holds the document and the uploaded tables, never stored secrets or version history (see
+[architecture](architecture.md#3a-export-and-import)).
+
 ## Secrets for HTTP sources
 
 Users can save API keys and tokens under Settings → Secrets and let a JSON URL dataset send them, encrypted at rest

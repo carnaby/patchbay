@@ -90,6 +90,9 @@ and runs as a single process you can host anywhere.
 - 🔐 **Yours.** Sign in with Google; dashboards are private or public. Anyone can build a public dashboard without an
   account and claim it later. Deleting your account removes your dashboards, uploads, secrets and tokens at once.
 - 🗂️ **Boring storage.** One folder per dashboard. Delete the folder and the dashboard is gone. SQLite only indexes.
+- 📦 **Export and import.** Download a dashboard with its uploaded data as one `.patchbay.json` file and import it
+  on any Patchbay server: share a template, move from the public instance to your own, or keep a backup. Stored
+  secrets never leave the account.
 - 🎬 **Use cases on the landing page.** Tabs with a short video, the prompt that built the dashboard, a live
   read-only example and a one-click editable copy. Add your own by dropping a folder into `showcase/`.
 - 🌗 **Accessible charts.** Colour-blind-validated palette, light and dark themes, no dual axes, tables as an
