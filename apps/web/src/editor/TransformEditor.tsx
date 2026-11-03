@@ -11,9 +11,9 @@ import {
   WINDOW_OPS,
 } from '@patchbay/core';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, cx, IconButton, Input, Select } from '../components/ui.tsx';
-import { columnsAfter } from './columns.ts';
+import { columnsAfter, repickJoinKeys, switchJoinDataset } from './columns.ts';
 import { PRESETS, type PresetKind, presetColumnName, presetExpression } from './step-presets.ts';
 
 type Step = TransformInput;
@@ -210,6 +210,25 @@ function ExpressionInput({
   );
 }
 
+/** Renders nothing: re-picks keys that cannot match once the other dataset's columns arrive (they load after the step is added). */
+function JoinKeyRepair({
+  step,
+  columns,
+  theirs,
+  onChange,
+}: {
+  step: Extract<Step, { type: 'join' }>;
+  columns: string[];
+  theirs: string[];
+  onChange: (s: Step) => void;
+}) {
+  const next = repickJoinKeys(step, columns, theirs);
+  useEffect(() => {
+    if (next !== step) onChange(next);
+  }, [next, step, onChange]);
+  return null;
+}
+
 /** One-click expressions for the Add column step; the result is an ordinary expression the user can still edit. */
 function DerivePresets({
   columns,
@@ -244,7 +263,14 @@ function DerivePresets({
   return (
     <div className="space-y-1.5 rounded-lg bg-surface-2 p-2">
       <div className="grid grid-cols-2 gap-1.5">
-        <ColumnSelect value={column} columns={columns} onChange={setColumn} />
+        <ColumnSelect
+          value={column}
+          columns={columns}
+          onChange={(c) => {
+            setColumn(c);
+            if (c === per) setPer('');
+          }}
+        />
         <Select
           aria-label="Per"
           value={per}
@@ -365,10 +391,11 @@ function StepFields({
       const bringable = theirs.filter((c) => !rightKeys.has(c));
       return (
         <div className="space-y-2">
+          <JoinKeyRepair step={step} columns={columns} theirs={theirs} onChange={onChange} />
           <Select
             aria-label="From dataset"
             value={step.with}
-            onChange={(e) => onChange({ ...step, with: e.target.value })}
+            onChange={(e) => onChange(switchJoinDataset(step, e.target.value))}
             className="h-8 text-[13px]"
           >
             {ctx.datasets.some((d) => d.id === step.with) ? null : (
@@ -454,7 +481,16 @@ function StepFields({
                   disabled={!on && step.with.length >= 4}
                   onClick={() => {
                     const next = on ? step.with.filter((x) => x !== d.id) : [...step.with, d.id];
-                    if (next.length) onChange({ ...step, with: next });
+                    if (!next.length) return;
+                    // Labels follow the datasets: a new one gets its name, a removed one loses its label.
+                    let labels = step.labels;
+                    if (step.origin && labels) {
+                      labels = { ...labels };
+                      if (on) delete labels[d.id];
+                      else labels[d.id] = d.name.slice(0, 80);
+                    }
+                    const { labels: _l, ...rest } = step;
+                    onChange({ ...rest, with: next, ...(labels ? { labels } : {}) });
                   }}
                   className={cx(
                     'rounded-md border px-1.5 py-0.5 text-xs transition disabled:opacity-40',

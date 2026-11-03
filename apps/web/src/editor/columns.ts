@@ -1,4 +1,4 @@
-import { joinedColumns, type TransformInput, unionColumns } from '@patchbay/core';
+import { joinedColumns, joinKeys, type TransformInput, unionColumns } from '@patchbay/core';
 
 /**
  * Column names available after the given steps (approximate, for autocompletion and column pickers). Plain
@@ -47,4 +47,34 @@ export function columnsAfter(
     }
   }
   return cols;
+}
+
+type JoinStep = Extract<TransformInput, { type: 'join' }>;
+
+const compact = (keys: { left: string; right: string }[]): JoinStep['on'] =>
+  keys.map((k) => (k.left === k.right ? k.left : k));
+
+/** Another dataset to look up: its columns are unrelated to the old one's, so the list and right-hand keys go. */
+export function switchJoinDataset(step: JoinStep, id: string): JoinStep {
+  const { fields: _fields, ...rest } = step;
+  return { ...rest, with: id, on: compact(joinKeys(step.on).map((k) => ({ left: k.left, right: k.left }))) };
+}
+
+/**
+ * Once the other dataset's columns are known, fix keys that cannot match: prefer a column both sides have, else keep
+ * the left one and take the other side's first column. Keys valid on both sides are the user's and stay. Returns the
+ * same object when nothing changes, so an effect calling it cannot loop.
+ */
+export function repickJoinKeys(step: JoinStep, left: string[], theirs: string[]): JoinStep {
+  if (theirs.length === 0) return step;
+  let changed = false;
+  const keys = joinKeys(step.on).map((k) => {
+    if ((left.length === 0 || left.includes(k.left)) && theirs.includes(k.right)) return k;
+    changed = true;
+    const shared =
+      left.includes(k.left) && theirs.includes(k.left) ? k.left : left.find((c) => theirs.includes(c));
+    if (shared !== undefined) return { left: shared, right: shared };
+    return { left: k.left, right: theirs[0] as string };
+  });
+  return changed ? { ...step, on: compact(keys) } : step;
 }

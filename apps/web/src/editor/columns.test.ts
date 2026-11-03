@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { columnsAfter } from './columns.ts';
+import { columnsAfter, repickJoinKeys, switchJoinDataset } from './columns.ts';
 
 describe('columnsAfter', () => {
   it('adds what a join brings, suffixing clashes like the server does', () => {
@@ -32,5 +32,37 @@ describe('columnsAfter', () => {
         ],
       ),
     ).toEqual(['b']);
+  });
+});
+
+describe('join key helpers', () => {
+  const join = (on: Parameters<typeof repickJoinKeys>[0]['on'], extra = {}) => ({
+    type: 'join' as const,
+    with: 'a',
+    on,
+    ...extra,
+  });
+
+  it('switching dataset drops the column list and the other side of the keys', () => {
+    const next = switchJoinDataset(
+      join([{ left: 'id', right: 'code' }], { fields: ['x'], how: 'inner' as const }),
+      'b',
+    );
+    expect(next).toEqual({ type: 'join', with: 'b', on: ['id'], how: 'inner' });
+  });
+
+  it('re-picks an untouched default once the other columns are known', () => {
+    expect(repickJoinKeys(join(['id']), ['id', 'n'], ['country', 'n'])).toEqual(
+      join([{ left: 'n', right: 'n' }].map(() => 'n')),
+    );
+    expect(repickJoinKeys(join(['id']), ['id', 'n'], ['zip', 'q'])).toEqual(
+      join([{ left: 'id', right: 'zip' }]),
+    );
+  });
+
+  it('keeps keys that exist on both sides and does nothing while columns are unknown', () => {
+    const s = join([{ left: 'id', right: 'code' }]);
+    expect(repickJoinKeys(s, ['id'], ['code', 'x'])).toBe(s);
+    expect(repickJoinKeys(s, ['id'], [])).toBe(s);
   });
 });
