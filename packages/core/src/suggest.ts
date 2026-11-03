@@ -7,8 +7,9 @@
  * can refine them with its own judgement.
  */
 import { fieldRef } from './expr.ts';
+import { DATASET_DEPTH, DATASET_INPUTS, type LineageDoc, lineageDepth, upstreamClosure } from './lineage.ts';
 import type { ColumnProfile, TableProfile } from './profile.ts';
-import type { WidgetInput } from './schema.ts';
+import type { DatasetInput, Source, WidgetInput } from './schema.ts';
 import type { TimeUnit, TransformInput } from './transforms.ts';
 
 export interface Suggestion {
@@ -32,6 +33,44 @@ export interface SuggestOptions {
   now?: number;
   /** The dataset keeps a rolling history (`accumulate`), so its rows are successive readings of one source. */
   accumulate?: boolean;
+}
+
+export interface SuggestionParent {
+  id: string;
+  name: string;
+  source: Source;
+  transforms: readonly TransformInput[];
+  refreshSec?: number;
+  accumulate?: number;
+}
+
+/**
+ * The dataset a suggestion's extra steps run in: derived from the saved parent, so accepting a suggestion never
+ * copies its source or steps (copies drift, and each one runs its own pipeline). Where one more level would pass the
+ * lineage limits, it falls back to a copy, which reads the same data at the same depth.
+ */
+export function suggestionDataset(
+  doc: LineageDoc<SuggestionParent>,
+  parentId: string,
+  id: string,
+  title: string,
+  transforms: readonly TransformInput[],
+): DatasetInput {
+  const parent = doc.datasets.find((d) => d.id === parentId);
+  if (!parent) throw new Error(`Unknown dataset "${parentId}"`);
+  const name = `${parent.name}: ${title}`.slice(0, 120);
+  const fits =
+    lineageDepth(doc, parentId) + 1 <= DATASET_DEPTH &&
+    upstreamClosure(doc, parentId).length + 1 <= DATASET_INPUTS;
+  if (fits) return { id, name, source: { kind: 'dataset', id: parentId }, transforms: [...transforms] };
+  return {
+    id,
+    name,
+    source: parent.source,
+    transforms: [...parent.transforms, ...transforms],
+    refreshSec: parent.refreshSec ?? 0,
+    accumulate: parent.accumulate ?? 0,
+  };
 }
 
 const DAY = 86_400_000;
@@ -451,6 +490,25 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
           { type: 'aggregate', groupBy: [dim.name], metrics: [{ op: 'sum', field: m.name, as: m.name }] },
         ],
         score: 60,
+      });
+    }
+    // Above six parts a donut stops being readable; a sorted bar of percentages keeps part-to-whole.
+    if (m && summary?.op === 'sum' && dim.distinct >= 7 && dim.distinct <= 12) {
+      const as = [dim.name, m.name].includes('share') ? 'share_pct' : 'share';
+      out.push({
+        title: `${label(m)} share by ${label(dim)} (%)`,
+        rationale: `"${dim.name}" has ${dim.distinct} categories: each bar is its percentage of the total ${label(m)}.`,
+        widget: {
+          type: 'chart',
+          title: `Share of ${label(m)} (%)`,
+          config: { kind: 'bar', x: dim.name, y: [as], horizontal: true, format: { style: 'percent' } },
+        },
+        transforms: [
+          { type: 'aggregate', groupBy: [dim.name], metrics: [{ op: 'sum', field: m.name, as: m.name }] },
+          { type: 'derive', as, expr: `round(${fieldRef(m.name)} / col_sum(${fieldRef(m.name)}) * 100, 1)` },
+          { type: 'sort', by: [{ field: as, dir: 'desc' }] },
+        ],
+        score: 58,
       });
     }
   }

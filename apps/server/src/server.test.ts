@@ -841,6 +841,40 @@ describe('MCP tools', () => {
     expect(text(ref)).toContain('sparingly');
   });
 
+  it('suggests derived datasets for saved data and explains the copies of a preview', async () => {
+    const agent = await connectAgent('derived-suggest@example.com');
+    extraClients.push(agent);
+    const text = (r: { content?: unknown }) =>
+      (r.content as { type: string; text?: string }[]).find((c) => c.type === 'text')!.text!;
+    const call = async (name: string, args: Record<string, unknown>) =>
+      JSON.parse(text(await agent.callTool({ name, arguments: args })));
+    const { dashboardId } = await call('create_dashboard', { title: 'S' });
+    const rows = Array.from({ length: 30 }, (_, i) => ({
+      region: ['EU', 'US', 'Asia'][i % 3],
+      revenue: 100 + i,
+    }));
+    await call('apply_operations', {
+      dashboardId,
+      operations: [
+        { op: 'addDataset', dataset: { id: 'sales', name: 'Sales', source: { kind: 'inline', rows } } },
+      ],
+    });
+    const suggested = await call('suggest_widgets', { dashboardId, datasetId: 'sales' });
+    const added = suggested.suggestions
+      .flatMap((s: { ops: { op: string; dataset?: unknown }[] }) => s.ops)
+      .filter((o: { op: string }) => o.op === 'addDataset')
+      .map((o: { dataset: { source: unknown; transforms: unknown[] } }) => o.dataset);
+    expect(added.length).toBeGreaterThan(0);
+    for (const d of added) expect(d.source).toEqual({ kind: 'dataset', id: 'sales' });
+    const preview = await call('preview_data', { source: { kind: 'inline', rows } });
+    expect(preview.suggestionsNote).toMatch(/suggest_widgets/);
+    const reference = text(await agent.callTool({ name: 'get_reference', arguments: {} }));
+    expect(reference).toContain('## Combining datasets');
+    expect(reference).toContain('- col_sum(x, by?): ');
+    expect(reference).toContain('Chains are at most 4 deep; a dataset reads at most 8 others');
+    expect(reference).toContain('Source dataset "<id>" failed');
+  });
+
   it('keeps tools/list compact', async () => {
     const list = await client.listTools();
     // Every client pays for this on every connection. It was 55.7 KB before shared subschemas were emitted once;

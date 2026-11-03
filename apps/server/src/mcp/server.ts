@@ -15,12 +15,15 @@ import {
   type DataTable,
   dependentsOf,
   formattingWarnings,
+  type LineageDoc,
   OpSchema,
   profileTable,
   type Row,
   rowSize,
   SourceSchema,
   type Suggestion,
+  type SuggestionParent,
+  suggestionDataset,
   suggestWidgets,
   TransformSchema,
 } from '@patchbay/core';
@@ -97,8 +100,16 @@ const slug = (s: string) =>
     .replace(/^-|-$/g, '')
     .slice(0, 28) || 'w';
 
-/** Turns engine suggestions into ready-to-apply operations. */
-function suggestionOps(dataset: Dataset, suggestions: Suggestion[]) {
+/**
+ * Turns engine suggestions into ready-to-apply operations. A saved dataset is derived from (source kind "dataset"),
+ * never copied; a preview has nothing saved to derive from, so its suggestions copy the source.
+ */
+function suggestionOps(
+  doc: LineageDoc<SuggestionParent>,
+  dataset: Dataset,
+  suggestions: Suggestion[],
+  mode: 'derive' | 'copy',
+) {
   return suggestions.map((s) => {
     const base = `${slug(s.title)}-${(++idCounter % 1000).toString(36)}`;
     const ops: unknown[] = [];
@@ -107,12 +118,15 @@ function suggestionOps(dataset: Dataset, suggestions: Suggestion[]) {
       datasetId = `${dataset.id.slice(0, 20)}-${base}`.slice(0, 40);
       ops.push({
         op: 'addDataset',
-        dataset: {
-          ...dataset,
-          id: datasetId,
-          name: `${dataset.name}: ${s.title}`.slice(0, 120),
-          transforms: [...dataset.transforms, ...s.transforms],
-        },
+        dataset:
+          mode === 'derive'
+            ? suggestionDataset(doc, dataset.id, datasetId, s.title, s.transforms)
+            : {
+                ...dataset,
+                id: datasetId,
+                name: `${dataset.name}: ${s.title}`.slice(0, 120),
+                transforms: [...dataset.transforms, ...s.transforms],
+              },
       });
     }
     ops.push({ op: 'addWidget', widget: { ...s.widget, id: base.slice(0, 40), datasetId } });
@@ -453,9 +467,13 @@ export function createMcp(deps: Deps) {
             trace: result.trace,
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
             suggestions: suggestionOps(
+              target.doc,
               dataset,
               suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
+              'copy',
             ),
+            suggestionsNote:
+              'These suggestions copy the previewed source because it is not saved yet. Once the dataset is saved, suggest_widgets returns suggestions that derive from it (source kind "dataset") instead.',
           });
         },
       ),
@@ -526,8 +544,10 @@ export function createMcp(deps: Deps) {
           rows: profile.rows,
           columns: profile.columns.map(({ sample: _s, ...c }) => c),
           suggestions: suggestionOps(
+            doc,
             dataset,
             suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
+            'derive',
           ),
         });
       }),
@@ -565,8 +585,10 @@ export function createMcp(deps: Deps) {
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
             sample: fitRows(result.table, result.table.rows.slice(0, 5), SAMPLE_CHARS / 4),
             suggestions: suggestionOps(
+              { datasets: [dataset] },
               dataset,
               suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
+              'derive',
             ),
             hint: 'Apply addDatasetOp first, then the ops of the suggestions you like (or your own).',
           });

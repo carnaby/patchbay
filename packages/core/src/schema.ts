@@ -149,6 +149,7 @@ export const DatasetSchema = z.strictObject({
     ),
 });
 export type Dataset = z.infer<typeof DatasetSchema>;
+export type DatasetInput = z.input<typeof DatasetSchema>;
 
 export const FormatSchema = z.strictObject({
   style: z.enum(['number', 'compact', 'percent', 'currency']).default('number'),
