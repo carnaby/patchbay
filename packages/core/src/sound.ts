@@ -6,7 +6,7 @@
  * cooldown) is unit-tested here instead of in the browser.
  */
 import { z } from 'zod';
-import { compile, ExprError, isTruthy, parse, referencedFields } from './expr.ts';
+import { compileFor, ExprError, isTruthy, parse, referencedFields } from './expr.ts';
 import type { DataTable, Scalar } from './table.ts';
 
 export const SOUND_IDS = ['bell', 'chime', 'ding', 'cash', 'pop', 'alert'] as const;
@@ -93,7 +93,7 @@ function conditionHolds(expr: string, table: DataTable): boolean {
   const last = table.rows[table.rows.length - 1];
   if (!last) return false;
   try {
-    return isTruthy(compile(expr)(last));
+    return isTruthy(compileFor(expr, table)(last));
   } catch {
     return false;
   }

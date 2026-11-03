@@ -239,3 +239,14 @@ describe('reference lines', () => {
     expect(add({ kind: 'line', x: 'station', y: ['temp'], referenceLines: [{ stat: 'max' }] })).not.toThrow();
   });
 });
+
+it('colours rows by a rule that compares with the whole table', () => {
+  const table = inferTable([
+    { city: 'A', temp: 10 },
+    { city: 'B', temp: 30 },
+  ]);
+  const config = TableConfigSchema.parse({ rules: [{ when: 'temp > col_avg(temp)', color: 'negative' }] });
+  const rules = compileTableRules(config, table);
+  expect(rules.matching(table.rows[0]!)).toHaveLength(0);
+  expect(rules.matching(table.rows[1]!)).toHaveLength(1);
+});

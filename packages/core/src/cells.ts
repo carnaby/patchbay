@@ -5,10 +5,10 @@
  * same row in `render_snapshot`. There is no second implementation.
  */
 import { bandFor } from './colors.ts';
-import { compile, isTruthy } from './expr.ts';
+import { compileFor, isTruthy } from './expr.ts';
 import { formatNumber, formatValue } from './format.ts';
 import type { Bands, Format, TableConfig, TableRule } from './schema.ts';
-import type { ColumnType, DataTable, Row, Scalar } from './table.ts';
+import { type ColumnType, type DataTable, EMPTY_TABLE, type Row, type Scalar } from './table.ts';
 import { type ChartTheme, resolveColor } from './theme.ts';
 
 export interface ResolvedColumn {
@@ -64,12 +64,12 @@ export interface TableRules {
   matching(row: Row): CompiledRule[];
 }
 
-/** Compiles a table's rules once per result. A rule that fails on a row (wrong types) simply does not match it. */
-export function compileTableRules(config: TableConfig): TableRules {
+/** Compiles a table's rules once per result. Rules see the table they colour, so `temp > col_avg(temp)` works. A rule that fails on a row (wrong types) simply does not match it. */
+export function compileTableRules(config: TableConfig, table: DataTable = EMPTY_TABLE): TableRules {
   const rules: CompiledRule[] = (config.rules ?? []).map((rule) => {
     let evaluate: ((row: Row) => Scalar) | null = null;
     try {
-      evaluate = compile(rule.when);
+      evaluate = compileFor(rule.when, table);
     } catch {
       // The schema validated the expression; this only guards documents edited by hand.
     }

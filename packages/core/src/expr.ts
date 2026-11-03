@@ -6,7 +6,8 @@
  * being able to reach globals, prototypes or the network. There are no loops
  * and the AST size is capped, so evaluation time is bounded.
  */
-import type { Row, Scalar } from './table.ts';
+import { type AggregateOp, aggregate } from './aggregate.ts';
+import type { DataTable, Row, Scalar } from './table.ts';
 
 export type Node =
   | { k: 'lit'; v: Scalar }
@@ -186,7 +187,8 @@ export function parse(src: string): Node {
         if (after.t === 'op' && after.v === '(') {
           next();
           const fn = tok.v;
-          if (!Object.hasOwn(FUNCTIONS, fn)) throw new ExprError(`Unknown function "${fn}"`, tok.p);
+          const table = isTableFunction(fn);
+          if (!table && !Object.hasOwn(FUNCTIONS, fn)) throw new ExprError(`Unknown function "${fn}"`, tok.p);
           const args: Node[] = [];
           const close = peek();
           if (!(close.t === 'op' && close.v === ')')) {
@@ -194,6 +196,10 @@ export function parse(src: string): Node {
             while (peek().t === 'op' && (peek() as { v: string }).v === ',' && next());
           }
           expectOp(')');
+          // Checked here, so a wrong argument fails when the step is saved rather than when it first runs.
+          if (table && (args.length < 1 || args.length > 2 || args.some((a) => a.k !== 'field'))) {
+            throw new ExprError(`${fn} needs a column: ${fn}(price) or ${fn}(price, region)`, tok.p);
+          }
           return node({ k: 'call', fn, args });
         }
         return node({ k: 'field', name: tok.v });
@@ -305,6 +311,24 @@ const datePart = (fn: (d: Date) => number) => (v: Scalar) => {
   return d ? fn(d) : null;
 };
 
+/**
+ * Functions over the whole table rather than one row (proposal 0005). A table of their own, under a `col_` prefix:
+ * `min(a, b)` already compares two values of a row, and the prefix tells a reader the value depends on other rows.
+ */
+export const TABLE_FUNCTIONS: Record<string, { op: AggregateOp; doc: string }> = {
+  col_sum: { op: 'sum', doc: 'Sum of column x over all rows, or over the rows with the same `by` value' },
+  col_avg: { op: 'avg', doc: 'Average of x, likewise' },
+  col_min: { op: 'min', doc: 'Smallest x, likewise' },
+  col_max: { op: 'max', doc: 'Largest x, likewise' },
+  col_median: { op: 'median', doc: 'Median of x, likewise' },
+  col_stddev: { op: 'stddev', doc: 'Standard deviation of x, likewise' },
+  col_count: { op: 'count', doc: 'Number of non-null values of x, likewise' },
+  col_first: { op: 'first', doc: 'First non-null x in the current row order, likewise' },
+  col_last: { op: 'last', doc: 'Last non-null x in the current row order, likewise' },
+};
+export const TABLE_FUNCTION_ARGS = 'x, by?';
+const isTableFunction = (fn: string) => Object.hasOwn(TABLE_FUNCTIONS, fn);
+
 /** The complete, whitelisted function library. All date parts are UTC. */
 export const FUNCTIONS: Record<string, { args: string; doc: string; fn: (...a: Scalar[]) => Scalar }> = {
   abs: { args: 'x', doc: 'Absolute value', fn: math(Math.abs) },
@@ -415,27 +439,37 @@ function compare(op: string, a: Scalar, b: Scalar): boolean {
   }
 }
 
-export function evaluate(ast: Node, row: Row): Scalar {
+export function evaluate(ast: Node, row: Row, values?: Map<Node, (row: Row) => Scalar>): Scalar {
   switch (ast.k) {
     case 'lit':
       return ast.v;
     case 'field':
       return Object.hasOwn(row, ast.name) ? (row[ast.name] ?? null) : null;
     case 'unary': {
-      const v = evaluate(ast.arg, row);
+      const v = evaluate(ast.arg, row, values);
       if (ast.op === '!') return !truthy(v);
       const n = num(v);
       return n === null ? null : -n;
     }
     case 'cond':
-      return truthy(evaluate(ast.test, row)) ? evaluate(ast.then, row) : evaluate(ast.else, row);
-    case 'call':
-      return FUNCTIONS[ast.fn]!.fn(...ast.args.map((a) => evaluate(a, row)));
+      return truthy(evaluate(ast.test, row, values))
+        ? evaluate(ast.then, row, values)
+        : evaluate(ast.else, row, values);
+    case 'call': {
+      if (isTableFunction(ast.fn)) {
+        const lookup = values?.get(ast);
+        if (!lookup) throw needsTable(ast.fn);
+        return lookup(row);
+      }
+      return FUNCTIONS[ast.fn]!.fn(...ast.args.map((a) => evaluate(a, row, values)));
+    }
     case 'binary': {
-      if (ast.op === '&&') return truthy(evaluate(ast.left, row)) && truthy(evaluate(ast.right, row));
-      if (ast.op === '||') return truthy(evaluate(ast.left, row)) || truthy(evaluate(ast.right, row));
-      const a = evaluate(ast.left, row);
-      const b = evaluate(ast.right, row);
+      if (ast.op === '&&')
+        return truthy(evaluate(ast.left, row, values)) && truthy(evaluate(ast.right, row, values));
+      if (ast.op === '||')
+        return truthy(evaluate(ast.left, row, values)) || truthy(evaluate(ast.right, row, values));
+      const a = evaluate(ast.left, row, values);
+      const b = evaluate(ast.right, row, values);
       if (['==', '!=', '<', '<=', '>', '>='].includes(ast.op)) return compare(ast.op, a, b);
       if (
         ast.op === '+' &&
@@ -472,10 +506,74 @@ export function evaluate(ast: Node, row: Row): Scalar {
   }
 }
 
-/** Parses once and returns a fast per-row evaluator. */
+/** The whole-table calls in an expression; an expression with any needs `compileFor`. */
+export function tableCalls(
+  ast: Node,
+  out: Extract<Node, { k: 'call' }>[] = [],
+): Extract<Node, { k: 'call' }>[] {
+  switch (ast.k) {
+    case 'unary':
+      tableCalls(ast.arg, out);
+      break;
+    case 'binary':
+      tableCalls(ast.left, out);
+      tableCalls(ast.right, out);
+      break;
+    case 'cond':
+      tableCalls(ast.test, out);
+      tableCalls(ast.then, out);
+      tableCalls(ast.else, out);
+      break;
+    case 'call':
+      if (isTableFunction(ast.fn)) out.push(ast);
+      else for (const a of ast.args) tableCalls(a, out);
+      break;
+  }
+  return out;
+}
+
+const needsTable = (fn: string) =>
+  new ExprError(`${fn}() needs the whole table: use it in a filter or derive step`);
+
+/** Parses once and returns a fast per-row evaluator. Whole-table functions need `compileFor`. */
 export function compile(src: string): (row: Row) => Scalar {
   const ast = parse(src);
+  const [first] = tableCalls(ast);
+  if (first) throw needsTable(first.fn);
   return (row) => evaluate(ast, row);
+}
+
+/**
+ * Like `compile`, for an expression evaluated on the rows of `table`: each whole-table call is computed once up front
+ * (per `by` value, in one pass), so a row costs a lookup. The AST node cap bounds how many there can be.
+ */
+export function compileFor(src: string, table: DataTable): (row: Row) => Scalar {
+  const ast = parse(src);
+  const values = new Map<Node, (row: Row) => Scalar>();
+  for (const call of tableCalls(ast)) {
+    const [column, by] = call.args as Extract<Node, { k: 'field' }>[];
+    const { op } = TABLE_FUNCTIONS[call.fn]!;
+    const of = (rows: readonly Row[]) => {
+      const vs = rows.map((r) => r[column!.name] ?? null);
+      // aggregate's count counts rows; here it counts values, as the function's doc says.
+      return aggregate(op, op === 'count' ? vs.filter((v) => v !== null) : vs);
+    };
+    if (!by) {
+      const value = of(table.rows);
+      values.set(call, () => value);
+      continue;
+    }
+    const groups = new Map<string, Row[]>();
+    for (const r of table.rows) {
+      const key = JSON.stringify(r[by.name] ?? null);
+      const list = groups.get(key);
+      if (list) list.push(r);
+      else groups.set(key, [r]);
+    }
+    const totals = new Map([...groups].map(([key, rows]) => [key, of(rows)]));
+    values.set(call, (row) => totals.get(JSON.stringify(row[by.name] ?? null)) ?? null);
+  }
+  return (row) => evaluate(ast, row, values);
 }
 
 export function isTruthy(v: Scalar): boolean {

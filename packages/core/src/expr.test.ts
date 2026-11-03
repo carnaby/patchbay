@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { compile, ExprError, parse } from './index.ts';
+import {
+  compile,
+  compileFor,
+  ExprError,
+  inferTable,
+  parse,
+  runPipeline,
+  TABLE_FUNCTIONS,
+  type Transform,
+  TransformSchema,
+} from './index.ts';
 
 const close = (actual: unknown, expected: number, digits = 9) => {
   expect(typeof actual).toBe('number');
@@ -61,5 +71,71 @@ describe('distance', () => {
 
   it('returns null when a coordinate is missing', () => {
     expect(compile('distance(lat, lon, 0, 0)')({ lat: 1, lon: null })).toBeNull();
+  });
+});
+
+describe('whole-table functions', () => {
+  const sales = inferTable([
+    { region: 'EU', sales: 10 },
+    { region: 'EU', sales: 30 },
+    { region: 'US', sales: 60 },
+    { region: 'US', sales: null },
+  ]);
+  const all = (src: string) => sales.rows.map(compileFor(src, sales));
+
+  it('computes shares and deviations over the table or per group, skipping nulls', () => {
+    expect(all('round(sales / col_sum(sales) * 100, 1)')).toEqual([10, 30, 60, null]);
+    expect(all('sales / col_sum(sales, region)')).toEqual([0.25, 0.75, 1, null]);
+    expect(all('sales - col_avg(sales, region)')).toEqual([-10, 10, 0, null]);
+    expect(all('col_count(sales)')[0]).toBe(3);
+    expect(all('col_count(sales, region)')[3]).toBe(1);
+    expect(all('col_min(sales)')[0]).toBe(10);
+    expect(all('col_max(sales)')[0]).toBe(60);
+    expect(all('col_median(sales)')[0]).toBe(30);
+    expect(all('col_stddev(sales)')[0]).toBeCloseTo(20.548, 3);
+    expect(all('col_first(sales)')[0]).toBe(10);
+    expect(all('col_last(sales)')[0]).toBe(60);
+    expect(all('if(sales > col_avg(sales), "above", "below")')).toEqual(['below', 'below', 'above', 'below']);
+  });
+
+  it('reads backticked columns and lists every function', () => {
+    const t = inferTable([{ 'wind speed': 2 }, { 'wind speed': 4 }]);
+    expect(t.rows.map(compileFor('`wind speed` / col_sum(`wind speed`)', t))).toEqual([1 / 3, 2 / 3]);
+    expect(Object.keys(TABLE_FUNCTIONS)).toEqual([
+      'col_sum',
+      'col_avg',
+      'col_min',
+      'col_max',
+      'col_median',
+      'col_stddev',
+      'col_count',
+      'col_first',
+      'col_last',
+    ]);
+  });
+
+  it('accepts only column references, at save time', () => {
+    for (const src of ['col_sum(1)', 'col_sum(a + b)', 'col_sum()', 'col_sum(a, b, c)']) {
+      expect(() => parse(src)).toThrow(ExprError);
+      expect(() => parse(src)).toThrow(
+        /col_sum needs a column: col_sum\(price\) or col_sum\(price, region\)/,
+      );
+    }
+    expect(() => parse('col_avg(price, region)')).not.toThrow();
+  });
+
+  it('is refused where only one row is known', () => {
+    expect(() => compile('x / col_sum(x)')).toThrow(
+      'col_sum() needs the whole table: use it in a filter or derive step',
+    );
+  });
+
+  it('works in filter and derive on the rows at that point of the pipeline', () => {
+    const steps = [
+      { type: 'filter', expr: 'region == "EU"' },
+      { type: 'derive', as: 'share', expr: 'round(sales / col_sum(sales) * 100)' },
+      { type: 'filter', expr: 'sales > col_avg(sales)' },
+    ].map((s) => TransformSchema.parse(s)) as Transform[];
+    expect(runPipeline(sales, steps).table.rows).toEqual([{ region: 'EU', sales: 30, share: 75 }]);
   });
 });

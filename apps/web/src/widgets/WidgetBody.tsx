@@ -213,7 +213,7 @@ export function TableBody({
   const table = result.table;
   const columns = useMemo(() => tableColumns(widget.config, table), [widget.config, table]);
   // Compiled once per result and config, not per cell.
-  const rules = useMemo(() => compileTableRules(widget.config), [widget.config]);
+  const rules = useMemo(() => compileTableRules(widget.config, table), [widget.config, table]);
   const rows = useMemo(() => {
     if (!sort) return table.rows;
     return [...table.rows].sort((a, b) => {

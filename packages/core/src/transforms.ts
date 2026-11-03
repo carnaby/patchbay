@@ -7,7 +7,7 @@
  */
 import { z } from 'zod';
 import { AGGREGATE_OPS, aggregate, numeric } from './aggregate.ts';
-import { compile, ExprError, fieldRef, isTruthy, parse, referencedFields } from './expr.ts';
+import { compileFor, ExprError, fieldRef, isTruthy, parse, referencedFields } from './expr.ts';
 import { IdSchema } from './ids.ts';
 import { type ColumnType, type DataTable, type Row, retype, type Scalar } from './table.ts';
 
@@ -420,7 +420,7 @@ function applyStep(
   switch (t.type) {
     case 'filter': {
       requireFields(table, [...referencedFields(parse(t.expr))], step);
-      const fn = compile(t.expr);
+      const fn = compileFor(t.expr, table);
       return budget.measure({
         columns: table.columns,
         rows: table.rows.filter((r) => {
@@ -455,7 +455,7 @@ function applyStep(
     }
     case 'derive': {
       requireFields(table, [...referencedFields(parse(t.expr))], step);
-      const fn = compile(t.expr);
+      const fn = compileFor(t.expr, table);
       const replaces = order.includes(t.as);
       // Charged row by row: text built by an expression is new memory, and 40 derive steps of long text over a
       // few thousand rows would otherwise pass the cell limit and still reach gigabytes.
