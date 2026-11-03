@@ -420,7 +420,7 @@ function applyStep(
   switch (t.type) {
     case 'filter': {
       requireFields(table, [...referencedFields(parse(t.expr))], step);
-      const fn = compileFor(t.expr, table);
+      const fn = compileFor(t.expr, table, () => budget.tick());
       return budget.measure({
         columns: table.columns,
         rows: table.rows.filter((r) => {
@@ -455,7 +455,7 @@ function applyStep(
     }
     case 'derive': {
       requireFields(table, [...referencedFields(parse(t.expr))], step);
-      const fn = compileFor(t.expr, table);
+      const fn = compileFor(t.expr, table, () => budget.tick());
       const replaces = order.includes(t.as);
       // Charged row by row: text built by an expression is new memory, and 40 derive steps of long text over a
       // few thousand rows would otherwise pass the cell limit and still reach gigabytes.

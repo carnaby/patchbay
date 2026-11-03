@@ -141,6 +141,20 @@ describe('pipeline size limit', () => {
     const { error } = failure(() => runPipeline(input, steps([{ type: 'derive', as: 'w', expr: 'v * 2' }])));
     expect(error.message).toMatch(/Step 1: Processing took longer than 3 s/);
   });
+
+  it('stops the whole-table values of an expression at the time limit, before any row is evaluated', () => {
+    const columns = ['a', 'b', 'c', 'd', 'e'];
+    const input = inferTable([Object.fromEntries(columns.map((c, i) => [c, i]))]);
+    const fns = ['col_sum', 'col_avg', 'col_min', 'col_max', 'col_median', 'col_stddev', 'col_count'];
+    const calls = fns.flatMap((fn) => columns.map((c) => `${fn}(${c})`));
+    let now = 0;
+    // One row, so only computing the 35 different whole-table values can use up the 3 s.
+    vi.spyOn(Date, 'now').mockImplementation(() => (now += 100));
+    const { error } = failure(() =>
+      runPipeline(input, steps([{ type: 'filter', expr: `${calls.join(' + ')} > 0` }])),
+    );
+    expect(error.message).toMatch(/Step 1: Processing took longer than 3 s/);
+  });
 });
 
 describe('text limits in expressions', () => {

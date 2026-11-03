@@ -543,35 +543,61 @@ export function compile(src: string): (row: Row) => Scalar {
   return (row) => evaluate(ast, row);
 }
 
+/** Rows between two clock readings while computing whole-table values: well under a millisecond of work. */
+const TICK_ROWS = 1024;
+
 /**
  * Like `compile`, for an expression evaluated on the rows of `table`: each whole-table call is computed once up front
- * (per `by` value, in one pass), so a row costs a lookup. The AST node cap bounds how many there can be.
+ * (per `by` value, in one pass), so a row costs a lookup. The AST node cap bounds how many there can be. `tick` is
+ * the pipeline's clock: up to a few hundred passes over the table happen here, before any row is evaluated, and
+ * have to stop at the run's time limit like the rows do.
  */
-export function compileFor(src: string, table: DataTable): (row: Row) => Scalar {
+export function compileFor(src: string, table: DataTable, tick: () => void = () => {}): (row: Row) => Scalar {
   const ast = parse(src);
   const values = new Map<Node, (row: Row) => Scalar>();
-  for (const call of tableCalls(ast)) {
-    const [column, by] = call.args as Extract<Node, { k: 'field' }>[];
-    const { op } = TABLE_FUNCTIONS[call.fn]!;
-    const of = (rows: readonly Row[]) => {
-      const vs = rows.map((r) => r[column!.name] ?? null);
-      // aggregate's count counts rows; here it counts values, as the function's doc says.
-      return aggregate(op, op === 'count' ? vs.filter((v) => v !== null) : vs);
-    };
-    if (!by) {
-      const value = of(table.rows);
-      values.set(call, () => value);
-      continue;
-    }
-    const groups = new Map<string, Row[]>();
-    for (const r of table.rows) {
-      const key = JSON.stringify(r[by.name] ?? null);
+  // An expression often repeats a call (`x / col_sum(x) * 100 - col_sum(x)`), and calls grouped by the same column
+  // share one grouping pass.
+  const done = new Map<string, (row: Row) => Scalar>();
+  const groupings = new Map<string, Map<string, Row[]>>();
+  const groupsBy = (name: string) => {
+    let groups = groupings.get(name);
+    if (groups) return groups;
+    groups = new Map();
+    table.rows.forEach((r, i) => {
+      if (i % TICK_ROWS === 0) tick();
+      const key = JSON.stringify(r[name] ?? null);
       const list = groups.get(key);
       if (list) list.push(r);
       else groups.set(key, [r]);
+    });
+    groupings.set(name, groups);
+    return groups;
+  };
+  for (const call of tableCalls(ast)) {
+    const [column, by] = call.args as Extract<Node, { k: 'field' }>[];
+    const key = JSON.stringify([call.fn, column!.name, by?.name ?? null]);
+    let value = done.get(key);
+    if (!value) {
+      const { op } = TABLE_FUNCTIONS[call.fn]!;
+      const of = (rows: readonly Row[]) => {
+        tick();
+        const vs = rows.map((r, i) => {
+          if (i % TICK_ROWS === TICK_ROWS - 1) tick();
+          return r[column!.name] ?? null;
+        });
+        // aggregate's count counts rows; here it counts values, as the function's doc says.
+        return aggregate(op, op === 'count' ? vs.filter((v) => v !== null) : vs);
+      };
+      if (by) {
+        const totals = new Map([...groupsBy(by.name)].map(([group, rows]) => [group, of(rows)]));
+        value = (row) => totals.get(JSON.stringify(row[by.name] ?? null)) ?? null;
+      } else {
+        const total = of(table.rows);
+        value = () => total;
+      }
+      done.set(key, value);
     }
-    const totals = new Map([...groups].map(([key, rows]) => [key, of(rows)]));
-    values.set(call, (row) => totals.get(JSON.stringify(row[by.name] ?? null)) ?? null);
+    values.set(call, value);
   }
   return (row) => evaluate(ast, row, values);
 }

@@ -98,6 +98,24 @@ describe('whole-table functions', () => {
     expect(all('if(sales > col_avg(sales), "above", "below")')).toEqual(['below', 'below', 'above', 'below']);
   });
 
+  it('computes identical whole-table calls once, under the clock of the run that asks', () => {
+    let ticks = 0;
+    const count = () => {
+      ticks++;
+    };
+    compileFor('col_sum(sales, region)', sales, count);
+    const once = ticks;
+    ticks = 0;
+    const same = compileFor(Array(10).fill('col_sum(sales, region)').join(' + '), sales, count);
+    expect(once).toBeGreaterThan(0);
+    expect(ticks).toBe(once);
+    expect(sales.rows.map(same)).toEqual([400, 400, 600, 600]);
+    const late = () => {
+      throw new Error('Too late');
+    };
+    expect(() => compileFor('col_median(sales)', sales, late)).toThrow('Too late');
+  });
+
   it('reads backticked columns and lists every function', () => {
     const t = inferTable([{ 'wind speed': 2 }, { 'wind speed': 4 }]);
     expect(t.rows.map(compileFor('`wind speed` / col_sum(`wind speed`)', t))).toEqual([1 / 3, 2 / 3]);
