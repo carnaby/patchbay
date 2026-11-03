@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { columnsAfter, repickJoinKeys, switchJoinDataset } from './columns.ts';
+import { columnsAfter, defaultOtherDataset, repickJoinKeys, switchJoinDataset } from './columns.ts';
 
 describe('columnsAfter', () => {
   it('adds what a join brings, suffixing clashes like the server does', () => {
@@ -84,5 +84,20 @@ describe('repickJoinKeys is idempotent', () => {
 
   it('leaves an unknown left key alone and fixes only the right', () => {
     expect(repickJoinKeys(j(['gone']), ['id'], ['zip'])).toEqual(j([{ left: 'gone', right: 'zip' }]));
+  });
+});
+
+describe('defaultOtherDataset', () => {
+  const offered = [{ id: 'bratislava' }, { id: 'kosice' }, { id: 'zilina' }];
+
+  it('skips the dataset the draft already reads', () => {
+    expect(defaultOtherDataset(offered, 'bratislava')?.id).toBe('kosice');
+    expect(defaultOtherDataset(offered, 'kosice')?.id).toBe('bratislava');
+    expect(defaultOtherDataset(offered)?.id).toBe('bratislava');
+  });
+
+  it('falls back to the only one offered, and to nothing when none is', () => {
+    expect(defaultOtherDataset([{ id: 'bratislava' }], 'bratislava')?.id).toBe('bratislava');
+    expect(defaultOtherDataset([], 'x')).toBeUndefined();
   });
 });

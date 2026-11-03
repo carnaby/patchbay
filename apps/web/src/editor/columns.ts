@@ -80,3 +80,15 @@ export function repickJoinKeys(step: JoinStep, left: string[], theirs: string[])
   });
   return changed ? { ...step, on: compact(keys) } : step;
 }
+
+/**
+ * The dataset a new Append rows / Look up columns step starts with. The draft's own source is skipped: stacking or
+ * joining a dataset with the one it already reads is never what the user meant. It is still the fallback when it is
+ * the only one offered.
+ */
+export function defaultOtherDataset<T extends { id: string }>(
+  datasets: readonly T[],
+  own?: string,
+): T | undefined {
+  return datasets.find((d) => d.id !== own) ?? datasets[0];
+}
