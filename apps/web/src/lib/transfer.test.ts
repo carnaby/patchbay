@@ -13,6 +13,7 @@ import {
   exportSummary,
   ImportError,
   importSummary,
+  largeExportFiles,
   prepareFiles,
   quoteList,
   readImportFile,
@@ -137,12 +138,14 @@ describe('prepareFiles', () => {
 
 describe('summaries', () => {
   it('says what an import brings and what it lacks', () => {
-    expect(importSummary(exp)).toEqual({
+    // The files prepared once when the file was chosen: the summary measures those, it does not pack them again.
+    const prepared = prepareFiles(exp).map((f) => ({ ...f, bytes: 1234 }));
+    expect(importSummary(exp, prepared)).toEqual({
       title: 'Shop board',
       datasets: 3,
       widgets: 1,
       files: 1,
-      bytes: prepareFiles(exp)[0]!.bytes,
+      bytes: 1234,
       secretDatasets: ['Orders'],
       missingFileDatasets: ['Stock'],
       exportedAt: '2026-11-03T10:00:00.000Z',
@@ -223,7 +226,30 @@ describe('runImport', () => {
   it('reports files that could not be uploaded and keeps going', async () => {
     const { calls } = fakeServer(() => new ApiError(400, 'Imported tables are limited to 7.0 MB', {}));
     expect((await runImport(exp, prepareFiles(exp), calls)).failed).toEqual([
-      { name: 'sales.csv', message: 'Imported tables are limited to 7.0 MB' },
+      { id: 'f_sales', name: 'sales.csv', message: 'Imported tables are limited to 7.0 MB' },
+    ]);
+  });
+});
+
+describe('largeExportFiles', () => {
+  const file = (name: string, bytes: number) => ({ id: `f_${name}`, name, size: 1, storedBytes: bytes });
+
+  it('names the tables an import may refuse: over the limit, or within a tenth below it', () => {
+    expect(
+      largeExportFiles([
+        file('small.csv', 1_000_000),
+        file('near.csv', MAX_TABLE_FILE_BYTES - 100_000),
+        file('over.csv', MAX_TABLE_FILE_BYTES + 1),
+      ]),
+    ).toEqual([
+      { id: 'f_near.csv', name: 'near.csv', bytes: MAX_TABLE_FILE_BYTES - 100_000, over: false },
+      { id: 'f_over.csv', name: 'over.csv', bytes: MAX_TABLE_FILE_BYTES + 1, over: true },
+    ]);
+  });
+
+  it('measures files stored before sizes were recorded by their upload', () => {
+    expect(largeExportFiles([{ id: 'f_old', name: 'old.csv', size: MAX_TABLE_FILE_BYTES }])).toEqual([
+      { id: 'f_old', name: 'old.csv', bytes: MAX_TABLE_FILE_BYTES, over: false },
     ]);
   });
 });

@@ -37,7 +37,8 @@ function useImport() {
     setStep({ kind: 'reading' });
     try {
       const exp = await readImportFile(file);
-      setStep({ kind: 'confirm', exp, files: prepareFiles(exp), summary: importSummary(exp) });
+      const files = prepareFiles(exp);
+      setStep({ kind: 'confirm', exp, files, summary: importSummary(exp, files) });
     } catch (e) {
       setStep({ kind: 'error', message: errorMessage(e) });
     }
@@ -96,20 +97,19 @@ function ImportDialog({ flow }: { flow: Flow }) {
         </p>
       </Modal>
     );
-  if (step.kind === 'partial')
+  if (step.kind === 'partial') {
+    // The dashboard exists already: every way out of this dialog leads to it, so the list is never just lost.
+    const openDashboard = () => {
+      close();
+      flow.navigate(`/d/${step.result.id}`);
+    };
     return (
       <Modal
         open
         title={`Imported "${step.title}", but not all files`}
-        onClose={close}
+        onClose={openDashboard}
         footer={
-          <Button
-            variant="primary"
-            onClick={() => {
-              close();
-              flow.navigate(`/d/${step.result.id}`);
-            }}
-          >
+          <Button variant="primary" onClick={openDashboard}>
             Open dashboard
           </Button>
         }
@@ -120,7 +120,7 @@ function ImportDialog({ flow }: { flow: Flow }) {
           </p>
           <ul className="list-disc space-y-1 pl-5">
             {step.result.failed.map((f) => (
-              <li key={f.name}>
+              <li key={f.id}>
                 <span className="font-medium text-ink">{f.name}</span>: {f.message}
               </li>
             ))}
@@ -128,6 +128,7 @@ function ImportDialog({ flow }: { flow: Flow }) {
         </div>
       </Modal>
     );
+  }
   const { summary } = step;
   return (
     <Modal

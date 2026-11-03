@@ -120,10 +120,13 @@ a new dashboard on any server (_New dashboard → Import file_, or _Import_ on _
   dialog warns about such URLs.
 - Anyone who can view a dashboard can export its document, a read-only token included. Uploaded files are included
   only for its editors, the people who can already list and preview them.
-- Limits: a file up to 32 MB, at most 20 files, 7 MB per table. Anonymous imports are public, with the edit key kept
-  in the importing browser; signed-in imports are private to the importer.
-- `GET /api/dashboards/:id/export` streams the file, one table at a time. An import is `POST /api/dashboards/import`
-  with `{ doc, files: [{ id, name, rows, columns, bytes }] }`, which runs every rule a save runs and checks what the
+- Limits: a file up to 32 MB, at most 20 files, 7 MB per table. A stored upload can take more than 7 MB as a table
+  (packed, CSV values gain quotes and brackets and dates become 13-digit numbers), so the export dialog warns when an
+  included table is near or over that limit: it is exported, but no Patchbay server imports it again. Anonymous
+  imports are public, with the edit key kept in the importing browser; signed-in imports are private to the importer.
+- `GET /api/dashboards/:id/export` streams the file within the response budget, a part of a table at a time (see
+  [deployment](deployment.md#memory-budget)). An import is `POST /api/dashboards/import` with
+  `{ doc, files: [{ id, name, rows, columns, bytes }] }`, which runs every rule a save runs and checks what the
   files will need before anything is created, then one `POST /api/dashboards/:id/files` per file with
   `{ name, format: "table", fileId, content }`. An upload may name its `fileId` only when a dataset uses that id and
   the dashboard does not have the file yet; a stored file is never replaced (`409 FILE_EXISTS`).

@@ -16,6 +16,7 @@ import {
   MAX_TABLE_FILE_BYTES,
   portability,
   readExport,
+  type UploadedFile,
 } from '@patchbay/core';
 import { ApiError, NetworkError } from './api.ts';
 import { getEditKey } from './edit-keys.ts';
@@ -116,7 +117,8 @@ export interface ImportSummary {
   exportedAt: string | null;
 }
 
-export function importSummary(exp: DashboardExport): ImportSummary {
+/** `files` are the export's files as `prepareFiles` made them once, so a large file is not packed a second time. */
+export function importSummary(exp: DashboardExport, files: readonly PreparedFile[]): ImportSummary {
   const { uploads, secrets } = portability(exp.doc);
   const carried = new Set(exp.files.map((f) => f.id));
   return {
@@ -124,7 +126,7 @@ export function importSummary(exp: DashboardExport): ImportSummary {
     datasets: exp.doc.datasets.length,
     widgets: exp.doc.widgets.length,
     files: exp.files.length,
-    bytes: prepareFiles(exp).reduce((sum, f) => sum + f.bytes, 0),
+    bytes: files.reduce((sum, f) => sum + f.bytes, 0),
     secretDatasets: datasetNames(exp.doc, [...exp.secretsRemovedFrom, ...secrets.map((s) => s.datasetId)]),
     missingFileDatasets: datasetNames(
       exp.doc,
@@ -167,6 +169,24 @@ export function exportSummary(doc: DashboardDoc, canEdit: boolean): ExportSummar
   };
 }
 
+/** Within this share of the import limit, a stored table may come out of an export larger than an import accepts. */
+const NEAR_IMPORT_LIMIT = 0.9;
+
+/**
+ * Included files an import may refuse. A stored upload is measured as the table it became, which can be larger than
+ * the file uploaded (CSV values gain quotes, dates become numbers), so a 5 MB CSV can export as a table over the
+ * import limit. Its stored size is close to the packed table in the export, so those near the limit are named too.
+ */
+export function largeExportFiles(
+  files: readonly Pick<UploadedFile, 'id' | 'name' | 'size' | 'storedBytes'>[],
+): { id: string; name: string; bytes: number; over: boolean }[] {
+  return files.flatMap((f) => {
+    const bytes = f.storedBytes ?? f.size;
+    if (bytes < MAX_TABLE_FILE_BYTES * NEAR_IMPORT_LIMIT) return [];
+    return [{ id: f.id, name: f.name, bytes, over: bytes > MAX_TABLE_FILE_BYTES }];
+  });
+}
+
 export interface ImportCalls {
   call: <T>(path: string, options: { body?: unknown; dashboardId?: string }) => Promise<T>;
   saveEditKey: (id: string, key: string, title: string) => void;
@@ -178,7 +198,7 @@ export interface ImportCalls {
 export interface ImportResult {
   id: string;
   notes: string[];
-  failed: { name: string; message: string }[];
+  failed: { id: string; name: string; message: string }[];
 }
 
 /**
@@ -212,7 +232,11 @@ export async function runImport(
     } catch (e) {
       // A retry whose first attempt landed finds the file stored already: that is success.
       if (e instanceof ApiError && e.status === 409 && e.body.code === 'FILE_EXISTS') continue;
-      failed.push({ name: f.name, message: e instanceof Error ? e.message : 'Something went wrong' });
+      failed.push({
+        id: f.id,
+        name: f.name,
+        message: e instanceof Error ? e.message : 'Something went wrong',
+      });
     }
   }
   calls.onProgress?.({ done: files.length, total: files.length, name: null });

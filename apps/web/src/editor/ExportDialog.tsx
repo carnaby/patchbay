@@ -1,9 +1,9 @@
-import { portability, type UploadedFile } from '@patchbay/core';
+import { MAX_TABLE_FILE_BYTES, portability, type UploadedFile } from '@patchbay/core';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { TriangleAlert } from 'lucide-react';
 import { Button, Modal, toast } from '../components/ui.tsx';
 import { api, errorMessage } from '../lib/api.ts';
-import { downloadExport, exportSummary, formatMb, quoteList } from '../lib/transfer.ts';
+import { downloadExport, exportSummary, formatMb, largeExportFiles, quoteList } from '../lib/transfer.ts';
 import { useEditor } from '../state/editor.ts';
 
 /** What the file will hold and what it will not, then the download. The file is what the server has saved. */
@@ -28,6 +28,7 @@ export function ExportDialog({
   const used = new Set(portability(doc).uploads.map((u) => u.fileId));
   const included = (files.data ?? []).filter((f) => used.has(f.id));
   const bytes = included.reduce((sum, f) => sum + (f.storedBytes ?? f.size), 0);
+  const large = largeExportFiles(included);
   const download = useMutation({
     mutationFn: () => downloadExport(dashboardId, doc.title),
     onSuccess: () => {
@@ -104,6 +105,17 @@ export function ExportDialog({
             <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warn" aria-hidden="true" />
             The address of "{k.dataset}" seems to contain a key ({k.params.join(', ')}). Anyone you give this
             file to can read it.
+          </p>
+        ))}
+        {large.map((f) => (
+          <p
+            key={f.id}
+            className="flex gap-2 rounded-lg border border-warn/50 bg-warn/10 px-2.5 py-1.5 text-xs text-ink"
+          >
+            <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warn" aria-hidden="true" />
+            {f.over
+              ? `"${f.name}" is ${formatMb(f.bytes)}, more than the ${formatMb(MAX_TABLE_FILE_BYTES)} per file that Patchbay can import. The download includes it, but Patchbay cannot import this file again.`
+              : `"${f.name}" is ${formatMb(f.bytes)}, close to the ${formatMb(MAX_TABLE_FILE_BYTES)} per file that Patchbay can import. Importing this file again may fail.`}
           </p>
         ))}
         {pending ? <p className="text-xs text-muted">Saving your latest changes first…</p> : null}
