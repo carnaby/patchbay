@@ -761,7 +761,7 @@ function applyStep(
       for (const s of sources) {
         const label = t.origin
           ? t.labels && Object.hasOwn(t.labels, s.key)
-            ? t.labels[s.key]
+            ? t.labels[s.key]!
             : s.name
           : null;
         const types = typesOf(s.table);
