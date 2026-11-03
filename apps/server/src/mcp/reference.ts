@@ -39,6 +39,11 @@ sees your changes live in the browser. Prefer few, meaningful widgets over many.
 different scale on one chart; make two charts instead. Read get_reference for the full schema. Private APIs: see
 list_secrets.`;
 
+/** http:// only works where the caller may use the operator's list, so no one else is shown it as an option. */
+function urlExample(network: NetworkAccess): string {
+  return network.kind === 'private' ? 'https://... or http://...' : 'https://...';
+}
+
 /** Which addresses http and feed sources may use on this server, for this user: agents should not try in vain. */
 export function addressesLine(network: NetworkAccess): string {
   if (network.kind === 'private')
@@ -70,8 +75,8 @@ ${UPLOAD_MAX_COLUMNS} columns with names of up to ${UPLOAD_MAX_COLUMN_NAME} char
 - source.kind "connector": { connector: "<id from list_connectors>", params: {...} }
 - source.kind "upload": { fileId } (from upload_data)
 - source.kind "inline": { rows: [{...}, ...] } (small data you create yourself)
-- source.kind "http": { url: "https://... or http://...", path?: "data.items", secrets?: ["sec_..."] } (JSON APIs; see Secrets)
-- source.kind "feed": { url: "https://... or http://...", limit?: 30 } reads RSS, Atom or JSON Feed: news sites, blogs, YouTube
+- source.kind "http": { url: "${urlExample(network)}", path?: "data.items", secrets?: ["sec_..."] } (JSON APIs; see Secrets)
+- source.kind "feed": { url: "${urlExample(network)}", limit?: 30 } reads RSS, Atom or JSON Feed: news sites, blogs, YouTube
   channels, subreddits (".../.rss"), GitHub releases (".../releases.atom"). A site's home page works when it
   announces a feed. Columns: id, title, link, published (time), summary, author, source, image; newest first.
   Fetched at most every ${FEED_MIN_REFRESH_SEC / 60} minutes (a lower refreshSec is raised). No secrets: only public feeds.

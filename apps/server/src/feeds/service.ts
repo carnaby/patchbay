@@ -1,7 +1,7 @@
 /**
  * Loads feed sources: fetch through the SSRF guard, find the feed a page announces, parse, cache.
  *
- * A feed is asked for at most every five minutes per address, shared by every dashboard on the instance, whatever a
+ * A feed is asked for at most every five minutes per address and network policy, shared by every dashboard on the instance, whatever a
  * dataset's refresh interval: many publishers block clients that poll faster, and news does not need it. A failure
  * is remembered for a few minutes too: otherwise every read of a dashboard pointing at a broken or hostile address
  * would fetch and parse it again.

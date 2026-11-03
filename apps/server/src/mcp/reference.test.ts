@@ -20,4 +20,16 @@ describe('the Addresses line of the reference', () => {
     expect(other).toContain('owned by an administrator');
     expect(other).not.toContain('192.168.1.0/24');
   });
+
+  it('shows http:// in the url examples only to users who may use the list', () => {
+    const entries = ['homeassistant.lan'];
+    const example = /url: "https:\/\/\.\.\. or http:\/\/\.\.\."/g;
+    const mine = referenceText('https://dash.example.com', { kind: 'private', entries });
+    expect(mine.match(example)).toHaveLength(2);
+    for (const network of [{ kind: 'public' }, { kind: 'not-yours' }] as const) {
+      const text = referenceText('https://dash.example.com', network);
+      expect(text.match(example)).toBeNull();
+      expect(text).toContain('url: "https://..."');
+    }
+  });
 });
