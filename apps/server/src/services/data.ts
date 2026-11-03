@@ -116,6 +116,8 @@ function fnv(text: string): string {
 export interface DashboardTarget {
   id: string;
   ownerId: string | null;
+  /** A read-only token's preview: the operator's private hosts never apply, whoever the owner is. */
+  publicOnly?: boolean;
 }
 
 /** Decrypts a dataset's credentials or throws an HttpError with a message that is safe to show any viewer. */

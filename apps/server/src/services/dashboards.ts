@@ -54,7 +54,7 @@ import { Gate } from '../util/gate.ts';
 import { heavyWork } from '../util/heavy.ts';
 import type { NetworkAccess, PrivateHosts, PrivateHostsFor } from '../util/private-hosts.ts';
 import { currentClient } from '../util/request-context.ts';
-import { type Credential, checkUrl } from '../util/safe-fetch.ts';
+import { type Credential, checkUrl, URL_MESSAGES } from '../util/safe-fetch.ts';
 import type { DashboardTarget } from './data.ts';
 import { PipelineError } from './pipeline-pool.ts';
 import { buildTemplate } from './templates.ts';
@@ -101,6 +101,8 @@ const TOKEN_PUBLISH =
   'Make it public in the web app; it would show data fetched with your secrets to anyone. Tokens cannot do this.';
 const URL_SOURCES_SIGNED_IN =
   'This server loads data from URLs (http and feed sources) only for dashboards with an owner. Sign in and claim this dashboard first.';
+const PREVIEW_PRIVATE_READ_ONLY =
+  "Previewing plain http://, another port or a private host (ALLOW_PRIVATE_HOSTS) needs the dashboards:write scope, because it reaches the server operator's network. Reconnect with write access.";
 const TOKEN_PUBLIC_EDIT =
   'This dashboard is public and shows data fetched with secrets, so agents and tokens cannot change it: a person has to make this change in the Patchbay web app. Ask the user to do it there, or to make the dashboard private first.';
 
@@ -542,10 +544,28 @@ export class DashboardService {
   assertMayFetchUrl(target: DashboardTarget, url: string): PrivateHosts | null {
     if (this.urlSources === 'signed-in' && target.ownerId === null && !this.trustedUrls.has(url))
       throw forbidden(URL_SOURCES_SIGNED_IN);
-    const hosts = this.privateHostsFor(target.ownerId);
+    const hosts = target.publicOnly ? null : this.privateHostsFor(target.ownerId);
     // Without this, the dashboard would get the public instance's answer, which tells it to ask the operator.
-    if (!hosts && this.privateHosts && needsList(url)) throw forbidden(this.privateHostsRefusal());
+    if (!hosts && this.privateHosts && needsList(url))
+      throw forbidden(target.publicOnly ? PREVIEW_PRIVATE_READ_ONLY : this.privateHostsRefusal());
     return hosts;
+  }
+
+  /**
+   * Whether a URL loads only with the operator's list: http://, another port, a listed host, or an address the
+   * public rules refuse (safe-fetch's `checkUrl` says which). A name that merely resolves into a listed range cannot
+   * be told apart here; a read-only preview's fetch refuses it (`publicOnly`).
+   */
+  private needsPrivateHosts(url: string): boolean {
+    const parsed = parsedUrl(url);
+    if (!this.privateHosts || !parsed) return false;
+    if (needsList(url) || this.privateHosts.listsHost(parsed.hostname)) return true;
+    try {
+      checkUrl(url, null);
+      return false;
+    } catch (e) {
+      return e instanceof HttpError && e.message === URL_MESSAGES.privateOff;
+    }
   }
 
   /**
@@ -1161,10 +1181,14 @@ export class DashboardService {
         'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.',
       );
     }
+    // Reaching the operator's network is a use as well: it runs requests the token's owner could not otherwise make.
+    const url = dataset.source.kind === 'http' || dataset.source.kind === 'feed' ? dataset.source.url : null;
+    if (p.readOnly && url !== null && this.needsPrivateHosts(url)) throw forbidden(PREVIEW_PRIVATE_READ_ONLY);
+    const publicOnly = p.readOnly ? { publicOnly: true } : {};
     if (!dashboardId) {
       if (upload) throw badRequest('Uploaded files need dashboardId');
       if (!p.user) throw unauthorized();
-      return { id: 'preview00', ownerId: p.user.id };
+      return { id: 'preview00', ownerId: p.user.id, ...publicOnly };
     }
     const { meta } = await this.loadViewable(dashboardId, p);
     const needsEdit = options.requireEdit || upload || sourceSecretIds(dataset.source).length > 0;
@@ -1176,7 +1200,11 @@ export class DashboardService {
           : 'Only editors of this dashboard can preview sources that use secrets',
       );
     }
-    return { id: dashboardId, ownerId: meta.ownerId };
+    // The owner's network rights (ALLOW_PRIVATE_HOSTS) stay with the owner: a viewer's preview of a URL of the
+    // viewer's choosing runs with the viewer's own rights. Secrets and uploads need an editor (above), so nothing
+    // else the target carries changes meaning for a viewer.
+    const ownerId = this.canEdit(meta, p) ? meta.ownerId : (p.user?.id ?? null);
+    return { id: dashboardId, ownerId, ...publicOnly };
   }
 
   // Secrets ------------------------------------------------------------------------------------------------------

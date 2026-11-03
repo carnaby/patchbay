@@ -1,12 +1,13 @@
 /**
- * ALLOW_PRIVATE_HOSTS through the REST API: who may save and load sources on the operator's network, and what a
- * public instance answers instead. The upstream is a local server on 127.0.0.1, reached for real (no test
+ * ALLOW_PRIVATE_HOSTS through the REST API and MCP: who may save, load and preview sources on the operator's
+ * network, and what a public instance answers instead. The upstream is a local server on 127.0.0.1, reached for real (no test
  * dispatcher): an IP literal needs no DNS lookup, so this runs the production agents.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
@@ -18,10 +19,13 @@ const ADMIN = 'admin@example.com';
 const TOKEN = 'ha-token-1234567890';
 let upstream: Server;
 let port = 0;
+/** Requests that reached the listed host: a refusal must happen before any connection. */
+let hits = 0;
 
 beforeAll(async () => {
   upstream = createServer((req, res) => {
     if (req.url?.startsWith('/api/states')) {
+      hits++;
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(
         JSON.stringify([
@@ -127,13 +131,38 @@ async function instance(env: Record<string, string>) {
   const preview = (d: Target, dataset: unknown) =>
     call(`/api/dashboards/${d.id}/preview`, { body: { dataset }, headers: d.headers });
   const data = (d: Target) => call(`/api/dashboards/${d.id}/data/home`, { headers: d.headers });
+  const clients: Client[] = [];
+  /** An MCP connection with a personal access token of `email`, read-only unless `write`. */
+  const mcp = async (email: string, write: boolean) => {
+    const scopes = write ? ['dashboards:read', 'dashboards:write'] : ['dashboards:read'];
+    const token = (
+      await call('/api/tokens', { body: { name: 'agent', scopes }, headers: await login(email) })
+    ).json.token as string;
+    const client = new Client({ name: 'vitest', version: '1.0.0' });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`), {
+        requestInit: { headers: { authorization: `Bearer ${token}` } },
+        fetch: async (url, init) => app.request(String(url), init as RequestInit),
+      }),
+    );
+    clients.push(client);
+    /** preview_data's answer: the rows, or the refusal text. */
+    return async (args: Record<string, unknown>) => {
+      const res = (await client.callTool({ name: 'preview_data', arguments: args })) as {
+        isError?: boolean;
+        content: { text: string }[];
+      };
+      return { isError: res.isError === true, text: res.content.map((c) => c.text).join(' ') };
+    };
+  };
   const close = async () => {
+    for (const c of clients) await c.close().catch(() => {});
     deps.hub.close();
     await deps.pipeline.close();
     deps.db.close();
     rmSync(dir, { recursive: true, force: true });
   };
-  return { deps, call, login, dashboard, addDataset, preview, data, close };
+  return { deps, call, login, dashboard, addDataset, preview, data, mcp, close };
 }
 type Instance = Awaited<ReturnType<typeof instance>>;
 
@@ -210,6 +239,55 @@ describe('a self-hosted instance with ALLOW_PRIVATE_HOSTS=127.0.0.1', () => {
     });
     expect(restored.status).toBe(200);
     expect((await lan.data(other)).json.error).toContain('only dashboards owned by an administrator');
+  });
+
+  it("never lends an administrator's private hosts to a viewer of the dashboard", async () => {
+    const auth = await lan.login(ADMIN);
+    const { envelope } = (
+      await lan.call('/api/dashboards', { body: { visibility: 'public' }, headers: auth })
+    ).json;
+    const id = envelope.meta.id as string;
+    const before = hits;
+    const rest = await lan.call(`/api/dashboards/${id}/preview`, {
+      body: { dataset: home(states()) },
+      headers: await lan.login('viewer@example.com'),
+    });
+    expect(rest.status).toBe(403);
+    const viewer = await lan.mcp('viewer@example.com', true);
+    for (const dashboardId of [id, undefined]) {
+      const res = await viewer({ ...(dashboardId ? { dashboardId } : {}), source: home(states()).source });
+      expect(res.isError, dashboardId).toBe(true);
+      expect(res.text).toContain('only dashboards owned by an administrator');
+    }
+    expect(hits).toBe(before);
+  });
+
+  it('keeps a read-only token from previewing what needs ALLOW_PRIVATE_HOSTS, also for an administrator', async () => {
+    const auth = await lan.login(ADMIN);
+    const { envelope } = (await lan.call('/api/dashboards', { body: {}, headers: auth })).json;
+    const readOnly = await lan.mcp(ADMIN, false);
+    const before = hits;
+    for (const dashboardId of [envelope.meta.id as string, undefined]) {
+      for (const url of [states(), `https://127.0.0.1:${port}/api/states`, 'https://127.0.0.1/api/states']) {
+        const res = await readOnly({
+          ...(dashboardId ? { dashboardId } : {}),
+          source: { kind: 'http', url },
+        });
+        expect(res.isError, url).toBe(true);
+        expect(res.text, url).toContain('dashboards:write');
+      }
+    }
+    expect(hits).toBe(before);
+    // The administrator's own preview with write access still reaches the listed host.
+    const writer = await lan.mcp(ADMIN, true);
+    // A URL of its own, so the answer cannot come from an earlier test's cache.
+    const ok = await writer({
+      dashboardId: envelope.meta.id,
+      source: { kind: 'http', url: `${states()}?own` },
+    });
+    expect(ok.isError, ok.text).toBe(false);
+    expect(ok.text).toContain('light.kitchen');
+    expect(hits).toBe(before + 1);
   });
 
   it('refuses an http:// address the list does not cover in any spelling, and leaves names to the fetch', async () => {
