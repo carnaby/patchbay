@@ -8,10 +8,13 @@
  */
 import { z } from 'zod';
 import { isValidTimeZone } from './clock.ts';
+import { IdSchema } from './ids.ts';
 import { SEARCH_ENGINES } from './search.ts';
 import { SoundRuleSchema } from './sound.ts';
 import { COLOR_TOKENS } from './theme.ts';
 import { ExpressionSchema, TransformSchema, withStepIds } from './transforms.ts';
+
+export { IdSchema };
 
 export const SCHEMA_VERSION = 1;
 export const GRID_COLUMNS = 12;
@@ -40,13 +43,6 @@ export const LIMITS = {
    */
   documentBytes: 1_000_000,
 } as const;
-
-export const IdSchema = z
-  .string()
-  .regex(
-    /^[a-z0-9][a-z0-9_-]{0,39}$/,
-    'Ids are 1-40 chars of a-z, 0-9, "_" or "-", starting with a letter or digit',
-  );
 
 /** Ids of saved secrets. Not secret themselves: they appear in public documents and grant nothing. */
 export const SecretIdSchema = z

@@ -25,6 +25,8 @@ const STEP_LABELS: Record<Step['type'], { label: string; help: string }> = {
   drop: { label: 'Remove columns', help: 'Drop columns you do not need' },
   rename: { label: 'Rename', help: 'Rename a column' },
   fillNull: { label: 'Fill empty', help: 'Replace empty values with a constant' },
+  join: { label: 'Look up columns', help: 'Add columns from another dataset where the keys match' },
+  union: { label: 'Append rows', help: 'Add the rows of other datasets below these' },
 };
 
 const DEFAULTS: Record<Step['type'], (cols: string[]) => Step> = {
@@ -43,6 +45,8 @@ const DEFAULTS: Record<Step['type'], (cols: string[]) => Step> = {
   drop: (c) => ({ type: 'drop', fields: c.slice(0, 1) }),
   rename: (c) => ({ type: 'rename', map: c[0] ? { [c[0]]: `${c[0]}_renamed` } : {} }),
   fillNull: (c) => ({ type: 'fillNull', fields: c.slice(0, 1), value: 0 }),
+  join: () => ({ type: 'join', with: '', on: [''] }),
+  union: () => ({ type: 'union', with: [] }),
 };
 
 /** Column names available after the given steps (approximate, for autocompletion). */
@@ -285,6 +289,9 @@ function StepFields({
           />
         </div>
       );
+    case 'join':
+    case 'union':
+      return null;
     case 'rename': {
       const entries = Object.entries(step.map);
       return (
@@ -613,20 +620,23 @@ export function TransformEditor({
       })}
       {adding ? (
         <div className="grid grid-cols-2 gap-1.5 rounded-xl border border-dashed border-line-strong p-2">
-          {(Object.keys(STEP_LABELS) as Step['type'][]).map((type) => (
-            <button
-              key={type}
-              type="button"
-              className="rounded-lg px-2.5 py-2 text-left hover:bg-surface-2"
-              onClick={() => {
-                onChange([...steps, DEFAULTS[type](columnsAfter(baseColumns, steps))]);
-                setAdding(false);
-              }}
-            >
-              <div className="text-[13px] font-medium">{STEP_LABELS[type].label}</div>
-              <div className="text-[11px] text-muted">{STEP_LABELS[type].help}</div>
-            </button>
-          ))}
+          {/* Offered once the editor can pick the other datasets (column lists, cycle checks). */}
+          {(Object.keys(STEP_LABELS) as Step['type'][])
+            .filter((type) => type !== 'join' && type !== 'union')
+            .map((type) => (
+              <button
+                key={type}
+                type="button"
+                className="rounded-lg px-2.5 py-2 text-left hover:bg-surface-2"
+                onClick={() => {
+                  onChange([...steps, DEFAULTS[type](columnsAfter(baseColumns, steps))]);
+                  setAdding(false);
+                }}
+              >
+                <div className="text-[13px] font-medium">{STEP_LABELS[type].label}</div>
+                <div className="text-[11px] text-muted">{STEP_LABELS[type].help}</div>
+              </button>
+            ))}
         </div>
       ) : (
         <Button size="sm" icon={<Plus className="size-3.5" />} onClick={() => setAdding(true)}>

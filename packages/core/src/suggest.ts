@@ -6,6 +6,7 @@
  * visitor for free; an MCP agent gets the same suggestions plus the profile and
  * can refine them with its own judgement.
  */
+import { fieldRef } from './expr.ts';
 import type { ColumnProfile, TableProfile } from './profile.ts';
 import type { WidgetInput } from './schema.ts';
 import type { TimeUnit, TransformInput } from './transforms.ts';
@@ -168,11 +169,6 @@ function timeOrder(before: readonly TransformInput[], field: string) {
   const steps: TransformInput[] = [{ type: 'sort', by: [{ field, dir: 'asc' }] }];
   return { steps, dir: 'asc' as const, kept: false };
 }
-
-const IDENT = /^[A-Za-z_$][A-Za-z0-9_$.]*$/;
-const RESERVED = new Set(['true', 'false', 'null', 'and', 'or', 'not']);
-const fieldRef = (name: string) =>
-  IDENT.test(name) && !RESERVED.has(name) ? name : `\`${name.replace(/[\\`]/g, '\\$&')}\``;
 
 function duration(ms: number): string {
   if (ms >= 2 * DAY) return `${Math.round(ms / DAY)} days`;

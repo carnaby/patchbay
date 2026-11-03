@@ -481,3 +481,10 @@ export function compile(src: string): (row: Row) => Scalar {
 export function isTruthy(v: Scalar): boolean {
   return truthy(v);
 }
+
+const IDENT = /^[A-Za-z_$][A-Za-z0-9_$.]*$/;
+const RESERVED = new Set(['true', 'false', 'null', 'and', 'or', 'not']);
+/** A column as an expression writes it: bare when it reads as an identifier, otherwise in backticks. */
+export function fieldRef(name: string): string {
+  return IDENT.test(name) && !RESERVED.has(name) ? name : `\`${name.replace(/[\\`]/g, '\\$&')}\``;
+}

@@ -6,7 +6,9 @@
  * ever runs. Each step is a pure `DataTable -> DataTable` function.
  */
 import { z } from 'zod';
-import { compile, ExprError, isTruthy, parse, referencedFields } from './expr.ts';
+import { AGGREGATE_OPS, aggregate, numeric } from './aggregate.ts';
+import { compile, ExprError, fieldRef, isTruthy, parse, referencedFields } from './expr.ts';
+import { IdSchema } from './ids.ts';
 import { type ColumnType, type DataTable, type Row, retype, type Scalar } from './table.ts';
 
 const field = z.string().min(1).max(200);
@@ -23,20 +25,6 @@ export const ExpressionSchema = z
     }
   });
 const expression = ExpressionSchema;
-
-export const AGGREGATE_OPS = [
-  'count',
-  'count_distinct',
-  'sum',
-  'avg',
-  'min',
-  'max',
-  'median',
-  'stddev',
-  'first',
-  'last',
-] as const;
-export type AggregateOp = (typeof AGGREGATE_OPS)[number];
 
 export const TIME_UNITS = ['minute', 'hour', 'day', 'week', 'month', 'quarter', 'year'] as const;
 export type TimeUnit = (typeof TIME_UNITS)[number];
@@ -125,6 +113,28 @@ export const TransformSchema = z.discriminatedUnion('type', [
       value: z.union([z.number(), z.string(), z.boolean()]),
     })
     .describe('Replace nulls with a constant'),
+  z
+    .object({
+      id: StepIdSchema.optional(),
+      type: z.literal('join'),
+      with: IdSchema,
+      on: z
+        .array(z.union([field, z.strictObject({ left: field, right: field })]))
+        .min(1)
+        .max(4),
+      how: z.enum(['left', 'inner']).default('left'),
+      fields: z.array(field).max(40).optional(),
+    })
+    .describe('Add columns from another dataset of this dashboard where the keys match'),
+  z
+    .object({
+      id: StepIdSchema.optional(),
+      type: z.literal('union'),
+      with: z.array(IdSchema).min(1).max(4),
+      origin: field.optional(),
+      labels: z.record(IdSchema, z.string().min(1).max(80)).optional(),
+    })
+    .describe('Append the rows of other datasets of this dashboard; columns are matched by name'),
 ]);
 
 export type Transform = z.infer<typeof TransformSchema>;
@@ -136,51 +146,6 @@ export class TransformError extends Error {
     super(`Step ${step + 1}: ${message}`);
     this.name = 'TransformError';
     this.step = step;
-  }
-}
-
-const numeric = (values: Scalar[]) =>
-  values.filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
-
-/** Removes binary floating point noise (0.1 + 0.2) from aggregated results. */
-const clean = (n: number) => (Number.isInteger(n) ? n : Math.round(n * 1e9) / 1e9);
-
-function aggregate(op: AggregateOp, values: Scalar[]): Scalar {
-  const result = aggregateRaw(op, values);
-  return typeof result === 'number' ? clean(result) : result;
-}
-
-function aggregateRaw(op: AggregateOp, values: Scalar[]): Scalar {
-  switch (op) {
-    case 'count':
-      return values.length;
-    case 'count_distinct':
-      return new Set(values.filter((v) => v !== null)).size;
-    case 'first':
-      return values.find((v) => v !== null) ?? null;
-    case 'last':
-      return values.findLast((v) => v !== null) ?? null;
-  }
-  const ns = numeric(values);
-  if (ns.length === 0) return null;
-  switch (op) {
-    case 'sum':
-      return ns.reduce((a, b) => a + b, 0);
-    case 'avg':
-      return ns.reduce((a, b) => a + b, 0) / ns.length;
-    case 'min':
-      return ns.reduce((a, b) => (b < a ? b : a));
-    case 'max':
-      return ns.reduce((a, b) => (b > a ? b : a));
-    case 'median': {
-      const s = [...ns].sort((a, b) => a - b);
-      const mid = s.length >> 1;
-      return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
-    }
-    case 'stddev': {
-      const mean = ns.reduce((a, b) => a + b, 0) / ns.length;
-      return Math.sqrt(ns.reduce((a, b) => a + (b - mean) ** 2, 0) / ns.length);
-    }
   }
 }
 
@@ -351,7 +316,105 @@ class RunBudget {
   }
 }
 
-function applyStep(table: DataTable, t: Transform, step: number, budget: RunBudget): DataTable {
+export type JoinKeyInput = string | { left: string; right: string };
+
+/** A join's keys as pairs; a plain name means the same column on both sides. */
+export function joinKeys(on: readonly JoinKeyInput[]): { left: string; right: string }[] {
+  return on.map((k) => (typeof k === 'string' ? { left: k, right: k } : { left: k.left, right: k.right }));
+}
+
+/**
+ * The columns a join brings, in order: `fields`, or every column of the other side except its keys. A name this side
+ * already has gets `_<dataset id>` (and a number if that is taken too), so nothing is overwritten silently.
+ */
+export function joinedColumns(
+  left: readonly string[],
+  right: readonly string[],
+  step: { with: string; on: readonly JoinKeyInput[]; fields?: readonly string[] | undefined },
+): { name: string; from: string }[] {
+  const rightKeys = new Set(joinKeys(step.on).map((k) => k.right));
+  const wanted = step.fields ?? right.filter((c) => !rightKeys.has(c));
+  const taken = new Set(left);
+  return wanted.map((from) => {
+    let name = taken.has(from) ? `${from}_${step.with}` : from;
+    for (let n = 2; taken.has(name); n++) name = `${from}_${step.with}_${n}`;
+    taken.add(name);
+    return { name, from };
+  });
+}
+
+/** The columns of a union: every name in the order first seen, then the origin column. */
+export function unionColumns(tables: readonly (readonly string[])[], origin?: string): string[] {
+  const names = [...new Set(tables.flat())];
+  return origin ? [...names, origin] : names;
+}
+
+/**
+ * The other datasets' processed tables that join and union steps read, resolved by the caller before the run so a
+ * worker stays a pure function of its message. `self` names the rows the pipeline starts with, for union's origin
+ * column: the parent of a derived dataset, otherwise the dataset itself.
+ */
+export interface PipelineInputs {
+  tables: Record<string, { name: string; table: DataTable }>;
+  self: { id: string; name: string };
+}
+
+const TYPE_WORDS: Record<ColumnType, string> = {
+  number: 'a number',
+  string: 'text',
+  boolean: 'true/false',
+  time: 'a time',
+};
+
+/** Times are epoch numbers at runtime, and date() makes a number column: they compare as the same type. */
+const sameKeyType = (a: ColumnType, b: ColumnType) =>
+  a === b || (a !== 'string' && a !== 'boolean' && b !== 'string' && b !== 'boolean');
+
+/** The derive that makes two key columns comparable: the text side takes the other side's type. */
+function keyConversion(k: { left: string; right: string }, mine: ColumnType, theirs: ColumnType): string {
+  if (mine === 'string' || theirs === 'string') {
+    const text = mine === 'string' ? k.left : k.right;
+    const target = mine === 'string' ? theirs : mine;
+    if (target === 'time') return `date(${fieldRef(text)})`;
+    if (target === 'number') return `number(${fieldRef(text)})`;
+    return `string(${fieldRef(mine === 'boolean' ? k.left : k.right)})`;
+  }
+  return `number(${fieldRef(mine === 'boolean' ? k.left : k.right)})`;
+}
+
+function inputTable(inputs: PipelineInputs | undefined, id: string, step: number) {
+  if (!inputs)
+    throw new TransformError(
+      'Steps that read other datasets (join, union) only run inside their dashboard',
+      step,
+    );
+  // Own properties only: "constructor" is a valid dataset id.
+  if (!Object.hasOwn(inputs.tables, id))
+    throw new TransformError(`Dataset "${id}" is not available here`, step);
+  return inputs.tables[id]!;
+}
+
+function requireFieldsIn(table: DataTable, fields: readonly string[], datasetId: string, step: number) {
+  const names = new Set(table.columns.map((c) => c.name));
+  for (const f of fields) {
+    if (!names.has(f)) {
+      throw new TransformError(
+        `Unknown column "${f}" in "${datasetId}". Available: ${[...names].join(', ') || '(none)'}`,
+        step,
+      );
+    }
+  }
+}
+
+const rowCap = () => PIPELINE_LIMITS.maxRows.toLocaleString('en');
+
+function applyStep(
+  table: DataTable,
+  t: Transform,
+  step: number,
+  budget: RunBudget,
+  inputs: PipelineInputs | undefined,
+): DataTable {
   const known = typesOf(table);
   const order = table.columns.map((c) => c.name);
   switch (t.type) {
@@ -577,6 +640,139 @@ function applyStep(table: DataTable, t: Transform, step: number, budget: RunBudg
       });
       return retype(rows, order, known);
     }
+    case 'join': {
+      const other = inputTable(inputs, t.with, step).table;
+      const keys = joinKeys(t.on);
+      requireFields(
+        table,
+        keys.map((k) => k.left),
+        step,
+      );
+      requireFieldsIn(
+        other,
+        keys.map((k) => k.right),
+        t.with,
+        step,
+      );
+      if (t.fields) requireFieldsIn(other, t.fields, t.with, step);
+      const theirs = typesOf(other);
+      for (const k of keys) {
+        const mine = known[k.left]!;
+        const their = theirs[k.right]!;
+        if (!sameKeyType(mine, their)) {
+          throw new TransformError(
+            `Key "${k.left}" is ${TYPE_WORDS[mine]} here and ${TYPE_WORDS[their]} in "${t.with}"; convert one side with derive ${keyConversion(k, mine, their)}`,
+            step,
+          );
+        }
+      }
+      const brought = joinedColumns(
+        order,
+        other.columns.map((c) => c.name),
+        t,
+      );
+      // A null key is an unknown value, never equal to another: as in SQL, it matches nothing.
+      const keyOf = (row: Row, side: 'left' | 'right') => {
+        const values = keys.map((k) => row[k[side]] ?? null);
+        return values.includes(null) ? null : JSON.stringify(values);
+      };
+      const index = new Map<string, Row[]>();
+      for (const r of other.rows) {
+        const key = keyOf(r, 'right');
+        if (key === null) continue;
+        const list = index.get(key);
+        if (list) list.push(r);
+        else index.set(key, [r]);
+      }
+      // Repeated keys multiply rows: the output is charged row by row, and capped before it is built past the limit.
+      budget.size = 0;
+      const rows: Row[] = [];
+      const emit = (row: Row, match: Row | null) => {
+        if (rows.length >= PIPELINE_LIMITS.maxRows) {
+          throw new TransformError(
+            `The join produced more than ${rowCap()} rows: the keys repeat on both sides. Aggregate one side first.`,
+            step,
+          );
+        }
+        const out: Row = { ...row };
+        for (const c of order) budget.add(cellSize(c, out[c]));
+        for (const b of brought) {
+          out[b.name] = match ? (match[b.from] ?? null) : null;
+          budget.add(cellSize(b.name, out[b.name]));
+        }
+        rows.push(out);
+      };
+      for (const row of table.rows) {
+        const key = keyOf(row, 'left');
+        const matches = key === null ? undefined : index.get(key);
+        if (matches) for (const m of matches) emit(row, m);
+        else if (t.how === 'left') emit(row, null);
+      }
+      const types: Record<string, ColumnType> = { ...known };
+      for (const b of brought) types[b.name] = theirs[b.from]!;
+      return retype(rows, [...order, ...brought.map((b) => b.name)], types);
+    }
+    case 'union': {
+      if (t.origin && order.includes(t.origin)) {
+        throw new TransformError(
+          `Column "${t.origin}" already exists; name the origin column differently`,
+          step,
+        );
+      }
+      const self = inputs?.self ?? { id: '', name: '' };
+      const sources = [
+        { key: self.id, name: self.name, table },
+        ...t.with.map((id) => ({ key: id, ...inputTable(inputs, id, step) })),
+      ];
+      const total = sources.reduce((n, s) => n + s.table.rows.length, 0);
+      if (total > PIPELINE_LIMITS.maxRows) {
+        throw new TransformError(
+          `The union produced more than ${rowCap()} rows; filter or aggregate the datasets first.`,
+          step,
+        );
+      }
+      const names = unionColumns(sources.map((s) => s.table.columns.map((c) => c.name)));
+      const seen = new Map<string, Set<ColumnType>>();
+      for (const s of sources) {
+        for (const c of s.table.columns) {
+          const set = seen.get(c.name) ?? new Set<ColumnType>();
+          set.add(c.type);
+          seen.set(c.name, set);
+        }
+      }
+      const unionTypes: Record<string, ColumnType> = {};
+      // A time column meeting text becomes text; epoch numbers in it would read as nonsense, ISO dates read back
+      // with date().
+      const timeAsText = new Set<string>();
+      for (const [name, set] of seen) {
+        if (set.size === 1) unionTypes[name] = [...set][0]!;
+        else if (set.has('time') && set.has('string')) timeAsText.add(name);
+      }
+      budget.size = 0;
+      const rows: Row[] = [];
+      for (const s of sources) {
+        const label = t.origin ? (t.labels?.[s.key] ?? s.name) : null;
+        const types = typesOf(s.table);
+        for (const r of s.table.rows) {
+          const out: Row = {};
+          for (const n of names) {
+            const v = r[n] ?? null;
+            out[n] =
+              timeAsText.has(n) && types[n] === 'time' && typeof v === 'number'
+                ? new Date(v).toISOString()
+                : v;
+            budget.add(cellSize(n, out[n]));
+          }
+          if (t.origin) {
+            out[t.origin] = label;
+            budget.add(cellSize(t.origin, label));
+          }
+          rows.push(out);
+        }
+      }
+      if (t.origin) unionTypes[t.origin] = 'string';
+      return retype(rows, t.origin ? [...names, t.origin] : names, unionTypes);
+    }
   }
 }
 
@@ -595,10 +791,22 @@ export interface PipelineResult {
  * The input, the previous step and the one being built are alive together, so even a run at the limit stays well
  * inside the 256 MB heap of a small instance. Real sources are far below it: fetches and uploads are capped at 5 MB
  * and 100,000 rows, and 100,000 rows of ten numbers come to about 16 million.
+ *
+ * `maxRows` caps what a join or union may produce: they are the only steps that add rows, and failing beats
+ * truncating silently.
  */
-export const PIPELINE_LIMITS = { maxCells: 5_000_000, maxMillis: 3_000, maxSize: 20_000_000 };
+export const PIPELINE_LIMITS = {
+  maxCells: 5_000_000,
+  maxMillis: 3_000,
+  maxSize: 20_000_000,
+  maxRows: 100_000,
+};
 
-export function runPipeline(input: DataTable, transforms: Transform[]): PipelineResult {
+export function runPipeline(
+  input: DataTable,
+  transforms: Transform[],
+  inputs?: PipelineInputs,
+): PipelineResult {
   let table = input;
   const trace: PipelineResult['trace'] = [];
   const budget = new RunBudget(Date.now() + PIPELINE_LIMITS.maxMillis);
@@ -620,7 +828,7 @@ export function runPipeline(input: DataTable, transforms: Transform[]): Pipeline
       throw new TransformError('Too much data to process; filter or aggregate earlier', i);
     }
     try {
-      table = applyStep(table, t, i, budget);
+      table = applyStep(table, t, i, budget, inputs);
     } catch (e) {
       if (e instanceof TransformError) throw e;
       throw new TransformError(e instanceof Error ? e.message : String(e), i);
