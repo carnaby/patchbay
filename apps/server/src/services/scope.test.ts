@@ -201,6 +201,32 @@ describe('resolution scopes', () => {
     }
   });
 
+  it('reports failures and warnings of inputs in declared order, however they are timed', async () => {
+    const data = new DataService(connectors, store);
+    // The later input fails first: a wall screen must not flip between the two messages from tick to tick.
+    const load = data.loadSource.bind(data);
+    vi.spyOn(data, 'loadSource').mockImplementation(async (t, dataset) => {
+      if (dataset.id === 'a' || dataset.id === 'sa') await new Promise((r) => setTimeout(r, 30));
+      if (dataset.id === 'a' || dataset.id === 'b') throw new Error(`${dataset.name} is down`);
+      const loaded = await load(t, dataset);
+      return dataset.id.startsWith('s') ? { ...loaded, warning: `${dataset.name} is stale` } : loaded;
+    });
+    const d = doc(
+      inline('a', cities),
+      inline('b', cities),
+      inline('both', cities, { transforms: [{ type: 'union', with: ['a', 'b'] }] }),
+      from('derived', 'a', { transforms: [{ type: 'union', with: ['b'] }] }),
+      inline('sa', cities),
+      inline('sb', cities),
+      inline('mix', cities, { transforms: [{ type: 'union', with: ['sa', 'sb'] }] }),
+    );
+    for (const id of ['both', 'derived']) {
+      const r = await data.scope(target, d).resolve(byId(d, id));
+      expect(r.error, id).toBe('Source dataset "a" failed: A is down');
+    }
+    expect((await data.scope(target, d).resolve(byId(d, 'mix'))).error).toBe('SA is stale; SB is stale');
+  });
+
   it('passes upstream warnings on and dates a result by its oldest input', async () => {
     const data = new DataService(connectors, store, new InlineRunner(), { maxSourceCells: 5 });
     const d = doc(

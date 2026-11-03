@@ -193,16 +193,22 @@ export class ResolveScope {
   }
 
   private async process(dataset: Dataset, path: readonly string[]): Promise<FullResult> {
-    const warnings: string[] = [];
     const source = dataset.source;
     const refs = stepInputsOf(dataset);
-    const [input, ...others] = await Promise.all([
+    // Per input, so that warnings, like failures, come in declared order and not in the order the inputs arrive:
+    // with two inputs down or stale, that order changes from tick to tick, and so would what wall screens show.
+    const said = [[], ...refs.map(() => [])] as string[][];
+    const loading =
       source.kind === 'dataset'
-        ? this.upstream(source.id, warnings, path).then((p) => ({ ...p, fresh: false }))
-        : this.within(() => this.data.loadInput(this.target, dataset)),
-      ...refs.map((id) => this.upstream(id, warnings, path)),
-    ]);
-    if (input.warning && source.kind !== 'dataset') warnings.push(input.warning);
+        ? this.upstream(source.id, said[0]!, path).then((p) => ({ ...p, fresh: false }))
+        : this.within(() => this.data.loadInput(this.target, dataset));
+    const reading = refs.map((id, i) => this.upstream(id, said[i + 1]!, path));
+    const failed = (await Promise.allSettled([loading, ...reading])).find((s) => s.status === 'rejected');
+    if (failed) throw failed.reason;
+    const input = await loading;
+    const others = await Promise.all(reading);
+    if (input.warning && source.kind !== 'dataset') said[0]!.push(input.warning);
+    const warnings = said.flat();
     let fetchedAt = input.fetchedAt;
     let inputs: PipelineInputs | undefined;
     if (refs.length) {
