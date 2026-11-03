@@ -61,6 +61,12 @@ describe('parsePrivateHosts', () => {
       ['::/7', /IPv4 instead/],
       ['169.254.169.254/32', /list the exact address 169\.254\.169\.254/],
       ['fd20:ce::254/128', /list the exact address fd20:ce::254/],
+      ['0.0.0.0/8', /not a host address/],
+      ['0.0.0.0/32', /not a host address/],
+      ['::/128', /not a host address/],
+      ['ff02::/16', /not a host address/],
+      ['224.0.0.0/8', /not a host address/],
+      ['255.255.255.255/32', /not a host address/],
     ];
     for (const [entry, message] of refusals) {
       expect(() => parsePrivateHosts(entry), entry).toThrow(PrivateHostsError);
@@ -152,6 +158,8 @@ describe('matching', () => {
     expect(local.allowsAddress('x', '127.0.0.1')).toBe(true);
     expect(local.allowsAddress('x', '169.254.10.10')).toBe(true);
     expect(local.allowsAddress('x', '169.254.169.254')).toBe(false);
+    expect(parse('169.254.0.23').allowsAddress('x', '169.254.0.23')).toBe(true);
+    expect(local.allowsAddress('x', '169.254.0.23')).toBe(false);
     expect(local.allowsAddress('x', '0.0.0.0')).toBe(false);
     expect(parse('169.254.169.254').allowsAddress('x', '169.254.169.254')).toBe(true);
     expect(parse('fd00::/8').allowsAddress('x', 'fd00:ec2::254')).toBe(false);

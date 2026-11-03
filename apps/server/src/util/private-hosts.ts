@@ -108,6 +108,7 @@ export const METADATA_ADDRESSES: ReadonlySet<string> = new Set([
   'fd00:ec2::23', // AWS EKS Pod Identity over IPv6
   'fd20:ce::254', // Google Cloud metadata over IPv6
   '100.100.100.200', // Alibaba Cloud
+  '169.254.0.23', // Tencent Cloud
 ]);
 
 /** Where a name entry's DNS answers may lead: home, office and VPN ranges. */
@@ -197,6 +198,12 @@ export function parsePrivateHosts(raw: string | undefined): PrivateHosts | null 
       // silently open every IPv4 address.
       if (version === 6 && coversMappedSpace(network, prefix))
         throw refuse(item, 'covers IPv4-mapped addresses; list IPv4 ranges as IPv4 instead');
+      // Same reason as the single-address refusal below: the range could never connect, so listing it only misleads.
+      if (NEVER.has(network))
+        throw refuse(
+          item,
+          'is not a host address range: it starts where nothing ever connects (unspecified, multicast)',
+        );
       ranges.addSubnet(network, prefix);
       entries.push(`${network}/${prefix}`);
       continue;
