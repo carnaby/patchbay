@@ -248,7 +248,9 @@ save and at every load:
 | `everyone`          | Every dashboard, anonymous ones included. Only for a server nobody outside your network can reach.  |
 
 The startup log says what is open and to whom, and warns when the setting has no effect (for example `admins`
-without Google sign-in). Everyone who can view a dashboard sees what its sources load: a public dashboard over Home
+without Google sign-in). An imported dashboard is checked like a save, by its new owner: an export whose sources
+use the list imports only where the importer may use it, and on an instance without the list an `http://` source
+refuses the whole import. Restoring an older version is not refused; the load decides. Everyone who can view a dashboard sees what its sources load: a public dashboard over Home
 Assistant shows your home to the internet. Keep such dashboards private.
 
 Agents (MCP) act as the dashboard's editor, and `get_reference` tells them which addresses their dashboards may load.
