@@ -1289,13 +1289,22 @@ export class DashboardService {
   ): SecretInfo {
     const user = this.secretsWriter(p);
     const name = secretName(input.name);
+    // The operator's private hosts, if this user's dashboards may use them: plain http:// and other ports then pass
+    // the binding's syntax, and the host is checked below.
+    const hosts = this.privateHostsFor(user.id);
     let binding: { origin: string; pathPrefix: string };
     try {
-      binding = parseBinding(input.sendTo);
+      binding = parseBinding(input.sendTo, { privateHosts: hosts !== null });
     } catch (e) {
       if (e instanceof BindingError) throw badRequest(e.message);
       throw e;
     }
+    // A binding is permanent, so it must name a host the list names itself, not one that resolves into it today.
+    const origin = new URL(binding.origin);
+    if ((origin.protocol === 'http:' || origin.port !== '') && !hosts?.listsHost(origin.hostname))
+      throw badRequest(
+        `Secrets go over http:// or to another port only for hosts listed in ALLOW_PRIVATE_HOSTS by name or address; ${origin.hostname} is not.`,
+      );
     const paramName = input.paramName?.trim() || null;
     const paramIssue = secretParamIssue(input.placement, paramName);
     if (paramIssue) throw badRequest(paramIssue);

@@ -18,8 +18,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Eye, EyeOff } from 'lucide-react';
 import { useState } from 'react';
 import { api, errorMessage } from '../lib/api.ts';
-import { useMe } from '../lib/hooks.ts';
-import type { SecretListItem, SecretsList } from '../lib/secrets.ts';
+import { useMe, useSecretsStatus } from '../lib/hooks.ts';
+import { plainHttpWarning, type SecretListItem, type SecretsList } from '../lib/secrets.ts';
 import { Button, Field, Input, Modal, Segmented } from './ui.tsx';
 
 export interface SecretDraft {
@@ -99,11 +99,14 @@ const PLACEMENTS: { value: SecretPlacement; label: string }[] = [
   { value: 'query', label: 'Query parameter' },
 ];
 
-function parsedBinding(input: string): { binding: SecretBinding | null; error: string | null } {
+function parsedBinding(
+  input: string,
+  privateHosts: boolean,
+): { binding: SecretBinding | null; error: string | null } {
   // The field starts as "https://"; complaining before anything was typed would only be noise.
   if (!input.trim() || input.trim() === 'https://') return { binding: null, error: null };
   try {
-    return { binding: parseBinding(input), error: null };
+    return { binding: parseBinding(input, { privateHosts }), error: null };
   } catch (e) {
     return { binding: null, error: e instanceof BindingError ? e.message : 'Invalid address' };
   }
@@ -120,6 +123,7 @@ function SecretForm({
 }) {
   const qc = useQueryClient();
   const { data: me } = useMe();
+  const { data: secretsStatus } = useSecretsStatus();
   const initial = target.kind === 'create' ? (target.initial ?? {}) : {};
   const replacing = target.kind === 'replace' ? target.secret : null;
   const [name, setName] = useState(initial.name ?? '');
@@ -133,7 +137,9 @@ function SecretForm({
   const [error, setError] = useState<string | null>(null);
 
   const effectivePlacement = replacing?.placement ?? placement;
-  const parsed = replacing ? { binding: replacing, error: null } : parsedBinding(sendTo);
+  const parsed = replacing
+    ? { binding: replacing, error: null }
+    : parsedBinding(sendTo, Boolean(secretsStatus?.privateHosts));
   const address = parsed.binding ? bindingLabel(parsed.binding) : null;
   const nameIssue = replacing ? null : name.trim().length > 80 ? 'At most 80 characters' : null;
   const paramIssue = replacing
@@ -253,7 +259,9 @@ function SecretForm({
               error={parsed.error}
               hint={
                 address
-                  ? `Sent only to addresses under ${address}`
+                  ? [`Sent only to addresses under ${address}`, plainHttpWarning(parsed.binding)]
+                      .filter(Boolean)
+                      .join('. ')
                   : 'The address the secret may be sent to, e.g. https://api.example.com/v1/. Anything else never receives it.'
               }
             >

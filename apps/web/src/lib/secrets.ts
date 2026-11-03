@@ -10,6 +10,7 @@ import {
   CREDENTIAL_ERRORS,
   type DashboardDoc,
   placementConflict,
+  type SecretBinding,
   type SecretInfo,
   type SecretMode,
   type Source,
@@ -196,10 +197,18 @@ export function secretsSectionMode(
 export function suggestedSendTo(url: string): string {
   try {
     const u = new URL(url);
-    return u.protocol === 'https:' ? `${u.origin}/` : '';
+    // http:// is suggested too: whether it may be bound is the server's decision (ALLOW_PRIVATE_HOSTS).
+    return u.protocol === 'https:' || u.protocol === 'http:' ? `${u.origin}/` : '';
   } catch {
     return '';
   }
+}
+
+/** Said before a value is bound to plain http://, where it crosses the network unencrypted. */
+export function plainHttpWarning(binding: SecretBinding | null): string | null {
+  return binding?.origin.startsWith('http:')
+    ? 'Plain http://: the value crosses your network unencrypted, readable by anyone who can watch that traffic'
+    : null;
 }
 
 /**

@@ -305,6 +305,32 @@ describe('a self-hosted instance with ALLOW_PRIVATE_HOSTS=127.0.0.1', () => {
     }
   });
 
+  it('sends a secret over http:// to a listed host, and refuses one bound to a host the list does not name', async () => {
+    const auth = await lan.login(ADMIN);
+    const admin = await lan.dashboard(ADMIN);
+    const created = await lan.call('/api/secrets', {
+      body: {
+        name: 'Home Assistant',
+        sendTo: `http://127.0.0.1:${port}/api/`,
+        placement: 'bearer',
+        value: TOKEN,
+      },
+      headers: auth,
+    });
+    expect(created.status).toBe(201);
+    expect((await lan.addDataset(admin, home(states(), { secrets: [created.json.id] }))).status).toBe(200);
+    expect((await lan.data(admin)).json.table.rows).toEqual([
+      { entity_id: 'light.kitchen', state: 'on', authorized: true },
+    ]);
+    const refused = await lan.call('/api/secrets', {
+      body: { name: 'Router', sendTo: 'http://192.168.0.1/', placement: 'bearer', value: TOKEN },
+      headers: auth,
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.json.error).toContain('only for hosts listed in ALLOW_PRIVATE_HOSTS by name or address');
+    expect((await lan.call('/api/me', { headers: auth })).json.privateHosts).toBe(true);
+  });
+
   it('opens the list to anonymous dashboards with PRIVATE_HOSTS_FOR=everyone', async () => {
     const open = await instance({ ALLOW_PRIVATE_HOSTS: '127.0.0.1', PRIVATE_HOSTS_FOR: 'everyone' });
     try {
