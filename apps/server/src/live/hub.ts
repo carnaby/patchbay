@@ -47,7 +47,7 @@ interface Chains {
   doc: DashboardDoc;
   /** Per live dataset with lineage: it and everything that reads it, parents first. */
   chains: Map<string, readonly string[]>;
-  /** Sorting by depth puts every dataset after the ones it reads, for refreshes that run several chains at once. */
+  /** Every dataset comes after the ones it reads; pushes wait only for strictly shallower ones, so never in a ring. */
   depth: Map<string, number>;
   /**
    * The datasets a refresh reads directly without re-running them: inputs of chain members outside the chain. A
@@ -56,9 +56,46 @@ interface Chains {
   inputs: ReadonlySet<string>;
   /** Latest tables of `inputs`, so a tick re-runs only what depends on the dataset that ticked. */
   tables: Map<string, FullResult>;
-  /** Live datasets that ticked while a refresh ran: they run together right after it. */
+  /** The component of each live dataset with lineage. */
+  components: Map<string, Component>;
+}
+
+/**
+ * Live chains that share a dataset (a member or a direct input). Their refreshes run one round at a time: two at
+ * once would each start from the other's older table and could push a dependent built from a stale reading after a
+ * fresh one. Chains with nothing in common are separate components and never wait for each other; a slow member
+ * still paces every chain of its own component.
+ */
+interface Component {
+  /** Live datasets that ticked while a round ran: they run together right after it. */
   queued: Set<string>;
   draining: boolean;
+}
+
+/** Groups live datasets whose chains touch a common dataset, transitively (union-find over the touched ids). */
+function componentsOf(touches: ReadonlyMap<string, ReadonlySet<string>>): Map<string, Component> {
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    let root = x;
+    while (parent.has(root) && parent.get(root) !== root) root = parent.get(root)!;
+    parent.set(x, root);
+    return root;
+  };
+  for (const [live, touched] of touches)
+    for (const x of touched) {
+      const a = find(live);
+      const b = find(x);
+      if (a !== b) parent.set(b, a);
+    }
+  const byRoot = new Map<string, Component>();
+  const out = new Map<string, Component>();
+  for (const live of touches.keys()) {
+    const root = find(live);
+    const component = byRoot.get(root) ?? { queued: new Set<string>(), draining: false };
+    byRoot.set(root, component);
+    out.set(live, component);
+  }
+  return out;
 }
 
 interface Room {
@@ -189,11 +226,18 @@ export class LiveHub {
       if (this.data.refreshIntervalSec(d) !== null && hasLineage(doc, d.id))
         byChain.set(d.id, [d.id, ...dependentsOf(doc, d.id)]);
     const inputs = new Set<string>();
-    for (const chain of byChain.values())
+    const touches = new Map<string, Set<string>>();
+    for (const [root, chain] of byChain) {
+      const touched = new Set(chain);
       for (const x of chain) {
         const dataset = doc.datasets.find((d) => d.id === x);
-        for (const up of dataset ? upstreamOf(dataset) : []) if (!chain.includes(up)) inputs.add(up);
+        for (const up of dataset ? upstreamOf(dataset) : []) {
+          touched.add(up);
+          if (!chain.includes(up)) inputs.add(up);
+        }
       }
+      touches.set(root, touched);
+    }
     const chains: Chains = {
       target,
       doc,
@@ -201,8 +245,7 @@ export class LiveHub {
       depth: new Map(doc.datasets.map((d) => [d.id, lineageDepth(doc, d.id)])),
       inputs,
       tables: new Map(),
-      queued: new Set(),
-      draining: false,
+      components: componentsOf(touches),
     };
     room.chains = chains;
     for (const dataset of live) {
@@ -245,20 +288,21 @@ export class LiveHub {
   }
 
   /**
-   * One refresh of chains at a time per room: two at once would each start from the other's older table and could
-   * push a dependent built from a stale reading after a fresh one. A tick that comes meanwhile waits for the next
-   * round, and ticks of the same moment share one.
+   * One round at a time per component (see `Component`): a tick that comes meanwhile waits for the next round, and
+   * ticks of the same moment share one.
    */
   private async queueChain(dashboardId: string, room: Room, generation: number, chains: Chains, id: string) {
-    chains.queued.add(id);
-    if (chains.draining) return;
-    chains.draining = true;
+    const component = chains.components.get(id);
+    if (!component) return;
+    component.queued.add(id);
+    if (component.draining) return;
+    component.draining = true;
     try {
       // Loops with the same interval fire in one timers phase; this lets them all join the first round.
       await new Promise((resolve) => setImmediate(resolve));
-      while (chains.queued.size && room.generation === generation) {
-        const roots = [...chains.queued];
-        chains.queued.clear();
+      while (component.queued.size && room.generation === generation) {
+        const roots = [...component.queued];
+        component.queued.clear();
         try {
           // One client per dashboard for the fair queues: many viewers share one loop, and so one share.
           await runAsClient(`live:${dashboardId}`, () =>
@@ -271,13 +315,15 @@ export class LiveHub {
         }
       }
     } finally {
-      chains.draining = false;
+      component.draining = false;
     }
   }
 
   /**
-   * Re-resolves live datasets and everything that reads them, parents first, in one scope. Their other inputs come
-   * from the room's latest tables, so a dataset that ticked a moment ago is seen with its newest reading.
+   * Re-resolves live datasets of one component and everything that reads them, in one scope with its own deadline.
+   * They resolve concurrently (the scope computes a shared member once) and each is pushed once it and its parents
+   * in the round are, so a viewer never sees a child ahead of its parent. Their other inputs come from the room's
+   * latest tables, so a dataset that ticked a moment ago is seen with its newest reading.
    */
   private async refreshChains(
     dashboardId: string,
@@ -301,18 +347,38 @@ export class LiveHub {
       if (!chains.inputs.has(x)) return;
       if (chains.tables.has(x) || chains.tables.size < LIMITS.datasetInputs) chains.tables.set(x, full);
     };
+    const depth = (x: string) => chains.depth.get(x) ?? 0;
+    const pushed = new Map<string, Promise<void>>();
+    // In depth order, so the parents' promises exist when a child's is made.
     for (const x of order) {
       const dataset = chains.doc.datasets.find((d) => d.id === x);
       if (!dataset) continue;
-      const result = await scope.resolve(dataset);
-      if (room.generation !== generation) return;
-      this.push(dashboardId, room, generation, result);
-      const full = scope.settled().get(x);
-      // A dataset that just failed is loaded again by the next refresh that reads it, never shown from its last
-      // table next to the error this one pushed.
-      if (full) keep(x, full);
-      else chains.tables.delete(x);
+      const parents = upstreamOf(dataset).flatMap((u) => {
+        const p = rerun.has(u) && depth(u) < depth(x) ? pushed.get(u) : undefined;
+        return p ? [p] : [];
+      });
+      const resolving = scope.resolve(dataset);
+      pushed.set(
+        x,
+        (async () => {
+          const result = await resolving;
+          await Promise.all(parents);
+          if (room.generation !== generation) return;
+          this.push(dashboardId, room, generation, result);
+          const full = scope.settled().get(x);
+          // A dataset that just failed is loaded again by the next refresh that reads it, never shown from its last
+          // table next to the error this one pushed.
+          if (full) keep(x, full);
+          else chains.tables.delete(x);
+        })(),
+      );
     }
+    // The round ends only when every push did, so none lands after the next round's; the first failure (a BusyError
+    // skips the round) is thrown once.
+    const settled = await Promise.allSettled(pushed.values());
+    const failed = settled.find((s) => s.status === 'rejected');
+    if (failed) throw failed.reason;
+    if (room.generation !== generation) return;
     // Inputs this refresh loaded are kept too, so the next one does not load them again; tables it was served from
     // the room are already there.
     for (const [x, full] of scope.settled()) if (!rerun.has(x) && !served.has(x)) keep(x, full);

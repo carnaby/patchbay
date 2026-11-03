@@ -55,6 +55,14 @@ const twoLive = () =>
       transforms: [{ type: 'union', with: ['b'] }],
     },
   ]);
+/** Two live readings, each with a child of its own: two chains with nothing in common. */
+const separate = () =>
+  doc([
+    { id: 'a', name: 'A', source: { kind: 'connector', connector: 'demo.signal' }, refreshSec: 5 },
+    { id: 'ka', name: 'KA', source: { kind: 'dataset', id: 'a' } },
+    { id: 'x', name: 'X', source: { kind: 'connector', connector: 'demo.signal' }, refreshSec: 5 },
+    { id: 'kx', name: 'KX', source: { kind: 'dataset', id: 'x' } },
+  ]);
 /** Union runs take `delay(call)` ms; returns the most union runs seen at once. */
 const slowUnions = (delay: (call: number) => number) => {
   const run = data.processShared.bind(data);
@@ -293,6 +301,60 @@ describe('LiveHub', () => {
     await sleep(200);
     expect(pushedFor(events, 'c')).toEqual(['101,201', '102,202', '103,203', '104,204', '105,205']);
     expect(unions.max).toBe(1);
+    hub.close();
+  });
+
+  it('lets chains with nothing in common keep their cadence while one of them is slow', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let n = 0;
+    vi.spyOn(data, 'loadSource').mockImplementation(async (_target, dataset) => {
+      if (dataset.id !== 'x') return reading(100 + n);
+      await sleep(300);
+      return reading(900);
+    });
+    const events: LiveEvent[] = [];
+    const hub = new LiveHub(data, async () => ({ ownerId: null, doc: separate() }));
+    hub.subscribe(
+      'd-apart',
+      viewer((e) => events.push(e)),
+    );
+    await settle();
+    n = 1;
+    vi.advanceTimersByTime(5_000);
+    await sleep(50);
+    expect(pushedFor(events, 'ka')).toEqual(['101']);
+    expect(pushedFor(events, 'x')).toEqual([]);
+    n = 2;
+    vi.advanceTimersByTime(5_000);
+    await sleep(50);
+    expect(pushedFor(events, 'ka')).toEqual(['101', '102']);
+    await sleep(700);
+    expect(pushedFor(events, 'kx')).toEqual(['900']);
+    hub.close();
+  });
+
+  it('gives each component its own scope and deadline', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    vi.spyOn(data, 'loadSource').mockImplementation(async () => {
+      await sleep(300);
+      return reading(1);
+    });
+    // A scaled stand-in for SCOPE_DEADLINE_MS: one root load fits in it, two in a row would not.
+    const open = data.scope.bind(data);
+    const scopes = vi
+      .spyOn(data, 'scope')
+      .mockImplementation((target, d, options) => open(target, d, { ...options, deadlineMs: 500 }));
+    const events: LiveEvent[] = [];
+    const hub = new LiveHub(data, async () => ({ ownerId: null, doc: separate() }));
+    hub.subscribe(
+      'd-deadline',
+      viewer((e) => events.push(e)),
+    );
+    await settle();
+    vi.advanceTimersByTime(5_000);
+    await sleep(800);
+    expect(scopes).toHaveBeenCalledTimes(2);
+    for (const id of ['a', 'ka', 'x', 'kx']) expect(pushedFor(events, id)).toEqual(['1']);
     hub.close();
   });
 
