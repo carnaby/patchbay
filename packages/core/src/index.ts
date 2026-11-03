@@ -4,6 +4,7 @@ export * from './chart.ts';
 export * from './clock.ts';
 export * from './colors.ts';
 export * from './csv.ts';
+export * from './export.ts';
 export * from './expr.ts';
 export * from './format.ts';
 export * from './layout.ts';

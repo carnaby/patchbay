@@ -61,6 +61,9 @@ export const FEED_MIN_REFRESH_SEC = 300;
 /** HTTP sources are cached this long per address, so a faster refresh would only re-read the cache. */
 export const HTTP_MIN_REFRESH_SEC = 30;
 
+/** Ids of uploaded files. Unique within one dashboard's folder, not across dashboards: copies and imports keep them. */
+export const FileIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/);
+
 export const SourceSchema = z.discriminatedUnion('kind', [
   z
     .strictObject({
@@ -70,7 +73,7 @@ export const SourceSchema = z.discriminatedUnion('kind', [
     })
     .describe('A built-in public API connector, see list_connectors'),
   z
-    .strictObject({ kind: z.literal('upload'), fileId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/) })
+    .strictObject({ kind: z.literal('upload'), fileId: FileIdSchema })
     .describe('A CSV/JSON file uploaded into this dashboard'),
   z
     .strictObject({
