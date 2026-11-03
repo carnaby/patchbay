@@ -9,13 +9,16 @@ import {
   type Dataset,
   type DatasetResult,
   decodeTable,
+  effectiveRefreshSec,
   type LiveEvent,
+  lineageKey,
 } from '@patchbay/core';
-import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from '../components/ui.tsx';
 import { ApiError, api } from '../lib/api.ts';
+import { datasetInSync, datasetKey, datasetKeyFor, refreshTiming } from './dataset-keys.ts';
 import { useEditor } from './editor.ts';
 import { openLiveChannel } from './live-channel.ts';
 import { performSave } from './save.ts';
@@ -60,9 +63,6 @@ export const fromWire = (result: DatasetResult): DatasetResult => ({
   ...result,
   table: decodeTable(result.table),
 });
-
-export const datasetKey = (dashboardId: string, dataset: Dataset) =>
-  ['data', dashboardId, dataset.id, JSON.stringify(dataset)] as const;
 
 let reconnects = 0;
 /** How often the live channel reconnected; results after a reconnect only set a new sound baseline. */
@@ -117,9 +117,10 @@ export function useLiveEvents(id: string | undefined) {
     const onMessage = (msg: MessageEvent<string>) => {
       const event = JSON.parse(msg.data) as LiveEvent;
       if (event.type === 'data') {
-        const doc = useEditor.getState().saved;
-        const dataset = doc?.datasets.find((d) => d.id === event.result.datasetId);
-        if (dataset) qc.setQueryData(datasetKey(id, dataset), fromWire(event.result));
+        const saved = useEditor.getState().saved;
+        // Pushed results are computed from the saved document: keyed by its lineage.
+        if (saved?.datasets.some((d) => d.id === event.result.datasetId))
+          qc.setQueryData(datasetKey(id, saved, event.result.datasetId), fromWire(event.result));
       } else if (event.type === 'doc') {
         void pullRemote(event);
       } else if (event.type === 'hello') {
@@ -169,27 +170,45 @@ export function useLiveEvents(id: string | undefined) {
   return connected;
 }
 
+const fetchResult = (dashboardId: string, datasetId: string) => async () =>
+  fromWire(
+    await api<DatasetResult>(`/api/dashboards/${dashboardId}/data/${datasetId}?rows=arrays`, { dashboardId }),
+  );
+
 /**
- * Data for one dataset. It only fetches definitions the server already has
- * (the editor autosaves within a second); until then the previous result stays
- * on screen, so editing never flashes empty widgets.
+ * Data for one dataset. It only fetches definitions the server already has, for the dataset and everything it reads
+ * (the editor autosaves within a second); until then the previous result stays on screen, so editing never flashes
+ * empty widgets.
  */
 export function useDatasetResult(dashboardId: string, dataset: Dataset | undefined, live: boolean) {
-  const savedDataset = useEditor((s) => s.saved?.datasets.find((d) => d.id === dataset?.id));
-  const inSync = Boolean(dataset && savedDataset && JSON.stringify(savedDataset) === JSON.stringify(dataset));
+  const id = dataset?.id;
+  // Primitives only: a selector returning a new object would re-render on every store change.
+  const lineage = useEditor((s) => (id && s.doc ? lineageKey(s.doc, id) : ''));
+  const inSync = useEditor((s) => (id ? datasetInSync(s.saved, s.doc, id) : false));
+  const refreshSec = useEditor((s) => (id && s.doc ? effectiveRefreshSec(s.doc, id) : 0));
+  const timing = refreshTiming(refreshSec, live);
   return useQuery({
-    queryKey: dataset ? datasetKey(dashboardId, dataset) : ['data', dashboardId, 'none'],
-    queryFn: async () =>
-      fromWire(
-        await api<DatasetResult>(`/api/dashboards/${dashboardId}/data/${dataset!.id}?rows=arrays`, {
-          dashboardId,
-        }),
-      ),
-    enabled: Boolean(dataset) && inSync,
+    queryKey: id ? datasetKeyFor(dashboardId, id, lineage) : ['data', dashboardId, 'none'],
+    queryFn: fetchResult(dashboardId, id ?? ''),
+    enabled: Boolean(id) && inSync,
     placeholderData: keepPreviousData,
-    staleTime: dataset && dataset.refreshSec > 0 ? dataset.refreshSec * 1000 : 5 * 60_000,
+    staleTime: timing.staleTime,
     // SSE pushes live updates; poll only if the live channel is down.
-    refetchInterval:
-      dataset && dataset.refreshSec > 0 && !live ? Math.max(dataset.refreshSec, 5) * 1000 : false,
+    refetchInterval: timing.refetchInterval,
   });
+}
+
+/** Column names of other datasets' current results, for the join and union step editors. */
+export function useDatasetColumns(dashboardId: string, ids: readonly string[]): (id: string) => string[] {
+  const doc = useEditor((s) => s.doc);
+  const saved = useEditor((s) => s.saved);
+  const results = useQueries({
+    queries: ids.map((id) => ({
+      queryKey: datasetKeyFor(dashboardId, id, doc ? lineageKey(doc, id) : ''),
+      queryFn: fetchResult(dashboardId, id),
+      enabled: datasetInSync(saved, doc, id),
+      staleTime: 5 * 60_000,
+    })),
+  });
+  return (id) => results[ids.indexOf(id)]?.data?.table.columns.map((c) => c.name) ?? [];
 }
