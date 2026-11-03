@@ -8,11 +8,12 @@ import { FolderStore } from '../store/folder-store.ts';
 import { HttpError } from '../util/errors.ts';
 import { BusyError, Gate } from '../util/gate.ts';
 import { OutboundLimiter } from '../util/outbound.ts';
+import { parsePrivateHosts } from '../util/private-hosts.ts';
 
-const fetchMock = vi.hoisted(() => vi.fn<(url: string) => Promise<unknown>>());
+const fetchMock = vi.hoisted(() => vi.fn<(url: string, options?: unknown) => Promise<unknown>>());
 vi.mock('../util/safe-fetch.ts', async (original) => ({
   ...(await original<typeof import('../util/safe-fetch.ts')>()),
-  safeFetchJson: (url: string) => fetchMock(url),
+  safeFetchJson: (url: string, options?: unknown) => fetchMock(url, options),
 }));
 
 const { DataService } = await import('./data.ts');
@@ -218,6 +219,38 @@ describe('http sources', () => {
       );
     }
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the private hosts the policy grants, and never serves those responses to other dashboards', async () => {
+    const lan = parsePrivateHosts('192.168.1.0/24')!;
+    const policy = vi.fn((t: { ownerId: string | null }) => (t.ownerId === 'admin' ? lan : null));
+    fetchMock.mockResolvedValueOnce([{ who: 'lan' }]).mockResolvedValueOnce([{ who: 'public' }]);
+    const data = new DataService(connectors, store, new InlineRunner(), { urlPolicy: policy });
+    const url = 'https://nas.example/api';
+    expect((await data.resolve({ id: target.id, ownerId: 'admin' }, http(url))).table.rows).toEqual([
+      { who: 'lan' },
+    ]);
+    expect((await data.resolve(target, http(url))).table.rows).toEqual([{ who: 'public' }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({ privateHosts: lan });
+    expect(fetchMock.mock.calls[1]![1]).not.toHaveProperty('privateHosts');
+  });
+
+  it('does not share a concurrent fetch between a dashboard with the private hosts and one without', async () => {
+    const lan = parsePrivateHosts('192.168.1.0/24')!;
+    const policy = (t: { ownerId: string | null }) => (t.ownerId === 'admin' ? lan : null);
+    fetchMock.mockImplementation(async (_url, options) => [
+      { who: (options as { privateHosts?: unknown } | undefined)?.privateHosts ? 'lan' : 'public' },
+    ]);
+    const data = new DataService(connectors, store, new InlineRunner(), { urlPolicy: policy });
+    const url = 'https://nas.example/slow';
+    const [a, b] = await Promise.all([
+      data.resolve({ id: target.id, ownerId: 'admin' }, http(url)),
+      data.resolve(target, http(url)),
+    ]);
+    expect(a.table.rows).toEqual([{ who: 'lan' }]);
+    expect(b.table.rows).toEqual([{ who: 'public' }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('keeps at most maxSourceCells cells of a response and says so', async () => {
