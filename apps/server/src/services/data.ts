@@ -260,6 +260,11 @@ export class DataService {
     );
   }
 
+  /** A stored upload's whole table, for an export; the caller checked who may read it (DashboardService.exportPlan). */
+  async uploadTable(target: DashboardTarget, fileId: string): Promise<DataTable> {
+    return (await this.loadUpload(target, fileId)).table;
+  }
+
   /**
    * Keyed by the stored file, not by dashboard: copies of a dashboard share their uploads through hard links, and a
    * shared file is parsed and held once. Permission was checked before this point (the caller resolved `target`).

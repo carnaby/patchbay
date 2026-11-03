@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MAX_TABLE_FILE_BYTES } from '@patchbay/core';
+import { MAX_TABLE_FILE_BYTES, readExport } from '@patchbay/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
@@ -215,5 +215,137 @@ describe('uploading a packed table', () => {
     expect(cells.status).toBe(400);
     expect(cells.json.error).toContain('1,000 cells');
     expect(cells.json.error).toContain('Dashboards of signed-in users accept up to 500,000 cells.');
+  });
+});
+
+const TEMPS_CSV =
+  'date,city,temp\n2026-01-01,Bratislava,1.5\n2026-01-02,Vienna,-0.5\n2026-01-03,Bratislava,\n';
+const FLAGS_JSON = JSON.stringify([
+  { ok: true, n: 1, note: 'a' },
+  { ok: false, n: null, note: 'b' },
+]);
+
+/**
+ * A signed-in user's board: a CSV upload and a JSON upload used by datasets, one upload no dataset uses, an HTTP
+ * dataset with a secret reference, and a widget.
+ */
+async function shopBoard(email: string) {
+  const cookie = await login(email);
+  const id = (await call('/api/dashboards', { body: { title: 'Shop board' }, cookie })).json.envelope.meta
+    .id as string;
+  const upload = async (name: string, content: string) =>
+    (await call(`/api/dashboards/${id}/files`, { body: { name, content }, cookie })).json.id as string;
+  const temps = await upload('temps.csv', TEMPS_CSV);
+  const flags = await upload('flags.json', FLAGS_JSON);
+  await upload('unused.csv', 'a\n1\n');
+  const secret = await call('/api/secrets', {
+    body: {
+      name: 'Shop key',
+      sendTo: 'https://api.example.com/v1/',
+      placement: 'bearer',
+      value: 'val_0123456789abcdef',
+    },
+    cookie,
+  });
+  expect(secret.status).toBe(201);
+  const ops = await call(`/api/dashboards/${id}/ops`, {
+    body: {
+      ops: [
+        {
+          op: 'addDataset',
+          dataset: { id: 'temps', name: 'Temperatures', source: { kind: 'upload', fileId: temps } },
+        },
+        {
+          op: 'addDataset',
+          dataset: { id: 'flags', name: 'Flags', source: { kind: 'upload', fileId: flags } },
+        },
+        {
+          op: 'addDataset',
+          dataset: {
+            id: 'orders',
+            name: 'Orders',
+            source: { kind: 'http', url: 'https://api.example.com/v1/orders', secrets: [secret.json.id] },
+          },
+        },
+        {
+          op: 'addWidget',
+          widget: { id: 'temps-table', type: 'table', datasetId: 'temps', title: 'Temperatures', config: {} },
+        },
+      ],
+    },
+    cookie,
+  });
+  expect(ops.status).toBe(200);
+  return { id, cookie, temps, flags };
+}
+
+async function exportOf(id: string, init: Init = {}) {
+  const res = await raw(`/api/dashboards/${id}/export`, init);
+  return { res, text: await res.text() };
+}
+
+describe('export', () => {
+  it('gives editors the document without secret references and the tables of the files datasets use', async () => {
+    const { id, cookie, temps, flags } = await shopBoard('owner@example.com');
+    const { res, text } = await exportOf(id, { cookie });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="shop-board.patchbay.json"');
+    const exp = readExport(JSON.parse(text));
+    expect(exp.secretsRemovedFrom).toEqual(['orders']);
+    expect(exp.doc.datasets.find((d) => d.id === 'orders')!.source).toEqual({
+      kind: 'http',
+      url: 'https://api.example.com/v1/orders',
+    });
+    expect(text).not.toContain('sec_');
+    expect(exp.files.map((f) => f.id).sort()).toEqual([temps, flags].sort());
+    const t = exp.files.find((f) => f.id === temps)!;
+    expect(t.name).toBe('temps.csv');
+    expect(t.columns).toEqual([
+      { name: 'date', type: 'time' },
+      { name: 'city', type: 'string' },
+      { name: 'temp', type: 'number' },
+    ]);
+    expect(t.data[0]).toEqual([Date.parse('2026-01-01T00:00:00Z'), 'Bratislava', 1.5]);
+    expect(exp.files.find((f) => f.id === flags)!.columns.map((c) => c.type)).toEqual([
+      'boolean',
+      'number',
+      'string',
+    ]);
+    // Everything else of the document is as stored.
+    const stored = (await call(`/api/dashboards/${id}`, { cookie })).json.doc;
+    expect({ ...exp.doc, datasets: [] }).toEqual({ ...stored, datasets: [] });
+    expect(exp.doc.datasets.map((d) => d.id)).toEqual(stored.datasets.map((d: { id: string }) => d.id));
+  });
+
+  it('gives viewers the document only, and strangers the same 404 as a missing dashboard', async () => {
+    const { id, cookie } = await shopBoard('public-owner@example.com');
+    expect((await exportOf(id)).res.status).toBe(404);
+    expect((await exportOf(id, { cookie: await login('stranger@example.com') })).res.status).toBe(404);
+    await call(`/api/dashboards/${id}/settings`, {
+      method: 'PATCH',
+      body: { visibility: 'public', confirmPublicSecrets: true },
+      cookie,
+    });
+    const viewer = await exportOf(id, { cookie: await login('viewer@example.com') });
+    expect(viewer.res.status).toBe(200);
+    const exp = readExport(JSON.parse(viewer.text));
+    expect(exp.files).toEqual([]);
+    expect(exp.doc.datasets.map((d) => d.id)).toEqual(['temps', 'flags', 'orders']);
+    expect(viewer.text).not.toContain('Bratislava');
+  });
+
+  it('lets the editors of an anonymous dashboard export its files with the edit key', async () => {
+    const anon = await withReference('f_anon');
+    await call(`/api/dashboards/${anon.id}/files`, {
+      body: {
+        name: 'a.json',
+        format: 'table',
+        fileId: 'f_anon',
+        content: JSON.stringify({ columns: [{ name: 'n', type: 'number' }], data: [[1]] }),
+      },
+      ...anon.auth,
+    });
+    expect(readExport(JSON.parse((await exportOf(anon.id, anon.auth)).text)).files).toHaveLength(1);
+    expect(readExport(JSON.parse((await exportOf(anon.id)).text)).files).toHaveLength(0);
   });
 });

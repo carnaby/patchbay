@@ -3,9 +3,9 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, s
 import { join } from 'node:path';
 import {
   type DashboardDoc,
-  docSecretIds,
   parseCsv,
   parseDashboard,
+  portability,
   type UseCaseMeta,
   UseCaseMetaSchema,
   useCaseDashboardId,
@@ -100,11 +100,12 @@ function hashFile(path: string): string {
  * secrets belong to a user, so neither can be shared.
  */
 function assertPortable(doc: DashboardDoc) {
-  if (doc.datasets.some((d) => d.source.kind === 'upload'))
+  const { uploads, secrets } = portability(doc);
+  if (uploads.length)
     throw new Error(
       'dashboard.json uses an upload source; use inline rows, a built-in connector or a public URL',
     );
-  if (docSecretIds(doc).length)
+  if (secrets.length)
     throw new Error('dashboard.json references a stored secret; a showcase cannot hold credentials');
 }
 

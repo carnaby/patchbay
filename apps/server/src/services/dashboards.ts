@@ -29,6 +29,7 @@ import {
   parseBinding,
   parseDashboard,
   placementConflict,
+  portability,
   type SecretInfo,
   type SecretMode,
   type SecretPlacement,
@@ -37,6 +38,7 @@ import {
   secretRefChanges,
   secretValueIssue,
   sourceSecretIds,
+  stripSecretRefs,
   type UploadedFile,
   type VersionInfo,
   type Visibility,
@@ -267,10 +269,12 @@ function uploadsFull(adding: number, used: number): HttpError {
 const fileExists = (fileId: string) =>
   new HttpError(409, `This dashboard already has file "${fileId}"`, { code: 'FILE_EXISTS' });
 
-function withoutSecrets(d: Dataset): Dataset {
-  if (d.source.kind !== 'http' || !d.source.secrets) return d;
-  const { secrets: _removed, ...source } = d.source;
-  return { ...d, source };
+export interface ExportPlan {
+  target: DashboardTarget;
+  doc: DashboardDoc;
+  /** Uploaded files to include: only those a dataset uses, and only for editors. */
+  files: UploadedFile[];
+  secretsRemovedFrom: string[];
 }
 
 function secretName(raw: string): string {
@@ -853,8 +857,9 @@ export class DashboardService {
     const { meta, doc } = await this.loadViewable(id, p);
     // Secrets belong to the dashboard's owner. Anyone else's copy would hold dead references (or be rejected, when
     // anonymous), so they are removed and the copy loads its URLs without credentials.
-    const strip = !(p.user && meta.ownerId === p.user.id) && docSecretIds(doc).length > 0;
-    const datasets = strip ? doc.datasets.map(withoutSecrets) : doc.datasets;
+    const stripped = stripSecretRefs(doc);
+    const strip = !(p.user && meta.ownerId === p.user.id) && stripped.datasetIds.length > 0;
+    const copied = strip ? stripped.doc : doc;
     const used = new Set(doc.datasets.flatMap((d) => (d.source.kind === 'upload' ? [d.source.fileId] : [])));
     // The copy's uploads share the original's bytes on disk, but they count towards the copy's owner in full: the
     // original may be deleted, and the index measures each dashboard on its own.
@@ -863,7 +868,7 @@ export class DashboardService {
       this.assertUserRoom(p.user.id, 2 * jsonBytes(doc) + storedBytes(files));
     }
     const created = await this.create(p, {
-      doc: { ...doc, datasets, title: copyTitle(doc.title) },
+      doc: { ...copied, title: copyTitle(doc.title) },
       ...(strip ? { changes: ['Created', 'Removed secret references (secrets belong to their owner)'] } : {}),
     });
     // Only files the copied datasets actually use: unreferenced uploads stay private to editors. Viewers may copy
@@ -876,6 +881,27 @@ export class DashboardService {
       await this.updateSize(id);
     }
     return created;
+  }
+
+  /**
+   * What an export of `id` may hold for `p`. Anyone who can view gets the document, which they can read anyway, with
+   * secret references removed: those name one account's secrets on one server. Uploaded tables only for editors, the
+   * people who can list and preview them already; viewers see data only through datasets.
+   */
+  async exportPlan(id: string, p: Principal): Promise<ExportPlan> {
+    const { meta, doc } = await this.loadViewable(id, p);
+    const stripped = stripSecretRefs(doc);
+    const used = new Set(portability(doc).uploads.map((u) => u.fileId));
+    const files =
+      used.size > 0 && this.canEdit(meta, p)
+        ? (await this.store.listFiles(id)).filter((f) => used.has(f.id))
+        : [];
+    return {
+      target: { id, ownerId: meta.ownerId },
+      doc: stripped.doc,
+      files,
+      secretsRemovedFrom: stripped.datasetIds,
+    };
   }
 
   async delete(id: string, p: Principal) {
