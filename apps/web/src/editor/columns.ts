@@ -61,20 +61,22 @@ export function switchJoinDataset(step: JoinStep, id: string): JoinStep {
 }
 
 /**
- * Once the other dataset's columns are known, fix keys that cannot match: prefer a column both sides have, else keep
- * the left one and take the other side's first column. Keys valid on both sides are the user's and stay. Returns the
- * same object when nothing changes, so an effect calling it cannot loop.
+ * Once the other dataset's columns are known, fix keys whose right side cannot match: prefer a column both sides
+ * have, else keep the left one and take the other side's first column. A key whose right side exists is the user's and
+ * stays, and an unknown left column is never touched (the select already shows it as missing). Every branch leaves the
+ * right side valid, so a second call returns the same object and an effect calling it cannot loop.
  */
 export function repickJoinKeys(step: JoinStep, left: string[], theirs: string[]): JoinStep {
   if (theirs.length === 0) return step;
   let changed = false;
   const keys = joinKeys(step.on).map((k) => {
-    if ((left.length === 0 || left.includes(k.left)) && theirs.includes(k.right)) return k;
+    if (theirs.includes(k.right)) return k;
     changed = true;
-    const shared =
-      left.includes(k.left) && theirs.includes(k.left) ? k.left : left.find((c) => theirs.includes(c));
-    if (shared !== undefined) return { left: shared, right: shared };
-    return { left: k.left, right: theirs[0] as string };
+    if (left.includes(k.left)) {
+      const shared = theirs.includes(k.left) ? k.left : left.find((c) => theirs.includes(c));
+      if (shared !== undefined) return { left: shared, right: shared };
+    }
+    return { left: k.left, right: theirs.includes(k.left) ? k.left : (theirs[0] as string) };
   });
   return changed ? { ...step, on: compact(keys) } : step;
 }

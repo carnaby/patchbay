@@ -66,3 +66,23 @@ describe('join key helpers', () => {
     expect(repickJoinKeys(s, ['id'], [])).toBe(s);
   });
 });
+
+describe('repickJoinKeys is idempotent', () => {
+  const j = (on: Parameters<typeof repickJoinKeys>[0]['on']) => ({ type: 'join' as const, with: 'a', on });
+  const cases: [string, ReturnType<typeof j>, string[], string[]][] = [
+    ['shared column', j(['id']), ['id', 'n'], ['country', 'n']],
+    ['no shared column', j(['id']), ['id'], ['zip', 'q']],
+    ['empty left key', j(['']), ['id'], ['zip', 'q']],
+    ['left key missing on this side', j(['gone']), ['id'], ['zip']],
+    ['valid key', j([{ left: 'id', right: 'code' }]), ['id'], ['code']],
+  ];
+  for (const [name, s, a, b] of cases)
+    it(name, () => {
+      const first = repickJoinKeys(s, a, b);
+      expect(repickJoinKeys(first, a, b)).toBe(first);
+    });
+
+  it('leaves an unknown left key alone and fixes only the right', () => {
+    expect(repickJoinKeys(j(['gone']), ['id'], ['zip'])).toEqual(j([{ left: 'gone', right: 'zip' }]));
+  });
+});
