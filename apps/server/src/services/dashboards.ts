@@ -1104,10 +1104,13 @@ export class DashboardService {
           code: 'FILE_NOT_REFERENCED',
         });
       if (f.bytes > MAX_TABLE_FILE_BYTES) throw tableTooLarge(f.name.slice(0, 120), f.bytes);
+      // An export holds up to MAX_FILES tables: the refusal says which one.
       const columns = columnCountProblem(f.columns);
-      if (columns) throw badRequest(columns.message);
+      if (columns) throw badRequest(`${label}: ${columns.message}`);
       if (f.rows * f.columns > maxCells)
-        throw badRequest(tooLarge(f.rows, f.columns, maxCells, false).message + this.cellsHint(ownerId));
+        throw badRequest(
+          `${label}: ${tooLarge(f.rows, f.columns, maxCells, false).message}${this.cellsHint(ownerId)}`,
+        );
       total += f.bytes;
     }
     // A stored table takes about the bytes of the packed text it comes from.

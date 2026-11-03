@@ -615,6 +615,7 @@ describe('import', () => {
     const before = folders();
     const anon = await call('/api/dashboards/import', { body: { doc, files: [file] } });
     expect(anon.status).toBe(400);
+    expect(anon.json.error).toMatch(/^File "big\.csv": The file has 600 rows × 2 columns; /);
     expect(anon.json.error).toContain('Dashboards of signed-in users accept up to 500,000 cells.');
     const cookie = await login('fits@example.com');
     const huge = await call('/api/dashboards/import', {
@@ -625,6 +626,12 @@ describe('import', () => {
     expect(huge.json.code).toBe('IMPORT_FILE_TOO_LARGE');
     expect(EXPORT_MAX_FILES).toBe(MAX_FILES);
     const many = Array.from({ length: MAX_FILES + 1 }, (_, i) => ({ ...file, id: `f_${i}` }));
+    const wide = await call('/api/dashboards/import', {
+      body: { doc, files: [{ ...file, rows: 1, columns: 501 }] },
+      cookie,
+    });
+    expect(wide.status).toBe(400);
+    expect(wide.json.error).toMatch(/^File "big\.csv": The file has 501 columns; /);
     const tooMany = await call('/api/dashboards/import', { body: { doc, files: many }, cookie });
     expect(tooMany.status).toBe(400);
     expect(tooMany.json.error).toContain(`up to ${MAX_FILES} files`);
