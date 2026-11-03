@@ -1482,10 +1482,12 @@ describe('canary', () => {
         http('gone', '/v1/orders?gone=1', [header.id]),
         http('bq', '/v1/whoami?bq=1', [bearer.id, query.id]),
         { id: 'who-derived', name: 'who-derived', source: { kind: 'dataset', id: 'who' } },
+        // "same" ends at /v1/orders with all three credentials, so its account matches who's and the join carries
+        // who's echoes of the credentials into a dataset that holds no secret reference of its own.
         {
           id: 'orders-joined',
           name: 'orders-joined',
-          source: { kind: 'dataset', id: 'orders' },
+          source: { kind: 'dataset', id: 'same' },
           transforms: [{ type: 'join', with: 'who', on: ['account'] }],
         },
       ];
@@ -1507,9 +1509,29 @@ describe('canary', () => {
         await c.call(`/api/dashboards/${dash}/data/${d.id}`, { cookie: owner });
         await c.call(`/api/dashboards/${dash}/suggest/${d.id}`, { cookie: owner });
       }
+      const joined = (await c.call(`/api/dashboards/${dash}/data/orders-joined`, { cookie: owner })).json;
+      expect(joined.table.rows).toHaveLength(2);
+      expect(joined.table.rows[0].echoAuth).toContain('[redacted]');
       await c.call(`/api/dashboards/${dash}/preview`, {
         cookie: owner,
         body: { dataset: { source: datasets[0]!.source } },
+      });
+      // Derived drafts, one standing in for a saved dataset: their upstream is fetched with the credentials.
+      const joinDraft = {
+        source: { kind: 'dataset', id: 'same' },
+        transforms: [{ type: 'join', with: 'who', on: ['account'] }],
+      };
+      for (const editing of [undefined, 'orders-joined']) {
+        const draft = await c.call(`/api/dashboards/${dash}/preview`, {
+          cookie: owner,
+          body: { dataset: joinDraft, ...(editing ? { editing } : {}) },
+        });
+        expect(draft.status).toBe(200);
+        expect(draft.json.result.table.rows[0].echoAuth).toContain('[redacted]');
+      }
+      await c.call(`/api/dashboards/${dash}/preview`, {
+        cookie: owner,
+        body: { dataset: { source: { kind: 'dataset', id: 'who' } } },
       });
       await c.call(`/api/dashboards/${dash}/preview`, {
         cookie: owner,
@@ -1604,6 +1626,12 @@ describe('canary', () => {
       }
       await call('preview_data', { source: datasets[0]!.source });
       await call('preview_data', { dashboardId: created, source: datasets[6]!.source });
+      for (const dashboardId of [dash, created]) {
+        const derived = await call('preview_data', { dashboardId, ...joinDraft });
+        expect(derived.isError, text(derived)).toBeFalsy();
+        expect(text(derived)).toContain('echoAuth');
+        await call('preview_data', { dashboardId, source: { kind: 'dataset', id: 'who' } });
+      }
       await call('preview_data', { source: { kind: 'http', url: `${API}/admin/orders`, secrets: all } });
       await call('upload_data', {
         dashboardId: created,

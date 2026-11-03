@@ -129,6 +129,12 @@ export interface DashboardTarget {
   ownerId: string | null;
   /** A read-only token's preview: the operator's private hosts never apply, whoever the owner is. */
   publicOnly?: boolean;
+  /**
+   * An unsaved draft's preview: it shows the accumulated history of the datasets it reads but never adds to it. Its
+   * fetch may be a reading of its own (another cache entry, a viewer's network rights), and the owner's history
+   * must hold only the dashboard's own readings.
+   */
+  preview?: boolean;
 }
 
 /** Decrypts a dataset's credentials or throws an HttpError with a message that is safe to show any viewer. */
@@ -452,6 +458,8 @@ export class DataService {
     const source = `${JSON.stringify(dataset.source)}|${loaded.credentialKey}`;
     let buffer = this.buffers.get(key);
     if (!buffer || buffer.source !== source) buffer = { rows: [], reading: '', source, rowBytes: 0 };
+    // A preview works on a copy that is never stored (see DashboardTarget.preview).
+    if (target.preview) buffer = { ...buffer, rows: [...buffer.rows] };
     // Only append when the source actually produced a new reading: a new fetch time, or for an upload or inline
     // rows, new content. Merely reading a static source again is not a reading.
     const reading = loaded.stamp ?? `t${fetchedAt}`;
@@ -466,7 +474,7 @@ export class DataService {
       if (buffer.rows.length > dataset.accumulate)
         buffer.rows.splice(0, buffer.rows.length - dataset.accumulate);
     }
-    this.buffers.set(key, buffer, 128 + buffer.rows.length * buffer.rowBytes);
+    if (!target.preview) this.buffers.set(key, buffer, 128 + buffer.rows.length * buffer.rowBytes);
     const columns = table.columns.some((c) => c.name === 'fetched_at')
       ? table.columns
       : [...table.columns, { name: 'fetched_at', type: 'time' as const }];

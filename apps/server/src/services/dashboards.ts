@@ -1393,6 +1393,9 @@ export class DashboardService {
     if (!dashboardId && upstreamOf(draft).length > 0) throw badRequest(DERIVED_NEEDS_DASHBOARD);
     const viewable = dashboardId ? await this.loadViewable(dashboardId, p) : null;
     const meta = viewable?.meta ?? null;
+    // Before anything about the draft: someone who may not edit learns nothing from its cycle or its sources.
+    if (options.requireEdit && meta && !this.canEdit(meta, p))
+      throw forbidden('You cannot edit this dashboard');
     let doc: DashboardDoc;
     let dataset: Dataset;
     if (viewable) {
@@ -1440,11 +1443,9 @@ export class DashboardService {
     if (!dashboardId || !meta) {
       if (upload) throw badRequest('Uploaded files need dashboardId');
       if (!p.user) throw unauthorized();
-      return { id: 'preview00', ownerId: p.user.id, ...publicOnly, doc, dataset };
+      return { id: 'preview00', ownerId: p.user.id, ...publicOnly, preview: true, doc, dataset };
     }
-    const needsEdit = options.requireEdit || upload || secrets;
-    if (needsEdit && !this.canEdit(meta, p)) {
-      if (options.requireEdit) throw forbidden('You cannot edit this dashboard');
+    if ((upload || secrets) && !this.canEdit(meta, p)) {
       throw forbidden(
         upload
           ? 'Only editors of this dashboard can preview its uploaded files'
@@ -1452,7 +1453,7 @@ export class DashboardService {
       );
     }
     // Secrets and uploads need an editor (above), so nothing else the target carries changes meaning for a viewer.
-    return { id: dashboardId, ownerId, ...publicOnly, doc, dataset };
+    return { id: dashboardId, ownerId, ...publicOnly, preview: true, doc, dataset };
   }
 
   // Secrets ------------------------------------------------------------------------------------------------------

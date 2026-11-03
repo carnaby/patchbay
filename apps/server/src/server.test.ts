@@ -556,6 +556,19 @@ describe('derived datasets over REST', () => {
       body: { dataset: { source: { kind: 'dataset', id: 'preview' } } },
     });
     expect(refused.status).toBe(404);
+    // A viewer of the now public dashboard is told it cannot edit, before anything about the draft (its cycle).
+    const shared = await call(`/api/dashboards/${id}/settings`, {
+      method: 'PATCH',
+      body: { visibility: 'public' },
+      cookie,
+    });
+    expect(shared.status).toBe(200);
+    const viewer = await call(`/api/dashboards/${id}/preview`, {
+      cookie: stranger,
+      body: { editing: 'preview', dataset: { source: { kind: 'dataset', id: 'kid' } } },
+    });
+    expect(viewer.status).toBe(403);
+    expect(viewer.json.error).toBe('You cannot edit this dashboard');
   });
 });
 

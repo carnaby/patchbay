@@ -31,7 +31,7 @@ import { exportBodies } from '../services/export-body.ts';
 import { type Body, rowsFormat, streamBodies, streamBody } from '../services/result-wire.ts';
 import { listTemplates } from '../services/templates.ts';
 import { useCaseInfo } from '../showcase/info.ts';
-import { badRequest, forbidden, HttpError, notFound, RetryLaterError } from '../util/errors.ts';
+import { badRequest, HttpError, notFound, RetryLaterError } from '../util/errors.ts';
 import { memoryGuard } from '../util/memory-pressure.ts';
 import { currentClient, runAsClient } from '../util/request-context.ts';
 
@@ -377,17 +377,15 @@ export function apiRoutes(deps: Deps) {
   app.post('/dashboards/:id/preview', async (c) => {
     const id = c.req.param('id');
     const principal = c.get('principal');
-    const { meta } = await dashboards.loadViewable(id, principal);
-    if (!dashboards.canEdit(meta, principal)) throw forbidden('You cannot edit this dashboard');
     // `editing`: the saved dataset the draft stands in for, so its readers and the cycle check see the draft there.
     const body = z.object({ dataset: z.unknown(), editing: IdSchema.optional() }).parse(await c.req.json());
     const draft = DatasetSchema.parse({ id: 'preview', name: 'Preview', ...(body.dataset as object) });
-    if (draft.source.kind === 'connector')
-      connectors.validateParams(draft.source.connector, draft.source.params);
     const target = await dashboards.previewTarget(principal, id, draft, {
       requireEdit: true,
       ...(body.editing ? { editing: body.editing } : {}),
     });
+    if (draft.source.kind === 'connector')
+      connectors.validateParams(draft.source.connector, draft.source.params);
     const dataset = target.dataset;
     const result = await data
       .scope(target, target.doc)

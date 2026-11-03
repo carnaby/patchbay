@@ -207,6 +207,29 @@ describe('resolution scopes', () => {
     expect(u.table.rows).toEqual([{ i: 'x' }, { i: 'y' }]);
   });
 
+  it("shows a preview the history of an accumulating root and never adds the preview's reading to it", async () => {
+    const data = new DataService(connectors, store);
+    // Every load is a new reading (a new fetch time), as a fetch outside the owner's cache would be.
+    let at = 1_000;
+    vi.spyOn(data, 'loadSource').mockImplementation(async () => ({
+      table: inferTable(cities),
+      fetchedAt: at,
+      credentialKey: '',
+    }));
+    const d = doc(inline('hist', cities, { accumulate: 10 }), from('kid', 'hist'));
+    expect((await data.scope(target, d).resolve(byId(d, 'kid'))).table.rows).toHaveLength(2);
+    at = 2_000;
+    const preview = { ...target, preview: true };
+    const draft = DatasetSchema.parse(from('draft', 'hist'));
+    const shown = await data.scope(preview, { ...d, datasets: [...d.datasets, draft] }).resolve(draft);
+    // The stored reading plus the preview's own one, which is shown but not kept.
+    expect(shown.table.rows).toHaveLength(4);
+    expect((await data.scope(preview, d).resolve(byId(d, 'hist'))).table.rows).toHaveLength(4);
+    // The same reading as the stored one is not new: the buffer still holds exactly one reading.
+    at = 1_000;
+    expect((await data.scope(target, d).resolve(byId(d, 'kid'))).table.rows).toHaveLength(2);
+  });
+
   it('resolves a draft that is not in the document against the document', async () => {
     const data = new DataService(connectors, store);
     const d = doc(inline('w', cities));
