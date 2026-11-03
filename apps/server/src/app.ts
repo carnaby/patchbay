@@ -94,10 +94,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   const data = new DataService(connectors, store, pipeline, {
     outbound,
     credentials: (target, dataset) => dashboards!.credentialsFor(target, dataset),
-    urlPolicy: (target, url) => {
-      dashboards!.assertMayFetchUrl(target, url);
-      return null;
-    },
+    urlPolicy: (target, url) => dashboards!.assertMayFetchUrl(target, url),
     offline: config.offline,
     cacheBytes: config.dataCacheBytes,
     maxSourceCells: config.uploadMaxCells,
@@ -126,6 +123,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       anonymousStorageBytes: config.anonymousStorageBytes,
       userStorageBytes: config.userStorageBytes,
       trustedUrls: trustedSourceUrls(useCases),
+      privateHosts: config.privateHosts,
+      privateHostsFor: config.privateHostsFor,
     },
   );
   const wire = new ResultWire();

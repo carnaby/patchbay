@@ -81,7 +81,8 @@ export const SourceSchema = z.discriminatedUnion('kind', [
   z
     .strictObject({
       kind: z.literal('http'),
-      url: z.url({ protocol: /^https$/ }).max(2000),
+      // http:// is the server's decision (ALLOW_PRIVATE_HOSTS), which this pure schema cannot see.
+      url: z.url({ protocol: /^https?$/ }).max(2000),
       path: z
         .string()
         .max(200)
@@ -96,12 +97,13 @@ export const SourceSchema = z.discriminatedUnion('kind', [
         .describe('Saved secret ids (list_secrets), sent only to the address each is bound to'),
     })
     .describe(
-      'An HTTPS JSON endpoint. Private networks are blocked. Credentials only via "secrets", never in the URL',
+      'A JSON endpoint; http:// and private hosts only if the server allows. Credentials only via "secrets", never in URL',
     ),
   z
     .strictObject({
       kind: z.literal('feed'),
-      url: z.url({ protocol: /^https$/ }).max(2000),
+      // http:// is the server's decision (ALLOW_PRIVATE_HOSTS), which this pure schema cannot see.
+      url: z.url({ protocol: /^https?$/ }).max(2000),
       limit: z.number().int().min(1).max(200).default(30),
     })
     .describe('An RSS, Atom or JSON Feed, or a web page that announces one'),
