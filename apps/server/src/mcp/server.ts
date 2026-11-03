@@ -423,7 +423,7 @@ export function createMcp(deps: Deps) {
       {
         title: 'Preview a data source',
         description:
-          'Loads a source and runs transforms WITHOUT saving: returns columns, sample rows, a column profile and widget suggestions. Pass dashboardId when the source is an uploaded file.',
+          'Loads a source and runs transforms WITHOUT saving: returns columns, sample rows, a column profile and widget suggestions. Pass dashboardId for an uploaded file, a source of kind "dataset", or join/union steps: they read the saved datasets of that dashboard.',
         inputSchema: previewDataInput,
         annotations: { ...read, openWorldHint: true },
       },
@@ -433,17 +433,19 @@ export function createMcp(deps: Deps) {
           args: { source: unknown; transforms: unknown[]; dashboardId?: string; sampleRows: number },
           p,
         ) => {
-          const dataset = DatasetSchema.parse({
+          const draft = DatasetSchema.parse({
             id: 'preview',
             name: 'Preview',
             source: args.source,
             transforms: args.transforms,
           });
-          // Raw uploads and secrets are for editors only; without a dashboard only the user's own secrets apply.
-          const target = await dashboards.previewTarget(p, args.dashboardId, dataset);
-          if (dataset.source.kind === 'connector')
-            connectors.validateParams(dataset.source.connector, dataset.source.params);
-          const result = await data.resolve(target, dataset, { maxRows: 5000 });
+          // Raw uploads and secrets are for editors only, in the draft and in every dataset it reads; without a
+          // dashboard only the user's own secrets apply, and nothing can be read from other datasets.
+          const target = await dashboards.previewTarget(p, args.dashboardId, draft);
+          if (draft.source.kind === 'connector')
+            connectors.validateParams(draft.source.connector, draft.source.params);
+          const dataset = target.dataset;
+          const result = await data.scope(target, target.doc).resolve(dataset, { maxRows: 5000 });
           if (result.error && result.table.rows.length === 0) return fail(result.error);
           const profile = profileTable(result.table);
           return json({
@@ -597,8 +599,10 @@ export function createMcp(deps: Deps) {
           const widget = needed[0];
           // Shares the REST endpoint's gate and per-client budget: snapshots from either side count against both.
           chargeSnapshot(deps.limits.snapshots, `user:${userId}`);
-          const scope = data.scope(target, doc);
           const png = await snapshotGate.run(async (draw) => {
+            // One scope for every widget of this picture, made once the gate admits it, so its deadline starts with
+            // this render's own work.
+            const scope = data.scope(target, doc);
             await Promise.all(
               doc.datasets
                 .filter((d) => ids.has(d.id))

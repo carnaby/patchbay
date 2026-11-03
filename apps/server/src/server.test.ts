@@ -490,6 +490,73 @@ describe('derived datasets over REST', () => {
       spy.mockRestore();
     }
   });
+
+  it('previews drafts against the saved datasets, without replacing one and refusing cycles', async () => {
+    // Run alone (-t), the test above did not create the dashboard.
+    if (!derivedId) {
+      derivedCookie = await login('derived-rest@example.com');
+      derivedId = await derivedDashboard(derivedCookie);
+    }
+    const cookie = derivedCookie;
+    const id = derivedId;
+    const added = await call(`/api/dashboards/${id}/ops`, {
+      cookie,
+      body: {
+        ops: [
+          // A saved dataset that happens to be called "preview" must not be replaced by a draft.
+          {
+            op: 'addDataset',
+            dataset: {
+              id: 'preview',
+              name: 'P',
+              source: { kind: 'inline', rows: [{ temp: 1 }, { temp: 3 }] },
+            },
+          },
+          {
+            op: 'addDataset',
+            dataset: { id: 'kid', name: 'Kid', source: { kind: 'dataset', id: 'preview' } },
+          },
+        ],
+      },
+    });
+    expect(added.status).toBe(200);
+    const draft = await call(`/api/dashboards/${id}/preview`, {
+      cookie,
+      body: {
+        dataset: {
+          source: { kind: 'dataset', id: 'preview' },
+          transforms: [{ type: 'filter', expr: 'temp > 2' }],
+        },
+      },
+    });
+    expect(draft.status).toBe(200);
+    expect(draft.json.result.table.rows).toEqual([{ temp: 3 }]);
+    expect(draft.json.result.datasetId).toBe('preview-2');
+    // Editing a saved dataset previews the draft in its place, so its readers see the change.
+    const edited = await call(`/api/dashboards/${id}/preview`, {
+      cookie,
+      body: {
+        editing: 'root',
+        dataset: { source: { kind: 'inline', rows: [{ city: 'C', temp: 5 }] } },
+      },
+    });
+    expect(edited.status).toBe(200);
+    expect(edited.json.result.table.rows).toEqual([{ city: 'C', temp: 5 }]);
+    expect(edited.json.result.datasetId).toBe('root');
+    const cycle = await call(`/api/dashboards/${id}/preview`, {
+      cookie,
+      body: { editing: 'preview', dataset: { source: { kind: 'dataset', id: 'kid' } } },
+    });
+    expect(cycle.status).toBe(400);
+    expect(cycle.json.error).toContain('Datasets "preview" → "kid" → "preview" form a cycle');
+    // Someone else cannot preview drafts against the (private) dashboard: it does not exist for them.
+    const stranger = await login('derived-preview-stranger@example.com');
+    const refused = await call(`/api/dashboards/${id}/preview`, {
+      cookie: stranger,
+      body: { dataset: { source: { kind: 'dataset', id: 'preview' } } },
+    });
+    expect(refused.status).toBe(404);
+  });
 });
 
 function pkce() {
@@ -774,8 +841,9 @@ describe('MCP tools', () => {
     // the widget union, without field descriptions; -> 39,300: the feed source and the table's column `link` and
     // `style`; -> 39,400: the http source's description mentions http:// and private hosts (ALLOW_PRIVATE_HOSTS); -> 42,200: the join and union steps (proposal 0005),
     // two more branches of the step union, advertised again wherever steps are accepted; -> 42,700: the dataset source (proposal 0005), one more branch of the
-    // source union, advertised wherever a source is accepted).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(42_700);
+    // source union, advertised wherever a source is accepted; -> 42,800: preview_data says which drafts need
+    // dashboardId).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(42_800);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(

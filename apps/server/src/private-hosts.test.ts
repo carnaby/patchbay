@@ -342,6 +342,32 @@ describe('a self-hosted instance with ALLOW_PRIVATE_HOSTS=127.0.0.1', () => {
     expect(hits).toBe(before + 1);
   });
 
+  it("keeps a read-only token from previewing a draft that reads a saved source on the operator's network", async () => {
+    const admin = await lan.dashboard(ADMIN);
+    expect((await lan.addDataset(admin, home(`${states()}?derived`))).status).toBe(200);
+    const readOnly = await lan.mcp(ADMIN, false);
+    const before = hits;
+    for (const draft of [
+      { source: { kind: 'dataset', id: 'home' } },
+      {
+        source: { kind: 'inline', rows: [{ state: 'on' }] },
+        transforms: [{ type: 'union', with: ['home'] }],
+      },
+    ]) {
+      const res = await readOnly({ dashboardId: admin.id, ...draft });
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain('dashboards:write');
+      // Refused up front, not by the fetch of the saved source (which would name it as a failed upstream).
+      expect(res.text).not.toContain('Source dataset');
+    }
+    expect(hits).toBe(before);
+    // With write access the same draft reads the saved source.
+    const writer = await lan.mcp(ADMIN, true);
+    const ok = await writer({ dashboardId: admin.id, source: { kind: 'dataset', id: 'home' } });
+    expect(ok.isError, ok.text).toBe(false);
+    expect(ok.text).toContain('light.kitchen');
+  });
+
   it('answers a read-only token of a user without the list the same for listed and unlisted names', async () => {
     const named = await instance({ ALLOW_PRIVATE_HOSTS: '127.0.0.1, homeassistant.lan' });
     try {

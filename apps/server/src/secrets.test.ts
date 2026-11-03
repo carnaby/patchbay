@@ -1198,6 +1198,82 @@ describe('secrets over MCP', () => {
     expect(ok.isError).toBeFalsy();
   });
 
+  it('needs the write scope to preview a dataset that reads a secret-backed one, even on a public dashboard', async () => {
+    const cookie = await env.login('mcp-derived-preview@example.com');
+    const s = await env.secret(cookie);
+    const dash = await env.dashboard(cookie);
+    expect((await env.ops(dash, cookie, [addDataset(http('orders', '/v1/orders', [s.id]))])).status).toBe(
+      200,
+    );
+    const pub = await env.call(`/api/dashboards/${dash}/settings`, {
+      method: 'PATCH',
+      body: { visibility: 'public', confirmPublicSecrets: true },
+      cookie,
+    });
+    expect(pub.status).toBe(200);
+    const readOnly = await env.mcp(await env.pat(cookie, ['dashboards:read']));
+    const mark = upstream.received.length;
+    for (const draft of [
+      { source: { kind: 'dataset', id: 'orders' } },
+      {
+        source: { kind: 'inline', rows: [{ id: 1 }] },
+        transforms: [{ type: 'join', with: 'orders', on: ['id'] }],
+      },
+    ]) {
+      const res = await readOnly.callTool({
+        name: 'preview_data',
+        arguments: { dashboardId: dash, ...draft },
+      });
+      expect(res.isError).toBe(true);
+      expect(text(res)).toMatch(/dashboards:write/);
+    }
+    // A viewer of the public dashboard, with the write scope, is no editor: the lineage's secrets and uploads stay
+    // with the editors.
+    const file = await env.call(`/api/dashboards/${dash}/files`, {
+      body: { name: 'sheet.csv', content: 'id,total\n1,2\n' },
+      cookie,
+    });
+    expect(file.status).toBe(201);
+    expect(
+      (
+        await env.ops(dash, cookie, [
+          addDataset({ id: 'sheet', name: 'Sheet', source: { kind: 'upload', fileId: file.json.id } }),
+        ])
+      ).status,
+    ).toBe(200);
+    const viewer = await env.mcp(await env.pat(await env.login('mcp-derived-viewer@example.com')));
+    for (const [draft, message] of [
+      [
+        { source: { kind: 'dataset', id: 'orders' } },
+        'Only editors of this dashboard can preview sources that use secrets',
+      ],
+      [
+        { source: { kind: 'inline', rows: [{ id: 1 }] }, transforms: [{ type: 'union', with: ['sheet'] }] },
+        'Only editors of this dashboard can preview its uploaded files',
+      ],
+    ] as const) {
+      const res = await viewer.callTool({ name: 'preview_data', arguments: { dashboardId: dash, ...draft } });
+      expect(res.isError).toBe(true);
+      expect(text(res)).toBe(message);
+    }
+    expect(upstream.since(mark)).toEqual([]);
+    const loose = await readOnly.callTool({
+      name: 'preview_data',
+      arguments: { source: { kind: 'dataset', id: 'orders' } },
+    });
+    expect(text(loose)).toBe('Derived sources read the saved datasets of a dashboard; pass dashboardId');
+    // The owner's agent with the write scope previews it on a private dashboard.
+    const priv = await env.dashboard(cookie);
+    await env.ops(priv, cookie, [addDataset(http('orders', '/v1/orders', [s.id]))]);
+    const writer = await env.mcp(await env.pat(cookie));
+    const ok = await writer.callTool({
+      name: 'preview_data',
+      arguments: { dashboardId: priv, source: { kind: 'dataset', id: 'orders' } },
+    });
+    expect(ok.isError).toBeFalsy();
+    expect(text(ok)).toContain('"total"');
+  });
+
   it('lists secrets, uses them on private dashboards and warns about keys in URLs', async () => {
     const cookie = await env.login('mcp-secrets@example.com');
     const s = await env.secret(cookie, { name: 'Shop', placement: 'query', paramName: 'api_key' });
@@ -1405,6 +1481,13 @@ describe('canary', () => {
         http('slow', '/v1/slow', all),
         http('gone', '/v1/orders?gone=1', [header.id]),
         http('bq', '/v1/whoami?bq=1', [bearer.id, query.id]),
+        { id: 'who-derived', name: 'who-derived', source: { kind: 'dataset', id: 'who' } },
+        {
+          id: 'orders-joined',
+          name: 'orders-joined',
+          source: { kind: 'dataset', id: 'orders' },
+          transforms: [{ type: 'join', with: 'who', on: ['account'] }],
+        },
       ];
       expect((await c.ops(dash, owner, datasets.map(addDataset))).status).toBe(200);
       await c.ops(dash, owner, [
