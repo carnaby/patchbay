@@ -190,6 +190,12 @@ describe('readExport', () => {
     expect(refusal(() => readExport(envelope({ doc: newerDoc })))).toBe(
       'The dashboard in this file was made with a newer version of Patchbay (document version 2). Update this server to import it.',
     );
+    // A bare document, and the REST answer around one, are refused the same way, not as a validation dump.
+    for (const raw of [newerDoc, { meta: { id: 'x' }, doc: newerDoc, access: {} }]) {
+      expect(refusal(() => readExport(raw))).toBe(
+        'The dashboard in this file was made with a newer version of Patchbay (document version 2). Update this server to import it.',
+      );
+    }
   });
 
   it('says plainly when a file is not an export at all', () => {
