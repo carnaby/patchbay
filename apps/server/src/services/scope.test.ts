@@ -594,6 +594,53 @@ describe('final results across scopes', () => {
     }
   });
 
+  it('lets only a chain admitted below the line continue when cold chains on other tables pile up', async () => {
+    const limit = 512 * 1024 * 1024;
+    let fraction = 0.3;
+    memoryGuard.configure({
+      reader: () => ({ usedBytes: fraction * limit, limitBytes: limit, source: 'cgroup v2' }),
+      sampleMs: 0,
+      collect: () => {},
+      log: () => {},
+    });
+    try {
+      const runs: string[] = [];
+      class Filling extends InlineRunner {
+        override async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs) {
+          runs.push(transforms.map((t) => t.type).join(','));
+          await new Promise((r) => setTimeout(r, 10));
+          // Past the hard line once the first run is done, as wall screens reconnecting after a restart can do.
+          fraction = 0.97;
+          return super.run(table, transforms, inputs);
+        }
+      }
+      const data = new DataService(connectors, store, new Filling());
+      const tables = new Map<string, DataTable>();
+      vi.spyOn(data, 'loadSource').mockImplementation(async (t) => {
+        if (!tables.has(t.id))
+          tables.set(
+            t.id,
+            inferTable(Array.from({ length: HEAVY_PIPELINE_CELLS / 2 }, (_, i) => ({ a: i, b: i % 7 }))),
+          );
+        return { table: tables.get(t.id)!, fetchedAt: 1, credentialKey: '' };
+      });
+      const d = doc(
+        inline('w', cities, { transforms: [{ type: 'derive', as: 'c2', expr: 'b * 2' }] }),
+        from('c', 'w', { transforms: [{ type: 'filter', expr: 'b > 3' }] }),
+      );
+      const settled = await Promise.allSettled(
+        [0, 1, 2, 3].map((i) => data.scope({ id: `dash${i}`, ownerId: null }, d).resolve(byId(d, 'c'))),
+      );
+      expect(settled[0]!.status).toBe('fulfilled');
+      for (const s of settled.slice(1))
+        expect((s as PromiseRejectedResult).reason).toBeInstanceOf(MemoryPressureError);
+      expect(runs).toEqual(['derive', 'filter']);
+      expect(memoryGuard.heavyRunning()).toBe(0);
+    } finally {
+      memoryGuard.configure({ reader: null });
+    }
+  });
+
   it('forgets final results when the memory guard drops the caches', async () => {
     const data = new DataService(connectors, store, new CountingRunner());
     controlled(data);

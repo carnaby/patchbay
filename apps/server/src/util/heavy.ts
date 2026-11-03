@@ -14,7 +14,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { Gate } from './gate.ts';
-import { memoryGuard } from './memory-pressure.ts';
+import { type HeavyReservation, memoryGuard } from './memory-pressure.ts';
 import { currentClient } from './request-context.ts';
 
 /** A pipeline over a table at least this large (rows x columns) is heavy; smaller ones stay well inside the heap. */
@@ -24,7 +24,29 @@ export const HEAVY_FEED_BYTES = 512 * 1024;
 /** A stored upload at least this large on disk is heavy to load: its text, its parsed values and the table at once. */
 export const HEAVY_FILE_BYTES = 1024 * 1024;
 
-const holding = new AsyncLocalStorage<true>();
+/** The turn being held, marked released when it ends: work its task left behind waits for a turn of its own. */
+const holding = new AsyncLocalStorage<{ released: boolean }>();
+const inTurn = () => {
+  const turn = holding.getStore();
+  return turn !== undefined && !turn.released;
+};
+
+async function inOwnTurn<T>(task: () => Promise<T>): Promise<T> {
+  const turn = { released: false };
+  try {
+    return await holding.run(turn, task);
+  } finally {
+    turn.released = true;
+  }
+}
+
+/** Runs that make up one result (a dataset and what it reads, see `heavyWork.chain`). */
+interface Chain {
+  done: boolean;
+  /** Held from the chain's first admitted turn until it ends. */
+  job: HeavyReservation | undefined;
+}
+const chains = new AsyncLocalStorage<Chain>();
 
 /**
  * FIFO, one at a time; a short queue per client so one client cannot hold everyone else's turn. Every job has a
@@ -47,9 +69,40 @@ export const heavyWork = {
    * running and is never refused.
    */
   async run<T>(task: () => Promise<T>, client = currentClient()): Promise<T> {
-    if (holding.getStore()) return task();
+    if (inTurn()) return task();
+    const chain = chains.getStore();
+    const live = chain && !chain.done ? chain : undefined;
+    // A later run of an admitted chain: part of work already running. Should the chain end while this waits, the
+    // reservation is released and its turn is checked like any new job's.
+    if (live?.job) {
+      const job = live.job;
+      return job.run(() => gate.run(client, () => memoryGuard.runHeavy(() => inOwnTurn(task))));
+    }
     memoryGuard.admitHeavy();
-    return gate.run(client, () => memoryGuard.runHeavy(() => holding.run(true, task)));
+    if (!live) return gate.run(client, () => memoryGuard.runHeavy(() => inOwnTurn(task)));
+    return gate.run(client, () => {
+      if (live.done) return memoryGuard.runHeavy(() => inOwnTurn(task));
+      // Checked at its turn exactly like any job; admitted, it is held for the chain's later runs.
+      live.job ??= memoryGuard.reserveHeavy();
+      return live.job.run(() => inOwnTurn(task));
+    });
+  },
+  /**
+   * Runs `work`, whose heavy runs build one result, as a chain: its first heavy run is admitted like any job, on
+   * arrival and at its turn, and from then on the chain counts as one heavy job until it ends, so its later runs are
+   * not refused at their turns. Those come after the first has raised memory, and refusing them threw the first
+   * run's work away and turned away every reader of the result while memory stayed up. A chain whose first turn
+   * comes under pressure is refused as before, so what continues past the soft line is only what was admitted below
+   * it (or the one job a resting server lets through), never a queue of new chains.
+   */
+  async chain<T>(work: () => Promise<T>): Promise<T> {
+    const chain: Chain = { done: false, job: undefined };
+    try {
+      return await chains.run(chain, work);
+    } finally {
+      chain.done = true;
+      chain.job?.release();
+    }
   },
   /** Running and waiting heavy jobs (diagnostics and tests). */
   stats: () => gate.stats(),

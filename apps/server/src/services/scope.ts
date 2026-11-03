@@ -21,8 +21,7 @@ import {
 } from '@patchbay/core';
 import { HttpError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
-import { HEAVY_PIPELINE_CELLS } from '../util/heavy.ts';
-import { memoryGuard } from '../util/memory-pressure.ts';
+import { heavyWork } from '../util/heavy.ts';
 import type { DashboardTarget, DataService } from './data.ts';
 
 export const SCOPE_DEADLINE_MS = 20_000;
@@ -72,22 +71,6 @@ export function errorResult(datasetId: string, e: unknown): DatasetResult {
 }
 
 const rows = (n: number) => n.toLocaleString('en-US');
-
-/**
- * Builds a chain with large inputs as one heavy job, admitted by the memory guard once, when it starts. Its runs take
- * their turns one by one, and a child's turn often comes after its parent's run has raised memory past the soft
- * line: refused then, the chain had done its expensive part and was turned away before its result, and every reader
- * of that dataset was refused alike while memory stayed up. Admitted at the start, the chain is work already running,
- * which the guard lets finish; a chain that starts under pressure is still refused before it does anything.
- */
-async function asOneJob<T>(work: () => Promise<T>): Promise<T> {
-  const job = memoryGuard.reserveHeavy();
-  try {
-    return await job.run(work);
-  } finally {
-    job.release();
-  }
-}
 const isTimeout = (e: unknown) => e instanceof HttpError && e.message === SCOPE_TIMEOUT_MESSAGE;
 
 /**
@@ -211,10 +194,10 @@ export class ResolveScope {
           ...(error ? { error } : {}),
         };
       };
-      const shared = same ? await this.finalKey(dataset.id, options.maxRows) : undefined;
-      if (!shared) return await build();
-      const { key, heavy } = shared;
-      const run = heavy ? () => asOneJob(build) : build;
+      const key = same ? await this.finalKey(dataset.id, options.maxRows) : undefined;
+      if (!key) return await build();
+      // Its later heavy runs (children after their parent) are not refused once its first is admitted.
+      const run = () => heavyWork.chain(build);
       for (;;) {
         try {
           return await this.within(() => this.data.sharedFinal(key, run));
@@ -240,13 +223,9 @@ export class ResolveScope {
    * (their loads are their own) and seeded scopes (the live hub, whose inputs are the room's tables and which keeps
    * the full tables it settles), and histories, which are a new table on every read.
    */
-  private async finalKey(
-    id: string,
-    maxRows: number | undefined,
-  ): Promise<{ key: string; heavy: boolean } | undefined> {
+  private async finalKey(id: string, maxRows: number | undefined): Promise<string | undefined> {
     if (this.target.preview || this.seed) return undefined;
-    const lineage = lineageDatasets(this.doc, id);
-    const roots = lineage.filter((d) => d.source.kind !== 'dataset');
+    const roots = lineageDatasets(this.doc, id).filter((d) => d.source.kind !== 'dataset');
     if (roots.some((d) => d.accumulate > 0)) return undefined;
     let inputs: Awaited<ReturnType<DataService['loadInput']>>[];
     try {
@@ -266,11 +245,7 @@ export class ResolveScope {
       lineageKey(this.doc, id),
       readings,
     ];
-    // An estimate before anything runs: a large root and a step somewhere in the lineage mean heavy runs.
-    const heavy =
-      lineage.some((d) => d.transforms.length > 0) &&
-      inputs.some((i) => i.table.rows.length * i.table.columns.length >= HEAVY_PIPELINE_CELLS);
-    return { key: `final|${createHash('sha256').update(JSON.stringify(parts)).digest('base64url')}`, heavy };
+    return `final|${createHash('sha256').update(JSON.stringify(parts)).digest('base64url')}`;
   }
 
   /** A stored dataset's source, loaded once per scope; a draft that is not the stored object loads its own. */
