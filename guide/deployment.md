@@ -217,7 +217,7 @@ What holds whatever the list says:
   hop. A name whose DNS answer changes cannot lead anywhere the list does not allow; one disallowed address in an
   answer blocks the request.
 - A name entry never opens loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`) or public
-  addresses over plain http; only an address entry that covers them does. `localhost` cannot be listed: list
+  addresses over plain http; only an IP or CIDR entry does. `localhost` cannot be listed: list
   `127.0.0.1`, and know that this opens every service listening on this machine or container.
 - Cloud metadata addresses (`169.254.169.254`, `169.254.170.2`, `169.254.170.23`, `fd00:ec2::254`, `fd00:ec2::23`,
   `fd20:ce::254`, `100.100.100.200`) open only through an entry naming exactly that address, never through a range
@@ -243,7 +243,10 @@ without Google sign-in). Everyone who can view a dashboard sees what its sources
 Assistant shows your home to the internet. Keep such dashboards private.
 
 Agents (MCP) act as the dashboard's editor, and `get_reference` tells them which addresses their dashboards may load.
-When an editor is not the owner, a preview uses the caller's own permission, not the owner's. A token without the
+An editor's preview runs with the owner's rights, so editors of an administrator's dashboard can preview listed
+addresses: on `admins`, give edit access to an administrator's dashboard only to people you trust with the listed
+hosts. When the caller can only view the dashboard (not edit it), a preview uses the caller's own permission, not
+the owner's. A token without the
 `dashboards:write` scope (read-only) cannot preview an address that needs the list, because that request would reach
 your network; it must reconnect with write access.
 
@@ -255,7 +258,7 @@ Examples (addresses are placeholders for your own):
 - **Prometheus**: `http://192.168.1.30:9090/api/v1/query?query=up` with path `data.result`. Behind an
   authenticating proxy, bind a Bearer secret to `http://192.168.1.30:9090/api/v1/`.
 - **Pi-hole 5**: `http://192.168.1.2/admin/api.php?summaryRaw` with the API token (Settings, API) as a secret sent as
-  query parameter `auth`. Pi-hole 6 hands out sessions through a login request, which Patchbay does not make.
+  query parameter `auth`, with "Only send to" `http://192.168.1.2/admin/`. Pi-hole 6 hands out sessions through a login request, which Patchbay does not make.
 
 Secrets can be bound to listed hosts over `http://` and on other ports, but only to a host the list names by name or
 address (not one that merely resolves into a range today). Over plain http the value crosses your network
