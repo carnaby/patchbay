@@ -15,6 +15,7 @@ import {
   SOUND_IDS,
   type SoundRule,
   type Suggestion,
+  suggestionDataset,
   type TableProfile,
   type Widget,
   type WidgetInput,
@@ -58,6 +59,7 @@ import {
 import { api } from '../lib/api.ts';
 import { previewSound, SOUND_LABELS } from '../lib/sounds.ts';
 import { groupTimeZones, timeZones } from '../lib/time-zones.ts';
+import { datasetInSync, lineageKey } from '../state/dataset-keys.ts';
 import { useEditor } from '../state/editor.ts';
 import { useDatasetResult } from '../state/sync.ts';
 import {
@@ -189,14 +191,18 @@ function NewWidget({ onCreated }: { onCreated: (id: string) => void }) {
   const apply = useEditor((s) => s.apply);
   const [datasetId, setDatasetId] = useState(datasets[0]?.id ?? '');
   const { columns } = useColumns(datasetId);
+  const lineage = useEditor((s) => (s.doc && datasetId ? lineageKey(s.doc, datasetId) : ''));
+  const inSync = useEditor((s) => datasetInSync(s.saved, s.doc, datasetId));
   const suggestions = useQuery({
-    queryKey: ['suggest', dashboardId, datasetId, JSON.stringify(datasets.find((d) => d.id === datasetId))],
+    // Keyed on the lineage (a derived dataset follows its parent) and fetched only once the server knows the
+    // current definitions: it profiles the saved dataset, not the unsaved one.
+    queryKey: ['suggest', dashboardId, datasetId, lineage],
     queryFn: () =>
       api<{ profile: TableProfile; suggestions: Suggestion[] }>(
         `/api/dashboards/${dashboardId}/suggest/${datasetId}`,
         { dashboardId },
       ),
-    enabled: Boolean(datasetId),
+    enabled: Boolean(datasetId) && inSync,
   });
 
   const create = (widget: Omit<WidgetInput, 'id'>, transforms: Suggestion['transforms'] = []) => {
@@ -206,17 +212,11 @@ function NewWidget({ onCreated }: { onCreated: (id: string) => void }) {
     const ops = [];
     let targetDataset = datasetId;
     if (transforms.length) {
-      const source = doc.datasets.find((d) => d.id === datasetId)!;
       const dsTaken = new Set(doc.datasets.map((d) => d.id));
-      targetDataset = slug(`${source.id}-${widget.title ?? 'view'}`, dsTaken).slice(0, 40);
+      targetDataset = slug(`${datasetId}-${widget.title ?? 'view'}`, dsTaken).slice(0, 40);
       ops.push({
         op: 'addDataset' as const,
-        dataset: {
-          ...source,
-          id: targetDataset,
-          name: `${source.name}: ${widget.title ?? 'view'}`.slice(0, 120),
-          transforms: [...source.transforms, ...transforms],
-        },
+        dataset: suggestionDataset(doc, datasetId, targetDataset, widget.title ?? 'view', transforms),
       });
     }
     ops.push({

@@ -1,6 +1,6 @@
 import { applyOps, type DashboardDoc, emptyDashboard, SoundRuleSchema } from '@patchbay/core';
 import { describe, expect, it } from 'vitest';
-import { datasetInSync, datasetKey, refreshTiming, soundIdentity } from './dataset-keys.ts';
+import { datasetInSync, datasetKey, lineageKey, refreshTiming, soundIdentity } from './dataset-keys.ts';
 
 const saved: DashboardDoc = applyOps(emptyDashboard('t'), [
   {
@@ -21,6 +21,12 @@ const parentEdited = applyOps(saved, [
 const otherEdited = applyOps(saved, [{ op: 'updateDataset', id: 'other', set: { name: 'Renamed' } }]).doc;
 
 describe('dataset keys by lineage', () => {
+  it('caches a key per document and follows each new document', () => {
+    expect(lineageKey(saved, 'temps')).toBe(lineageKey(saved, 'temps'));
+    expect(lineageKey(parentEdited, 'temps')).not.toBe(lineageKey(saved, 'temps'));
+    expect(lineageKey(saved, 'missing')).toBe('[]');
+  });
+
   it('changes a child key when its parent changes, and not for unrelated edits', () => {
     expect(datasetKey('d', parentEdited, 'temps')).not.toEqual(datasetKey('d', saved, 'temps'));
     expect(datasetKey('d', otherEdited, 'temps')).toEqual(datasetKey('d', saved, 'temps'));

@@ -8,7 +8,6 @@
  */
 import {
   type DatasetResult,
-  lineageKey,
   type SoundRule,
   type SoundState,
   soundDecision,
@@ -17,7 +16,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { armAutoUnlock, playCue } from '../lib/sounds.ts';
-import { datasetKey, soundIdentity } from './dataset-keys.ts';
+import { datasetKey, lineageKey, soundIdentity } from './dataset-keys.ts';
 import { useEditor } from './editor.ts';
 import { liveReconnects } from './sync.ts';
 

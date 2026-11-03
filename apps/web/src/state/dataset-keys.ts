@@ -2,7 +2,23 @@
  * Identities of dataset results in the web app (proposal 0005). A derived dataset's data changes when anything it
  * reads changes, so keys, the "saved yet?" check and sound baselines all use its lineage, not its own definition.
  */
-import { type DashboardDoc, lineageKey, type SoundRule } from '@patchbay/core';
+import { lineageKey as computeLineageKey, type DashboardDoc, type SoundRule } from '@patchbay/core';
+
+const memo = new WeakMap<DashboardDoc, Map<string, string>>();
+
+/**
+ * Cached per document and dataset: reading it runs on every render of every widget. Documents are immutable (the
+ * editor store replaces `doc` through applyOps and never mutates it), so a cached key cannot go stale.
+ */
+export function lineageKey(doc: DashboardDoc, datasetId: string): string {
+  const byId = memo.get(doc) ?? new Map<string, string>();
+  memo.set(doc, byId);
+  const cached = byId.get(datasetId);
+  if (cached !== undefined) return cached;
+  const key = computeLineageKey(doc, datasetId);
+  byId.set(datasetId, key);
+  return key;
+}
 
 export const datasetKeyFor = (dashboardId: string, datasetId: string, lineage: string) =>
   ['data', dashboardId, datasetId, lineage] as const;
