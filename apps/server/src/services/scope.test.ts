@@ -469,13 +469,84 @@ describe('final results across scopes', () => {
     controlled(data);
     const d = chain();
     const c = byId(d, 'c');
+    const filled = await data.scope(target, d).resolve(c);
     const preview = { ...target, preview: true };
+    expect(await data.scope(preview, d).resolve(c)).not.toBe(filled);
+    expect(await data.scope(target, d, { seed: () => undefined }).resolve(c)).not.toBe(filled);
+    data.dropCaches();
     const one = await data.scope(preview, d).resolve(c);
     expect(await data.scope(preview, d).resolve(c)).not.toBe(one);
     const seeded = () => data.scope(target, d, { seed: () => undefined });
     const tick = await seeded().resolve(c);
     expect(await seeded().resolve(c)).not.toBe(tick);
     expect(await data.scope(target, d).resolve(c)).not.toBe(tick);
+  });
+
+  it('computes a child again when a dataset it reads is edited, and only then', async () => {
+    const runner = new CountingRunner();
+    const data = new DataService(connectors, store, runner);
+    const edited = (expr: string, ...more: unknown[]) =>
+      doc(
+        inline('w', cities, { transforms: [{ type: 'derive', as: 'f', expr }] }),
+        from('c', 'w', { transforms: [{ type: 'filter', expr: 'f > 3' }] }),
+        ...more,
+      );
+    const a = edited('temp * 2');
+    const first = await data.scope(target, a).resolve(byId(a, 'c'));
+    const b = edited('temp * 10');
+    const changed = await data.scope(target, b).resolve(byId(b, 'c'));
+    expect(changed).not.toBe(first);
+    expect(changed.hash).not.toBe(first.hash);
+    // A new document object with the same lineage, even with an unrelated dataset added, is the same result.
+    const same = edited('temp * 2', inline('other', [{ x: 1 }]));
+    expect(await data.scope(target, same).resolve(byId(same, 'c'))).toBe(first);
+  });
+
+  it('never shares a result between dashboards or row caps', async () => {
+    const data = new DataService(connectors, store, new CountingRunner());
+    controlled(data);
+    const d = chain();
+    const c = byId(d, 'c');
+    const first = await data.scope(target, d).resolve(c);
+    expect(await data.scope({ id: 'other01', ownerId: null }, d).resolve(c)).not.toBe(first);
+    expect(await data.scope(target, d).resolve(c, { maxRows: 1 })).not.toBe(first);
+    expect(await data.scope(target, d).resolve(c)).toBe(first);
+  });
+
+  it('does not keep a failed run', async () => {
+    class Flaky extends InlineRunner {
+      fail = 1;
+      override async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs) {
+        if (this.fail-- > 0) throw new Error('Processing crashed');
+        return super.run(table, transforms, inputs);
+      }
+    }
+    const data = new DataService(connectors, store, new Flaky());
+    controlled(data);
+    const d = chain();
+    expect((await data.scope(target, d).resolve(byId(d, 'c'))).error).toBeTruthy();
+    const good = await data.scope(target, d).resolve(byId(d, 'c'));
+    expect(good.error).toBeUndefined();
+    expect(good.table.rows).toHaveLength(1);
+  });
+
+  it("lets a scope that joins another's computation keep its own deadline", async () => {
+    class Slow extends InlineRunner {
+      override async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs) {
+        await new Promise((r) => setTimeout(r, 150));
+        return super.run(table, transforms, inputs);
+      }
+    }
+    const data = new DataService(connectors, store, new Slow());
+    controlled(data);
+    const d = chain();
+    const hurried = data.scope(target, d, { deadlineMs: 60 }).resolve(byId(d, 'c'));
+    await new Promise((r) => setTimeout(r, 10));
+    const patient = data.scope(target, d).resolve(byId(d, 'c'));
+    const [h, p] = await Promise.all([hurried, patient]);
+    expect(h.error).toBe(SCOPE_TIMEOUT_MESSAGE);
+    expect(p.error).toBeUndefined();
+    expect(p.table.rows).toHaveLength(1);
   });
 
   it('forgets final results when the memory guard drops the caches', async () => {

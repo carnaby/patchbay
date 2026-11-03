@@ -70,6 +70,7 @@ export function errorResult(datasetId: string, e: unknown): DatasetResult {
 }
 
 const rows = (n: number) => n.toLocaleString('en-US');
+const isTimeout = (e: unknown) => e instanceof HttpError && e.message === SCOPE_TIMEOUT_MESSAGE;
 
 /**
  * A table cut to its last PIPELINE_LIMITS.maxRows rows, the same object for as long as the uncapped one is shared:
@@ -193,8 +194,17 @@ export class ResolveScope {
         };
       };
       const key = same ? await this.finalKey(dataset.id, options.maxRows) : undefined;
-      // Joining another scope's computation still ends at this scope's own deadline.
-      return key ? await this.within(() => this.data.sharedFinal(key, build)) : await build();
+      if (!key) return await build();
+      for (;;) {
+        try {
+          return await this.within(() => this.data.sharedFinal(key, build));
+        } catch (e) {
+          // A build this scope joined runs against the deadline of the scope that started it. When that one ran out
+          // and this one has time left, it builds again under its own: the loads and runs still in flight are
+          // shared, so nothing is done twice. Its own build ending past its own deadline ends the loop.
+          if (!isTimeout(e) || this.deadline <= Date.now()) throw e;
+        }
+      }
     } catch (e) {
       // The server, not the dataset, is the problem: callers answer 503 or skip a refresh.
       if (e instanceof BusyError) throw e;
@@ -295,7 +305,7 @@ export class ResolveScope {
       r = await this.full(id, path);
     } catch (e) {
       if (e instanceof BusyError || e instanceof UpstreamError || e instanceof CycleError) throw e;
-      if (e instanceof HttpError && e.message === SCOPE_TIMEOUT_MESSAGE) throw e;
+      if (isTimeout(e)) throw e;
       throw new UpstreamError(id, e instanceof Error ? e.message : 'Failed to load data');
     }
     if (r.warning) warnings.push(r.warning);
