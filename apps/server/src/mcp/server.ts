@@ -209,7 +209,11 @@ export function createMcp(deps: Deps) {
           'Full schema of datasets, transforms, expressions, widgets and operations, plus design guidance. Read this once before building.',
         annotations: read,
       },
-      tool(SCOPES.read, async () => ({ content: [{ type: 'text', text: referenceText(config.publicUrl) }] })),
+      tool(SCOPES.read, async () => ({
+        content: [
+          { type: 'text', text: referenceText(config.publicUrl, dashboards.networkAccess(userId ?? null)) },
+        ],
+      })),
     );
 
     server.registerTool(
@@ -665,7 +669,13 @@ export function createMcp(deps: Deps) {
         mimeType: 'text/markdown',
       },
       async (uri: URL) => ({
-        contents: [{ uri: uri.href, mimeType: 'text/markdown', text: referenceText(config.publicUrl) }],
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: 'text/markdown',
+            text: referenceText(config.publicUrl, dashboards.networkAccess(userId ?? null)),
+          },
+        ],
       }),
     );
 
