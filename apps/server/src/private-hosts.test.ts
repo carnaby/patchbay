@@ -242,7 +242,7 @@ describe('a self-hosted instance with ALLOW_PRIVATE_HOSTS=127.0.0.1', () => {
       ['Saved before'],
     );
     expect((await lan.data(other)).json.error).toContain('only dashboards owned by an administrator');
-    // A restore brings back what was stored and leaves the decision to the load.
+    // After a restore the load still refuses it (the restore exemption itself is pinned by its own test).
     const restored = await lan.call(`/api/dashboards/${other.id}/versions/${meta.version + 1}/restore`, {
       body: {},
       headers: other.headers,
