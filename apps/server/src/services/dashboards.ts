@@ -23,6 +23,7 @@ import {
   isStaticSource,
   LIMITS,
   MAX_SECRETS_PER_USER,
+  MAX_TABLE_FILE_BYTES,
   normalizeLayout,
   OpError,
   parseBinding,
@@ -57,7 +58,13 @@ import type { Credential } from '../util/safe-fetch.ts';
 import type { DashboardTarget } from './data.ts';
 import { PipelineError } from './pipeline-pool.ts';
 import { buildTemplate } from './templates.ts';
-import { jsonUploadProblem, parseUpload, UploadError, type UploadInput } from './upload-parse.ts';
+import {
+  jsonUploadProblem,
+  parseUpload,
+  UploadError,
+  type UploadFormat,
+  type UploadInput,
+} from './upload-parse.ts';
 
 export interface Principal {
   user: UserRow | null;
@@ -256,6 +263,9 @@ function uploadsFull(adding: number, used: number): HttpError {
       ` (${mb(used)} in use${adding ? `, this file needs ${mb(adding)}` : ''}). Delete unused files first.`,
   );
 }
+
+const fileExists = (fileId: string) =>
+  new HttpError(409, `This dashboard already has file "${fileId}"`, { code: 'FILE_EXISTS' });
 
 function withoutSecrets(d: Dataset): Dataset {
   if (d.source.kind !== 'http' || !d.source.secrets) return d;
@@ -956,18 +966,26 @@ export class DashboardService {
   async uploadFile(
     id: string,
     p: Principal,
-    input: { name: string; content: string; format?: 'csv' | 'json' | undefined },
+    input: { name: string; content: string; format?: UploadFormat | undefined; fileId?: string | undefined },
   ): Promise<UploadedFile> {
-    const { meta } = await this.load(id);
+    const { meta, doc } = await this.load(id);
     this.assertCanEdit(meta, p);
-    if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) throw badRequest('Files are limited to 5 MB');
+    const bytes = Buffer.byteLength(input.content);
+    if (input.format === 'table') {
+      if (bytes > MAX_TABLE_FILE_BYTES)
+        throw badRequest(
+          `The file "${input.name}" in this export is too large to import (${mb(bytes)}; at most ${mb(MAX_TABLE_FILE_BYTES)} per file).`,
+          { code: 'IMPORT_FILE_TOO_LARGE' },
+        );
+    } else if (bytes > MAX_FILE_BYTES) throw badRequest('Files are limited to 5 MB');
+    if (input.fileId !== undefined) await this.assertFileSlot(id, doc, input.fileId);
     const existing = await this.store.listFiles(id);
     if (existing.length >= MAX_FILES || storedBytes(existing) >= MAX_DASHBOARD_BYTES) {
       throw uploadsFull(0, storedBytes(existing));
     }
     // Before parsing: the stored file is rarely much smaller than the upload.
     this.assertRoom(meta.ownerId, Buffer.byteLength(input.content));
-    const format =
+    const format: UploadFormat =
       input.format ?? (/\.json$/i.test(input.name) || /^\s*[[{]/.test(input.content) ? 'json' : 'csv');
     const maxCells = meta.ownerId === null ? this.uploadMaxCellsAnonymous : this.uploadMaxCells;
     const refused = (e: UploadError) => {
@@ -978,7 +996,7 @@ export class DashboardService {
       return badRequest(e.message + hint);
     };
     // Here, not only in the worker: a hostile document is refused in milliseconds without taking a queue place.
-    if (format === 'json') {
+    if (format === 'json' || format === 'table') {
       const problem = jsonUploadProblem(input.content, maxCells);
       if (problem) throw refused(problem);
     }
@@ -989,11 +1007,25 @@ export class DashboardService {
     );
   }
 
+  /**
+   * An upload may name its file id only to supply a file the document uses and the dashboard does not have: what an
+   * import does, so the document keeps its ids. It never replaces a stored file, which copies may share through hard
+   * links; a retried upload whose first attempt landed gets FILE_EXISTS.
+   */
+  private async assertFileSlot(id: string, doc: DashboardDoc, fileId: string) {
+    if (!doc.datasets.some((d) => d.source.kind === 'upload' && d.source.fileId === fileId))
+      throw badRequest(
+        `No dataset of this dashboard uses file "${fileId}". Upload without fileId to add a new file.`,
+        { code: 'FILE_NOT_REFERENCED' },
+      );
+    if (await this.store.fileStamp(id, fileId)) throw fileExists(fileId);
+  }
+
   private async parseAndSave(
     id: string,
     meta: StoredMeta,
-    input: { name: string; content: string },
-    format: 'csv' | 'json',
+    input: { name: string; content: string; fileId?: string | undefined },
+    format: UploadFormat,
     maxCells: number,
     refused: (e: UploadError) => HttpError,
   ): Promise<UploadedFile> {
@@ -1006,7 +1038,7 @@ export class DashboardService {
       throw e;
     }
     const file = {
-      id: `f_${newId()}`.slice(0, 20),
+      id: input.fileId ?? `f_${newId()}`.slice(0, 20),
       name: input.name.slice(0, 120),
       rows: table.rows.length,
       columns: table.columns.length,
@@ -1016,6 +1048,9 @@ export class DashboardService {
     // The limits count bytes on disk, known only once serialised. Checked under the lock, so that concurrent
     // uploads cannot both squeeze in.
     const written = await this.store.withLock(id, async () => {
+      // Again under the lock: two uploads of the same imported file must not both be stored.
+      if (input.fileId !== undefined && (await this.store.fileStamp(id, input.fileId)))
+        throw fileExists(input.fileId);
       const files = await this.store.listFiles(id);
       const used = storedBytes(files);
       const bytes = await this.store.saveFile(id, { ...file, table }, (bytes) => {

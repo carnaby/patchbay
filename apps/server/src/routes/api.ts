@@ -2,6 +2,7 @@ import {
   type Dataset,
   type DatasetResult,
   DatasetSchema,
+  FileIdSchema,
   type LiveEvent,
   profileTable,
   SECRET_PLACEMENTS,
@@ -356,7 +357,8 @@ export function apiRoutes(deps: Deps) {
       .object({
         name: z.string().min(1).max(200),
         content: z.string(),
-        format: z.enum(['csv', 'json']).optional(),
+        format: z.enum(['csv', 'json', 'table']).optional(),
+        fileId: FileIdSchema.optional(),
       })
       .parse(await c.req.json());
     return c.json(await dashboards.uploadFile(c.req.param('id'), c.get('principal'), body), 201);
