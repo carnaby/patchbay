@@ -5,7 +5,8 @@
  * document is the store's shared serialisation, counted once in the response budget however many exports read it.
  * Uploaded tables are written a part at a time: each part is built only when the socket has taken the previous one
  * and is held within the response budget until it has been read (streamBodies in result-wire.ts). Between parts the
- * export holds nothing but its position; the table itself is the data cache's, loaded again when it was dropped.
+ * export holds nothing but its position and which stored file it reads; the table itself is the data cache's, loaded
+ * again when it was dropped.
  */
 import { EXPORT_FORMAT, EXPORT_VERSION, exportedFile, exportedRow } from '@patchbay/core';
 import type { ExportPlan } from './dashboards.ts';
@@ -46,6 +47,8 @@ export async function exportBodies(
   );
   let file = 0;
   let row = 0;
+  /** The stored file the current table's first part came from. */
+  let reading = '';
   let ended = false;
   const next = async (): Promise<Body | null> => {
     const current = plan.files[file];
@@ -54,7 +57,13 @@ export async function exportBodies(
       ended = true;
       return deps.wire.held([Buffer.from(']}')]);
     }
-    const table = await deps.data.uploadTable(plan.target, current.id);
+    const { table, stamp } = await deps.data.uploadTable(plan.target, current.id);
+    // A file deleted and supplied again under the same id between two parts is another table: going on would put
+    // its rows under the first one's columns. The stream fails instead (logged by the route), so the client gets a
+    // broken download rather than a file that reads as valid.
+    if (row > 0 && stamp !== reading)
+      throw new Error(`Uploaded file "${current.id}" changed while it was being exported`);
+    reading = stamp;
     const parts: string[] = [];
     let size = 0;
     if (row === 0) {
