@@ -7,7 +7,7 @@ import { saveEditKey } from '../lib/edit-keys.ts';
 import { relativeTime, useMe } from '../lib/hooks.ts';
 import { withRetry } from '../lib/retry.ts';
 import {
-  formatMb,
+  formatSize,
   type ImportResult,
   type ImportSummary,
   importSummary,
@@ -151,7 +151,7 @@ function ImportDialog({ flow }: { flow: Flow }) {
           Creates a new dashboard with {plural(summary.datasets, 'dataset')} and{' '}
           {plural(summary.widgets, 'widget')}
           {summary.files
-            ? `, and ${plural(summary.files, 'uploaded file')} (${formatMb(summary.bytes)})`
+            ? `, and ${plural(summary.files, 'uploaded file')} (${formatSize(summary.bytes)})`
             : ''}
           .{summary.exportedAt ? ` Exported ${relativeTime(summary.exportedAt)}.` : ''}
         </p>

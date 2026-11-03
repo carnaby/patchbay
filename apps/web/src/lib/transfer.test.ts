@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { ApiError, NetworkError } from './api.ts';
 import {
   exportSummary,
+  formatSize,
   ImportError,
   importSummary,
   largeExportFiles,
@@ -251,5 +252,20 @@ describe('largeExportFiles', () => {
     expect(largeExportFiles([{ id: 'f_old', name: 'old.csv', size: MAX_TABLE_FILE_BYTES }])).toEqual([
       { id: 'f_old', name: 'old.csv', bytes: MAX_TABLE_FILE_BYTES, over: false },
     ]);
+  });
+});
+
+describe('formatSize', () => {
+  it('shows small files in KB, so a few rows never read as 0.0 MB', () => {
+    expect(formatSize(0)).toBe('0 KB');
+    expect(formatSize(300)).toBe('1 KB');
+    expect(formatSize(12 * 1024)).toBe('12 KB');
+    expect(formatSize(100 * 1024)).toBe('100 KB');
+  });
+
+  it('keeps MB from 0.1 MB up', () => {
+    expect(formatSize(0.1 * 1024 * 1024)).toBe('0.1 MB');
+    expect(formatSize(2.5 * 1024 * 1024)).toBe('2.5 MB');
+    expect(formatSize(MAX_TABLE_FILE_BYTES)).toBe('7.0 MB');
   });
 });

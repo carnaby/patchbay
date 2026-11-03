@@ -3,7 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { TriangleAlert } from 'lucide-react';
 import { Button, Modal, toast } from '../components/ui.tsx';
 import { api, errorMessage } from '../lib/api.ts';
-import { downloadExport, exportSummary, formatMb, largeExportFiles, quoteList } from '../lib/transfer.ts';
+import { downloadExport, exportSummary, formatSize, largeExportFiles, quoteList } from '../lib/transfer.ts';
 import { useEditor } from '../state/editor.ts';
 
 /** What the file will hold and what it will not, then the download. The file is what the server has saved. */
@@ -74,7 +74,7 @@ export function ExportDialog({
             {summary.filesIncluded ? (
               <li>
                 {used.size} uploaded file{used.size === 1 ? '' : 's'}
-                {files.data ? `, about ${formatMb(bytes)}` : ''}.
+                {files.data ? `, about ${formatSize(bytes)}` : ''}.
               </li>
             ) : null}
           </ul>
@@ -114,8 +114,8 @@ export function ExportDialog({
           >
             <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-warn" aria-hidden="true" />
             {f.over
-              ? `"${f.name}" is ${formatMb(f.bytes)}, more than the ${formatMb(MAX_TABLE_FILE_BYTES)} per file that Patchbay can import. The download includes it, but Patchbay cannot import this file again.`
-              : `"${f.name}" is ${formatMb(f.bytes)}, close to the ${formatMb(MAX_TABLE_FILE_BYTES)} per file that Patchbay can import. Importing this file again may fail.`}
+              ? `"${f.name}" is ${formatSize(f.bytes)}, more than the ${formatSize(MAX_TABLE_FILE_BYTES)} per file that Patchbay can import. The download includes it, but Patchbay cannot import this file again.`
+              : `"${f.name}" is ${formatSize(f.bytes)}, close to the ${formatSize(MAX_TABLE_FILE_BYTES)} per file that Patchbay can import. Importing this file again may fail.`}
           </p>
         ))}
         {pending ? <p className="text-xs text-muted">Saving your latest changes first…</p> : null}

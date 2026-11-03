@@ -29,8 +29,10 @@ export class ImportError extends Error {
   }
 }
 
-export const formatMb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 const formatKb = (bytes: number) => `${Math.ceil(bytes / 1024)} KB`;
+/** MB with one decimal; below 0.1 MB in KB, where one decimal of a MB would read "0.0 MB" for a small file. */
+export const formatSize = (bytes: number) =>
+  bytes < 0.1 * 1024 * 1024 ? formatKb(bytes) : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 
 /** Names as a quoted list for a sentence: "A", "B" and "C". */
 export function quoteList(names: readonly string[]): string {
@@ -93,7 +95,7 @@ export function prepareFiles(exp: DashboardExport): PreparedFile[] {
     const wireBytes = encoder.encode(JSON.stringify(content)).length;
     if (bytes > MAX_TABLE_FILE_BYTES || wireBytes > MAX_UPLOAD_BODY_BYTES)
       throw new ImportError(
-        `The file "${f.name}" in this export is too large to import (${formatMb(bytes)}; at most ${formatMb(MAX_TABLE_FILE_BYTES)} per file).`,
+        `The file "${f.name}" in this export is too large to import (${formatSize(bytes)}; at most ${formatSize(MAX_TABLE_FILE_BYTES)} per file).`,
       );
     return { id: f.id, name: f.name, rows: f.data.length, columns: f.columns.length, bytes, content };
   });
