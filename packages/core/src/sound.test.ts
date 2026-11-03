@@ -243,3 +243,12 @@ describe('soundRuleMissingColumns', () => {
     ).toEqual(['price']);
   });
 });
+
+it('evaluates whole-table functions in a condition over the whole result', () => {
+  const r = rule({ trigger: { kind: 'condition', expr: 'price > col_avg(price)' } });
+  const low = inferTable([{ price: 10 }, { price: 20 }, { price: 12 }]);
+  const high = inferTable([{ price: 10 }, { price: 20 }, { price: 30 }]);
+  const first = soundDecision(r, low, null, 0);
+  expect(first.state.condition).toBe(false);
+  expect(soundDecision(r, high, first.state, 60_000).play).toBe(true);
+});

@@ -34,23 +34,23 @@ Scopes:
 
 ## Tools
 
-| Tool               | Scope | What it does                                                                                                                                                                                                                                                |
-| ------------------ | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `get_reference`    | read  | The full authoring guide: document schema, transforms, expression functions, widget configs, design rules.                                                                                                                                                  |
-| `list_connectors`  | read  | Built-in public data sources and their parameters.                                                                                                                                                                                                          |
-| `list_dashboards`  | read  | The user's dashboards with URLs.                                                                                                                                                                                                                            |
-| `get_dashboard`    | read  | One dashboard's document and metadata.                                                                                                                                                                                                                      |
-| `preview_data`     | read  | Run a source + transforms **without saving**: columns, sample rows, row count per step, column profile, suggested widgets as operations.                                                                                                                    |
-| `get_data`         | read  | The processed rows of a saved dataset, with `rowCount` and a profile. `limit` (default 50) keeps the first rows; `from: "end"` keeps the last ones instead, i.e. the newest of an ascending time series.                                                    |
-| `suggest_widgets`  | read  | Rules-based visualisation suggestions for a saved dataset, as ready-to-apply operations with rationales.                                                                                                                                                    |
-| `render_snapshot`  | read  | PNG of the dashboard or a single widget (light or dark), plus any data errors.                                                                                                                                                                              |
-| `list_versions`    | read  | Version history with actor and change log.                                                                                                                                                                                                                  |
-| `list_secrets`     | read  | The user's saved secrets for HTTP sources: id, name, origin, path prefix, how each is sent, timestamps. Never values. See "Secrets" below.                                                                                                                  |
-| `create_dashboard` | write | New dashboard (private by default), optionally from a template.                                                                                                                                                                                             |
-| `apply_operations` | write | Atomic batch of operations; `dryRun` to validate only; `baseVersion` for optimistic concurrency. Returns the change log, a data check for every touched dataset and `warnings` (a URL that looks like it holds a key, hard-to-see colours, truncated bars). |
-| `upload_data`      | write | Store CSV/JSON (≤ 5 MB) in a dashboard; returns the file id, profile, a ready `addDataset` op and suggestions.                                                                                                                                              |
-| `restore_version`  | write | Restore an earlier version (as a new version).                                                                                                                                                                                                              |
-| `set_visibility`   | write | Public or private.                                                                                                                                                                                                                                          |
+| Tool               | Scope | What it does                                                                                                                                                                                                                                                                                                                                   |
+| ------------------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `get_reference`    | read  | The full authoring guide: document schema, transforms, expression functions, widget configs, design rules.                                                                                                                                                                                                                                     |
+| `list_connectors`  | read  | Built-in public data sources and their parameters.                                                                                                                                                                                                                                                                                             |
+| `list_dashboards`  | read  | The user's dashboards with URLs.                                                                                                                                                                                                                                                                                                               |
+| `get_dashboard`    | read  | One dashboard's document and metadata.                                                                                                                                                                                                                                                                                                         |
+| `preview_data`     | read  | Run a source + transforms **without saving**: columns, sample rows, row count per step, column profile, suggested widgets as operations. Pass `dashboardId` for uploads, `dataset` sources and join/union steps.                                                                                                                               |
+| `get_data`         | read  | The processed rows of a saved dataset, with `rowCount` and a profile. `limit` (default 50) keeps the first rows; `from: "end"` keeps the last ones instead, i.e. the newest of an ascending time series.                                                                                                                                       |
+| `suggest_widgets`  | read  | Rules-based visualisation suggestions for a saved dataset, as ready-to-apply operations with rationales. Suggestions with extra steps derive a dataset from the saved one (source kind `dataset`) instead of copying it.                                                                                                                       |
+| `render_snapshot`  | read  | PNG of the dashboard or a single widget (light or dark), plus any data errors.                                                                                                                                                                                                                                                                 |
+| `list_versions`    | read  | Version history with actor and change log.                                                                                                                                                                                                                                                                                                     |
+| `list_secrets`     | read  | The user's saved secrets for HTTP sources: id, name, origin, path prefix, how each is sent, timestamps. Never values. See "Secrets" below.                                                                                                                                                                                                     |
+| `create_dashboard` | write | New dashboard (private by default), optionally from a template.                                                                                                                                                                                                                                                                                |
+| `apply_operations` | write | Atomic batch of operations; `dryRun` to validate only; `baseVersion` for optimistic concurrency. Returns the change log, a data check for every dataset the batch added or changed (also through step operations) and every dataset built on them, and `warnings` (a URL that looks like it holds a key, hard-to-see colours, truncated bars). |
+| `upload_data`      | write | Store CSV/JSON (≤ 5 MB) in a dashboard; returns the file id, profile, a ready `addDataset` op and suggestions.                                                                                                                                                                                                                                 |
+| `restore_version`  | write | Restore an earlier version (as a new version).                                                                                                                                                                                                                                                                                                 |
+| `set_visibility`   | write | Public or private.                                                                                                                                                                                                                                                                                                                             |
 
 There is intentionally no delete tool.
 
@@ -98,7 +98,7 @@ median gap between its times) inside it. Data with fewer than two distinct times
 The answer of `apply_operations`:
 
 - `changes`: one line per operation (the same text the version history shows).
-- `dataChecks`: one entry per dataset the batch added or changed, loaded right away so a broken source surfaces at
+- `dataChecks`: one entry per dataset the batch added or changed, and per dataset built on those, loaded right away so a broken source surfaces at
   once: `rowCount` (rows after the whole pipeline), `columns` (`name:type`), `sampleRows` (the first 3 rows, a sample,
   not a count) and `error`. `truncated: true` means the result has more rows than the 10,000 that widgets receive.
   A result larger than 4 MB as JSON comes back as an `error` with its columns and no rows, for every reader alike:
@@ -185,6 +185,59 @@ accept unrelated edits. The web editor does not offer intervals below the minimu
 
 For accumulating datasets, `get_data` answers with `watchers` (open browsers right now) and a `note` with the summary
 above; the data checks of `apply_operations` carry the same `note`.
+
+## Combining datasets
+
+A dataset can take its rows from another dataset of the same dashboard, and pipelines can join and append other
+datasets. Use this instead of copying a source: the source is fetched once per request, refresh or snapshot, and
+everything built on it stays in sync.
+
+```jsonc
+{ "op": "addDataset", "dataset": { "id": "ba", "name": "Bratislava", "source": { "kind": "connector", "connector": "weather.forecast", "params": { "city": "Bratislava" } }, "refreshSec": 900 } }
+{ "op": "addDataset", "dataset": { "id": "brno", "name": "Brno", "source": { "kind": "connector", "connector": "weather.forecast", "params": { "city": "Brno" } }, "refreshSec": 900 } }
+{ "op": "addDataset", "dataset": { "id": "temps", "name": "Temps (both cities)", "source": { "kind": "dataset", "id": "ba" },
+  "transforms": [{ "type": "union", "with": ["brno"], "origin": "place" }] } }
+{ "op": "addWidget", "widget": { "id": "temp-chart", "type": "chart", "datasetId": "temps", "config": { "kind": "line", "x": "time", "y": ["temperature_2m"], "series": "place" } } }
+```
+
+- `source: { "kind": "dataset", "id": "<dataset>" }` reads the other dataset's processed rows (its full table, not
+  the 10,000 rows widgets get; a parent above 100,000 rows gives its last 100,000, with a warning). A derived dataset
+  has no `refreshSec` or `accumulate` of its own: it refreshes when its source does. To keep a history, accumulate
+  the source.
+- `join { with, on, how, fields? }` adds columns where keys match: `on: ["country"]` when both sides use the name,
+  `[{ "left": "code", "right": "iso" }]` otherwise, up to 4 keys. `how: "left"` (default) keeps every row, `"inner"`
+  only rows with a match. Keys must have the same type; a time matches a number (both epoch ms), and text dates
+  become times with `derive date(column)`. A repeated key gives one row per match; a null key matches nothing.
+  Columns this dataset already has get `_<dataset id>`.
+- `union { with, origin?, labels? }` appends the rows of up to 4 datasets, columns matched by name (missing ones are
+  null, conflicting types become text). `origin` adds a column naming where each row came from; chart it with
+  `series`. Labels default to dataset names (for a derived dataset's own rows, its source dataset's name); set them
+  to keep series values (and their colours) stable when a dataset is renamed.
+- Expressions can use whole-table functions over the rows at that point of the pipeline: `col_sum`, `col_avg`,
+  `col_min`, `col_max`, `col_median`, `col_stddev`, `col_count`, `col_first`, `col_last`, each `(column, by?)`.
+  Share of total: `{ "type": "derive", "as": "share", "expr": "round(sales / col_sum(sales) * 100, 1)" }`; above
+  average: `{ "type": "filter", "expr": "temp > col_avg(temp, city)" }`.
+- Limits: chains at most 4 deep, a dataset reads at most 8 others, joins and unions produce at most 100,000 rows (more
+  is an error, never a silent cut). Only datasets of the same dashboard can be read.
+- A dataset that others read cannot be removed; remove or re-point them first, earlier in the same batch.
+  `removeDataset`'s `cascade` still only removes widgets.
+- A problem upstream shows on every dataset built on it, naming the dataset that failed:
+  `Source dataset "brno" failed: …`.
+- While somebody watches, a live source refreshes every dataset built on it together with it; datasets that share a
+  source refresh in the same round (a slow one paces the others of its group), and unrelated live datasets refresh
+  independently. A dataset the chain reads that is not built on the source that ticked (an upload, inline rows, or an
+  `http`, `feed` or connector source without a timer of its own) is taken from the table the server kept from an
+  earlier refresh until the dashboard changes: at most 8 per watched dashboard, all dropped when the server runs
+  short of memory, and loaded again (through the usual caches) when not kept. A preview never adds to a dataset's
+  kept history (`accumulate`).
+- `preview_data` of a `dataset` source or of join/union steps needs `dashboardId` and reads the saved datasets.
+  Previewing anything whose lineage uses secrets needs the `dashboards:write` scope, as previewing the secret-backed
+  source itself does. On a server that sets `ALLOW_PRIVATE_HOSTS`, so does previewing a lineage with an address only
+  that list opens (plain `http://`, a port other than the default, or a private host) whenever the list applies to
+  the preview: an editor's previews use the owner's network rights, anyone else's their own, so a saved root on a
+  private host fails for a viewer without the list. Only editors' previews use the dashboard's secrets and uploads:
+  for anyone else a lineage with a secret or an uploaded file is refused, and the saved roots of a viewer's derived
+  preview load with the viewer's own rights.
 
 ## Maps
 

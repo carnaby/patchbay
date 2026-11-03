@@ -70,6 +70,8 @@ export const WidgetFrame = memo(function WidgetFrame({
   const dataset = useEditor((s) =>
     'datasetId' in widget ? s.doc?.datasets.find((d) => d.id === widget.datasetId) : undefined,
   );
+  // The credit line follows the whole lineage, so it needs every dataset of the document.
+  const datasets = useEditor((s) => s.doc?.datasets);
   const flashAt = useEditor((s) => s.flash[widget.id]);
   const entityColors = useEditor((s) => s.doc?.colors);
   const isOwner = useEditor((s) => Boolean(s.access?.isOwner));
@@ -78,8 +80,8 @@ export const WidgetFrame = memo(function WidgetFrame({
   const query = useDatasetResult(dashboardId, dataset, live);
   const attributions = useAttributions();
   const credit = useMemo(
-    () => (dataset ? creditLine(widgetAttributions([dataset], [widget], attributions)) : ''),
-    [dataset, widget, attributions],
+    () => (dataset && datasets ? creditLine(widgetAttributions(datasets, [widget], attributions)) : ''),
+    [dataset, datasets, widget, attributions],
   );
   const [flashing, setFlashing] = useState(false);
   // Per screen and not saved: the table is a way to read this map, not a setting of the dashboard.

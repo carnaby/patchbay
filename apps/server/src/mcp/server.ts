@@ -13,13 +13,17 @@ import {
   type DatasetResult,
   DatasetSchema,
   type DataTable,
+  dependentsOf,
   formattingWarnings,
+  type LineageDoc,
   OpSchema,
   profileTable,
   type Row,
   rowSize,
   SourceSchema,
   type Suggestion,
+  type SuggestionParent,
+  suggestionDataset,
   suggestWidgets,
   TransformSchema,
 } from '@patchbay/core';
@@ -30,6 +34,7 @@ import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import type { Principal } from '../services/dashboards.ts';
 import { listTemplates } from '../services/templates.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
+import { BusyError } from '../util/gate.ts';
 import { advertise } from './input-schema.ts';
 import { referenceText, SERVER_INSTRUCTIONS } from './reference.ts';
 
@@ -45,6 +50,11 @@ const fail = (message: string): ToolResult => ({ content: [{ type: 'text', text:
 
 /** Rows shown per dataset in apply_operations' data checks: enough to spot a wrong column, small enough to batch. */
 const DATA_CHECK_SAMPLE = 3;
+
+/** A data check the server was too busy to run. It says what was saved: agents retry what reads as a failure. */
+const BUSY_CHECK_SAVED = 'The server is busy, so this dataset was not checked; the change is saved.';
+const BUSY_CHECK_DRY =
+  'The server is busy, so this dataset was not checked; the operations are valid, nothing was saved.';
 
 /**
  * Agents watching an accumulating dataset over MCP saw rows arrive at the rhythm of their own calls, not refreshSec,
@@ -96,8 +106,16 @@ const slug = (s: string) =>
     .replace(/^-|-$/g, '')
     .slice(0, 28) || 'w';
 
-/** Turns engine suggestions into ready-to-apply operations. */
-function suggestionOps(dataset: Dataset, suggestions: Suggestion[]) {
+/**
+ * Turns engine suggestions into ready-to-apply operations. A saved dataset is derived from (source kind "dataset"),
+ * never copied; a preview has nothing saved to derive from, so its suggestions copy the source.
+ */
+function suggestionOps(
+  doc: LineageDoc<SuggestionParent>,
+  dataset: Dataset,
+  suggestions: Suggestion[],
+  mode: 'derive' | 'copy',
+) {
   return suggestions.map((s) => {
     const base = `${slug(s.title)}-${(++idCounter % 1000).toString(36)}`;
     const ops: unknown[] = [];
@@ -106,12 +124,15 @@ function suggestionOps(dataset: Dataset, suggestions: Suggestion[]) {
       datasetId = `${dataset.id.slice(0, 20)}-${base}`.slice(0, 40);
       ops.push({
         op: 'addDataset',
-        dataset: {
-          ...dataset,
-          id: datasetId,
-          name: `${dataset.name}: ${s.title}`.slice(0, 120),
-          transforms: [...dataset.transforms, ...s.transforms],
-        },
+        dataset:
+          mode === 'derive'
+            ? suggestionDataset(doc, dataset.id, datasetId, s.title, s.transforms)
+            : {
+                ...dataset,
+                id: datasetId,
+                name: `${dataset.name}: ${s.title}`.slice(0, 120),
+                transforms: [...dataset.transforms, ...s.transforms],
+              },
       });
     }
     ops.push({ op: 'addWidget', widget: { ...s.widget, id: base.slice(0, 40), datasetId } });
@@ -338,13 +359,26 @@ export function createMcp(deps: Deps) {
           if (args.baseVersion !== undefined) options.baseVersion = args.baseVersion;
           const result = await dashboards.applyOps(args.dashboardId, p, args.operations, options);
           const target = { id: args.dashboardId, ownerId: result.envelope.meta.ownerId };
-          // Check every dataset the batch touched, so broken sources surface immediately.
+          // Check every dataset the batch touched and everything built on them, so a change that breaks a derived
+          // dataset (a renamed column, a removed step) surfaces in the same answer.
+          type DataOp = { op: string; dataset?: { id: string }; id?: string; datasetId?: string };
+          const STEP_OPS = new Set(['addStep', 'updateStep', 'removeStep', 'moveStep']);
           const touched = new Set(
-            (args.operations as { op: string; dataset?: { id: string }; id?: string }[])
-              .filter((o) => o.op === 'addDataset' || o.op === 'updateDataset')
-              .map((o) => o.dataset?.id ?? o.id!),
+            (args.operations as DataOp[]).flatMap((o) =>
+              o.op === 'addDataset' || o.op === 'updateDataset'
+                ? [o.dataset?.id ?? o.id!]
+                : STEP_OPS.has(o.op)
+                  ? [o.datasetId!]
+                  : [],
+            ),
           );
-          const touchedDatasets = result.envelope.doc.datasets.filter((d) => touched.has(d.id));
+          const doc = result.envelope.doc;
+          // Credential warnings are about what this batch wrote; dependents only join the data checks.
+          const touchedDatasets = doc.datasets.filter((d) => touched.has(d.id));
+          const checked = new Set(touched);
+          for (const id of touched) for (const d of dependentsOf(doc, id)) checked.add(d);
+          const checkedDatasets = doc.datasets.filter((d) => checked.has(d.id));
+          const scope = data.scope(target, doc);
           // Keys pasted into URLs end up in every version and every get_dashboard answer: point to secrets instead.
           const warnings = touchedDatasets.flatMap((d) => {
             const params =
@@ -376,8 +410,15 @@ export function createMcp(deps: Deps) {
           // rowCount is the full result and sampleRows a few of its rows, named apart: a bare `rows: 5` read like a
           // row count when it was the sample size.
           const dataChecks = await Promise.all(
-            touchedDatasets.map(async (d) => {
-              const r = await data.resolve(target, d);
+            checkedDatasets.map(async (d) => {
+              let r: Awaited<ReturnType<typeof scope.resolve>>;
+              try {
+                r = await scope.resolve(d);
+              } catch (e) {
+                // The batch is already applied: a busy answer for the whole call would make the agent send it again.
+                if (!(e instanceof BusyError)) throw e;
+                return { datasetId: d.id, error: args.dryRun ? BUSY_CHECK_DRY : BUSY_CHECK_SAVED };
+              }
               return {
                 datasetId: d.id,
                 rowCount: r.table.rows.length,
@@ -409,7 +450,7 @@ export function createMcp(deps: Deps) {
       {
         title: 'Preview a data source',
         description:
-          'Loads a source and runs transforms WITHOUT saving: returns columns, sample rows, a column profile and widget suggestions. Pass dashboardId when the source is an uploaded file.',
+          'Loads a source and runs transforms WITHOUT saving: returns columns, sample rows, a column profile and widget suggestions. Pass dashboardId for an uploaded file, a source of kind "dataset", or join/union steps: they read the saved datasets of that dashboard.',
         inputSchema: previewDataInput,
         annotations: { ...read, openWorldHint: true },
       },
@@ -419,17 +460,19 @@ export function createMcp(deps: Deps) {
           args: { source: unknown; transforms: unknown[]; dashboardId?: string; sampleRows: number },
           p,
         ) => {
-          const dataset = DatasetSchema.parse({
+          const draft = DatasetSchema.parse({
             id: 'preview',
             name: 'Preview',
             source: args.source,
             transforms: args.transforms,
           });
-          // Raw uploads and secrets are for editors only; without a dashboard only the user's own secrets apply.
-          const target = await dashboards.previewTarget(p, args.dashboardId, dataset);
-          if (dataset.source.kind === 'connector')
-            connectors.validateParams(dataset.source.connector, dataset.source.params);
-          const result = await data.resolve(target, dataset, { maxRows: 5000 });
+          // Raw uploads and secrets are for editors only, in the draft and in every dataset it reads; without a
+          // dashboard only the user's own secrets apply, and nothing can be read from other datasets.
+          const target = await dashboards.previewTarget(p, args.dashboardId, draft);
+          if (draft.source.kind === 'connector')
+            connectors.validateParams(draft.source.connector, draft.source.params);
+          const dataset = target.dataset;
+          const result = await data.scope(target, target.doc).resolve(dataset, { maxRows: 5000 });
           if (result.error && result.table.rows.length === 0) return fail(result.error);
           const profile = profileTable(result.table);
           return json({
@@ -437,9 +480,13 @@ export function createMcp(deps: Deps) {
             trace: result.trace,
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
             suggestions: suggestionOps(
+              target.doc,
               dataset,
               suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
+              'copy',
             ),
+            suggestionsNote:
+              'These suggestions copy the previewed source because it is not saved yet. Once the dataset is saved, suggest_widgets returns suggestions that derive from it (source kind "dataset") instead.',
           });
         },
       ),
@@ -470,7 +517,9 @@ export function createMcp(deps: Deps) {
             return fail(
               `No dataset "${args.datasetId}". Datasets: ${doc.datasets.map((d) => d.id).join(', ') || 'none'}`,
             );
-          const result = await data.resolve({ id: args.dashboardId, ownerId: meta.ownerId }, dataset);
+          const result = await data
+            .scope({ id: args.dashboardId, ownerId: meta.ownerId }, doc)
+            .resolve(dataset);
           const profile = profileTable(result.table);
           return json({
             ...sampleTable(result.table, args.limit, args.from),
@@ -500,14 +549,18 @@ export function createMcp(deps: Deps) {
         const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
         const dataset = doc.datasets.find((d) => d.id === args.datasetId);
         if (!dataset) return fail(`No dataset "${args.datasetId}"`);
-        const result = await data.resolve({ id: args.dashboardId, ownerId: meta.ownerId }, dataset);
+        const result = await data
+          .scope({ id: args.dashboardId, ownerId: meta.ownerId }, doc)
+          .resolve(dataset);
         const profile = profileTable(result.table);
         return json({
           rows: profile.rows,
           columns: profile.columns.map(({ sample: _s, ...c }) => c),
           suggestions: suggestionOps(
+            doc,
             dataset,
             suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
+            'derive',
           ),
         });
       }),
@@ -545,8 +598,10 @@ export function createMcp(deps: Deps) {
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
             sample: fitRows(result.table, result.table.rows.slice(0, 5), SAMPLE_CHARS / 4),
             suggestions: suggestionOps(
+              { datasets: [dataset] },
               dataset,
               suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
+              'derive',
             ),
             hint: 'Apply addDatasetOp first, then the ops of the suggestions you like (or your own).',
           });
@@ -580,10 +635,13 @@ export function createMcp(deps: Deps) {
           // Shares the REST endpoint's gate and per-client budget: snapshots from either side count against both.
           chargeSnapshot(deps.limits.snapshots, `user:${userId}`);
           const png = await snapshotGate.run(async (draw) => {
+            // One scope for every widget of this picture, made once the gate admits it, so its deadline starts with
+            // this render's own work.
+            const scope = data.scope(target, doc);
             await Promise.all(
               doc.datasets
                 .filter((d) => ids.has(d.id))
-                .map(async (d) => results.set(d.id, await data.resolve(target, d))),
+                .map(async (d) => results.set(d.id, await scope.resolve(d))),
             );
             return draw(
               args.widgetId && widget

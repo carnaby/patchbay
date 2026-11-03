@@ -135,7 +135,11 @@ a new dashboard on any server (_New dashboard → Import file_, or _Import_ on _
 
 ## 4. Data: connectors, pipelines, live updates
 
-`DataService.resolve(dataset)` = load source → (optionally) accumulate → run pipeline → cap rows.
+`DataService` resolves datasets in a **scope**, one per request, live tick, snapshot or MCP call: load source →
+(optionally) accumulate → run pipeline → cap rows. A scope loads and processes each dataset of the document at most
+once, however many datasets read it. Across scopes, the final capped result of a dataset in a lineage is reused for
+a few seconds while the same roots give the same cached tables (keyed by the definitions it depends on, those
+tables, the owner and the row cap), so a burst of viewers costs one run of the chain, not one per request.
 
 - **Connectors** are small modules with a parameter spec, a `fetch` against a fixed upstream host, and a `sample` that
   produces deterministic synthetic data of the same shape. `OFFLINE=1` switches every connector to `sample`, which keeps
@@ -150,6 +154,19 @@ a new dashboard on any server (_New dashboard → Import file_, or _Import_ on _
   (publishers block faster polling); `OFFLINE=1` serves a deterministic sample.
 - **Pipelines run on the server.** The browser, the MCP agent and the PNG renderer therefore always agree on the numbers,
   and the browser never downloads more than it displays (10,000 rows max, at most 4 MB as JSON).
+- **Datasets can build on each other** (`source.kind: "dataset"`, and the `join` and `union` steps). The graph lives
+  in `packages/core/src/lineage.ts` and is checked on every write: no unknown ids, no cycles, at most 4 levels and 8
+  datasets read by one dataset, and no `refreshSec` or `accumulate` on a derived dataset (it refreshes with its
+  source). A child always receives its parent's full processed table (up to 100,000 rows; a longer parent gives its
+  last 100,000 and a warning), never the 10,000 rows sent to widgets, so aggregates over a derived dataset are not
+  computed on a truncated input. A join or union produces at most 100,000 rows. The scope resolves the tables a join
+  or union reads before the run, so a pipeline worker stays a pure function of its message, and credentials never
+  leave the main thread. An upstream failure shows on every dataset built on it as `Source dataset "<id>" failed: …`
+  (naming the dataset that actually failed); the age of a combined result is the age of its oldest input. Datasets
+  read only datasets of the same document: one document has one owner, one visibility and one set of editors, which
+  is what keeps the secret rules intact. Expressions can also use whole-table functions (`col_sum(x, by?)` …),
+  computed once per step over the rows at that point of the pipeline. A preview of a draft never adds to a saved
+  dataset's accumulated history, it only reads it.
 - **Results are serialised once and shared** (`services/result-wire.ts`). The web app asks for rows as arrays
   (`?rows=arrays`, column names once instead of in every row; `decodeTable` in core turns them back); other clients
   get rows as objects. Concurrent readers of a result and every subscriber of a live push send the same bytes, and the
@@ -202,7 +219,13 @@ a new dashboard on any server (_New dashboard → Import file_, or _Import_ on _
   under separate keys, so a dashboard without it never receives one. OAuth client documents never get the list.
 
 **Live updates.** `LiveHub` keeps a "room" per dashboard while at least one browser is subscribed over SSE. Each live
-dataset gets its own interval; results are hashed and pushed only when the hash changed. N viewers share one refresh
+dataset gets its own interval; a tick also re-runs every dataset that reads the one that ticked, parents first, taking
+everything else from the room's latest tables, so a static sibling is not fetched again (an input that has no timer
+of its own, `http`, `feed` and connector sources included, is reused from those tables until the dashboard changes;
+a room keeps at most 8, drops them all when memory runs short, and loads any other through the data caches).
+Live datasets that share a dataset refresh together, one round at a time, so a viewer never sees a child built from an
+older reading than its parent: a slow member paces the chains of its own group, while unrelated live chains refresh
+independently. Results are hashed and pushed only when the hash changed. N viewers share one refresh
 loop and an unwatched dashboard costs nothing. SSE was chosen over WebSockets because traffic is one-directional
 (writes go through normal HTTP requests), it works through every proxy, and reconnection is built into `EventSource`.
 
@@ -370,11 +393,14 @@ may want a limit in their reverse proxy.
 
 ## 10. Testing strategy
 
-- `packages/core`: unit tests for the expression language (including injection attempts), every transform, op atomicity,
+- `packages/core`: unit tests for the expression language (including injection attempts), every transform, the dataset graph (cycles,
+  limits, lineage keys), join and union, whole-table functions, op atomicity,
   colour tokens and contrast in both themes, series colours, table cell styling, reference lines,
   layout normalisation, profiling and suggestions.
 - `apps/server`: worker pool and render worker tests (identical results to inline, main thread stays responsive,
-  timeouts and running out of heap replace the worker, queue limit), and integration tests through `app.request()` against a real temporary data directory: permissions,
+  timeouts and running out of heap replace the worker, queue limit), resolution scopes (one load per shared parent,
+  error and age propagation), live refresh of dependents, a replay of the field-test dashboards with derived datasets
+  (same rows, byte-identical PNG as the hand-made copies), and integration tests through `app.request()` against a real temporary data directory: permissions,
   conflicts, claims, uploads, versioning, folder deletion, admin access, the complete OAuth flow, and MCP tools driven by
   the official MCP client.
 - The web app was verified end to end with Playwright during development (editing, undo, live agent edits arriving in an

@@ -8,6 +8,7 @@
  */
 import { z } from 'zod';
 import { normalizeLayout, placeItem, reorderLayout } from './layout.ts';
+import { readersOf } from './lineage.ts';
 import {
   ColorMapSchema,
   type DashboardDoc,
@@ -158,10 +159,16 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
       }
       return next;
     }
-    case 'addDataset':
+    case 'addDataset': {
       if (doc.datasets.some((d) => d.id === op.dataset.id)) fail(`Dataset "${op.dataset.id}" already exists`);
-      changes.push(`Added dataset "${op.dataset.name}"`);
+      const parent =
+        op.dataset.source.kind === 'dataset'
+          ? (doc.datasets.find((d) => d.id === (op.dataset.source as { id: string }).id)?.name ??
+            op.dataset.source.id)
+          : null;
+      changes.push(`Added dataset "${op.dataset.name}"${parent ? ` from "${parent}"` : ''}`);
       return { ...doc, datasets: [...doc.datasets, op.dataset] };
+    }
     case 'updateDataset': {
       const current = dataset(op.id);
       const next = DatasetSchema.safeParse({ ...current, ...op.set });
@@ -171,6 +178,13 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
     }
     case 'removeDataset': {
       const current = dataset(op.id);
+      // Deleting the datasets built on this one with it would be too much for one flag: cascade stays about widgets.
+      const readers = readersOf(doc, op.id);
+      if (readers.length) {
+        fail(
+          `Dataset "${op.id}" is read by ${readers.map((r) => `"${r}"`).join(', ')}; remove or re-point those datasets first (earlier in the same batch)`,
+        );
+      }
       const users = doc.widgets.filter((w) => 'datasetId' in w && w.datasetId === op.id);
       if (users.length && !op.cascade) {
         fail(

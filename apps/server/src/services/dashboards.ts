@@ -24,6 +24,9 @@ import {
   HTTP_MIN_REFRESH_SEC,
   isStaticSource,
   LIMITS,
+  lineageDatasets,
+  lineageIssues,
+  lineageSecretIds,
   MAX_SECRETS_PER_USER,
   MAX_TABLE_FILE_BYTES,
   normalizeLayout,
@@ -42,6 +45,7 @@ import {
   sourceSecretIds,
   stripSecretRefs,
   type UploadedFile,
+  upstreamOf,
   type VersionInfo,
   type Visibility,
 } from '@patchbay/core';
@@ -116,8 +120,25 @@ const URL_SOURCES_SIGNED_IN =
   'This server loads data from URLs (http and feed sources) only for dashboards with an owner. Sign in and claim this dashboard first.';
 const PREVIEW_PRIVATE_READ_ONLY =
   "Previewing plain http://, another port or a private host (ALLOW_PRIVATE_HOSTS) needs the dashboards:write scope, because it reaches the server operator's network. Reconnect with write access.";
+const PREVIEW_SECRETS_NEEDS_WRITE =
+  'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.';
+export const DERIVED_NEEDS_DASHBOARD =
+  'Derived sources read the saved datasets of a dashboard; pass dashboardId';
 const TOKEN_PUBLIC_EDIT =
   'This dashboard is public and shows data fetched with secrets, so agents and tokens cannot change it: a person has to make this change in the Patchbay web app. Ask the user to do it there, or to make the dashboard private first.';
+
+/** An id for a draft that names no saved dataset, so a preview never stands in for one by accident. */
+function freeDatasetId(doc: DashboardDoc, base: string): string {
+  const taken = new Set(doc.datasets.map((d) => d.id));
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
+}
+
+/** Where a draft is previewed: the dashboard, plus its document with the draft in it. */
+export interface PreviewTarget extends DashboardTarget {
+  doc: DashboardDoc;
+  dataset: Dataset;
+}
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 /**
@@ -1353,41 +1374,78 @@ export class DashboardService {
   /**
    * Where an unsaved dataset definition may be previewed. Raw uploads and secrets are for editors only: a preview
    * resolves secrets against the dashboard's owner, so it must be the owner (or their agent) asking. Without a
-   * dashboard, only the caller's own secrets can be used.
+   * dashboard, only the caller's own secrets can be used. Derived drafts read the saved datasets, and every secret
+   * and upload in their lineage counts as theirs.
+   *
+   * `doc` is the saved document with the draft in place of `editing` (when that dataset exists) or added under an
+   * id no saved dataset has; `dataset` is the draft under that id.
    */
   async previewTarget(
     p: Principal,
     dashboardId: string | undefined,
-    dataset: Dataset,
-    options: { requireEdit?: boolean } = {},
-  ): Promise<DashboardTarget> {
-    const upload = dataset.source.kind === 'upload';
+    draft: Dataset,
+    options: { requireEdit?: boolean; editing?: string } = {},
+  ): Promise<PreviewTarget> {
     // A preview sends the credentials to a URL of the caller's choosing (within the binding) without saving
-    // anything, so it is a use of the secret, not a read: read-only tokens may not do it.
-    if (p.readOnly && sourceSecretIds(dataset.source).length > 0) {
-      throw forbidden(
-        'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.',
-      );
+    // anything, so it is a use of the secret, not a read: read-only tokens may not do it. Checked before the
+    // dashboard is loaded, so such a token learns nothing about it.
+    if (p.readOnly && sourceSecretIds(draft.source).length > 0) throw forbidden(PREVIEW_SECRETS_NEEDS_WRITE);
+    if (!dashboardId && upstreamOf(draft).length > 0) throw badRequest(DERIVED_NEEDS_DASHBOARD);
+    const viewable = dashboardId ? await this.loadViewable(dashboardId, p) : null;
+    const meta = viewable?.meta ?? null;
+    // Before anything about the draft: someone who may not edit learns nothing from its cycle or its sources.
+    if (options.requireEdit && meta && !this.canEdit(meta, p))
+      throw forbidden('You cannot edit this dashboard');
+    let doc: DashboardDoc;
+    let dataset: Dataset;
+    if (viewable) {
+      const saved = viewable.doc;
+      const editing =
+        options.editing && saved.datasets.some((d) => d.id === options.editing) ? options.editing : undefined;
+      dataset = { ...draft, id: editing ?? freeDatasetId(saved, draft.id) };
+      doc = {
+        ...saved,
+        datasets: editing
+          ? saved.datasets.map((d) => (d.id === dataset.id ? dataset : d))
+          : [...saved.datasets, dataset],
+      };
+      // Interval and history do not change the rows a preview shows; only the graph must hold, so a preview cannot
+      // smuggle a cycle past validation.
+      const issues = lineageIssues({
+        datasets: doc.datasets.map((d) => (d.id === dataset.id ? { ...d, refreshSec: 0, accumulate: 0 } : d)),
+      });
+      if (issues.length) throw badRequest(issues.join('; '));
+    } else {
+      dataset = draft;
+      doc = { ...emptyDashboard('Preview'), datasets: [draft] };
     }
-    const meta = dashboardId ? (await this.loadViewable(dashboardId, p)).meta : null;
+    // A draft reads its lineage with the owner's credentials: previewing it is a use of every secret in it, or a
+    // read-only token could re-run a secret-backed source by previewing a dataset derived from it.
+    const lineage = lineageDatasets(doc, dataset.id);
+    const secrets = lineageSecretIds(doc, dataset.id).length > 0;
+    const upload = lineage.some((d) => d.source.kind === 'upload');
+    if (p.readOnly && secrets) throw forbidden(PREVIEW_SECRETS_NEEDS_WRITE);
     // The owner's network rights (ALLOW_PRIVATE_HOSTS) stay with the owner: a viewer's preview of a URL of the
-    // viewer's choosing runs with the viewer's own rights.
+    // viewer's choosing runs with the viewer's own rights. That holds for the saved roots a derived draft reads as
+    // well: for a viewer they load with the viewer's network rights, so a root on a private host fails for a viewer
+    // without the list, as the root itself would if the viewer previewed it.
     const ownerId = meta && this.canEdit(meta, p) ? meta.ownerId : (p.user?.id ?? null);
     // Reaching the operator's network is a use as well: it runs requests the token's owner could not otherwise make.
     // Only for someone who may use the list, though: the refusal depends on the list's entries, so it would let
-    // every signed-in user probe them.
-    const url = dataset.source.kind === 'http' || dataset.source.kind === 'feed' ? dataset.source.url : null;
-    if (p.readOnly && url !== null && this.privateHostsFor(ownerId) !== null && this.needsPrivateHosts(url))
-      throw forbidden(PREVIEW_PRIVATE_READ_ONLY);
+    // every signed-in user probe them. Every URL in the lineage counts, the saved roots' too.
+    if (p.readOnly && this.privateHostsFor(ownerId) !== null) {
+      const urls = lineage.flatMap((d) =>
+        d.source.kind === 'http' || d.source.kind === 'feed' ? [d.source.url] : [],
+      );
+      if (urls.some((url) => this.needsPrivateHosts(url))) throw forbidden(PREVIEW_PRIVATE_READ_ONLY);
+    }
     const publicOnly = p.readOnly ? { publicOnly: true } : {};
     if (!dashboardId || !meta) {
       if (upload) throw badRequest('Uploaded files need dashboardId');
       if (!p.user) throw unauthorized();
-      return { id: 'preview00', ownerId: p.user.id, ...publicOnly };
+      return { id: 'preview00', ownerId: p.user.id, ...publicOnly, preview: true, doc, dataset };
     }
-    const needsEdit = options.requireEdit || upload || sourceSecretIds(dataset.source).length > 0;
-    if (needsEdit && !this.canEdit(meta, p)) {
-      if (options.requireEdit) throw forbidden('You cannot edit this dashboard');
+    if ((upload || secrets) && !this.canEdit(meta, p)) {
       throw forbidden(
         upload
           ? 'Only editors of this dashboard can preview its uploaded files'
@@ -1395,7 +1453,7 @@ export class DashboardService {
       );
     }
     // Secrets and uploads need an editor (above), so nothing else the target carries changes meaning for a viewer.
-    return { id: dashboardId, ownerId, ...publicOnly };
+    return { id: dashboardId, ownerId, ...publicOnly, preview: true, doc, dataset };
   }
 
   // Secrets ------------------------------------------------------------------------------------------------------

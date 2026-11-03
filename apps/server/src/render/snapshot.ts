@@ -279,7 +279,7 @@ function widgetBody(
     }
     case 'table': {
       const cols = tableColumns(widget.config, table).slice(0, 8);
-      const rules = compileTableRules(widget.config);
+      const rules = compileTableRules(widget.config, table);
       if (widget.config.style === 'list' && cols.length) {
         // Headlines: the first column as the title, the others muted under it; times relative to the render time.
         const now = Date.now();

@@ -1,9 +1,9 @@
 import {
-  type Dataset,
   type DatasetResult,
   DatasetSchema,
   exportFileName,
   FileIdSchema,
+  IdSchema,
   type LiveEvent,
   profileTable,
   SECRET_PLACEMENTS,
@@ -31,7 +31,7 @@ import { exportBodies } from '../services/export-body.ts';
 import { type Body, rowsFormat, streamBodies, streamBody } from '../services/result-wire.ts';
 import { listTemplates } from '../services/templates.ts';
 import { useCaseInfo } from '../showcase/info.ts';
-import { badRequest, forbidden, HttpError, notFound, RetryLaterError } from '../util/errors.ts';
+import { badRequest, HttpError, notFound, RetryLaterError } from '../util/errors.ts';
 import { memoryGuard } from '../util/memory-pressure.ts';
 import { currentClient, runAsClient } from '../util/request-context.ts';
 
@@ -369,7 +369,7 @@ export function apiRoutes(deps: Deps) {
     const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
     const dataset = doc.datasets.find((d) => d.id === c.req.param('datasetId'));
     if (!dataset) throw notFound('Dataset not found');
-    const result = await data.resolve({ id, ownerId: meta.ownerId }, dataset);
+    const result = await data.scope({ id, ownerId: meta.ownerId }, doc).resolve(dataset);
     return sendBody(c, await wire.dataBody(result, rowsFormat(c.req.query('rows'))));
   });
 
@@ -377,14 +377,19 @@ export function apiRoutes(deps: Deps) {
   app.post('/dashboards/:id/preview', async (c) => {
     const id = c.req.param('id');
     const principal = c.get('principal');
-    const { meta } = await dashboards.loadViewable(id, principal);
-    if (!dashboards.canEdit(meta, principal)) throw forbidden('You cannot edit this dashboard');
-    const body = z.object({ dataset: z.unknown() }).parse(await c.req.json());
-    const dataset = DatasetSchema.parse({ id: 'preview', name: 'Preview', ...(body.dataset as object) });
-    if (dataset.source.kind === 'connector')
-      connectors.validateParams(dataset.source.connector, dataset.source.params);
-    const target = await dashboards.previewTarget(principal, id, dataset, { requireEdit: true });
-    const result = await data.resolve(target, { ...dataset, accumulate: 0 }, { maxRows: 500 });
+    // `editing`: the saved dataset the draft stands in for, so its readers and the cycle check see the draft there.
+    const body = z.object({ dataset: z.unknown(), editing: IdSchema.optional() }).parse(await c.req.json());
+    const draft = DatasetSchema.parse({ id: 'preview', name: 'Preview', ...(body.dataset as object) });
+    const target = await dashboards.previewTarget(principal, id, draft, {
+      requireEdit: true,
+      ...(body.editing ? { editing: body.editing } : {}),
+    });
+    if (draft.source.kind === 'connector')
+      connectors.validateParams(draft.source.connector, draft.source.params);
+    const dataset = target.dataset;
+    const result = await data
+      .scope(target, target.doc)
+      .resolve({ ...dataset, accumulate: 0 }, { maxRows: 500 });
     const profile = profileTable(result.table);
     const rest = JSON.stringify({
       profile,
@@ -407,7 +412,7 @@ export function apiRoutes(deps: Deps) {
     const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
     const dataset = doc.datasets.find((d) => d.id === c.req.param('datasetId'));
     if (!dataset) throw notFound('Dataset not found');
-    const result = await data.resolve({ id, ownerId: meta.ownerId }, dataset);
+    const result = await data.scope({ id, ownerId: meta.ownerId }, doc).resolve(dataset);
     const profile = profileTable(result.table);
     return c.json({
       profile,
@@ -521,11 +526,6 @@ export function apiRoutes(deps: Deps) {
     const target = { id, ownerId: meta.ownerId };
     const theme: ThemeMode = c.req.query('theme') === 'dark' ? 'dark' : 'light';
     const widgetId = c.req.query('widget');
-    const resolveAll = async (datasets: Dataset[]) => {
-      const map = new Map<string, DatasetResult>();
-      await Promise.all(datasets.map(async (d) => map.set(d.id, await data.resolve(target, d))));
-      return map;
-    };
     const widget = widgetId ? doc.widgets.find((w) => w.id === widgetId) : undefined;
     if (widgetId && !widget) throw notFound('Widget not found');
     const key = SnapshotCache.key({ id, version: meta.version, theme, widget: widgetId });
@@ -534,13 +534,18 @@ export function apiRoutes(deps: Deps) {
     const png = await snapshotCache.get(key, async () => {
       chargeSnapshot(deps.limits.snapshots);
       return snapshotGate.run(async (draw) => {
+        // One scope for the whole picture: a parent read by several widgets' datasets is loaded and processed once.
+        // Made once the gate admits the snapshot: its deadline starts with this render's own work, and a cache hit
+        // makes none.
+        const scope = data.scope(target, doc);
         if (widget) {
           const dataset =
             'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
-          const result = dataset ? await data.resolve(target, dataset) : undefined;
+          const result = dataset ? await scope.resolve(dataset) : undefined;
           return draw({ kind: 'widget', widget, result, options: { theme, entityColors: doc.colors } });
         }
-        const results = await resolveAll(doc.datasets);
+        const results = new Map<string, DatasetResult>();
+        await Promise.all(doc.datasets.map(async (d) => results.set(d.id, await scope.resolve(d))));
         return draw({
           kind: 'dashboard',
           doc,

@@ -8,10 +8,14 @@
  */
 import { z } from 'zod';
 import { isValidTimeZone } from './clock.ts';
+import { IdSchema } from './ids.ts';
+import { DATASET_DEPTH, DATASET_INPUTS, lineageIssues } from './lineage.ts';
 import { SEARCH_ENGINES } from './search.ts';
 import { SoundRuleSchema } from './sound.ts';
 import { COLOR_TOKENS } from './theme.ts';
 import { ExpressionSchema, TransformSchema, withStepIds } from './transforms.ts';
+
+export { IdSchema };
 
 export const SCHEMA_VERSION = 1;
 export const GRID_COLUMNS = 12;
@@ -31,6 +35,10 @@ export const LIMITS = {
    */
   inlineColumns: 200,
   transforms: 40,
+  /** Longest chain of datasets reading datasets (source kind "dataset", join and union); bounds the work per request. */
+  datasetDepth: DATASET_DEPTH,
+  /** Datasets one dataset reads, directly or through others. */
+  datasetInputs: DATASET_INPUTS,
   markdown: 20_000,
   title: 120,
   description: 1000,
@@ -40,13 +48,6 @@ export const LIMITS = {
    */
   documentBytes: 1_000_000,
 } as const;
-
-export const IdSchema = z
-  .string()
-  .regex(
-    /^[a-z0-9][a-z0-9_-]{0,39}$/,
-    'Ids are 1-40 chars of a-z, 0-9, "_" or "-", starting with a letter or digit',
-  );
 
 /** Ids of saved secrets. Not secret themselves: they appear in public documents and grant nothing. */
 export const SecretIdSchema = z
@@ -110,6 +111,9 @@ export const SourceSchema = z.discriminatedUnion('kind', [
       limit: z.number().int().min(1).max(200).default(30),
     })
     .describe('An RSS, Atom or JSON Feed, or a web page that announces one'),
+  z
+    .strictObject({ kind: z.literal('dataset'), id: IdSchema })
+    .describe('The processed rows of another dataset of this dashboard, fetched once and shared'),
 ]);
 export type Source = z.infer<typeof SourceSchema>;
 
@@ -145,6 +149,7 @@ export const DatasetSchema = z.strictObject({
     ),
 });
 export type Dataset = z.infer<typeof DatasetSchema>;
+export type DatasetInput = z.input<typeof DatasetSchema>;
 
 export const FormatSchema = z.strictObject({
   style: z.enum(['number', 'compact', 'percent', 'currency']).default('number'),
@@ -453,6 +458,7 @@ export function integrityIssues(doc: DashboardDoc): string[] {
       if (step.id) stepIds.add(step.id);
     }
   }
+  issues.push(...lineageIssues(doc));
   const widgetIds = new Set<string>();
   for (const w of doc.widgets) {
     if (widgetIds.has(w.id)) issues.push(`Duplicate widget id "${w.id}"`);

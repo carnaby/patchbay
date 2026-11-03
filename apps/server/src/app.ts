@@ -133,6 +133,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     if (!deep) return;
     data.dropCaches();
     wire.dropCaches();
+    // Up to LIMITS.datasetInputs full tables per watched room, outside the byte-bounded caches.
+    hub.dropSeeds();
   });
   return {
     config,

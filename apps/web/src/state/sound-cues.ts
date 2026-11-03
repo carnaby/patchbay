@@ -13,16 +13,17 @@ import {
   soundDecision,
   type Widget,
 } from '@patchbay/core';
-import { type QueryClient, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { armAutoUnlock, playCue } from '../lib/sounds.ts';
+import { datasetKey, lineageKey, soundIdentity } from './dataset-keys.ts';
 import { useEditor } from './editor.ts';
-import { datasetKey, liveReconnects } from './sync.ts';
+import { liveReconnects } from './sync.ts';
 
 type SoundWidget = Extract<Widget, { datasetId: string }> & { sound: SoundRule };
 
 interface Tracked {
-  /** Rule + dataset definition the state belongs to; a change means a new baseline. */
+  /** Rule + lineage of its dataset; a change means a new baseline. */
   identity: string;
   epoch: number;
   hash: string | null;
@@ -43,10 +44,7 @@ export function useSoundCues(dashboardId: string) {
     if (!hasSounds) return;
     const tracked = new Map<string, Tracked>();
 
-    const identityOf = (w: SoundWidget) => {
-      const dataset = useEditor.getState().doc?.datasets.find((d) => d.id === w.datasetId);
-      return dataset ? JSON.stringify([w.sound, dataset]) : null;
-    };
+    const identityOf = (w: SoundWidget) => soundIdentity(useEditor.getState().doc, w.sound, w.datasetId);
 
     const consider = (w: SoundWidget, result: DatasetResult, now: number): boolean => {
       const identity = identityOf(w);
@@ -82,8 +80,9 @@ export function useSoundCues(dashboardId: string) {
     const seed = () => {
       const doc = useEditor.getState().doc;
       for (const w of soundWidgets(doc?.widgets)) {
-        const dataset = doc?.datasets.find((d) => d.id === w.datasetId);
-        const cached = dataset ? cachedResult(qc, dashboardId, dataset) : undefined;
+        const cached = doc
+          ? qc.getQueryData<DatasetResult>(datasetKey(dashboardId, doc, w.datasetId))
+          : undefined;
         const entry = tracked.get(w.id);
         if (cached && (!entry || entry.identity !== identityOf(w))) consider(w, cached, Date.now());
       }
@@ -94,9 +93,9 @@ export function useSoundCues(dashboardId: string) {
       if (event.type !== 'updated' || event.action.type !== 'success') return;
       const [kind, id, datasetId, definition] = event.query.queryKey as unknown[];
       if (kind !== 'data' || id !== dashboardId || typeof datasetId !== 'string') return;
-      // Results for a definition that is no longer current (an edit in flight) are skipped.
-      const dataset = useEditor.getState().doc?.datasets.find((d) => d.id === datasetId);
-      if (!dataset || JSON.stringify(dataset) !== definition) return;
+      // Results for a definition that is no longer current (an edit of the dataset or of anything it reads) are skipped.
+      const doc = useEditor.getState().doc;
+      if (!doc?.datasets.some((d) => d.id === datasetId) || lineageKey(doc, datasetId) !== definition) return;
       const result = event.query.state.data as DatasetResult | undefined;
       if (result) decide(datasetId, result);
     });
@@ -108,8 +107,4 @@ export function useSoundCues(dashboardId: string) {
       unsubscribeDoc();
     };
   }, [qc, dashboardId, hasSounds]);
-}
-
-function cachedResult(qc: QueryClient, dashboardId: string, dataset: Parameters<typeof datasetKey>[1]) {
-  return qc.getQueryData<DatasetResult>(datasetKey(dashboardId, dataset));
 }

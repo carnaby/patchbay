@@ -17,6 +17,8 @@ import {
   REFERENCE_STATS,
   SEARCH_ENGINES,
   SOUND_IDS,
+  TABLE_FUNCTION_ARGS,
+  TABLE_FUNCTIONS,
   TIME_UNITS,
   WINDOW_OPS,
 } from '@patchbay/core';
@@ -37,7 +39,7 @@ Workflow that works well:
 Rules: every write creates a new version the user can roll back (list_versions / restore_version), and the user
 sees your changes live in the browser. Prefer few, meaningful widgets over many. Never put two measures of
 different scale on one chart; make two charts instead. Read get_reference for the full schema. Private APIs: see
-list_secrets.`;
+list_secrets. Show one source several ways by deriving datasets (source kind "dataset"), not by copying it.`;
 
 /** http:// only works where the caller may use the operator's list, so no one else is shown it as an option. */
 function urlExample(network: NetworkAccess): string {
@@ -60,6 +62,10 @@ export function referenceText(
   const fns = Object.entries(FUNCTIONS)
     .map(([name, f]) => `- ${name}(${f.args}): ${f.doc}`)
     .join('\n');
+  const tableFns = Object.entries(TABLE_FUNCTIONS)
+    .map(([name, f]) => `- ${name}(${TABLE_FUNCTION_ARGS}): ${f.doc}`)
+    .join('\n');
+  const maxRows = PIPELINE_LIMITS.maxRows.toLocaleString('en');
   return `# Patchbay authoring reference
 
 ## Document
@@ -75,6 +81,7 @@ ${UPLOAD_MAX_COLUMNS} columns with names of up to ${UPLOAD_MAX_COLUMN_NAME} char
 - source.kind "connector": { connector: "<id from list_connectors>", params: {...} }
 - source.kind "upload": { fileId } (from upload_data)
 - source.kind "inline": { rows: [{...}, ...] } (small data you create yourself)
+- source.kind "dataset": { id } (the processed rows of another dataset of this dashboard; see Combining datasets)
 - source.kind "http": { url: "${urlExample(network)}", path?: "data.items", secrets?: ["sec_..."] } (JSON APIs; see Secrets)
 - source.kind "feed": { url: "${urlExample(network)}", limit?: 30 } reads RSS, Atom or JSON Feed: news sites, blogs, YouTube
   channels, subreddits (".../.rss"), GitHub releases (".../releases.atom"). A site's home page works when it
@@ -132,12 +139,36 @@ ${(PIPELINE_LIMITS.maxSize / 1_000_000).toLocaleString('en')} million characters
 select early. A dataset's result (what its widgets receive, at most 10,000 rows) may be at most ${MAX_RESULT_BYTES / 1024 / 1024} MB
 as JSON; a larger one comes back as an error with its columns and no rows: add limit, select or aggregate steps.
 
+## Combining datasets
+- source.kind "dataset": { id } takes the processed rows of another dataset of this dashboard. Use it instead of
+  copying a source: the source is fetched once and every derived dataset stays in sync. Derived datasets have no
+  refreshSec or accumulate of their own: they refresh when their source does.
+- join { with, on: ["key"] | [{ left, right }], how: "left"|"inner", fields? }: add columns from another dataset.
+  "left" (default) keeps every row. Keys must have the same type on both sides (a time matches a number, both are
+  epoch ms; turn text dates into times with derive date(column)). A key that repeats on the other side gives one row
+  per match; a null key matches nothing. fields: the columns to bring (default all but the keys); a name this
+  dataset already has gets "_<dataset id>".
+- union { with: [ids], origin?: "column", labels?: { id: "label" } }: append rows of other datasets, columns matched
+  by name. With origin, chart the result with series: "<origin column>" to compare sources in one chart. Labels
+  default to the dataset names (for a derived dataset's own rows, its source dataset's name); set them to keep series
+  values and colours stable when a dataset is renamed. A column with different types becomes text.
+- Whole-table functions in expressions: ${Object.keys(TABLE_FUNCTIONS).join(', ')} (column, by?). They use the rows at that point of the pipeline.
+  Share of total: derive { as: "share", expr: "round(sales / col_sum(sales) * 100, 1)" }.
+- Chains are at most ${LIMITS.datasetDepth} deep; a dataset reads at most ${LIMITS.datasetInputs} others; joins and unions produce at most ${maxRows} rows.
+- When a dataset it reads fails, a derived dataset shows the error: Source dataset "<id>" failed: <message>, where
+  <id> is the id of the dataset that failed, and no rows.
+- A dataset that others read cannot be removed: remove or re-point them first, earlier in the same batch.
+  preview_data needs dashboardId for a "dataset" source or join/union steps: it reads the saved datasets.
+
 ## Expressions
 Operators: + - * / % ^, == != < <= > >=, && || ! (or: and, or, not), cond ? a : b. Strings in "double" or 'single'
 quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Trigonometry works in radians (convert
 with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed point. Text built with concat or +
 is at most ${MAX_STRING.toLocaleString('en')} characters (use substr to shorten). Functions:
 ${fns}
+
+Whole-table functions (filter and derive steps, table rules, sound conditions; see Combining datasets):
+${tableFns}
 
 ## Widgets
 - chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels?, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors?, referenceLines? }

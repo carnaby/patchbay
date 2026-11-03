@@ -6,6 +6,7 @@ import {
   profileTable,
   runPipeline,
   type Suggestion,
+  suggestionDataset,
   suggestWidgets,
   summaryOf,
   type TransformInput,
@@ -302,5 +303,55 @@ describe('locations', () => {
       (s) => s.widget.type === 'map',
     )!;
     expect((track.widget.config as { mode?: string }).mode).toBe('track');
+  });
+});
+
+describe('share of total', () => {
+  it('suggests a percentage bar for 7 to 12 categories, computed with col_sum', () => {
+    const sales = Array.from({ length: 80 }, (_, i) => ({ store: `S${i % 8}`, revenue: 10 + (i % 8) }));
+    const list = suggest(sales);
+    const share = list.find((s) => s.title === 'revenue share by store (%)');
+    expect(share?.widget.config).toMatchObject({
+      kind: 'bar',
+      x: 'store',
+      y: ['share'],
+      horizontal: true,
+      format: { style: 'percent' },
+    });
+    const rows = run(sales, [], share!).rows;
+    expect(rows).toHaveLength(8);
+    expect(rows.reduce((t, r) => t + (r.share as number), 0)).toBeCloseTo(100, 0);
+    // Up to 6 categories the donut already shows part-to-whole.
+    const few = suggest(sales.map((r, i) => ({ ...r, store: `S${i % 3}` })));
+    expect(few.some((s) => s.title.includes(' share by '))).toBe(false);
+  });
+});
+
+describe('suggestionDataset', () => {
+  const chain = (n: number) => [
+    { id: 'd0', name: 'D0', source: { kind: 'inline' as const, rows: [] }, transforms: [], refreshSec: 60 },
+    ...Array.from({ length: n }, (_, i) => ({
+      id: `d${i + 1}`,
+      name: `D${i + 1}`,
+      source: { kind: 'dataset' as const, id: `d${i}` },
+      transforms: [],
+    })),
+  ];
+
+  it('derives from the saved dataset instead of copying its source and steps', () => {
+    expect(
+      suggestionDataset({ datasets: chain(0) }, 'd0', 'view', 'By region', [{ type: 'limit', n: 5 }]),
+    ).toEqual({
+      id: 'view',
+      name: 'D0: By region',
+      source: { kind: 'dataset', id: 'd0' },
+      transforms: [{ type: 'limit', n: 5 }],
+    });
+  });
+
+  it('copies when one more level would pass the depth limit', () => {
+    const d = suggestionDataset({ datasets: chain(4) }, 'd4', 'view', 'X', [{ type: 'limit', n: 5 }]);
+    expect(d.source).toEqual({ kind: 'dataset', id: 'd3' });
+    expect(d.transforms).toEqual([{ type: 'limit', n: 5 }]);
   });
 });
