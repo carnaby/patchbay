@@ -14,6 +14,7 @@ import {
   type Source,
   type Suggestion,
   sourceSecretIds,
+  stepInputsOf,
   suggestionDataset,
   type TableProfile,
   type TransformInput,
@@ -59,7 +60,7 @@ import { useConnectors } from '../lib/hooks.ts';
 import { withRetry } from '../lib/retry.ts';
 import { credentialErrorHint, introducedSecretIds, introducedSecretRefs } from '../lib/secrets.ts';
 import { useEditor } from '../state/editor.ts';
-import { fromWire } from '../state/sync.ts';
+import { fromWire, useDatasetColumns } from '../state/sync.ts';
 import {
   type CredentialContext,
   CredentialsField,
@@ -827,6 +828,18 @@ function DatasetEditor({
   });
   const baseColumns = raw.data?.result.table.columns.map((c) => c.name) ?? [];
 
+  const candidates = useMemo(() => (doc ? sourceCandidates(doc, editingId ?? null) : []), [doc, editingId]);
+  // Only the datasets the steps read: loading every other dataset when the editor opens would be wasted work.
+  const columnsOf = useDatasetColumns(dashboardId, stepInputsOf(draft));
+  const parentId = draft.source.kind === 'dataset' ? draft.source.id : undefined;
+  const parent = parentId ? doc?.datasets.find((d) => d.id === parentId) : undefined;
+  // Union labels its own rows after where they came from: the parent of a derived dataset, otherwise this dataset.
+  const self = parent
+    ? { id: parent.id, name: parent.name }
+    : initial
+      ? { id: initial.id, name: draft.name }
+      : undefined;
+
   const save = async (extraWidgets: { widget: WidgetInput; transforms: TransformInput[] }[] = []) => {
     const doc = useEditor.getState().doc!;
     const datasetIds = new Set(doc.datasets.map((d) => d.id));
@@ -920,6 +933,9 @@ function DatasetEditor({
           steps={draft.transforms}
           baseColumns={baseColumns}
           trace={result?.trace}
+          datasets={candidates.map((c) => ({ id: c.id, name: c.name }))}
+          columnsOf={columnsOf}
+          self={self}
           onChange={(transforms) => setDraft((d) => ({ ...d, transforms }))}
         />
       </section>
