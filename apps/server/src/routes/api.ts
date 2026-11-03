@@ -125,7 +125,12 @@ export function apiRoutes(deps: Deps) {
   app.get('/me', (c) => {
     const user = c.get('user');
     const { mode, canUseSecrets } = dashboards.secretsStatus(user);
-    return c.json({ user: user ? deps.users.toPublic(user) : null, secrets: mode, canUseSecrets });
+    return c.json({
+      user: user ? deps.users.toPublic(user) : null,
+      secrets: mode,
+      canUseSecrets,
+      privateHosts: dashboards.privateHostsFor(user?.id ?? null) !== null,
+    });
   });
 
   // Erasure of the account and everything it owns. Session only (a leaked token must not be able to do this),

@@ -26,8 +26,9 @@ function attributes(tag: string): Map<string, string> {
 }
 
 /**
- * The first announced feed, resolved against the page's address. Plain http links are upgraded to https: feed
- * sources are https only, and sites that announce http feeds almost always serve them over https too.
+ * The first announced feed, resolved against the page's address. On a page served over https, plain http links are
+ * upgraded to https: sites that announce http feeds almost always serve them over https too. A page served over http
+ * (only possible for a host in ALLOW_PRIVATE_HOSTS) keeps its links as written, and the guard decides on the fetch.
  */
 export function discoverFeed(html: string, pageUrl: string): string | null {
   for (const tag of linkTags(html.slice(0, SCAN_BYTES))) {
@@ -41,8 +42,8 @@ export function discoverFeed(html: string, pageUrl: string): string | null {
     if (!href) continue;
     try {
       const url = new URL(href, pageUrl);
-      if (url.protocol === 'http:') url.protocol = 'https:';
-      if (url.protocol === 'https:') return url.href;
+      if (url.protocol === 'http:' && new URL(pageUrl).protocol === 'https:') url.protocol = 'https:';
+      if (url.protocol === 'https:' || url.protocol === 'http:') return url.href;
     } catch {
       // A broken href: try the next link.
     }

@@ -2,6 +2,7 @@ import { serve } from '@hono/node-server';
 import { createApp, createDeps, syncShowcaseUseCases } from './app.ts';
 import { loadConfig } from './config.ts';
 import { detectMemoryReader, memoryGuard } from './util/memory-pressure.ts';
+import { privateHostsNotice } from './util/private-hosts.ts';
 
 // `--production` instead of `NODE_ENV=production node ...`, which does not work in Windows shells.
 const config = loadConfig(
@@ -79,6 +80,12 @@ const server = serve(
     // Holding other people's credentials is a deliberate choice; say so where the operator looks.
     if (config.secrets.mode !== 'off')
       console.log(`[patchbay] SECRETS=${config.secrets.mode}: credentials for HTTP sources can be stored`);
+    // Opening the operator's network is a deliberate choice too; say what is open and to whom.
+    for (const line of privateHostsNotice(config.privateHosts, config.privateHostsFor, {
+      googleSignIn: config.google !== null || config.devLogin,
+      admins: config.adminEmails.size,
+    }))
+      console.log(`[patchbay] ${line}`);
   },
 );
 

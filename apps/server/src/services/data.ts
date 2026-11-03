@@ -36,6 +36,7 @@ import { BusyError, Gate } from '../util/gate.ts';
 import { HEAVY_FILE_BYTES, HEAVY_PIPELINE_CELLS, heavyWork } from '../util/heavy.ts';
 import { approxTableBytes, ByteLru } from '../util/lru.ts';
 import { OutboundLimiter } from '../util/outbound.ts';
+import type { PrivateHosts } from '../util/private-hosts.ts';
 import { currentClient } from '../util/request-context.ts';
 import { type Credential, safeFetchJson, type UpstreamTestSeam } from '../util/safe-fetch.ts';
 import { InlineRunner, type PipelineRunner } from './pipeline-pool.ts';
@@ -115,6 +116,8 @@ function fnv(text: string): string {
 export interface DashboardTarget {
   id: string;
   ownerId: string | null;
+  /** A read-only token's preview: the operator's private hosts never apply, whoever the owner is. */
+  publicOnly?: boolean;
 }
 
 /** Decrypts a dataset's credentials or throws an HttpError with a message that is safe to show any viewer. */
@@ -122,8 +125,12 @@ export type CredentialResolver = (target: DashboardTarget, dataset: Dataset) => 
 
 export interface DataServiceOptions {
   credentials?: CredentialResolver;
-  /** Throws when this instance does not fetch URLs (http and feed sources) for the dashboard. */
-  urlPolicy?: (target: DashboardTarget, url: string) => void;
+  /**
+   * Called before every http or feed load: throws when this instance does not fetch the URL for the dashboard,
+   * otherwise returns the private hosts (ALLOW_PRIVATE_HOSTS) its sources may reach, or null for public addresses
+   * only. DashboardService decides, by the dashboard's owner.
+   */
+  urlPolicy?: (target: DashboardTarget, url: string) => PrivateHosts | null;
   /** OFFLINE=1: feeds return their deterministic sample instead of fetching. */
   offline?: boolean;
   /** Memory for parsed tables (uploads, inline rows, HTTP responses), in bytes. */
@@ -180,7 +187,7 @@ export class DataService {
 
   private readonly pipeline: PipelineRunner;
   private readonly credentialsFor: CredentialResolver;
-  private readonly urlPolicy: (target: DashboardTarget, url: string) => void;
+  private readonly urlPolicy: (target: DashboardTarget, url: string) => PrivateHosts | null;
   private readonly upstreamTest: UpstreamTestSeam | undefined;
   private readonly feeds: FeedService;
   private readonly maxSourceCells: number;
@@ -203,7 +210,7 @@ export class DataService {
       (async () => {
         throw new HttpError(403, 'Credentials are turned off on this server.');
       });
-    this.urlPolicy = options.urlPolicy ?? (() => {});
+    this.urlPolicy = options.urlPolicy ?? (() => null);
     this.upstreamTest = options.upstreamTest;
     this.tables = new ByteLru(options.cacheBytes ?? DEFAULT_CACHE_BYTES);
     this.maxSourceCells = options.maxSourceCells ?? DEFAULT_MAX_SOURCE_CELLS;
@@ -332,6 +339,7 @@ export class DataService {
     target: DashboardTarget,
     dataset: Dataset,
     source: Extract<Dataset['source'], { kind: 'http' }>,
+    privateHosts: PrivateHosts | null,
   ): Promise<Loaded> {
     // Resolved on every call, before the cache: the switch, the owner's rights and the binding apply at once.
     const credentials = sourceSecretIds(source).length ? await this.credentialsFor(target, dataset) : [];
@@ -339,12 +347,15 @@ export class DataService {
       .map((c) => `${target.ownerId}/${c.id}@${c.revision}`)
       .sort()
       .join(',');
-    const key = `http:${credentialKey}|${source.url}#${source.path ?? ''}`;
+    // A response fetched with the operator's private hosts never answers a dashboard that may not use them.
+    const key = `http:${privateHosts ? 'lan|' : ''}${credentialKey}|${source.url}#${source.path ?? ''}`;
     let entry = this.tables.get(key);
     if (!entry) {
       let pending = this.loading.get(key);
       if (!pending) {
-        pending = this.fetchHttp(key, source, credentials).finally(() => this.loading.delete(key));
+        pending = this.fetchHttp(key, source, credentials, privateHosts).finally(() =>
+          this.loading.delete(key),
+        );
         this.loading.set(key, pending);
       }
       entry = await pending;
@@ -362,11 +373,13 @@ export class DataService {
     key: string,
     source: Extract<Dataset['source'], { kind: 'http' }>,
     credentials: Credential[],
+    privateHosts: PrivateHosts | null,
   ): Promise<CacheEntry> {
     try {
       const json = await this.outbound.run(currentClient(), source.url, () =>
         safeFetchJson(source.url, {
           credentials,
+          ...(privateHosts ? { privateHosts } : {}),
           ...(this.upstreamTest ? { test: this.upstreamTest } : {}),
         }),
       );
@@ -401,11 +414,9 @@ export class DataService {
       case 'upload':
         return this.loadUpload(target, source.fileId);
       case 'http':
-        this.urlPolicy(target, source.url);
-        return this.loadHttp(target, dataset, source);
+        return this.loadHttp(target, dataset, source, this.urlPolicy(target, source.url));
       case 'feed': {
-        this.urlPolicy(target, source.url);
-        const feed = await this.feeds.load(source.url);
+        const feed = await this.feeds.load(source.url, this.urlPolicy(target, source.url));
         const rows = feed.table.rows.slice(0, source.limit);
         return { table: { columns: feed.table.columns, rows }, fetchedAt: feed.fetchedAt, credentialKey: '' };
       }
