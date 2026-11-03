@@ -173,6 +173,8 @@ interface Loaded {
   credentialKey: string;
   /** For sources that change only when edited: which content this is. A new reading exactly when it changes. */
   stamp?: string;
+  /** The cached table `table` was cut from, when it is a new object on every load (a feed's first items). */
+  origin?: DataTable;
 }
 
 export type Computed = Pick<DatasetResult, 'table' | 'hash' | 'truncated' | 'trace' | 'error'>;
@@ -208,6 +210,13 @@ export class DataService {
    * one is shared, not a new slice to hash, serialise and budget each time.
    */
   private readonly finished = new WeakMap<DataTable, Map<number, Computed>>();
+  /**
+   * Final capped results of datasets resolved through a scope, keyed by their lineage, the readings of its roots and
+   * the target's policy (ResolveScope.finalKey). Without them every request re-runs the whole chain: a parent too
+   * large for `results` is processed again for each reader. Only capped tables are kept, never an uncapped parent.
+   */
+  private readonly finals = new ByteLru<DatasetResult>(RESULT_CACHE_BYTES);
+  private readonly finalizing = new Map<string, Promise<DatasetResult>>();
   /** Rolling buffers for `accumulate`, keyed by dashboard + dataset. In memory by design. */
   private readonly buffers = new ByteLru<HistoryBuffer>(BUFFER_BYTES);
 
@@ -257,6 +266,7 @@ export class DataService {
   dropCaches() {
     this.tables.clear();
     this.results.clear();
+    this.finals.clear();
   }
 
   /**
@@ -449,7 +459,12 @@ export class DataService {
       case 'feed': {
         const feed = await this.feeds.load(source.url, this.urlPolicy(target, source.url));
         const rows = feed.table.rows.slice(0, source.limit);
-        return { table: { columns: feed.table.columns, rows }, fetchedAt: feed.fetchedAt, credentialKey: '' };
+        return {
+          table: { columns: feed.table.columns, rows },
+          fetchedAt: feed.fetchedAt,
+          credentialKey: '',
+          origin: feed.table,
+        };
       }
       case 'dataset':
         throw new HttpError(400, readsOtherDatasets(dataset.id));
@@ -588,11 +603,15 @@ export class DataService {
     return pending;
   }
 
-  /** The table a dataset's pipeline starts from: its source, or the accumulated history of it. */
+  /**
+   * The table a dataset's pipeline starts from: its source, or the accumulated history of it. `reading` names what
+   * was loaded (absent for a history, which is a new table on every call): equal readings are the same cached table
+   * object, fetched with the same credentials, and so give the same result.
+   */
   async loadInput(
     target: DashboardTarget,
     dataset: Dataset,
-  ): Promise<{ table: DataTable; fetchedAt: number; warning?: string; fresh: boolean }> {
+  ): Promise<{ table: DataTable; fetchedAt: number; warning?: string; fresh: boolean; reading?: string }> {
     const loaded = await this.loadSource(target, dataset);
     const fresh = dataset.accumulate > 0;
     return {
@@ -600,7 +619,38 @@ export class DataService {
       fetchedAt: loaded.fetchedAt,
       fresh,
       ...(loaded.warning ? { warning: loaded.warning } : {}),
+      ...(fresh
+        ? {}
+        : {
+            reading: JSON.stringify([
+              this.tableId(loaded.origin ?? loaded.table),
+              loaded.credentialKey,
+              loaded.fetchedAt,
+              loaded.warning ?? '',
+            ]),
+          }),
     };
+  }
+
+  /**
+   * A scope's final result under `key` (see `finals`): reused for RESULT_TTL_MS, and built once for concurrent
+   * scopes, which then all hold the same object and so the same serialisation. A failure is never kept.
+   */
+  sharedFinal(key: string, build: () => Promise<DatasetResult>): Promise<DatasetResult> {
+    const hit = this.finals.get(key);
+    if (hit) return Promise.resolve(hit);
+    let pending = this.finalizing.get(key);
+    if (!pending) {
+      pending = build()
+        .then((r) => {
+          const bytes = approxTableBytes(r.table) + 2 * (key.length + r.hash.length + (r.error?.length ?? 0));
+          this.finals.set(key, r, bytes, RESULT_TTL_MS);
+          return r;
+        })
+        .finally(() => this.finalizing.delete(key));
+      this.finalizing.set(key, pending);
+    }
+    return pending;
   }
 
   /** One per request, hub tick, snapshot or MCP call: see `ResolveScope`. */

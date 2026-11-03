@@ -3,6 +3,7 @@
  * call. Each dataset of the document is loaded and processed at most once per scope, however many datasets read it,
  * and children always get their parent's uncapped table, never the 10,000 rows a widget receives.
  */
+import { createHash } from 'node:crypto';
 import {
   type DashboardDoc,
   type Dataset,
@@ -10,6 +11,8 @@ import {
   type DataTable,
   hasLineage,
   lineageCycles,
+  lineageDatasets,
+  lineageKey,
   PIPELINE_LIMITS,
   type PipelineInputs,
   type PipelineResult,
@@ -116,6 +119,8 @@ export class ResolveScope {
   private readonly deadline: number;
   private readonly memo = new Map<string, Promise<FullResult>>();
   private readonly done = new Map<string, FullResult>();
+  /** Source loads of the document's datasets: the final key reads them first, and processing must see the same. */
+  private readonly loads = new Map<string, ReturnType<DataService['loadInput']>>();
   private cycles: Map<string, string[]> | undefined;
 
   constructor(data: DataService, target: DashboardTarget, doc: DashboardDoc, options: ScopeOptions = {}) {
@@ -173,23 +178,74 @@ export class ResolveScope {
       const stored = this.doc.datasets.find((d) => d.id === dataset.id);
       const same =
         stored === dataset || (stored !== undefined && JSON.stringify(stored) === JSON.stringify(dataset));
-      // The whole wait is bounded too, not only each load and run: a caller never outlives the scope's deadline.
-      const full = await this.within(() =>
-        same ? this.full(dataset.id) : this.process(dataset, [dataset.id]),
-      );
-      const computed = this.data.finish(full, options.maxRows);
-      const error = computed.error ?? full.warning;
-      return {
-        datasetId: dataset.id,
-        ...computed,
-        fetchedAt: new Date(full.fetchedAt).toISOString(),
-        ...(error ? { error } : {}),
+      const build = async (): Promise<DatasetResult> => {
+        // The whole wait is bounded too, not only each load and run: a caller never outlives the scope's deadline.
+        const full = await this.within(() =>
+          same ? this.full(dataset.id) : this.process(dataset, [dataset.id]),
+        );
+        const computed = this.data.finish(full, options.maxRows);
+        const error = computed.error ?? full.warning;
+        return {
+          datasetId: dataset.id,
+          ...computed,
+          fetchedAt: new Date(full.fetchedAt).toISOString(),
+          ...(error ? { error } : {}),
+        };
       };
+      const key = same ? await this.finalKey(dataset.id, options.maxRows) : undefined;
+      // Joining another scope's computation still ends at this scope's own deadline.
+      return key ? await this.within(() => this.data.sharedFinal(key, build)) : await build();
     } catch (e) {
       // The server, not the dataset, is the problem: callers answer 503 or skip a refresh.
       if (e instanceof BusyError) throw e;
       return errorResult(dataset.id, e);
     }
+  }
+
+  /**
+   * The key under which a stored dataset's final result is shared across scopes, or undefined when it must not be.
+   * It names everything the result depends on: the definitions of the dataset and of all it reads (lineageKey), what
+   * each root of that lineage loaded (the cached table object, its credentials, fetch time and warning), the target's
+   * policy and the row cap. A new reading of any root is a new table object and so a new key. Never shared: previews
+   * (their loads are their own) and seeded scopes (the live hub, whose inputs are the room's tables and which keeps
+   * the full tables it settles), and histories, which are a new table on every read.
+   */
+  private async finalKey(id: string, maxRows: number | undefined): Promise<string | undefined> {
+    if (this.target.preview || this.seed) return undefined;
+    const roots = lineageDatasets(this.doc, id).filter((d) => d.source.kind !== 'dataset');
+    if (roots.some((d) => d.accumulate > 0)) return undefined;
+    let readings: (string | undefined)[];
+    try {
+      readings = await Promise.all(roots.map(async (d) => (await this.within(() => this.load(d))).reading));
+    } catch {
+      // Resolved without the cache, which reports the failure where it belongs (the dataset or its upstream).
+      return undefined;
+    }
+    if (readings.some((r) => r === undefined)) return undefined;
+    const { ownerId, publicOnly } = this.target;
+    const parts = [
+      this.target.id,
+      ownerId,
+      publicOnly === true,
+      maxRows ?? null,
+      lineageKey(this.doc, id),
+      readings,
+    ];
+    return `final|${createHash('sha256').update(JSON.stringify(parts)).digest('base64url')}`;
+  }
+
+  /** A stored dataset's source, loaded once per scope; a draft that is not the stored object loads its own. */
+  private load(dataset: Dataset): ReturnType<DataService['loadInput']> {
+    if (this.doc.datasets.find((d) => d.id === dataset.id) !== dataset)
+      return this.data.loadInput(this.target, dataset);
+    let pending = this.loads.get(dataset.id);
+    if (!pending) {
+      pending = this.data.loadInput(this.target, dataset);
+      // Its readers may give up on it first (the deadline); a later failure must not go unhandled.
+      pending.catch(() => {});
+      this.loads.set(dataset.id, pending);
+    }
+    return pending;
   }
 
   private async process(dataset: Dataset, path: readonly string[]): Promise<FullResult> {
@@ -201,7 +257,7 @@ export class ResolveScope {
     const loading =
       source.kind === 'dataset'
         ? this.upstream(source.id, said[0]!, path).then((p) => ({ ...p, fresh: false }))
-        : this.within(() => this.data.loadInput(this.target, dataset));
+        : this.within(() => this.load(dataset));
     const reading = refs.map((id, i) => this.upstream(id, said[i + 1]!, path));
     const failed = (await Promise.allSettled([loading, ...reading])).find((s) => s.status === 'rejected');
     if (failed) throw failed.reason;
@@ -222,7 +278,7 @@ export class ResolveScope {
       inputs = { tables, self: { id: self, name: self === dataset.id ? dataset.name : this.nameOf(self) } };
     }
     // Shared across requests only while in flight in practice: the result cache is the 8 MB one widget results use,
-    // so a large table is not kept.
+    // so a large table is not kept. Across requests the final capped results are shared instead (finalKey).
     const result = await this.within(() =>
       this.data.processShared(input.table, dataset.transforms, inputs, input.fresh),
     );

@@ -137,7 +137,9 @@ a new dashboard on any server (_New dashboard → Import file_, or _Import_ on _
 
 `DataService` resolves datasets in a **scope**, one per request, live tick, snapshot or MCP call: load source →
 (optionally) accumulate → run pipeline → cap rows. A scope loads and processes each dataset of the document at most
-once, however many datasets read it.
+once, however many datasets read it. Across scopes, the final capped result of a dataset in a lineage is reused for
+a few seconds while the same roots give the same cached tables (keyed by the definitions it depends on, those
+tables, the owner and the row cap), so a burst of viewers costs one run of the chain, not one per request.
 
 - **Connectors** are small modules with a parameter spec, a `fetch` against a fixed upstream host, and a `sample` that
   produces deterministic synthetic data of the same shape. `OFFLINE=1` switches every connector to `sample`, which keeps

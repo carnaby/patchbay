@@ -382,6 +382,120 @@ describe('resolution scopes', () => {
   });
 });
 
+describe('final results across scopes', () => {
+  /** A root whose reading the test controls: the same table object until `next` makes a new one. */
+  function controlled(data: InstanceType<typeof DataService>, credentialKey = () => '') {
+    let table = inferTable(cities);
+    vi.spyOn(data, 'loadSource').mockImplementation(async () => ({
+      table,
+      fetchedAt: 1_000,
+      credentialKey: credentialKey(),
+    }));
+    return {
+      next: () => {
+        table = inferTable(cities);
+      },
+    };
+  }
+  const chain = () =>
+    doc(
+      inline('w', cities, { transforms: [{ type: 'derive', as: 'f', expr: 'temp * 2' }] }),
+      from('c', 'w', { transforms: [{ type: 'filter', expr: 'f > 3' }] }),
+    );
+
+  it('answers a request whose inputs are warm without running any pipeline, with the same result object', async () => {
+    const runner = new CountingRunner();
+    const data = new DataService(connectors, store, runner);
+    controlled(data);
+    const d = chain();
+    const first = await data.scope(target, d).resolve(byId(d, 'c'));
+    const parent = await data.scope(target, d).resolve(byId(d, 'w'));
+    const runs = runner.runs.length;
+    const processed = vi.spyOn(data, 'processShared');
+    const second = await data.scope(target, d).resolve(byId(d, 'c'));
+    expect(second).toBe(first);
+    expect(second.table).toBe(first.table);
+    expect(await data.scope(target, d).resolve(byId(d, 'w'))).toBe(parent);
+    expect(processed).not.toHaveBeenCalled();
+    expect(runner.runs).toHaveLength(runs);
+  });
+
+  it('shares one computation between concurrent scopes', async () => {
+    const runner = new CountingRunner();
+    const data = new DataService(connectors, store, runner);
+    controlled(data);
+    const d = chain();
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => data.scope(target, d).resolve(byId(d, 'c'))),
+    );
+    for (const r of results) expect(r).toBe(results[0]);
+    expect([...runner.runs].sort()).toEqual(['derive', 'filter']);
+  });
+
+  it('computes again when a root has a new reading', async () => {
+    const runner = new CountingRunner();
+    const data = new DataService(connectors, store, runner);
+    const root = controlled(data);
+    const d = chain();
+    const first = await data.scope(target, d).resolve(byId(d, 'c'));
+    root.next();
+    const second = await data.scope(target, d).resolve(byId(d, 'c'));
+    expect(second).not.toBe(first);
+    expect(second.hash).toBe(first.hash);
+    expect([...runner.runs].sort()).toEqual(['derive', 'derive', 'filter', 'filter']);
+  });
+
+  it('never shares a result between owners, read-only previews or credentials', async () => {
+    const runner = new CountingRunner();
+    const data = new DataService(connectors, store, runner);
+    let credential = '';
+    controlled(data, () => credential);
+    const d = chain();
+    const c = byId(d, 'c');
+    const first = await data.scope({ id: target.id, ownerId: 'u1' }, d).resolve(c);
+    expect(await data.scope({ id: target.id, ownerId: 'u2' }, d).resolve(c)).not.toBe(first);
+    expect(await data.scope({ id: target.id, ownerId: 'u1', publicOnly: true }, d).resolve(c)).not.toBe(
+      first,
+    );
+    credential = 'u1/s1@2';
+    expect(await data.scope({ id: target.id, ownerId: 'u1' }, d).resolve(c)).not.toBe(first);
+    credential = '';
+    expect(await data.scope({ id: target.id, ownerId: 'u1' }, d).resolve(c)).toBe(first);
+  });
+
+  it('neither serves nor keeps the result of a preview or of a seeded scope (the live hub)', async () => {
+    const runner = new CountingRunner();
+    const data = new DataService(connectors, store, runner);
+    controlled(data);
+    const d = chain();
+    const c = byId(d, 'c');
+    const preview = { ...target, preview: true };
+    const one = await data.scope(preview, d).resolve(c);
+    expect(await data.scope(preview, d).resolve(c)).not.toBe(one);
+    const seeded = () => data.scope(target, d, { seed: () => undefined });
+    const tick = await seeded().resolve(c);
+    expect(await seeded().resolve(c)).not.toBe(tick);
+    expect(await data.scope(target, d).resolve(c)).not.toBe(tick);
+  });
+
+  it('forgets final results when the memory guard drops the caches', async () => {
+    const data = new DataService(connectors, store, new CountingRunner());
+    controlled(data);
+    const d = chain();
+    const first = await data.scope(target, d).resolve(byId(d, 'c'));
+    data.dropCaches();
+    expect(await data.scope(target, d).resolve(byId(d, 'c'))).not.toBe(first);
+  });
+
+  it('never keeps the result of a chain over an accumulating root', async () => {
+    const data = new DataService(connectors, store, new CountingRunner());
+    controlled(data);
+    const d = doc(inline('hist', cities, { accumulate: 10 }), from('kid', 'hist'));
+    const first = await data.scope(target, d).resolve(byId(d, 'kid'));
+    expect(await data.scope(target, d).resolve(byId(d, 'kid'))).not.toBe(first);
+  });
+});
+
 describe('processShared', () => {
   const unionDoc = () =>
     doc(

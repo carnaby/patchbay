@@ -390,7 +390,7 @@ across the process, so at most one worker is at its peak while the others sit at
 | Feed worker               | 30 MB, while used                          | 48 + 8 MB                                                                 |
 
 The main thread's share is bounded by its caches and gates rather than by a heap flag: parsed tables (`DATA_CACHE_MB`,
-32), results reused for a few seconds (8 MB), serialised results (8 MB), snapshot images (8 MB), response bodies
+32), results reused for a few seconds (8 MB, and 8 MB for datasets that read others), serialised results (8 MB), snapshot images (8 MB), response bodies
 (12 MB, 4 MB waiting), large request bodies arriving or waiting for their turn (16 MB) and one large request body and
 one upload processed at a time. V8 lets that heap grow to about twice what is live before it collects, which is where
 most of the gap between resting and peak comes from. The snapshot and feed workers stop after a minute without work;
