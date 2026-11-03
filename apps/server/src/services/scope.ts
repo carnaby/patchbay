@@ -1,0 +1,206 @@
+/**
+ * Resolution of datasets that read other datasets (proposal 0005), one scope per request, hub tick, snapshot or MCP
+ * call. Each dataset of the document is loaded and processed at most once per scope, however many datasets read it,
+ * and children always get their parent's uncapped table, never the 10,000 rows a widget receives.
+ */
+import {
+  type DashboardDoc,
+  type Dataset,
+  type DatasetResult,
+  type DataTable,
+  hasLineage,
+  PIPELINE_LIMITS,
+  type PipelineInputs,
+  type PipelineResult,
+  stepInputsOf,
+  upstreamOf,
+} from '@patchbay/core';
+import { HttpError } from '../util/errors.ts';
+import { BusyError } from '../util/gate.ts';
+import type { DashboardTarget, DataService } from './data.ts';
+
+export const SCOPE_DEADLINE_MS = 20_000;
+export const SCOPE_TIMEOUT_MESSAGE =
+  'Loading this dataset and the datasets it reads took longer than 20 s; shorten the chain or simplify its steps';
+
+export interface FullResult {
+  /** The processed rows, at most PIPELINE_LIMITS.maxRows (the last ones). */
+  table: DataTable;
+  trace: PipelineResult['trace'];
+  /** Epoch ms of the oldest input: the data is as old as its stalest part. */
+  fetchedAt: number;
+  /** Stale or capped inputs, shown on the widget like a root's warning. */
+  warning?: string;
+  /** Rows dropped from the start to fit PIPELINE_LIMITS.maxRows. */
+  cut: number;
+}
+
+export interface ScopeOptions {
+  /** Tables already known (the live hub's latest), used instead of loading those datasets again. */
+  seed?: (id: string) => FullResult | undefined;
+  /** Overall time for the scope; a chain of slow steps ends with a clear error instead of holding the request. */
+  deadlineMs?: number;
+}
+
+/** A failure upstream, named once after the dataset that actually failed, however deep the chain. */
+export class UpstreamError extends Error {
+  readonly datasetId: string;
+  constructor(datasetId: string, message: string) {
+    super(`Source dataset "${datasetId}" failed: ${message}`);
+    this.name = 'UpstreamError';
+    this.datasetId = datasetId;
+  }
+}
+
+/** The result a widget shows for a dataset that could not be resolved. Inner messages are already viewer-safe. */
+export function errorResult(datasetId: string, e: unknown): DatasetResult {
+  const message = e instanceof Error ? e.message : 'Failed to load data';
+  return {
+    datasetId,
+    table: { columns: [], rows: [] },
+    fetchedAt: new Date().toISOString(),
+    hash: `error:${message}`,
+    truncated: false,
+    error: message,
+  };
+}
+
+const rows = (n: number) => n.toLocaleString('en-US');
+
+export class ResolveScope {
+  readonly target: DashboardTarget;
+  readonly doc: DashboardDoc;
+  private readonly data: DataService;
+  private readonly seed: ((id: string) => FullResult | undefined) | undefined;
+  private readonly deadline: number;
+  private readonly memo = new Map<string, Promise<FullResult>>();
+  private readonly done = new Map<string, FullResult>();
+
+  constructor(data: DataService, target: DashboardTarget, doc: DashboardDoc, options: ScopeOptions = {}) {
+    this.data = data;
+    this.target = target;
+    this.doc = doc;
+    this.seed = options.seed;
+    this.deadline = Date.now() + (options.deadlineMs ?? SCOPE_DEADLINE_MS);
+  }
+
+  /** The uncapped processed table of a dataset of `doc`, shared by every caller in this scope. */
+  full(id: string): Promise<FullResult> {
+    let pending = this.memo.get(id);
+    if (!pending) {
+      const seeded = this.seed?.(id);
+      const dataset = this.doc.datasets.find((d) => d.id === id);
+      pending = seeded
+        ? Promise.resolve(seeded)
+        : dataset
+          ? this.process(dataset)
+          : Promise.reject(new HttpError(404, `Unknown dataset "${id}"`));
+      pending.then(
+        (r) => this.done.set(id, r),
+        () => {},
+      );
+      this.memo.set(id, pending);
+    }
+    return pending;
+  }
+
+  /** Full tables resolved so far; the live hub keeps those that other datasets read. */
+  settled(): ReadonlyMap<string, FullResult> {
+    return this.done;
+  }
+
+  /**
+   * What widgets, agents and snapshots get. `dataset` may be a draft that is not in `doc` (previews): its upstream is
+   * then read from `doc`.
+   */
+  async resolve(dataset: Dataset, options: { maxRows?: number } = {}): Promise<DatasetResult> {
+    // Nothing reads it and it reads nothing: today's path, with its caches, exactly as before.
+    if (upstreamOf(dataset).length === 0 && !hasLineage(this.doc, dataset.id))
+      return this.data.resolve(this.target, dataset, options);
+    try {
+      const stored = this.doc.datasets.find((d) => d.id === dataset.id);
+      const same =
+        stored === dataset || (stored !== undefined && JSON.stringify(stored) === JSON.stringify(dataset));
+      // The whole wait is bounded too, not only each load and run: a caller never outlives the scope's deadline.
+      const full = await this.within(same ? this.full(dataset.id) : this.process(dataset));
+      const computed = this.data.finish(full, options.maxRows);
+      const error = computed.error ?? full.warning;
+      return {
+        datasetId: dataset.id,
+        ...computed,
+        fetchedAt: new Date(full.fetchedAt).toISOString(),
+        ...(error ? { error } : {}),
+      };
+    } catch (e) {
+      // The server, not the dataset, is the problem: callers answer 503 or skip a refresh.
+      if (e instanceof BusyError) throw e;
+      return errorResult(dataset.id, e);
+    }
+  }
+
+  private async process(dataset: Dataset): Promise<FullResult> {
+    const warnings: string[] = [];
+    const source = dataset.source;
+    const refs = stepInputsOf(dataset);
+    const [input, ...others] = await Promise.all([
+      source.kind === 'dataset'
+        ? this.upstream(source.id, warnings).then((p) => ({ ...p, fresh: false }))
+        : this.within(this.data.loadInput(this.target, dataset)),
+      ...refs.map((id) => this.upstream(id, warnings)),
+    ]);
+    if (input.warning && source.kind !== 'dataset') warnings.push(input.warning);
+    let fetchedAt = input.fetchedAt;
+    let inputs: PipelineInputs | undefined;
+    if (refs.length) {
+      const tables: PipelineInputs['tables'] = {};
+      refs.forEach((id, i) => {
+        tables[id] = { name: this.nameOf(id), table: others[i]!.table };
+        fetchedAt = Math.min(fetchedAt, others[i]!.fetchedAt);
+      });
+      // Union labels the rows it starts with after where they came from: the parent of a derived dataset.
+      const self = source.kind === 'dataset' ? source.id : dataset.id;
+      inputs = { tables, self: { id: self, name: self === dataset.id ? dataset.name : this.nameOf(self) } };
+    }
+    const result = await this.within(
+      this.data.processShared(input.table, dataset.transforms, inputs, input.fresh),
+    );
+    const cut = Math.max(0, result.table.rows.length - PIPELINE_LIMITS.maxRows);
+    const table = cut ? { columns: result.table.columns, rows: result.table.rows.slice(cut) } : result.table;
+    const warning = [...new Set(warnings)].join('; ');
+    return { table, trace: result.trace, fetchedAt, cut, ...(warning ? { warning } : {}) };
+  }
+
+  /** A dataset this one reads, with its warnings passed on and its failure named after it. */
+  private async upstream(id: string, warnings: string[]): Promise<FullResult> {
+    let r: FullResult;
+    try {
+      r = await this.full(id);
+    } catch (e) {
+      if (e instanceof BusyError || e instanceof UpstreamError) throw e;
+      if (e instanceof HttpError && e.message === SCOPE_TIMEOUT_MESSAGE) throw e;
+      throw new UpstreamError(id, e instanceof Error ? e.message : 'Failed to load data');
+    }
+    if (r.warning) warnings.push(r.warning);
+    if (r.cut) {
+      const max = rows(PIPELINE_LIMITS.maxRows);
+      warnings.push(`Source dataset "${id}" has more than ${max} rows; only its last ${max} are used`);
+    }
+    return r;
+  }
+
+  private nameOf(id: string): string {
+    return this.doc.datasets.find((d) => d.id === id)?.name ?? id;
+  }
+
+  /** Races work against the scope's deadline. The work itself still ends at its own limit. */
+  private within<T>(work: Promise<T>): Promise<T> {
+    const left = this.deadline - Date.now();
+    if (left <= 0) return Promise.reject(new HttpError(504, SCOPE_TIMEOUT_MESSAGE));
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new HttpError(504, SCOPE_TIMEOUT_MESSAGE)), left);
+      timer.unref();
+    });
+    return Promise.race([work, late]).finally(() => clearTimeout(timer));
+  }
+}

@@ -11,6 +11,7 @@
  * viewers on one dashboard costs one parse, not one per viewer.
  */
 import {
+  type DashboardDoc,
   type Dataset,
   type DatasetResult,
   type DataTable,
@@ -20,11 +21,12 @@ import {
   INFER_MAX_COLUMNS,
   inferTableCapped,
   isStaticSource,
+  PIPELINE_LIMITS,
+  type PipelineInputs,
   type PipelineResult,
   sourceSecretIds,
   TableTooWideError,
   type Transform,
-  TransformError,
   upstreamOf,
   wireSize,
 } from '@patchbay/core';
@@ -40,12 +42,12 @@ import { OutboundLimiter } from '../util/outbound.ts';
 import type { PrivateHosts } from '../util/private-hosts.ts';
 import { currentClient } from '../util/request-context.ts';
 import { type Credential, safeFetchJson, type UpstreamTestSeam } from '../util/safe-fetch.ts';
-import { InlineRunner, type PipelineRunner } from './pipeline-pool.ts';
+import { cellsOf, InlineRunner, type PipelineRunner } from './pipeline-pool.ts';
 import { MAX_RESULT_BYTES, tooLargeResult } from './result-wire.ts';
+import { errorResult, ResolveScope, type ScopeOptions } from './scope.ts';
 import type { UploadInput } from './upload-parse.ts';
 
 export const MAX_ROWS_OUT = 10_000;
-const MAX_ROWS_IN = 100_000;
 
 /** The message for a dataset resolved without its document: it reads other datasets, which only a scope can load. */
 export const readsOtherDatasets = (id: string) =>
@@ -93,7 +95,11 @@ export function recordsFrom(json: unknown, path?: string): unknown[] {
  */
 export function cappedTable(records: unknown[], maxCells: number): { table: DataTable; capped: boolean } {
   try {
-    return inferTableCapped(records, { maxRows: MAX_ROWS_IN, maxCells, maxColumns: INFER_MAX_COLUMNS });
+    return inferTableCapped(records, {
+      maxRows: PIPELINE_LIMITS.maxRows,
+      maxCells,
+      maxColumns: INFER_MAX_COLUMNS,
+    });
   } catch (e) {
     if (e instanceof TableTooWideError) throw new HttpError(400, e.message);
     throw e;
@@ -163,7 +169,7 @@ interface Loaded {
   stamp?: string;
 }
 
-type Computed = Pick<DatasetResult, 'table' | 'hash' | 'truncated' | 'trace' | 'error'>;
+export type Computed = Pick<DatasetResult, 'table' | 'hash' | 'truncated' | 'trace' | 'error'>;
 
 interface HistoryBuffer {
   rows: DataTable['rows'];
@@ -182,9 +188,12 @@ export class DataService {
    */
   private readonly tables: ByteLru<CacheEntry>;
   private readonly loading = new Map<string, Promise<CacheEntry>>();
-  /** Recent pipeline results, keyed by the identity of the input table. */
-  private readonly results = new ByteLru<Computed>(RESULT_CACHE_BYTES);
-  private readonly computing = new Map<string, Promise<Computed>>();
+  /**
+   * Recent pipeline results, keyed by the identity of the input table: capped results for widgets, and (keys starting
+   * with "full|") uncapped ones that derived datasets read. One byte budget for both.
+   */
+  private readonly results = new ByteLru<Computed | PipelineResult>(RESULT_CACHE_BYTES);
+  private readonly computing = new Map<string, Promise<Computed | PipelineResult>>();
   private readonly tableIds = new WeakMap<DataTable, number>();
   private nextTableId = 1;
   /** Rolling buffers for `accumulate`, keyed by dashboard + dataset. In memory by design. */
@@ -473,11 +482,21 @@ export class DataService {
     return id;
   }
 
-  private async compute(input: DataTable, transforms: Transform[], max: number): Promise<Computed> {
-    const run = () => this.pipeline.run(input, transforms);
-    // A large table can fill the pipeline worker's heap: it waits for its turn with the other heavy jobs.
-    const heavy = transforms.length > 0 && input.rows.length * input.columns.length >= HEAVY_PIPELINE_CELLS;
-    const { table, trace }: PipelineResult = await (heavy ? heavyWork.run(run) : run());
+  private async run(
+    input: DataTable,
+    transforms: Transform[],
+    inputs?: PipelineInputs,
+  ): Promise<PipelineResult> {
+    const run = () => this.pipeline.run(input, transforms, inputs);
+    // A large table can fill the pipeline worker's heap: it waits for its turn with the other heavy jobs. The tables a
+    // join or union reads are copied to the worker too, so they count.
+    const heavy = transforms.length > 0 && cellsOf(input, inputs) >= HEAVY_PIPELINE_CELLS;
+    return heavy ? heavyWork.run(run) : run();
+  }
+
+  /** Caps a processed table for widgets, agents and snapshots: the last `max` rows, the wire size check, the hash. */
+  finish(result: PipelineResult, max = MAX_ROWS_OUT): Computed {
+    const { table, trace } = result;
     const truncated = table.rows.length > max;
     const out: DataTable = truncated ? { columns: table.columns, rows: table.rows.slice(-max) } : table;
     // Measured in the compact form the web app reads, before anything is hashed, kept or serialised: a result too
@@ -487,12 +506,16 @@ export class DataService {
     return { table: out, hash: hashTable(out), truncated, trace };
   }
 
+  private async compute(input: DataTable, transforms: Transform[], max: number): Promise<Computed> {
+    return this.finish(await this.run(input, transforms), max);
+  }
+
   /** The same input table with the same steps gives the same result: computed once for concurrent callers. */
   private computeShared(input: DataTable, transforms: Transform[], max: number): Promise<Computed> {
     const key = `${this.tableId(input)}|${max}|${JSON.stringify(transforms)}`;
-    const hit = this.results.get(key);
+    const hit = this.results.get(key) as Computed | undefined;
     if (hit) return Promise.resolve(hit);
-    let pending = this.computing.get(key);
+    let pending = this.computing.get(key) as Promise<Computed> | undefined;
     if (!pending) {
       pending = this.compute(input, transforms, max)
         .then((c) => {
@@ -503,6 +526,61 @@ export class DataService {
       this.computing.set(key, pending);
     }
     return pending;
+  }
+
+  /**
+   * An uncapped pipeline result, shared by concurrent callers like `computeShared`: a burst of viewers of a dashboard
+   * with derived datasets costs one run per dataset. The key names every table the run reads (and the names a union
+   * labels rows with), so two runs over the same table that join or union different tables never share a result.
+   * `fresh` inputs (accumulate buffers, a new table on every call) are never shared.
+   */
+  processShared(
+    input: DataTable,
+    transforms: Transform[],
+    inputs?: PipelineInputs,
+    fresh = false,
+  ): Promise<PipelineResult> {
+    if (fresh) return this.run(input, transforms, inputs);
+    const read = inputs
+      ? JSON.stringify([
+          inputs.self,
+          Object.entries(inputs.tables).map(([id, t]) => [id, t.name, this.tableId(t.table)]),
+        ])
+      : '';
+    const key = `full|${this.tableId(input)}|${read}|${JSON.stringify(transforms)}`;
+    const hit = this.results.get(key) as PipelineResult | undefined;
+    if (hit) return Promise.resolve(hit);
+    let pending = this.computing.get(key) as Promise<PipelineResult> | undefined;
+    if (!pending) {
+      pending = this.run(input, transforms, inputs)
+        .then((r) => {
+          this.results.set(key, r, approxTableBytes(r.table), RESULT_TTL_MS);
+          return r;
+        })
+        .finally(() => this.computing.delete(key));
+      this.computing.set(key, pending);
+    }
+    return pending;
+  }
+
+  /** The table a dataset's pipeline starts from: its source, or the accumulated history of it. */
+  async loadInput(
+    target: DashboardTarget,
+    dataset: Dataset,
+  ): Promise<{ table: DataTable; fetchedAt: number; warning?: string; fresh: boolean }> {
+    const loaded = await this.loadSource(target, dataset);
+    const fresh = dataset.accumulate > 0;
+    return {
+      table: fresh ? this.accumulate(target, dataset, loaded) : loaded.table,
+      fetchedAt: loaded.fetchedAt,
+      fresh,
+      ...(loaded.warning ? { warning: loaded.warning } : {}),
+    };
+  }
+
+  /** One per request, hub tick, snapshot or MCP call: see `ResolveScope`. */
+  scope(target: DashboardTarget, doc: DashboardDoc, options: ScopeOptions = {}): ResolveScope {
+    return new ResolveScope(this, target, doc, options);
   }
 
   /**
@@ -531,18 +609,7 @@ export class DataService {
       };
     } catch (e) {
       if (e instanceof BusyError) throw e;
-      const message =
-        e instanceof HttpError || e instanceof TransformError || e instanceof Error
-          ? e.message
-          : 'Failed to load data';
-      return {
-        ...base,
-        table: { columns: [], rows: [] },
-        fetchedAt: new Date().toISOString(),
-        hash: `error:${message}`,
-        truncated: false,
-        error: message,
-      };
+      return errorResult(dataset.id, e);
     }
   }
 
