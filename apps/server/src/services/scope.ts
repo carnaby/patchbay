@@ -69,6 +69,20 @@ export function errorResult(datasetId: string, e: unknown): DatasetResult {
 const rows = (n: number) => n.toLocaleString('en-US');
 
 /**
+ * A table cut to its last PIPELINE_LIMITS.maxRows rows, the same object for as long as the uncapped one is shared:
+ * children key their shared runs, and widgets their serialisation, by table identity.
+ */
+const cutTables = new WeakMap<DataTable, DataTable>();
+function lastRows(table: DataTable): DataTable {
+  let cut = cutTables.get(table);
+  if (!cut) {
+    cut = { columns: table.columns, rows: table.rows.slice(-PIPELINE_LIMITS.maxRows) };
+    cutTables.set(table, cut);
+  }
+  return cut;
+}
+
+/**
  * A cycle in a document that did not pass validation (lineageIssues refuses them on every write and read). Named like
  * the validation names it, and passed on unwrapped: it is not a failure of one upstream dataset.
  */
@@ -202,12 +216,12 @@ export class ResolveScope {
       inputs = { tables, self: { id: self, name: self === dataset.id ? dataset.name : this.nameOf(self) } };
     }
     // Shared across requests only while in flight in practice: the result cache is the 8 MB one widget results use,
-    // so a large table is not kept, and a parent cut to PIPELINE_LIMITS.maxRows is a new table object in every scope.
+    // so a large table is not kept.
     const result = await this.within(() =>
       this.data.processShared(input.table, dataset.transforms, inputs, input.fresh),
     );
     const cut = Math.max(0, result.table.rows.length - PIPELINE_LIMITS.maxRows);
-    const table = cut ? { columns: result.table.columns, rows: result.table.rows.slice(cut) } : result.table;
+    const table = cut ? lastRows(result.table) : result.table;
     const warning = [...new Set(warnings)].join('; ');
     return { table, trace: result.trace, fetchedAt, cut, ...(warning ? { warning } : {}) };
   }

@@ -163,6 +163,26 @@ describe('resolution scopes', () => {
     expect(child.error).toBe('Source dataset "p" has more than 100,000 rows; only its last 100,000 are used');
   });
 
+  it('gives every scope the same capped table of a large result, so its serialisation is shared', async () => {
+    await saveUpload('f_wide', 12_000);
+    await saveUpload('f_over', 100_005);
+    const data = new DataService(connectors, store);
+    const d = doc(
+      { id: 'p', name: 'P', source: { kind: 'upload', fileId: 'f_wide' } },
+      from('c', 'p', { transforms: [{ type: 'filter', expr: 'a >= 1' }] }),
+      // Read by a child, so it goes through the scope and its table is cut to PIPELINE_LIMITS.maxRows first.
+      { id: 'huge', name: 'Huge', source: { kind: 'upload', fileId: 'f_over' } },
+      from('h', 'huge'),
+    );
+    for (const id of ['p', 'c', 'huge']) {
+      const first = await data.scope(target, d).resolve(byId(d, id));
+      const second = await data.scope(target, d).resolve(byId(d, id));
+      expect(first.truncated, id).toBe(true);
+      expect(second.table, id).toBe(first.table);
+      expect(second.hash, id).toBe(first.hash);
+    }
+  });
+
   it('names the upstream dataset that failed, also inside a union, and shows no partial rows', async () => {
     fetchMock.mockResolvedValue(5);
     const data = new DataService(connectors, store);

@@ -202,6 +202,12 @@ export class DataService {
   private readonly computing = new Map<string, Promise<Computed | PipelineResult>>();
   private readonly tableIds = new WeakMap<DataTable, number>();
   private nextTableId = 1;
+  /**
+   * Capped results by uncapped table and row limit. Widget answers and the live hub serialise once per table object
+   * (ResultWire), so a dataset read through a scope must give every request the same capped table while its uncapped
+   * one is shared, not a new slice to hash, serialise and budget each time.
+   */
+  private readonly finished = new WeakMap<DataTable, Map<number, Computed>>();
   /** Rolling buffers for `accumulate`, keyed by dashboard + dataset. In memory by design. */
   private readonly buffers = new ByteLru<HistoryBuffer>(BUFFER_BYTES);
 
@@ -505,13 +511,24 @@ export class DataService {
   /** Caps a processed table for widgets, agents and snapshots: the last `max` rows, the wire size check, the hash. */
   finish(result: PipelineResult, max = MAX_ROWS_OUT): Computed {
     const { table, trace } = result;
+    let byMax = this.finished.get(table);
+    const hit = byMax?.get(max);
+    if (hit) return hit.trace === trace ? hit : { ...hit, trace };
     const truncated = table.rows.length > max;
     const out: DataTable = truncated ? { columns: table.columns, rows: table.rows.slice(-max) } : table;
     // Measured in the compact form the web app reads, before anything is hashed, kept or serialised: a result too
     // large to send is an error for every reader alike (widget, agent, snapshot), and only the error is kept.
     const size = wireSize(out, 'arrays');
-    if (size > MAX_RESULT_BYTES) return tooLargeResult({ table: out, hash: '', truncated, trace }, size);
-    return { table: out, hash: hashTable(out), truncated, trace };
+    const computed =
+      size > MAX_RESULT_BYTES
+        ? tooLargeResult({ table: out, hash: '', truncated, trace }, size)
+        : { table: out, hash: hashTable(out), truncated, trace };
+    if (!byMax) {
+      byMax = new Map();
+      this.finished.set(table, byMax);
+    }
+    byMax.set(max, computed);
+    return computed;
   }
 
   private async compute(input: DataTable, transforms: Transform[], max: number): Promise<Computed> {
