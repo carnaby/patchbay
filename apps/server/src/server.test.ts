@@ -666,8 +666,9 @@ describe('MCP tools', () => {
     // descriptions cut to a few words; -> 38,500: the clock and search widgets (proposal 0009), two more branches of
     // the widget union, without field descriptions; -> 39,300: the feed source and the table's column `link` and
     // `style`; -> 39,400: the http source's description mentions http:// and private hosts (ALLOW_PRIVATE_HOSTS); -> 42,200: the join and union steps (proposal 0005),
-    // two more branches of the step union, advertised again wherever steps are accepted).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(42_200);
+    // two more branches of the step union, advertised again wherever steps are accepted; -> 42,700: the dataset source (proposal 0005), one more branch of the
+    // source union, advertised wherever a source is accepted).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(42_700);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(

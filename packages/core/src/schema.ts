@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { isValidTimeZone } from './clock.ts';
 import { IdSchema } from './ids.ts';
+import { DATASET_DEPTH, DATASET_INPUTS, lineageIssues } from './lineage.ts';
 import { SEARCH_ENGINES } from './search.ts';
 import { SoundRuleSchema } from './sound.ts';
 import { COLOR_TOKENS } from './theme.ts';
@@ -34,6 +35,10 @@ export const LIMITS = {
    */
   inlineColumns: 200,
   transforms: 40,
+  /** Longest chain of datasets reading datasets (source kind "dataset", join and union); bounds the work per request. */
+  datasetDepth: DATASET_DEPTH,
+  /** Datasets one dataset reads, directly or through others. */
+  datasetInputs: DATASET_INPUTS,
   markdown: 20_000,
   title: 120,
   description: 1000,
@@ -106,6 +111,9 @@ export const SourceSchema = z.discriminatedUnion('kind', [
       limit: z.number().int().min(1).max(200).default(30),
     })
     .describe('An RSS, Atom or JSON Feed, or a web page that announces one'),
+  z
+    .strictObject({ kind: z.literal('dataset'), id: IdSchema })
+    .describe('The processed rows of another dataset of this dashboard, fetched once and shared'),
 ]);
 export type Source = z.infer<typeof SourceSchema>;
 
@@ -449,6 +457,7 @@ export function integrityIssues(doc: DashboardDoc): string[] {
       if (step.id) stepIds.add(step.id);
     }
   }
+  issues.push(...lineageIssues(doc));
   const widgetIds = new Set<string>();
   for (const w of doc.widgets) {
     if (widgetIds.has(w.id)) issues.push(`Duplicate widget id "${w.id}"`);

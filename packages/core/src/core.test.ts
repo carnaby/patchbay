@@ -537,3 +537,38 @@ describe('chart + kpi builders', () => {
     ).toBe(false);
   });
 });
+
+describe('removing datasets that others read', () => {
+  const add = (dataset: Record<string, unknown>) => ({ op: 'addDataset', dataset });
+  const base = applyOps(emptyDashboard('t'), [
+    add({ id: 'w', name: 'Weather', source: { kind: 'inline', rows: [{ t: 1 }] } }),
+    add({ id: 't', name: 'Temps', source: { kind: 'dataset', id: 'w' } }),
+    add({ id: 'h', name: 'Humidity', source: { kind: 'dataset', id: 'w' } }),
+  ]);
+
+  it('says where a derived dataset comes from in the change log', () => {
+    expect(base.changes[1]).toBe('Added dataset "Temps" from "Weather"');
+  });
+
+  it('refuses the parent first, with or without cascade, and accepts children first', () => {
+    for (const cascade of [false, true]) {
+      expect(() => applyOps(base.doc, [{ op: 'removeDataset', id: 'w', cascade }])).toThrow(
+        'Operation 1: Dataset "w" is read by "t", "h"; remove or re-point those datasets first (earlier in the same batch)',
+      );
+    }
+    const done = applyOps(base.doc, [
+      { op: 'removeDataset', id: 't' },
+      { op: 'removeDataset', id: 'h' },
+      { op: 'removeDataset', id: 'w' },
+    ]);
+    expect(done.doc.datasets).toEqual([]);
+  });
+
+  it('rejects a batch that leaves a reference to a removed dataset', () => {
+    expect(() =>
+      applyOps(base.doc, [
+        { op: 'updateDataset', id: 't', set: { source: { kind: 'dataset', id: 'gone' } } },
+      ]),
+    ).toThrow('Dataset "t" reads unknown dataset "gone"');
+  });
+});

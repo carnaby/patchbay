@@ -25,6 +25,7 @@ import {
   TableTooWideError,
   type Transform,
   TransformError,
+  upstreamOf,
   wireSize,
 } from '@patchbay/core';
 
@@ -45,6 +46,10 @@ import type { UploadInput } from './upload-parse.ts';
 
 export const MAX_ROWS_OUT = 10_000;
 const MAX_ROWS_IN = 100_000;
+
+/** The message for a dataset resolved without its document: it reads other datasets, which only a scope can load. */
+export const readsOtherDatasets = (id: string) =>
+  `Dataset "${id}" reads other datasets and can only be loaded with its dashboard`;
 /** Default cap on the table an HTTP source may produce; a 5 MB body of short values is far more. */
 export const DEFAULT_MAX_SOURCE_CELLS = 500_000;
 const HTTP_TTL_MS = HTTP_MIN_REFRESH_SEC * 1000;
@@ -425,6 +430,8 @@ export class DataService {
         const rows = feed.table.rows.slice(0, source.limit);
         return { table: { columns: feed.table.columns, rows }, fetchedAt: feed.fetchedAt, credentialKey: '' };
       }
+      case 'dataset':
+        throw new HttpError(400, readsOtherDatasets(dataset.id));
     }
   }
 
@@ -509,6 +516,7 @@ export class DataService {
   ): Promise<DatasetResult> {
     const base = { datasetId: dataset.id };
     try {
+      if (upstreamOf(dataset).length) throw new HttpError(400, readsOtherDatasets(dataset.id));
       const loaded = await this.loadSource(target, dataset);
       const max = options.maxRows ?? MAX_ROWS_OUT;
       const computed =

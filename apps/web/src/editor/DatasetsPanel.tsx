@@ -129,6 +129,8 @@ export function sourceSummary(source: Source, connectors: ConnectorInfo[] | unde
       return new URL(source.url).host;
     case 'feed':
       return `Feed · ${new URL(source.url).host}`;
+    case 'dataset':
+      return `from ${source.id}`;
   }
 }
 
