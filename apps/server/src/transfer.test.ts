@@ -1,13 +1,14 @@
 /** Export and import of a dashboard (.patchbay.json): packed-table uploads, the export route and the import route. */
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MAX_TABLE_FILE_BYTES, readExport } from '@patchbay/core';
+import { type DashboardExport, EXPORT_MAX_FILES, MAX_TABLE_FILE_BYTES, readExport } from '@patchbay/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
+import { MAX_FILES } from './services/dashboards.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 
 const BASE = 'http://localhost:8787';
@@ -347,5 +348,214 @@ describe('export', () => {
     });
     expect(readExport(JSON.parse((await exportOf(anon.id, anon.auth)).text)).files).toHaveLength(1);
     expect(readExport(JSON.parse((await exportOf(anon.id)).text)).files).toHaveLength(0);
+  });
+});
+
+const folders = () => readdirSync(join(dir, 'dashboards')).length;
+
+const contentOf = (f: DashboardExport['files'][number]) =>
+  JSON.stringify({ columns: f.columns, data: f.data });
+const declared = (exp: DashboardExport) =>
+  exp.files.map((f) => ({
+    id: f.id,
+    name: f.name,
+    rows: f.data.length,
+    columns: f.columns.length,
+    bytes: Buffer.byteLength(contentOf(f)),
+  }));
+
+/** What the web app does: create from the document, then upload every file under its id. */
+async function importAs(exp: DashboardExport, auth: { cookie?: string } = {}) {
+  const created = await call('/api/dashboards/import', {
+    body: { doc: exp.doc, files: declared(exp) },
+    ...auth,
+  });
+  if (created.status !== 201) return { created };
+  const id = created.json.envelope.meta.id as string;
+  const editKey = created.json.editKey as string | undefined;
+  const as = { ...auth, ...(editKey ? { key: editKey } : {}) };
+  for (const f of exp.files) {
+    const up = await call(`/api/dashboards/${id}/files`, {
+      body: { name: f.name, format: 'table', fileId: f.id, content: contentOf(f) },
+      ...as,
+    });
+    expect(up.status).toBe(201);
+  }
+  return { created, id, as };
+}
+
+describe('import', () => {
+  it('round-trips a dashboard: same document, same ids, same data and column types', async () => {
+    const board = await shopBoard('exporter@example.com');
+    const exp = readExport(JSON.parse((await exportOf(board.id, { cookie: board.cookie })).text));
+    const cookie = await login('importer@example.com');
+    const { created, id, as } = await importAs(exp, { cookie });
+    expect(created.status).toBe(201);
+    expect(created.json.envelope.meta.visibility).toBe('private');
+    expect(created.json.envelope.doc).toEqual(exp.doc);
+    for (const dataset of ['temps', 'flags']) {
+      const before = await call(`/api/dashboards/${board.id}/data/${dataset}`, { cookie: board.cookie });
+      const after = await call(`/api/dashboards/${id}/data/${dataset}`, as!);
+      expect(after.json.table).toEqual(before.json.table);
+    }
+    const versions = await call(`/api/dashboards/${id}/versions`, as!);
+    expect(versions.json[0].changes[0]).toBe('Imported from a Patchbay export file');
+  });
+
+  it('imports the same file twice as two independent dashboards', async () => {
+    const board = await shopBoard('twice-exporter@example.com');
+    const exp = readExport(JSON.parse((await exportOf(board.id, { cookie: board.cookie })).text));
+    const first = await importAs(exp);
+    const second = await importAs(exp);
+    expect(first.id).not.toBe(second.id);
+    for (const r of [first, second]) {
+      expect((await call(`/api/dashboards/${r.id}/data/temps`, r.as!)).json.table.rows).toHaveLength(3);
+    }
+  });
+
+  it('always removes secret references, for signed-in and anonymous importers, and says so', async () => {
+    const crafted = (secretId: string) => ({
+      schemaVersion: 1,
+      title: 'Crafted',
+      datasets: [
+        {
+          id: 'orders',
+          name: 'Orders',
+          source: { kind: 'http', url: 'https://api.example.com/v1/orders', secrets: [secretId] },
+        },
+      ],
+    });
+    const cookie = await login('crafted@example.com');
+    // The importer's own secret is removed too: the file may come from anywhere.
+    const own = await call('/api/secrets', {
+      body: {
+        name: 'Own key',
+        sendTo: 'https://api.example.com/v1/',
+        placement: 'bearer',
+        value: 'val_0123456789abcdef',
+      },
+      cookie,
+    });
+    expect(own.status).toBe(201);
+    for (const [auth, secretId] of [
+      [{ cookie }, own.json.id as string],
+      [{}, 'sec_AAAAAAAAAAAAAAAA'],
+    ] as const) {
+      const res = await call('/api/dashboards/import', { body: { doc: crafted(secretId) }, ...auth });
+      expect(res.status).toBe(201);
+      expect(res.json.envelope.doc.datasets[0].source).toEqual({
+        kind: 'http',
+        url: 'https://api.example.com/v1/orders',
+      });
+      expect(res.json.notes[0]).toBe(
+        'Removed secret references from "Orders": secrets belong to their owner. Add your own under Credentials.',
+      );
+    }
+  });
+
+  it('refuses what cannot fit before anything is created', async () => {
+    const doc = {
+      schemaVersion: 1,
+      title: 'Big',
+      datasets: [{ id: 'big', name: 'Big', source: { kind: 'upload', fileId: 'f_big' } }],
+    };
+    const file = { id: 'f_big', name: 'big.csv', rows: 600, columns: 2, bytes: 10_000 };
+    const before = folders();
+    const anon = await call('/api/dashboards/import', { body: { doc, files: [file] } });
+    expect(anon.status).toBe(400);
+    expect(anon.json.error).toContain('Dashboards of signed-in users accept up to 500,000 cells.');
+    const cookie = await login('fits@example.com');
+    const huge = await call('/api/dashboards/import', {
+      body: { doc, files: [{ ...file, bytes: MAX_TABLE_FILE_BYTES + 1 }] },
+      cookie,
+    });
+    expect(huge.status).toBe(400);
+    expect(huge.json.code).toBe('IMPORT_FILE_TOO_LARGE');
+    expect(EXPORT_MAX_FILES).toBe(MAX_FILES);
+    const many = Array.from({ length: MAX_FILES + 1 }, (_, i) => ({ ...file, id: `f_${i}` }));
+    const tooMany = await call('/api/dashboards/import', { body: { doc, files: many }, cookie });
+    expect(tooMany.status).toBe(400);
+    expect(tooMany.json.error).toContain(`up to ${MAX_FILES} files`);
+    const stray = await call('/api/dashboards/import', {
+      body: { doc, files: [{ ...file, id: 'f_x' }] },
+      cookie,
+    });
+    expect(stray.json.code).toBe('FILE_NOT_REFERENCED');
+    expect(folders()).toBe(before);
+  });
+
+  it('refuses files that together exceed the storage of one dashboard', async () => {
+    const doc = {
+      schemaVersion: 1,
+      title: 'Four',
+      datasets: [1, 2, 3, 4].map((n) => ({
+        id: `d${n}`,
+        name: `D${n}`,
+        source: { kind: 'upload', fileId: `f_${n}` },
+      })),
+    };
+    const files = [1, 2, 3, 4].map((n) => ({
+      id: `f_${n}`,
+      name: `${n}.json`,
+      rows: 10,
+      columns: 2,
+      bytes: MAX_TABLE_FILE_BYTES,
+    }));
+    const cookie = await login('totals@example.com');
+    const before = folders();
+    const res = await call('/api/dashboards/import', { body: { doc, files }, cookie });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toContain('of uploaded data');
+    expect(folders()).toBe(before);
+  });
+
+  it('refuses documents a save would refuse, before anything is created', async () => {
+    const cookie = await login('rules@example.com');
+    const before = folders();
+    const newer = await call('/api/dashboards/import', {
+      body: { doc: { schemaVersion: 2, title: 'X' } },
+      cookie,
+    });
+    expect(newer.status).toBe(400);
+    expect(newer.json.error).toMatch(/^The dashboard in this file is not valid: /);
+    const unknown = await call('/api/dashboards/import', {
+      body: {
+        doc: {
+          schemaVersion: 1,
+          title: 'X',
+          datasets: [{ id: 'x', name: 'X', source: { kind: 'connector', connector: 'nope.nothing' } }],
+        },
+      },
+      cookie,
+    });
+    expect(unknown.status).toBe(400);
+    expect(unknown.json.error).toContain('Unknown connector "nope.nothing"');
+    const longText = await call('/api/dashboards/import', {
+      body: {
+        doc: {
+          schemaVersion: 1,
+          title: 'X',
+          datasets: [{ id: 'x', name: 'X', source: { kind: 'inline', rows: [{ a: 'x'.repeat(5000) }] } }],
+        },
+      },
+      cookie,
+    });
+    expect(longText.json.code).toBe('INLINE_VALUE_TOO_LONG');
+    expect(folders()).toBe(before);
+  });
+
+  it('raises a refresh below the source minimum, like a save', async () => {
+    const res = await call('/api/dashboards/import', {
+      body: {
+        doc: {
+          schemaVersion: 1,
+          title: 'Fast',
+          datasets: [{ id: 'x', name: 'X', source: { kind: 'inline', rows: [{ a: 1 }] }, refreshSec: 5 }],
+        },
+      },
+    });
+    expect(res.status).toBe(201);
+    expect(res.json.envelope.doc.datasets[0].refreshSec).toBe(0);
+    expect(res.json.notes.join(' ')).toContain('Turned off live refresh');
   });
 });

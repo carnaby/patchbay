@@ -47,6 +47,25 @@ const CreateBody = z.object({
   visibility: z.enum(['public', 'private']).optional(),
 });
 
+/** The document of an export file and what its files will need (DashboardService.importDashboard). */
+const ImportBody = z.strictObject({
+  doc: z.unknown(),
+  files: z
+    .array(
+      z.strictObject({
+        id: FileIdSchema,
+        name: z.string().min(1).max(200),
+        rows: z.number().int().min(0),
+        columns: z.number().int().min(1),
+        bytes: z.number().int().min(1),
+      }),
+    )
+    // The service refuses more than MAX_FILES with a sentence; this only bounds the body.
+    .max(100)
+    .optional(),
+  visibility: z.enum(['public', 'private']).optional(),
+});
+
 /** Sent by the web app after the user confirmed showing data fetched with secrets publicly (answer 428). */
 const confirmPublicSecrets = z.boolean().optional();
 
@@ -214,6 +233,14 @@ export function apiRoutes(deps: Deps) {
     const body = CreateBody.parse(await c.req.json().catch(() => ({})));
     const created = await dashboards.create(c.get('principal'), body);
     return c.json(created, 201);
+  });
+
+  app.post('/dashboards/import', async (c) => {
+    if (!deps.limits.creates.take(clientKey(c, config.trustProxy, IPV6_CREATE_PREFIX))) {
+      throw new HttpError(429, 'Too many new dashboards from your network. Try again later.');
+    }
+    const body = ImportBody.parse(await c.req.json().catch(() => null));
+    return c.json(await dashboards.importDashboard(c.get('principal'), body), 201);
   });
 
   app.get('/dashboards/:id', async (c) => {

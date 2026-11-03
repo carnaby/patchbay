@@ -54,19 +54,25 @@ export const maxUploadValues = (maxCells: number) => maxCells * 3;
 
 const fmt = (n: number) => n.toLocaleString('en-US');
 
-function tooLarge(rows: number, columns: number, maxCells: number, atLeast: boolean): UploadError {
+export function tooLarge(rows: number, columns: number, maxCells: number, atLeast: boolean): UploadError {
   return new UploadError(
     `The file has ${atLeast ? 'more than ' : ''}${fmt(rows)} rows × ${fmt(columns)} columns; this dashboard accepts files of up to ${fmt(maxCells)} cells (rows × columns). Remove rows or columns you do not need.`,
     true,
   );
 }
 
+/** The refusal for a file with too many columns, or null. */
+export function columnCountProblem(count: number): UploadError | null {
+  if (count <= UPLOAD_MAX_COLUMNS) return null;
+  return new UploadError(
+    `The file has ${fmt(count)} columns; uploads are limited to ${fmt(UPLOAD_MAX_COLUMNS)}. Remove columns you do not need.`,
+  );
+}
+
 /** Why these column names cannot be stored, or null. */
-function columnsProblem(names: readonly string[]): UploadError | null {
-  if (names.length > UPLOAD_MAX_COLUMNS)
-    return new UploadError(
-      `The file has ${fmt(names.length)} columns; uploads are limited to ${fmt(UPLOAD_MAX_COLUMNS)}. Remove columns you do not need.`,
-    );
+export function columnsProblem(names: readonly string[]): UploadError | null {
+  const count = columnCountProblem(names.length);
+  if (count) return count;
   const long = names.find((name) => name.length > UPLOAD_MAX_COLUMN_NAME);
   if (long !== undefined)
     return new UploadError(
