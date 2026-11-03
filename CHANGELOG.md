@@ -8,6 +8,12 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ### Added
 
+- **Combining datasets**: a dataset can take its rows from another dataset of the same dashboard (`source.kind:
+  "dataset"`), pipelines can `join` (look up columns) and `union` (append rows, with a column naming the origin)
+  other datasets, and expressions get whole-table functions such as `col_sum(x, by?)` for shares of total and
+  differences from the average. Shared sources are fetched and processed once per request, refresh or snapshot. The
+  editor has an "Another dataset" source, a one-click "New dataset from this one", step editors for both new steps
+  and presets for share and difference; suggestions derive from the saved dataset instead of copying it.
 - **Export and import**: _Export file_ in a dashboard's Details and sharing panel downloads the dashboard and its
   uploaded data as one `.patchbay.json` file; _Import file_ on the New dashboard page (and _Import_ on My dashboards)
   turns such a file into a new dashboard on any server. Stored secrets, the owner, sharing and history are never
