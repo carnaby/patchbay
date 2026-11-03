@@ -67,6 +67,21 @@ export function errorResult(datasetId: string, e: unknown): DatasetResult {
 
 const rows = (n: number) => n.toLocaleString('en-US');
 
+/**
+ * A cycle in a document that did not pass validation (lineageIssues refuses them on every write and read). Named like
+ * the validation names it, and passed on unwrapped: it is not a failure of one upstream dataset.
+ */
+class CycleError extends Error {
+  constructor(path: readonly string[]) {
+    super(
+      path.length === 2
+        ? `Dataset "${path[0]}" reads itself`
+        : `Datasets ${path.map((id) => `"${id}"`).join(' → ')} form a cycle`,
+    );
+    this.name = 'CycleError';
+  }
+}
+
 export class ResolveScope {
   readonly target: DashboardTarget;
   readonly doc: DashboardDoc;
@@ -84,16 +99,22 @@ export class ResolveScope {
     this.deadline = Date.now() + (options.deadlineMs ?? SCOPE_DEADLINE_MS);
   }
 
-  /** The uncapped processed table of a dataset of `doc`, shared by every caller in this scope. */
-  full(id: string): Promise<FullResult> {
+  /**
+   * The uncapped processed table of a dataset of `doc`, shared by every caller in this scope. `path` is the chain of
+   * datasets waiting for this one: meeting `id` on it again means a cycle, which would otherwise wait for itself.
+   */
+  full(id: string, path: readonly string[] = []): Promise<FullResult> {
+    const at = path.indexOf(id);
+    if (at >= 0) return Promise.reject(new CycleError([...path.slice(at), id]));
     let pending = this.memo.get(id);
     if (!pending) {
       const seeded = this.seed?.(id);
       const dataset = this.doc.datasets.find((d) => d.id === id);
+      // The work starts on a later microtask, after the memo entry below is in place.
       pending = seeded
         ? Promise.resolve(seeded)
         : dataset
-          ? this.process(dataset)
+          ? Promise.resolve().then(() => this.process(dataset, [...path, id]))
           : Promise.reject(new HttpError(404, `Unknown dataset "${id}"`));
       pending.then(
         (r) => this.done.set(id, r),
@@ -122,7 +143,9 @@ export class ResolveScope {
       const same =
         stored === dataset || (stored !== undefined && JSON.stringify(stored) === JSON.stringify(dataset));
       // The whole wait is bounded too, not only each load and run: a caller never outlives the scope's deadline.
-      const full = await this.within(same ? this.full(dataset.id) : this.process(dataset));
+      const full = await this.within(() =>
+        same ? this.full(dataset.id) : this.process(dataset, [dataset.id]),
+      );
       const computed = this.data.finish(full, options.maxRows);
       const error = computed.error ?? full.warning;
       return {
@@ -138,15 +161,15 @@ export class ResolveScope {
     }
   }
 
-  private async process(dataset: Dataset): Promise<FullResult> {
+  private async process(dataset: Dataset, path: readonly string[]): Promise<FullResult> {
     const warnings: string[] = [];
     const source = dataset.source;
     const refs = stepInputsOf(dataset);
     const [input, ...others] = await Promise.all([
       source.kind === 'dataset'
-        ? this.upstream(source.id, warnings).then((p) => ({ ...p, fresh: false }))
-        : this.within(this.data.loadInput(this.target, dataset)),
-      ...refs.map((id) => this.upstream(id, warnings)),
+        ? this.upstream(source.id, warnings, path).then((p) => ({ ...p, fresh: false }))
+        : this.within(() => this.data.loadInput(this.target, dataset)),
+      ...refs.map((id) => this.upstream(id, warnings, path)),
     ]);
     if (input.warning && source.kind !== 'dataset') warnings.push(input.warning);
     let fetchedAt = input.fetchedAt;
@@ -161,7 +184,9 @@ export class ResolveScope {
       const self = source.kind === 'dataset' ? source.id : dataset.id;
       inputs = { tables, self: { id: self, name: self === dataset.id ? dataset.name : this.nameOf(self) } };
     }
-    const result = await this.within(
+    // Shared across requests only while in flight in practice: the result cache is the 8 MB one widget results use,
+    // so a large table is not kept, and a parent cut to PIPELINE_LIMITS.maxRows is a new table object in every scope.
+    const result = await this.within(() =>
       this.data.processShared(input.table, dataset.transforms, inputs, input.fresh),
     );
     const cut = Math.max(0, result.table.rows.length - PIPELINE_LIMITS.maxRows);
@@ -171,12 +196,12 @@ export class ResolveScope {
   }
 
   /** A dataset this one reads, with its warnings passed on and its failure named after it. */
-  private async upstream(id: string, warnings: string[]): Promise<FullResult> {
+  private async upstream(id: string, warnings: string[], path: readonly string[]): Promise<FullResult> {
     let r: FullResult;
     try {
-      r = await this.full(id);
+      r = await this.full(id, path);
     } catch (e) {
-      if (e instanceof BusyError || e instanceof UpstreamError) throw e;
+      if (e instanceof BusyError || e instanceof UpstreamError || e instanceof CycleError) throw e;
       if (e instanceof HttpError && e.message === SCOPE_TIMEOUT_MESSAGE) throw e;
       throw new UpstreamError(id, e instanceof Error ? e.message : 'Failed to load data');
     }
@@ -192,8 +217,11 @@ export class ResolveScope {
     return this.doc.datasets.find((d) => d.id === id)?.name ?? id;
   }
 
-  /** Races work against the scope's deadline. The work itself still ends at its own limit. */
-  private within<T>(work: Promise<T>): Promise<T> {
+  /**
+   * Races work against the scope's deadline. The work itself still ends at its own limit. It is a thunk so that past
+   * the deadline nothing starts: a run begun and then abandoned would fail later with nobody listening.
+   */
+  private within<T>(work: () => Promise<T>): Promise<T> {
     const left = this.deadline - Date.now();
     if (left <= 0) return Promise.reject(new HttpError(504, SCOPE_TIMEOUT_MESSAGE));
     let timer: NodeJS.Timeout | undefined;
@@ -201,6 +229,7 @@ export class ResolveScope {
       timer = setTimeout(() => reject(new HttpError(504, SCOPE_TIMEOUT_MESSAGE)), left);
       timer.unref();
     });
-    return Promise.race([work, late]).finally(() => clearTimeout(timer));
+    // The race handles a rejection of `work` that comes after the deadline.
+    return Promise.race([work(), late]).finally(() => clearTimeout(timer));
   }
 }

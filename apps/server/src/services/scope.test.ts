@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import {
   type DashboardDoc,
   DashboardDocSchema,
+  DatasetSchema,
   type DataTable,
   inferTable,
   type PipelineInputs,
@@ -222,6 +223,41 @@ describe('resolution scopes', () => {
     const d = doc(inline('w', cities), from('c', 'w'));
     const r = await data.scope(target, d, { deadlineMs: 0 }).resolve(byId(d, 'c'));
     expect(r.error).toBe(SCOPE_TIMEOUT_MESSAGE);
+  });
+
+  it('starts no work once the deadline has passed, so a late failure is never left unhandled', async () => {
+    const data = new DataService(connectors, store);
+    const d = doc(
+      inline('p', cities),
+      from('c', 'p', { transforms: [{ type: 'filter', expr: 'nope > 1' }] }),
+    );
+    const slow = data.scope(target, d, {
+      deadlineMs: 10,
+      seed: (id) => {
+        if (id !== 'p') return undefined;
+        // A slow upstream: the deadline passes before the child's own step would start.
+        const until = Date.now() + 30;
+        while (Date.now() < until);
+        return { table: inferTable(cities), trace: [], fetchedAt: 0, cut: 0 };
+      },
+    });
+    expect((await slow.resolve(byId(d, 'c'))).error).toBe(SCOPE_TIMEOUT_MESSAGE);
+    const draft = { ...byId(d, 'c'), id: 'draft' };
+    expect((await data.scope(target, d, { deadlineMs: 0 }).resolve(draft)).error).toBe(SCOPE_TIMEOUT_MESSAGE);
+    // Any orphaned rejection surfaces on a later turn of the event loop and fails this file.
+    await new Promise((r) => setTimeout(r, 20));
+  });
+
+  it('names a cycle that slipped past validation instead of overflowing the stack', async () => {
+    const data = new DataService(connectors, store);
+    const valid = doc(inline('a', cities), from('b', 'a'));
+    const cyclic = { ...valid, datasets: [DatasetSchema.parse(from('a', 'b')), byId(valid, 'b')] };
+    expect((await data.scope(target, cyclic).resolve(byId(cyclic, 'a'))).error).toBe(
+      'Datasets "a" → "b" → "a" form a cycle',
+    );
+    const self = DatasetSchema.parse(inline('s', cities, { transforms: [{ type: 'union', with: ['s'] }] }));
+    const own = { ...valid, datasets: [self] };
+    expect((await data.scope(target, own).resolve(self)).error).toBe('Dataset "s" reads itself');
   });
 
   it('refuses a dataset that reads others when resolved without its document', async () => {
