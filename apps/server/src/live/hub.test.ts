@@ -1,18 +1,22 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type DashboardDoc, DatasetSchema, type LiveEvent } from '@patchbay/core';
+import { type DashboardDoc, DatasetSchema, LIMITS, type LiveEvent } from '@patchbay/core';
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { ConnectorService } from '../connectors/registry.ts';
 import { DataService } from '../services/data.ts';
 import { FolderStore } from '../store/folder-store.ts';
+import { HttpError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
 import { LiveHub } from './hub.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'patchbay-hub-test-'));
 const data = new DataService(new ConnectorService({ offline: true }), new FolderStore(dir));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 const doc = (datasets: unknown[]) =>
   ({
@@ -26,6 +30,49 @@ const viewer = (send: (e: LiveEvent) => void = () => {}) => ({
   principal: { user: null, isAdmin: false, viaToken: false },
 });
 const settle = () => new Promise((r) => setTimeout(r, 10));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const reading = (v: number) => ({
+  table: { columns: [{ name: 'v', type: 'number' as const }], rows: [{ v }] },
+  fetchedAt: Date.now(),
+  credentialKey: '',
+});
+/** What was pushed for a dataset: its values joined, or "error". */
+const pushedFor = (events: LiveEvent[], id: string) =>
+  events.flatMap((e) =>
+    e.type === 'data' && e.result.datasetId === id
+      ? [e.result.error ? 'error' : e.result.table.rows.map((r) => r.v).join(',')]
+      : [],
+  );
+/** Two live readings and a union of them, the shape where two loops meet. */
+const twoLive = () =>
+  doc([
+    { id: 'a', name: 'A', source: { kind: 'connector', connector: 'demo.signal' }, refreshSec: 5 },
+    { id: 'b', name: 'B', source: { kind: 'connector', connector: 'demo.signal' }, refreshSec: 5 },
+    {
+      id: 'c',
+      name: 'C',
+      source: { kind: 'dataset', id: 'a' },
+      transforms: [{ type: 'union', with: ['b'] }],
+    },
+  ]);
+/** Union runs take `delay(call)` ms; returns the most union runs seen at once. */
+const slowUnions = (delay: (call: number) => number) => {
+  const run = data.processShared.bind(data);
+  let calls = 0;
+  let inFlight = 0;
+  const seen = { max: 0, reset: () => (calls = 0) };
+  vi.spyOn(data, 'processShared').mockImplementation(async (...args: Parameters<typeof run>) => {
+    if (!args[1].some((t) => t.type === 'union')) return run(...args);
+    seen.max = Math.max(seen.max, ++inFlight);
+    try {
+      await sleep(delay(calls++));
+      return await run(...args);
+    } finally {
+      inFlight--;
+    }
+  });
+  return seen;
+};
 
 describe('LiveHub', () => {
   it('schedules no refresh for uploads and inline rows, and HTTP no faster than its cache', async () => {
@@ -176,6 +223,113 @@ describe('LiveHub', () => {
       true,
     );
     load.mockRestore();
+    hub.close();
+  });
+
+  it('keeps a failed input failed in what reads it, tick after tick, without flickering back to old data', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let n = 0;
+    let bFails = false;
+    vi.spyOn(data, 'loadSource').mockImplementation(async (_target, dataset) => {
+      if (dataset.id === 'a') return reading(100 + n);
+      await sleep(5);
+      if (bFails) throw new HttpError(502, 'b is down');
+      return reading(200 + n);
+    });
+    slowUnions(() => 30);
+    const events: LiveEvent[] = [];
+    const hub = new LiveHub(data, async () => ({ ownerId: null, doc: twoLive() }));
+    hub.subscribe(
+      'd-fail',
+      viewer((e) => events.push(e)),
+    );
+    await settle();
+    n = 1;
+    vi.advanceTimersByTime(5_000);
+    await sleep(100);
+    expect(pushedFor(events, 'c')).toEqual(['101,201']);
+    bFails = true;
+    for (n = 2; n <= 4; n++) {
+      vi.advanceTimersByTime(5_000);
+      await sleep(100);
+    }
+    // One error, then the same error (same hash, nothing pushed): never b's last good reading next to a new a.
+    expect(pushedFor(events, 'c')).toEqual(['101,201', 'error']);
+    expect(pushedFor(events, 'a')).toEqual(['101', '102', '103', '104']);
+    expect(hub.seedSize('d-fail')).toBe(1);
+    hub.close();
+  });
+
+  it('runs one refresh of chains at a time, so a dependent is never pushed from an older reading after a newer', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    let n = 0;
+    vi.spyOn(data, 'loadSource').mockImplementation(async (_target, dataset) => {
+      if (dataset.id === 'a') return reading(100 + n);
+      await sleep(5);
+      return reading(200 + n);
+    });
+    // The first union run of a round is the slow one: run concurrently, it would finish last with the older b.
+    const unions = slowUnions((call) => (call % 2 === 0 ? 40 : 5));
+    const events: LiveEvent[] = [];
+    const hub = new LiveHub(data, async () => ({ ownerId: null, doc: twoLive() }));
+    hub.subscribe(
+      'd-order',
+      viewer((e) => events.push(e)),
+    );
+    await settle();
+    for (n = 1; n <= 3; n++) {
+      unions.reset();
+      vi.advanceTimersByTime(5_000);
+      await sleep(150);
+    }
+    expect(pushedFor(events, 'c')).toEqual(['101,201', '102,202', '103,203']);
+    // A tick during a refresh waits for it and runs right after, with the newest readings.
+    unions.reset();
+    n = 4;
+    vi.advanceTimersByTime(5_000);
+    await sleep(15);
+    n = 5;
+    vi.advanceTimersByTime(5_000);
+    await sleep(200);
+    expect(pushedFor(events, 'c')).toEqual(['101,201', '102,202', '103,203', '104,204', '105,205']);
+    expect(unions.max).toBe(1);
+    hub.close();
+  });
+
+  it('keeps only the direct inputs of live chains, at most LIMITS.datasetInputs per room, until memory relief', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const inline = (id: string) => ({ id, name: id, source: { kind: 'inline', rows: [{ value: 1 }] } });
+    const live = (id: string, inputs: string[]) => ({
+      id,
+      name: id,
+      source: { kind: 'connector', connector: 'demo.signal' },
+      refreshSec: 5,
+      transforms: [{ type: 'union', with: inputs }],
+    });
+    const hub = new LiveHub(data, async () => ({
+      ownerId: null,
+      doc: doc([
+        ...['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8', 'z'].map(inline),
+        { id: 'y', name: 'y', source: { kind: 'dataset', id: 'z' } },
+        { id: 'x', name: 'x', source: { kind: 'dataset', id: 'y' } },
+        live('l1', ['s1', 's2', 's3', 's4']),
+        live('l2', ['s5', 's6', 's7', 's8']),
+        // x reads y, which reads z: only x is read by a chain member, so y and z are never kept.
+        live('l3', ['x']),
+      ]),
+    }));
+    hub.subscribe('d-bound', viewer());
+    await settle();
+    vi.advanceTimersByTime(5_000);
+    await sleep(100);
+    // Nine direct inputs, capped at eight.
+    expect(LIMITS.datasetInputs).toBe(8);
+    expect(hub.seedSize('d-bound')).toBe(8);
+    hub.dropSeeds();
+    expect(hub.seedSize('d-bound')).toBe(0);
+    vi.advanceTimersByTime(5_000);
+    await sleep(100);
+    expect(hub.seedSize('d-bound')).toBe(8);
     hub.close();
   });
 

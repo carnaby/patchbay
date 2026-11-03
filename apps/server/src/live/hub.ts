@@ -16,8 +16,10 @@ import {
   type DatasetResult,
   dependentsOf,
   hasLineage,
+  LIMITS,
   type LiveEvent,
-  upstreamClosure,
+  lineageDepth,
+  upstreamOf,
 } from '@patchbay/core';
 import type { Principal } from '../services/dashboards.ts';
 import type { DashboardTarget, DataService } from '../services/data.ts';
@@ -37,17 +39,26 @@ export interface Subscriber {
 }
 
 /**
- * Latest full tables of one schedule, so a tick re-runs only what depends on the dataset that ticked. They belong to
- * the target that produced them: a scope with any other owner or network rights must load its own.
+ * The refreshes of live datasets that others read, for one schedule. The kept tables belong to the target that
+ * produced them: a scope with any other owner or network rights must load its own.
  */
-interface Seeds {
+interface Chains {
   target: DashboardTarget;
-  tables: Map<string, FullResult>;
+  doc: DashboardDoc;
+  /** Per live dataset with lineage: it and everything that reads it, parents first. */
+  chains: Map<string, readonly string[]>;
+  /** Sorting by depth puts every dataset after the ones it reads, for refreshes that run several chains at once. */
+  depth: Map<string, number>;
   /**
-   * The datasets some tick reads without re-running them: everything upstream of a live chain. Each is cut to
-   * PIPELINE_LIMITS.maxRows, and one chain member reads at most LIMITS.datasetInputs of them.
+   * The datasets a refresh reads directly without re-running them: inputs of chain members outside the chain. A
+   * kept table is cut to PIPELINE_LIMITS.maxRows, and a room keeps at most LIMITS.datasetInputs of them.
    */
-  reused: ReadonlySet<string>;
+  inputs: ReadonlySet<string>;
+  /** Latest tables of `inputs`, so a tick re-runs only what depends on the dataset that ticked. */
+  tables: Map<string, FullResult>;
+  /** Live datasets that ticked while a refresh ran: they run together right after it. */
+  queued: Set<string>;
+  draining: boolean;
 }
 
 interface Room {
@@ -56,8 +67,8 @@ interface Room {
   lastHash: Map<string, string>;
   /** Bumped on every (re)schedule; stale async schedules notice and bail out. */
   generation: number;
-  /** Dropped on every (re)schedule: a new document may have a new graph. */
-  seeds: Seeds | null;
+  /** Replaced on every (re)schedule: a new document may have a new graph. */
+  chains: Chains | null;
 }
 
 export class LiveHub {
@@ -73,7 +84,7 @@ export class LiveHub {
   subscribe(dashboardId: string, subscriber: Subscriber): () => void {
     let room = this.rooms.get(dashboardId);
     if (!room) {
-      room = { subscribers: new Set(), timers: [], lastHash: new Map(), generation: 0, seeds: null };
+      room = { subscribers: new Set(), timers: [], lastHash: new Map(), generation: 0, chains: null };
       this.rooms.set(dashboardId, room);
       void this.schedule(dashboardId);
     }
@@ -92,7 +103,7 @@ export class LiveHub {
     room.generation++;
     for (const t of room.timers) clearInterval(t);
     room.timers = [];
-    room.seeds = null;
+    room.chains = null;
     if (this.rooms.get(dashboardId) === room) this.rooms.delete(dashboardId);
   }
 
@@ -109,7 +120,12 @@ export class LiveHub {
 
   /** Full tables a room keeps between ticks (tests and diagnostics). */
   seedSize(dashboardId: string): number {
-    return this.rooms.get(dashboardId)?.seeds?.tables.size ?? 0;
+    return this.rooms.get(dashboardId)?.chains?.tables.size ?? 0;
+  }
+
+  /** Memory relief: the next tick loads what it needs again, through the data caches. */
+  dropSeeds() {
+    for (const room of this.rooms.values()) room.chains?.tables.clear();
   }
 
   publish(dashboardId: string, event: LiveEvent) {
@@ -156,7 +172,7 @@ export class LiveHub {
     const generation = ++room.generation;
     for (const t of room.timers) clearInterval(t);
     room.timers = [];
-    room.seeds = null;
+    room.chains = null;
     const loaded = await this.loadDashboard(dashboardId).catch(() => null);
     // While we awaited, the room may have closed, been replaced, or been rescheduled.
     if (!loaded || this.rooms.get(dashboardId) !== room || room.generation !== generation) return;
@@ -168,40 +184,53 @@ export class LiveHub {
     // A derived dataset refreshes when its parent does (lineageIssues refuses refreshSec on it): a second loop on the
     // chain would fetch the same thing twice, even for a document that reached the store some other way.
     const live = doc.datasets.filter((d) => d.source.kind !== 'dataset');
-    const chains = new Map<string, string[]>();
+    const byChain = new Map<string, readonly string[]>();
     for (const d of live)
       if (this.data.refreshIntervalSec(d) !== null && hasLineage(doc, d.id))
-        chains.set(d.id, [d.id, ...dependentsOf(doc, d.id)]);
-    const reused = new Set<string>();
-    for (const chain of chains.values())
-      for (const x of chain)
-        for (const up of upstreamClosure(doc, x)) if (!chain.includes(up)) reused.add(up);
-    room.seeds = { target, tables: new Map(), reused };
+        byChain.set(d.id, [d.id, ...dependentsOf(doc, d.id)]);
+    const inputs = new Set<string>();
+    for (const chain of byChain.values())
+      for (const x of chain) {
+        const dataset = doc.datasets.find((d) => d.id === x);
+        for (const up of dataset ? upstreamOf(dataset) : []) if (!chain.includes(up)) inputs.add(up);
+      }
+    const chains: Chains = {
+      target,
+      doc,
+      chains: byChain,
+      depth: new Map(doc.datasets.map((d) => [d.id, lineageDepth(doc, d.id)])),
+      inputs,
+      tables: new Map(),
+      queued: new Set(),
+      draining: false,
+    };
+    room.chains = chains;
     for (const dataset of live) {
       // The same floors as on save, applied again here so a document saved before a floor existed (or written by
       // any other path) cannot schedule faster; uploads and inline rows are never refreshed on a timer.
       const seconds = this.data.refreshIntervalSec(dataset);
       if (seconds === null) continue;
-      const chain = chains.get(dataset.id);
       const interval = seconds * 1000;
       let running = false;
-      const tick = async () => {
-        if (running) return; // never overlap slow upstream calls
-        running = true;
-        try {
-          // One client per dashboard for the fair queues: many viewers share one loop, and so one share.
-          await runAsClient(`live:${dashboardId}`, async () => {
-            if (chain) await this.refreshChain(dashboardId, room, generation, doc, chain);
-            else this.push(dashboardId, room, generation, await this.data.resolve(target, dataset));
-          });
-        } catch (e) {
-          // A saturated server skips this refresh; viewers keep the data they have. Anything else is a bug, and a
-          // timer callback must not take the process down with it.
-          if (!(e instanceof BusyError)) console.error('[patchbay] live refresh failed', e);
-        } finally {
-          running = false;
-        }
-      };
+      const tick = byChain.has(dataset.id)
+        ? () => this.queueChain(dashboardId, room, generation, chains, dataset.id)
+        : async () => {
+            if (running) return; // never overlap slow upstream calls
+            running = true;
+            try {
+              // One client per dashboard for the fair queues: many viewers share one loop, and so one share.
+              const result = await runAsClient(`live:${dashboardId}`, () =>
+                this.data.resolve(target, dataset),
+              );
+              this.push(dashboardId, room, generation, result);
+            } catch (e) {
+              // A saturated server skips this refresh; viewers keep the data they have. Anything else is a bug,
+              // and a timer callback must not take the process down with it.
+              if (!(e instanceof BusyError)) console.error('[patchbay] live refresh failed', e);
+            } finally {
+              running = false;
+            }
+          };
       const timer = setInterval(() => void tick(), interval);
       timer.unref();
       room.timers.push(timer);
@@ -216,40 +245,77 @@ export class LiveHub {
   }
 
   /**
-   * Re-resolves a live dataset and everything that reads it, parents first (`chain`). Everything else comes from the
-   * room's latest tables, read when needed, so a dataset that ticked a moment ago is seen with its newest reading.
+   * One refresh of chains at a time per room: two at once would each start from the other's older table and could
+   * push a dependent built from a stale reading after a fresh one. A tick that comes meanwhile waits for the next
+   * round, and ticks of the same moment share one.
    */
-  private async refreshChain(
+  private async queueChain(dashboardId: string, room: Room, generation: number, chains: Chains, id: string) {
+    chains.queued.add(id);
+    if (chains.draining) return;
+    chains.draining = true;
+    try {
+      // Loops with the same interval fire in one timers phase; this lets them all join the first round.
+      await new Promise((resolve) => setImmediate(resolve));
+      while (chains.queued.size && room.generation === generation) {
+        const roots = [...chains.queued];
+        chains.queued.clear();
+        try {
+          // One client per dashboard for the fair queues: many viewers share one loop, and so one share.
+          await runAsClient(`live:${dashboardId}`, () =>
+            this.refreshChains(dashboardId, room, generation, chains, roots),
+          );
+        } catch (e) {
+          // A saturated server skips this refresh; viewers keep the data they have. Anything else is a bug, and a
+          // timer callback must not take the process down with it.
+          if (!(e instanceof BusyError)) console.error('[patchbay] live refresh failed', e);
+        }
+      }
+    } finally {
+      chains.draining = false;
+    }
+  }
+
+  /**
+   * Re-resolves live datasets and everything that reads them, parents first, in one scope. Their other inputs come
+   * from the room's latest tables, so a dataset that ticked a moment ago is seen with its newest reading.
+   */
+  private async refreshChains(
     dashboardId: string,
     room: Room,
     generation: number,
-    doc: DashboardDoc,
-    chain: readonly string[],
+    chains: Chains,
+    roots: readonly string[],
   ) {
-    const seeds = room.seeds;
-    if (!seeds || room.generation !== generation) return;
-    const rerun = new Set(chain);
-    // The scope runs for the seeds' own target, so a table is only ever reused by the target that produced it.
-    const scope = this.data.scope(seeds.target, doc, {
-      seed: (x) => (rerun.has(x) ? undefined : seeds.tables.get(x)),
+    const rerun = new Set(roots.flatMap((r) => chains.chains.get(r) ?? []));
+    const order = [...rerun].sort((a, b) => (chains.depth.get(a) ?? 0) - (chains.depth.get(b) ?? 0));
+    const served = new Set<string>();
+    // The scope runs for the tables' own target, so a table is only ever reused by the target that produced it.
+    const scope = this.data.scope(chains.target, chains.doc, {
+      seed: (x) => {
+        const kept = rerun.has(x) ? undefined : chains.tables.get(x);
+        if (kept) served.add(x);
+        return kept;
+      },
     });
-    for (const x of chain) {
-      const dataset = doc.datasets.find((d) => d.id === x);
+    const keep = (x: string, full: FullResult) => {
+      if (!chains.inputs.has(x)) return;
+      if (chains.tables.has(x) || chains.tables.size < LIMITS.datasetInputs) chains.tables.set(x, full);
+    };
+    for (const x of order) {
+      const dataset = chains.doc.datasets.find((d) => d.id === x);
       if (!dataset) continue;
       const result = await scope.resolve(dataset);
       if (room.generation !== generation) return;
       this.push(dashboardId, room, generation, result);
-      if (!seeds.reused.has(x)) continue;
       const full = scope.settled().get(x);
-      // A dataset that just failed is loaded again by the next tick that reads it, never shown from its last table
-      // next to the error this one pushed.
-      if (full) seeds.tables.set(x, full);
-      else seeds.tables.delete(x);
+      // A dataset that just failed is loaded again by the next refresh that reads it, never shown from its last
+      // table next to the error this one pushed.
+      if (full) keep(x, full);
+      else chains.tables.delete(x);
     }
-    // Inputs this tick had to load are kept too, so the next tick does not load them again. Only where no table is
-    // kept: another live dataset's loop may have stored a newer reading than the one this tick started from.
-    for (const [x, full] of scope.settled())
-      if (!rerun.has(x) && seeds.reused.has(x) && !seeds.tables.has(x)) seeds.tables.set(x, full);
+    // Inputs this refresh loaded are kept too, so the next one does not load them again; tables it was served from
+    // the room are already there.
+    for (const [x, full] of scope.settled()) if (!rerun.has(x) && !served.has(x)) keep(x, full);
   }
 
   close() {

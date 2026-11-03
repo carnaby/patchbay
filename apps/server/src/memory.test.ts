@@ -5,12 +5,12 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
 import { heavyWork } from './util/heavy.ts';
-import { MemoryPressureError, memoryGuard } from './util/memory-pressure.ts';
+import { MemoryPressureError, memoryGuard, type Relief } from './util/memory-pressure.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 
 const BASE = 'http://localhost:8787';
@@ -18,12 +18,17 @@ const LIMIT = 384 * 1024 * 1024;
 let dir: string;
 let deps: Deps;
 let app: ReturnType<typeof createApp>;
+/** The real "caches" relief, kept for the test of what it empties before the stub below replaces it. */
+let cachesRelief: Relief | undefined;
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), 'patchbay-memory-test-'));
+  const registered = vi.spyOn(memoryGuard, 'setRelief');
   deps = await createDeps(
     loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, OFFLINE: '1', PUBLIC_URL: BASE, PIPELINE_WORKERS: '1' }),
   );
+  cachesRelief = registered.mock.calls.find(([name]) => name === 'caches')?.[1];
+  registered.mockRestore();
   // The pressure here is simulated, with no memory to give back: reliefs that empty caches and replace workers would
   // only race the reads the tests check. Registered under the same names, these replace the real ones.
   memoryGuard.setRelief('caches', () => {});
@@ -352,5 +357,18 @@ describe('large request bodies', () => {
     expect(refused.status).toBe(503);
     expect(((await refused.json()) as { error: string }).error).toContain('low on memory');
     expect((await arriving).status).toBe(200);
+  });
+});
+
+describe('memory relief', () => {
+  // Last in the file: a deep relief empties the caches the reads above answer from.
+  it('drops the live hub’s kept tables with the caches, in a deep relief only', () => {
+    const drop = vi.spyOn(deps.hub, 'dropSeeds');
+    expect(cachesRelief).toBeDefined();
+    cachesRelief!(false);
+    expect(drop).not.toHaveBeenCalled();
+    cachesRelief!(true);
+    expect(drop).toHaveBeenCalledOnce();
+    drop.mockRestore();
   });
 });
