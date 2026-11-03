@@ -105,6 +105,9 @@ docker compose up -d
 - `URL_SOURCES=signed-in` is set in the compose file: the instance runs on a home connection, so only dashboards
   owned by a signed-in user can load http and feed sources, and strangers cannot make it fetch arbitrary addresses
   from your IP. See "Limits for a small public instance".
+- `ALLOW_PRIVATE_HOSTS` (in `patchbay.env`, empty by default) lets dashboards read services on your home network;
+  see [Home network sources](#home-network-sources-allow_private_hosts). This instance is public through the tunnel,
+  so keep `PRIVATE_HOSTS_FOR=admins`.
 - `UMAMI_SCRIPT_URL` and `UMAMI_WEBSITE_ID` (optional, in `.env`) turn on page-view analytics; see "Analytics"
   below. The compose file passes them through with empty defaults, which means off, and they take precedence over
   `patchbay.env`.
@@ -181,6 +184,95 @@ the value.
 **If the key and a copy of the database leak together**, rotation does not help: the old copy and the old key still
 decrypt. The credentials have to be revoked where they were issued. The admin page lists how many secrets each user
 stored (never names or values), so you know whom to tell.
+
+## Home network sources (`ALLOW_PRIVATE_HOSTS`)
+
+By default Patchbay fetches only public `https://` addresses on port 443: the SSRF guard refuses private and local
+networks, so nobody can use an instance to look into the network it runs in. On a server you run at home you may
+want the opposite: dashboards over Home Assistant, Pi-hole, Prometheus or Proxmox on the same network.
+`ALLOW_PRIVATE_HOSTS` lists the hosts http and feed sources may reach; for them, plain `http://` and any port work too.
+Empty (the default) changes nothing.
+
+```bash
+ALLOW_PRIVATE_HOSTS=192.168.1.0/24, homeassistant.lan, *.home.arpa
+PRIVATE_HOSTS_FOR=admins
+```
+
+Entries are separated by commas or spaces, and case does not matter.
+
+| Entry      | Example                       | Allows                                                                                                                                                                |
+| ---------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host name  | `homeassistant.lan`           | That name (a trailing dot does not matter), when it resolves into `10/8`, `172.16/12`, `192.168/16`, `100.64/10` or `fc00::/7`                                        |
+| Wildcard   | `*.home.arpa`                 | Every name below `home.arpa` (not `home.arpa` itself), with the same ranges                                                                                           |
+| IP address | `192.168.1.20`, `fd00::20`    | That address, whatever name the URL used                                                                                                                              |
+| CIDR range | `192.168.1.0/24`, `fd00::/64` | Every address in it, whatever name the URL used. At least `/8` (IPv4) or `/7` (IPv6). Shown in the log as the network address (`192.168.1.77/24` is `192.168.1.0/24`) |
+
+Write wildcards for private suffixes such as `*.lan`, `*.home.arpa` or `*.internal`, never for a public one like
+`*.com`: any name under the suffix that resolves into your network would be reachable, and anyone can register a
+public name and point it at a private address.
+
+What holds whatever the list says:
+
+- The check runs on the address actually connected to, inside the socket's DNS lookup, and again for every redirect
+  hop. A name whose DNS answer changes cannot lead anywhere the list does not allow; one disallowed address in an
+  answer blocks the request.
+- A name entry never opens loopback (`127.0.0.0/8`, `::1`), link-local (`169.254.0.0/16`, `fe80::/10`) or public
+  addresses over plain http; only an address entry that covers them does. `localhost` cannot be listed: list
+  `127.0.0.1`, and know that this opens every service listening on this machine or container.
+- Cloud metadata addresses (`169.254.169.254`, `169.254.170.2`, `169.254.170.23`, `fd00:ec2::254`, `fd00:ec2::23`,
+  `fd20:ce::254`, `100.100.100.200`) open only through an entry naming exactly that address, never through a range
+  (a `/32` or `/128` entry of one is refused). Do not list them.
+- `0.0.0.0`, `::` and multicast never connect. A redirect from `https://` to `http://` is refused.
+- Addresses in unusual notation (`3232235786`, `0x7f.1`, `::ffff:192.168.1.7`) are the same address to the guard.
+  The server does not start with an entry it cannot use, and says what to write: a scheme, a port, a user name, a
+  numeric last label in a wildcard (`*.1`), an address in unusual notation, a range broader than the minimum, or an
+  IPv6 range that covers `::ffff:0:0` (list IPv4 ranges as IPv4).
+- OAuth client documents and the built-in connectors never use the list.
+
+`PRIVATE_HOSTS_FOR` decides whose dashboards may use the list, by the dashboard's **owner** (never the viewer), at
+save and at every load:
+
+| `PRIVATE_HOSTS_FOR` | Dashboards that may use the list                                                                    |
+| ------------------- | --------------------------------------------------------------------------------------------------- |
+| `admins` (default)  | Owned by a user in `ADMIN_EMAILS` (needs Google sign-in). For an instance others can reach.         |
+| `signed-in`         | Owned by any signed-in user: on a server reachable from the internet, anyone with a Google account. |
+| `everyone`          | Every dashboard, anonymous ones included. Only for a server nobody outside your network can reach.  |
+
+The startup log says what is open and to whom, and warns when the setting has no effect (for example `admins`
+without Google sign-in). Everyone who can view a dashboard sees what its sources load: a public dashboard over Home
+Assistant shows your home to the internet. Keep such dashboards private.
+
+Agents (MCP) act as the dashboard's editor, and `get_reference` tells them which addresses their dashboards may load.
+When an editor is not the owner, a preview uses the caller's own permission, not the owner's. A token without the
+`dashboards:write` scope (read-only) cannot preview an address that needs the list, because that request would reach
+your network; it must reconnect with write access.
+
+Examples (addresses are placeholders for your own):
+
+- **Home Assistant**: create a long-lived access token (your profile, Security), save it under Settings, Secrets as a
+  Bearer token with "Only send to" `http://192.168.1.20:8123/api/`, and use the source
+  `http://192.168.1.20:8123/api/states` with that secret. Every entity is one row; filter by `entity_id`.
+- **Prometheus**: `http://192.168.1.30:9090/api/v1/query?query=up` with path `data.result`. Behind an
+  authenticating proxy, bind a Bearer secret to `http://192.168.1.30:9090/api/v1/`.
+- **Pi-hole 5**: `http://192.168.1.2/admin/api.php?summaryRaw` with the API token (Settings, API) as a secret sent as
+  query parameter `auth`. Pi-hole 6 hands out sessions through a login request, which Patchbay does not make.
+
+Secrets can be bound to listed hosts over `http://` and on other ports, but only to a host the list names by name or
+address (not one that merely resolves into a range today). Over plain http the value crosses your network
+unencrypted; the dialog says so. The binding is checked against the list when the secret is created, so narrowing the
+list later does not re-check secrets that already exist: delete and recreate them.
+
+In Docker:
+
+- `.local` names (`homeassistant.local`) usually do not resolve inside a container: Docker's DNS does not speak mDNS.
+  Use the IP address (give the device a fixed DHCP lease) or a name your router's DNS serves.
+- `127.0.0.1` inside the container is the container itself. To reach a service on the Docker host, add
+  `extra_hosts: ["host.docker.internal:host-gateway"]` to the `patchbay` service and list `host.docker.internal`
+  (the address it maps to must be one a name entry may reach, or list that address too).
+  Other containers of the same compose project are reachable by service name (`http://prometheus:9090`, list
+  `prometheus`), provided their address is in a LAN range (Docker's default `172.16.0.0/12` is).
+- Self-signed HTTPS (Proxmox on 8006): Patchbay never turns certificate checks off. Mount your CA certificate and set
+  `NODE_EXTRA_CA_CERTS=/certs/ca.pem`; the name in the URL must match the certificate.
 
 ## Anonymous dashboards and disk space
 

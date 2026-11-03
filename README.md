@@ -270,7 +270,9 @@ request. The editor names each connector's data source next to its parameters.
 Plus your own data:
 
 - **Files:** CSV or JSON uploads (up to 5 MB, stored in the dashboard's folder), or a table pasted as inline rows.
-- **Any HTTPS JSON endpoint**, public or your own, fetched through an SSRF guard.
+- **Any HTTPS JSON endpoint**, public or your own, fetched through an SSRF guard. A self-hosted instance can also
+  open services on its own network (Home Assistant, Prometheus), over plain http too: `ALLOW_PRIVATE_HOSTS` in
+  [guide/deployment.md](guide/deployment.md#home-network-sources-allow_private_hosts).
 - **Private APIs:** an endpoint that needs a key uses a **secret** saved under Settings → Secrets. It is sent as a
   bearer token, a header or a query parameter, only to the origin and path prefix it is bound to, and its value never
   reaches the browser, the dashboard document or the agent. The instance switch `SECRETS` decides who may store them.
@@ -319,7 +321,9 @@ after every step.
   OAuth registrations per /56) and per user; `DEV_LOGIN` refuses to start unless `PUBLIC_URL` is localhost.
 - User-supplied URLs: HTTPS only, IANA special-purpose ranges blocked (IPv6 only within global unicast), including IPv6
   forms that embed IPv4 (mapped, translated, NAT64, Teredo, 6to4); the check runs inside the socket's DNS lookup (no
-  DNS-rebinding window); redirects re-checked; size and time capped.
+  DNS-rebinding window); redirects re-checked; size and time capped. A self-hosted instance may open
+  listed hosts of its own network (`ALLOW_PRIVATE_HOSTS`, administrators' dashboards by default); names reach only LAN
+  ranges, cloud metadata addresses only when listed exactly.
 - Markdown is rendered without raw HTML; SVG text in snapshots is escaped.
 - Resource limits everywhere: request bodies (1 MB; 8 MB for uploads and MCP), upload files (5 MB and 500,000
   cells, 200,000 on anonymous dashboards), uploads per dashboard (20 files / 25 MB as stored), documents (1 MB), new
