@@ -29,7 +29,14 @@ const viewer = (send: (e: LiveEvent) => void = () => {}) => ({
   close: () => {},
   principal: { user: null, isAdmin: false, viaToken: false },
 });
-const settle = () => new Promise((r) => setTimeout(r, 10));
+// Every timer the hub and the mocks wait on is fake, so a test moves time only by awaiting `advance`: no real clock,
+// so a loaded machine cannot reorder anything. Date stays real (connector cache times, reading stamps).
+const useFakeTimers = () =>
+  vi.useFakeTimers({
+    toFake: ['setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'setImmediate', 'clearImmediate'],
+  });
+const advance = (ms: number) => vi.advanceTimersByTimeAsync(ms);
+const settle = () => advance(10);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const reading = (v: number) => ({
   table: { columns: [{ name: 'v', type: 'number' as const }], rows: [{ v }] },
@@ -84,6 +91,7 @@ const slowUnions = (delay: (call: number) => number) => {
 
 describe('LiveHub', () => {
   it('schedules no refresh for uploads and inline rows, and HTTP no faster than its cache', async () => {
+    useFakeTimers();
     const spy = vi.spyOn(globalThis, 'setInterval');
     const hub = new LiveHub(data, async () => ({
       ownerId: null,
@@ -107,6 +115,7 @@ describe('LiveHub', () => {
   });
 
   it('closes the room and its timers when the last subscriber fails to receive', async () => {
+    useFakeTimers();
     const hub = new LiveHub(data, async () => ({
       ownerId: null,
       doc: doc([
@@ -128,7 +137,7 @@ describe('LiveHub', () => {
   });
 
   it('refreshes what reads a live dataset on its tick, from one loop, without fetching static siblings again', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    useFakeTimers();
     const load = vi.spyOn(data, 'loadSource');
     const events: LiveEvent[] = [];
     const hub = new LiveHub(data, async () => ({
@@ -151,12 +160,12 @@ describe('LiveHub', () => {
     );
     await settle();
     expect(hub.activeTimers()).toBe(1);
-    vi.advanceTimersByTime(5_000);
+    await advance(5_000);
     await settle();
     const pushed = () => events.flatMap((e) => (e.type === 'data' ? [e.result.datasetId] : []));
     expect(pushed()).toEqual(['live', 'kid', 'both']);
     expect(hub.seedSize('d-chain')).toBeGreaterThan(0);
-    vi.advanceTimersByTime(5_000);
+    await advance(5_000);
     await settle();
     // The connector serves the same reading within its cache time: same hashes, nothing pushed again.
     expect(pushed()).toEqual(['live', 'kid', 'both']);
@@ -174,7 +183,7 @@ describe('LiveHub', () => {
   });
 
   it('keeps only tables a tick can reuse, drops a failed one, and gives a derived dataset no loop of its own', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    useFakeTimers();
     const events: LiveEvent[] = [];
     let ownerId = 'u1';
     const hub = new LiveHub(data, async () => ({
@@ -201,12 +210,12 @@ describe('LiveHub', () => {
     );
     await settle();
     expect(hub.activeTimers()).toBe(2);
-    vi.advanceTimersByTime(5_000);
+    await advance(5_000);
     await settle();
     // Each loop reads the other's table; neither re-runs its own from the room.
     expect(hub.seedSize('d-keep')).toBe(2);
     const broken = vi.spyOn(data, 'loadSource').mockRejectedValue(new Error('upstream down'));
-    vi.advanceTimersByTime(5_000);
+    await advance(5_000);
     await settle();
     const errors = events.flatMap((e) => (e.type === 'data' && e.result.error ? [e.result.datasetId] : []));
     expect(new Set(errors)).toEqual(new Set(['a', 'b', 'ab']));
@@ -223,7 +232,7 @@ describe('LiveHub', () => {
       actor: { kind: 'system', label: 't' },
       changes: [],
     });
-    vi.advanceTimersByTime(5_000);
+    await advance(5_000);
     await settle();
     const targets = load.mock.calls.map((c) => c[0]);
     expect(targets.length).toBeGreaterThan(0);
@@ -235,7 +244,7 @@ describe('LiveHub', () => {
   });
 
   it('keeps a failed input failed in what reads it, tick after tick, without flickering back to old data', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    useFakeTimers();
     let n = 0;
     let bFails = false;
     vi.spyOn(data, 'loadSource').mockImplementation(async (_target, dataset) => {
@@ -253,13 +262,13 @@ describe('LiveHub', () => {
     );
     await settle();
     n = 1;
-    vi.advanceTimersByTime(5_000);
-    await sleep(100);
+    await advance(5_000);
+    await advance(100);
     expect(pushedFor(events, 'c')).toEqual(['101,201']);
     bFails = true;
     for (n = 2; n <= 4; n++) {
-      vi.advanceTimersByTime(5_000);
-      await sleep(100);
+      await advance(5_000);
+      await advance(100);
     }
     // One error, then the same error (same hash, nothing pushed): never b's last good reading next to a new a.
     expect(pushedFor(events, 'c')).toEqual(['101,201', 'error']);
@@ -269,7 +278,7 @@ describe('LiveHub', () => {
   });
 
   it('runs one refresh of chains at a time, so a dependent is never pushed from an older reading after a newer', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    useFakeTimers();
     let n = 0;
     vi.spyOn(data, 'loadSource').mockImplementation(async (_target, dataset) => {
       if (dataset.id === 'a') return reading(100 + n);
@@ -287,25 +296,26 @@ describe('LiveHub', () => {
     await settle();
     for (n = 1; n <= 3; n++) {
       unions.reset();
-      vi.advanceTimersByTime(5_000);
-      await sleep(150);
+      await advance(5_000);
+      await advance(150);
     }
     expect(pushedFor(events, 'c')).toEqual(['101,201', '102,202', '103,203']);
     // A tick during a refresh waits for it and runs right after, with the newest readings.
     unions.reset();
     n = 4;
-    vi.advanceTimersByTime(5_000);
-    await sleep(15);
+    await advance(5_000);
+    await advance(15);
     n = 5;
+    // Synchronous on purpose: the next tick must land while the slow union of the round above is still in flight.
     vi.advanceTimersByTime(5_000);
-    await sleep(200);
+    await advance(200);
     expect(pushedFor(events, 'c')).toEqual(['101,201', '102,202', '103,203', '104,204', '105,205']);
     expect(unions.max).toBe(1);
     hub.close();
   });
 
   it('lets chains with nothing in common keep their cadence while one of them is slow', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    useFakeTimers();
     let n = 0;
     vi.spyOn(data, 'loadSource').mockImplementation(async (_target, dataset) => {
       if (dataset.id !== 'x') return reading(100 + n);
@@ -320,21 +330,21 @@ describe('LiveHub', () => {
     );
     await settle();
     n = 1;
-    vi.advanceTimersByTime(5_000);
-    await sleep(50);
+    await advance(5_000);
+    await advance(50);
     expect(pushedFor(events, 'ka')).toEqual(['101']);
     expect(pushedFor(events, 'x')).toEqual([]);
     n = 2;
-    vi.advanceTimersByTime(5_000);
-    await sleep(50);
+    await advance(5_000);
+    await advance(50);
     expect(pushedFor(events, 'ka')).toEqual(['101', '102']);
-    await sleep(700);
+    await advance(700);
     expect(pushedFor(events, 'kx')).toEqual(['900']);
     hub.close();
   });
 
   it('gives each component its own scope and deadline', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    useFakeTimers();
     vi.spyOn(data, 'loadSource').mockImplementation(async () => {
       await sleep(300);
       return reading(1);
@@ -351,15 +361,15 @@ describe('LiveHub', () => {
       viewer((e) => events.push(e)),
     );
     await settle();
-    vi.advanceTimersByTime(5_000);
-    await sleep(800);
+    await advance(5_000);
+    await advance(800);
     expect(scopes).toHaveBeenCalledTimes(2);
     for (const id of ['a', 'ka', 'x', 'kx']) expect(pushedFor(events, id)).toEqual(['1']);
     hub.close();
   });
 
   it('keeps only the direct inputs of live chains, at most LIMITS.datasetInputs per room, until memory relief', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    useFakeTimers();
     const inline = (id: string) => ({ id, name: id, source: { kind: 'inline', rows: [{ value: 1 }] } });
     const live = (id: string, inputs: string[]) => ({
       id,
@@ -382,21 +392,21 @@ describe('LiveHub', () => {
     }));
     hub.subscribe('d-bound', viewer());
     await settle();
-    vi.advanceTimersByTime(5_000);
-    await sleep(100);
+    await advance(5_000);
+    await advance(100);
     // Nine direct inputs, capped at eight.
     expect(LIMITS.datasetInputs).toBe(8);
     expect(hub.seedSize('d-bound')).toBe(8);
     hub.dropSeeds();
     expect(hub.seedSize('d-bound')).toBe(0);
-    vi.advanceTimersByTime(5_000);
-    await sleep(100);
+    await advance(5_000);
+    await advance(100);
     expect(hub.seedSize('d-bound')).toBe(8);
     hub.close();
   });
 
   it('skips a refresh when the server is busy instead of failing', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    useFakeTimers();
     const busy = vi.spyOn(data, 'resolve').mockRejectedValue(new BusyError());
     const events: LiveEvent[] = [];
     const hub = new LiveHub(data, async () => ({
@@ -410,7 +420,7 @@ describe('LiveHub', () => {
       viewer((e) => events.push(e)),
     );
     await settle();
-    vi.advanceTimersByTime(5_000);
+    await advance(5_000);
     await settle();
     expect(busy).toHaveBeenCalled();
     expect(events).toEqual([]);
