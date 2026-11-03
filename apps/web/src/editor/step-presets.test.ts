@@ -1,6 +1,12 @@
 import { parse } from '@patchbay/core';
 import { describe, expect, it } from 'vitest';
-import { PRESETS, presetColumnName, presetExpression } from './step-presets.ts';
+import {
+  defaultPresetColumn,
+  PRESETS,
+  presetColumnName,
+  presetColumns,
+  presetExpression,
+} from './step-presets.ts';
 
 describe('derive presets', () => {
   it('writes share and difference expressions, optionally per group', () => {
@@ -18,5 +24,22 @@ describe('derive presets', () => {
     expect(presetColumnName('share', 'sales')).toBe('share_sales');
     expect(presetColumnName('difference', 'temp')).toBe('diff_temp');
     expect(PRESETS.share.help).toMatch(/of the rows at this point in the pipeline$/);
+  });
+});
+
+describe('preset columns', () => {
+  const types = { city: 'string', sales: 'number', year: 'number' };
+
+  it('starts on the first numeric column, not a string one', () => {
+    expect(defaultPresetColumn(['city', 'sales', 'year'], types)).toBe('sales');
+  });
+
+  it('offers numeric columns, keeps ones added by a step, and everything when nothing is numeric or typed', () => {
+    expect(presetColumns(['city', 'sales', 'ratio'], types)).toEqual(['sales', 'ratio']);
+    expect(defaultPresetColumn(['city', 'ratio'], types)).toBe('ratio');
+    expect(presetColumns(['city'], types)).toEqual(['city']);
+    expect(presetColumns(['a', 'b'], {})).toEqual(['a', 'b']);
+    expect(defaultPresetColumn(['a', 'b'], {})).toBe('a');
+    expect(defaultPresetColumn([], {})).toBe('');
   });
 });

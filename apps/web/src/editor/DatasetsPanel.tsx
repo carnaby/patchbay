@@ -827,6 +827,7 @@ function DatasetEditor({
     enabled: previewable(debounced.source) && !previewBlocked,
   });
   const baseColumns = raw.data?.result.table.columns.map((c) => c.name) ?? [];
+  const baseTypes = Object.fromEntries(raw.data?.result.table.columns.map((c) => [c.name, c.type]) ?? []);
 
   const candidates = useMemo(() => (doc ? sourceCandidates(doc, editingId ?? null) : []), [doc, editingId]);
   // Only the datasets the steps read: loading every other dataset when the editor opens would be wasted work.
@@ -932,6 +933,7 @@ function DatasetEditor({
         <TransformEditor
           steps={draft.transforms}
           baseColumns={baseColumns}
+          baseTypes={baseTypes}
           trace={result?.trace}
           datasets={candidates.map((c) => ({ id: c.id, name: c.name }))}
           columnsOf={columnsOf}

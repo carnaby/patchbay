@@ -13,8 +13,15 @@ import {
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Button, cx, IconButton, Input, Select } from '../components/ui.tsx';
-import { columnsAfter, repickJoinKeys, switchJoinDataset } from './columns.ts';
-import { PRESETS, type PresetKind, presetColumnName, presetExpression } from './step-presets.ts';
+import { columnsAfter, defaultOtherDataset, repickJoinKeys, switchJoinDataset } from './columns.ts';
+import {
+  defaultPresetColumn,
+  PRESETS,
+  type PresetKind,
+  presetColumnName,
+  presetColumns,
+  presetExpression,
+} from './step-presets.ts';
 
 type Step = TransformInput;
 
@@ -39,6 +46,8 @@ interface StepContext {
   datasets: { id: string; name: string }[];
   columnsOf: (id: string) => string[];
   self: { id: string; name: string } | undefined;
+  /** Types of the source's own columns, by name; empty while unknown. */
+  types: Record<string, string>;
 }
 
 const DEFAULTS: Record<Step['type'], (cols: string[], ctx: StepContext) => Step> = {
@@ -57,13 +66,16 @@ const DEFAULTS: Record<Step['type'], (cols: string[], ctx: StepContext) => Step>
   drop: (c) => ({ type: 'drop', fields: c.slice(0, 1) }),
   rename: (c) => ({ type: 'rename', map: c[0] ? { [c[0]]: `${c[0]}_renamed` } : {} }),
   fillNull: (c) => ({ type: 'fillNull', fields: c.slice(0, 1), value: 0 }),
-  join: (c, { datasets, columnsOf }) => {
-    const other = datasets[0]?.id ?? '';
+  join: (c, { datasets, columnsOf, self }) => {
+    const other = defaultOtherDataset(datasets, self?.id)?.id ?? '';
     const theirs = columnsOf(other);
     // A column both sides have is the likeliest key.
     return { type: 'join', with: other, on: [c.find((x) => theirs.includes(x)) ?? c[0] ?? ''], how: 'left' };
   },
-  union: (_c, { datasets }) => ({ type: 'union', with: datasets[0] ? [datasets[0].id] : [] }),
+  union: (_c, { datasets, self }) => {
+    const other = defaultOtherDataset(datasets, self?.id);
+    return { type: 'union', with: other ? [other.id] : [] };
+  },
 };
 
 /**
@@ -232,9 +244,11 @@ function JoinKeyRepair({
 /** One-click expressions for the Add column step; the result is an ordinary expression the user can still edit. */
 function DerivePresets({
   columns,
+  types,
   onApply,
 }: {
   columns: string[];
+  types: Record<string, string>;
   onApply: (expr: string, as: string) => void;
 }) {
   const [kind, setKind] = useState<PresetKind | null>(null);
@@ -250,7 +264,7 @@ function DerivePresets({
             variant="ghost"
             onClick={() => {
               setKind(k);
-              setColumn(columns[0] ?? '');
+              setColumn(defaultPresetColumn(columns, types));
               setPer('');
             }}
           >
@@ -265,7 +279,7 @@ function DerivePresets({
       <div className="grid grid-cols-2 gap-1.5">
         <ColumnSelect
           value={column}
-          columns={columns}
+          columns={presetColumns(columns, types)}
           onChange={(c) => {
             setColumn(c);
             if (c === per) setPer('');
@@ -339,6 +353,7 @@ function StepFields({
           />
           <DerivePresets
             columns={columns}
+            types={ctx.types}
             onApply={(expr, as) => onChange({ ...step, expr, ...(step.as === 'new_column' ? { as } : {}) })}
           />
           <ExpressionInput
@@ -819,6 +834,7 @@ export function TransformEditor({
   datasets = [],
   columnsOf = () => [],
   self,
+  baseTypes = {},
   onChange,
 }: {
   steps: Step[];
@@ -827,9 +843,10 @@ export function TransformEditor({
   datasets?: { id: string; name: string }[];
   columnsOf?: (id: string) => string[];
   self?: { id: string; name: string } | undefined;
+  baseTypes?: Record<string, string>;
   onChange: (steps: Step[]) => void;
 }) {
-  const ctx: StepContext = { datasets, columnsOf, self };
+  const ctx: StepContext = { datasets, columnsOf, self, types: baseTypes };
   const [adding, setAdding] = useState(false);
   const update = (i: number, s: Step) => onChange(steps.map((x, j) => (j === i ? s : x)));
   const move = (i: number, d: -1 | 1) => {
