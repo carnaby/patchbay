@@ -206,6 +206,7 @@ class Env {
         mcp: generous(),
         creates: generous(),
         snapshots: generous(),
+        exports: generous(),
       },
     });
     return this;

@@ -151,8 +151,13 @@ export function exportedFile(file: { id: string; name: string }, table: DataTabl
     id: file.id,
     name: file.name,
     columns: table.columns.map(({ name, type }) => ({ name, type })),
-    data: table.rows.map((row) => table.columns.map((c) => row[c.name] ?? null)),
+    data: table.rows.map((row) => exportedRow(table.columns, row)),
   };
+}
+
+/** One row of `exportedFile`'s data, for a server that writes a large table a part at a time. */
+export function exportedRow(columns: DataTable['columns'], row: DataTable['rows'][number]): Scalar[] {
+  return columns.map((c) => row[c.name] ?? null);
 }
 
 function fits(value: unknown, type: ColumnType): boolean {

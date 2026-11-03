@@ -2,9 +2,6 @@ import {
   type Dataset,
   type DatasetResult,
   DatasetSchema,
-  EXPORT_FORMAT,
-  EXPORT_VERSION,
-  exportedFile,
   exportFileName,
   FileIdSchema,
   type LiveEvent,
@@ -30,11 +27,12 @@ import {
 } from '../context.ts';
 import { SnapshotCache, snapshotCache } from '../render/cache.ts';
 import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
-import { type Body, rowsFormat, streamBody } from '../services/result-wire.ts';
+import { exportBodies } from '../services/export-body.ts';
+import { type Body, rowsFormat, streamBodies, streamBody } from '../services/result-wire.ts';
 import { listTemplates } from '../services/templates.ts';
 import { useCaseInfo } from '../showcase/info.ts';
-import { badRequest, forbidden, HttpError, notFound } from '../util/errors.ts';
-import { HEAVY_FILE_BYTES, heavyWork } from '../util/heavy.ts';
+import { badRequest, forbidden, HttpError, notFound, RetryLaterError } from '../util/errors.ts';
+import { memoryGuard } from '../util/memory-pressure.ts';
 import { currentClient, runAsClient } from '../util/request-context.ts';
 
 /** Live stream heartbeat while nothing else is sent. */
@@ -312,47 +310,33 @@ export function apiRoutes(deps: Deps) {
     return c.json(await dashboards.duplicate(c.req.param('id'), c.get('principal')), 201);
   });
   /**
-   * One dashboard as a .patchbay.json file (packages/core/src/export.ts). Streamed one uploaded table at a time, so a
-   * dashboard with 25 MB of uploads never sits in memory whole; a large table is serialised in the process's heavy
-   * turn (util/heavy.ts). Works with a read-only token, for scripted backups.
+   * One dashboard as a .patchbay.json file (packages/core/src/export.ts), built while it is sent (services/export-body.ts)
+   * within the response budget. Admitted before the status goes out, so a refusal is a clear 429 or 503 rather than a
+   * cut download. Works with a read-only token, for scripted backups.
    */
   app.get('/dashboards/:id/export', async (c) => {
-    const plan = await dashboards.exportPlan(c.req.param('id'), c.get('principal'));
+    const id = c.req.param('id');
+    const plan = await dashboards.exportPlan(id, c.get('principal'));
     // The stream is read after this handler returns, outside the request's context; without the client key every
     // export would queue as "server" and share one per-client cap.
     const client = currentClient();
-    const encoder = new TextEncoder();
-    const head = JSON.stringify({
-      format: EXPORT_FORMAT,
-      version: EXPORT_VERSION,
-      exportedAt: new Date().toISOString(),
-      secretsRemovedFrom: plan.secretsRemovedFrom,
-      doc: plan.doc,
-    });
-    let next = 0;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(encoder.encode(`${head.slice(0, -1)},"files":[`));
-      },
-      pull(controller) {
-        return runAsClient(client, async () => {
-          const file = plan.files[next];
-          if (!file) {
-            controller.enqueue(encoder.encode(']}'));
-            controller.close();
-            return;
-          }
-          const serialise = async () =>
-            JSON.stringify(exportedFile(file, await data.uploadTable(plan.target, file.id)));
-          const text =
-            (file.storedBytes ?? file.size) >= HEAVY_FILE_BYTES
-              ? await heavyWork.run(serialise)
-              : await serialise();
-          controller.enqueue(encoder.encode(`${next === 0 ? '' : ','}${text}`));
-          next++;
-        });
-      },
-    });
+    // Tables are loaded from disk while the export runs: like any other large read, refused under memory pressure,
+    // before the refusal costs the caller a turn of their budget.
+    if (plan.files.length > 0) memoryGuard.admitHeavy({ oneShot: true });
+    if (!deps.limits.exports.take(client)) {
+      const wait = deps.limits.exports.retryAfterSec(client);
+      throw new RetryLaterError(429, `Too many exports from you; try again in ${wait} s`, wait);
+    }
+    const { first, next } = await exportBodies(
+      { data, wire, serializedDoc: (doc) => deps.store.serializedDoc(doc) },
+      plan,
+    );
+    const body = streamBodies(
+      first,
+      () => runAsClient(client, next),
+      (e) =>
+        console.warn(`[patchbay] export of ${id} failed while sending:`, e instanceof Error ? e.message : e),
+    );
     return c.body(body, 200, {
       'content-type': 'application/json; charset=UTF-8',
       'content-disposition': `attachment; filename="${exportFileName(plan.doc.title)}"`,

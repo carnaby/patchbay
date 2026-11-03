@@ -4,11 +4,15 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type DashboardExport, EXPORT_MAX_FILES, MAX_TABLE_FILE_BYTES, readExport } from '@patchbay/core';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
 import { MAX_FILES } from './services/dashboards.ts';
+import { ResultWire } from './services/result-wire.ts';
+import { ByteBudget } from './util/byte-budget.ts';
+import { HEAVY_FILE_BYTES, heavyWork } from './util/heavy.ts';
+import { memoryGuard } from './util/memory-pressure.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 
 const BASE = 'http://localhost:8787';
@@ -36,6 +40,7 @@ beforeAll(async () => {
     api: new RateLimiter(100_000, 100_000),
     writes: new RateLimiter(100_000, 100_000),
     creates: new RateLimiter(100_000, 100_000),
+    exports: new RateLimiter(100_000, 100_000),
   });
   app = createApp(deps);
 });
@@ -348,6 +353,153 @@ describe('export', () => {
     });
     expect(readExport(JSON.parse((await exportOf(anon.id, anon.auth)).text)).files).toHaveLength(1);
     expect(readExport(JSON.parse((await exportOf(anon.id)).text)).files).toHaveLength(0);
+  });
+});
+
+/** A signed-in user's board with one stored table of `rows` rows of about 70 bytes each. */
+async function bigFileBoard(email: string, rows: number) {
+  const cookie = await login(email);
+  const { id, auth } = await withReference('f_large', cookie);
+  const up = await call(`/api/dashboards/${id}/files`, {
+    body: {
+      name: 'large.json',
+      format: 'table',
+      fileId: 'f_large',
+      content: packed(
+        [
+          { name: 'n', type: 'number' },
+          { name: 's', type: 'string' },
+        ],
+        Array.from({ length: rows }, (_, i) => [i, `row ${i} ${'x'.repeat(50)}`]),
+      ),
+    },
+    ...auth,
+  });
+  expect(up.status).toBe(201);
+  return { id, auth, storedBytes: up.json.storedBytes as number };
+}
+
+/** A public document of about 55 KB, over the size from which response bodies count against the budget. */
+async function largeDocBoard(email: string) {
+  const cookie = await login(email);
+  const id = (await call('/api/dashboards', { body: { title: 'Wide doc', visibility: 'public' }, cookie }))
+    .json.envelope.meta.id as string;
+  const rows = Array.from({ length: 600 }, (_, i) => ({ a: `${i} ${'x'.repeat(80)}` }));
+  const ops = await call(`/api/dashboards/${id}/ops`, {
+    body: { ops: [{ op: 'addDataset', dataset: { id: 'x', name: 'X', source: { kind: 'inline', rows } } }] },
+    cookie,
+  });
+  expect(ops.status).toBe(200);
+  return id;
+}
+
+/** Simulates a 384 MB container at `fraction` of its limit (see memory.test.ts). */
+function pressure(fraction: number) {
+  const limit = 384 * 1024 * 1024;
+  memoryGuard.configure({
+    reader: () => ({ usedBytes: fraction * limit, limitBytes: limit, source: 'cgroup v2' }),
+    sampleMs: 0,
+    collect: () => {},
+    log: () => {},
+  });
+}
+
+describe('export stream', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    memoryGuard.configure({ reader: null });
+  });
+
+  it('loads a large file in the heavy turn and hands it out in small slices within the response budget', async () => {
+    const { id, auth, storedBytes } = await bigFileBoard('heavy-export@example.com', 20_000);
+    expect(storedBytes).toBeGreaterThanOrEqual(HEAVY_FILE_BYTES);
+    // The upload left the table in the cache; an export usually finds it on disk.
+    deps.data.dropCaches();
+    const heavy = vi.spyOn(heavyWork, 'run');
+    const res = await raw(`/api/dashboards/${id}/export`, auth);
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const chunks: Uint8Array[] = [];
+    let held = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      held = Math.max(held, deps.wire.budget.stats().bytes);
+    }
+    expect(heavy).toHaveBeenCalled();
+    expect(Math.max(...chunks.map((c) => c.byteLength))).toBeLessThanOrEqual(64 * 1024);
+    // One part of the table at a time is held, never the whole file.
+    expect(held).toBeGreaterThan(0);
+    expect(held).toBeLessThan(storedBytes);
+    const exp = readExport(JSON.parse(Buffer.concat(chunks).toString()));
+    expect(exp.files).toHaveLength(1);
+    expect(exp.files[0]!.data).toHaveLength(20_000);
+    expect(exp.files[0]!.data[19_999]).toEqual([19_999, `row 19999 ${'x'.repeat(50)}`]);
+    expect(deps.wire.budget.stats()).toEqual({ bytes: 0, bodies: 0, waiting: 0, waitingBytes: 0 });
+  });
+
+  it('gives the budget back when the client goes away', async () => {
+    const { id, auth } = await bigFileBoard('cancel-export@example.com', 20_000);
+    const res = await raw(`/api/dashboards/${id}/export`, auth);
+    const reader = res.body!.getReader();
+    // The document is small and costs nothing; the first part of the table is held until it has been read.
+    for (let i = 0; i < 10 && deps.wire.budget.stats().bytes === 0; i++) await reader.read();
+    expect(deps.wire.budget.stats().bytes).toBeGreaterThan(0);
+    await reader.cancel();
+    expect(deps.wire.budget.stats()).toEqual({ bytes: 0, bodies: 0, waiting: 0, waitingBytes: 0 });
+  });
+
+  it('counts one document exported by many readers once', async () => {
+    const id = await largeDocBoard('shared-export@example.com');
+    const readers = await Promise.all(
+      [1, 2, 3].map(async () => (await raw(`/api/dashboards/${id}/export`)).body!.getReader()),
+    );
+    for (const r of readers) await r.read();
+    const stats = deps.wire.budget.stats();
+    expect(stats.bodies).toBe(1);
+    expect(stats.bytes).toBeGreaterThan(32 * 1024);
+    for (const r of readers) await r.cancel();
+    expect(deps.wire.budget.stats().bytes).toBe(0);
+  });
+
+  it('refuses exports before answering when a client asks too often, the budget is full or memory is short', async () => {
+    const id = await largeDocBoard('admit-export@example.com');
+    const limited = createApp({ ...deps, limits: { ...deps.limits, exports: new RateLimiter(1, 1) } });
+    const first = await limited.request(`${BASE}/api/dashboards/${id}/export`);
+    expect(first.status).toBe(200);
+    await first.text();
+    const second = await limited.request(`${BASE}/api/dashboards/${id}/export`);
+    expect(second.status).toBe(429);
+    expect(second.headers.get('retry-after')).toBeTruthy();
+    expect(((await second.json()) as { error: string }).error).toMatch(
+      /^Too many exports from you; try again in \d+ s$/,
+    );
+
+    const full = createApp({
+      ...deps,
+      wire: new ResultWire({
+        budget: new ByteBudget({
+          maxBytes: 1024,
+          maxBytesPerClient: 1024,
+          maxQueue: 0,
+          maxQueuedPerClient: 0,
+          maxWaitMs: 10,
+          retryAfterSec: 2,
+        }),
+      }),
+    });
+    const busy = await full.request(`${BASE}/api/dashboards/${id}/export`);
+    expect(busy.status).toBe(503);
+    expect(busy.headers.get('retry-after')).toBe('2');
+
+    const { id: withFiles, auth } = await bigFileBoard('pressure-export@example.com', 10);
+    pressure(0.9);
+    expect((await raw(`/api/dashboards/${withFiles}/export`, auth)).status).toBe(503);
+    // The document alone takes no heavy work.
+    const docOnly = await raw(`/api/dashboards/${id}/export`);
+    expect(docOnly.status).toBe(200);
+    await docOnly.text();
   });
 });
 

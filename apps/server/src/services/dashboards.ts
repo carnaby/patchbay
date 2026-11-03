@@ -372,6 +372,11 @@ export class DashboardService {
   private readonly urlSources: UrlSourcesMode;
   private readonly trustedUrls: ReadonlySet<string>;
   private readonly uploadGate: Gate;
+  /**
+   * The export form of each stored document, made once: the store shares a parsed document among its readers, so
+   * concurrent exports of it share one stripped document and therefore one serialisation (FolderStore.serializedDoc).
+   */
+  private readonly exportDocs = new WeakMap<DashboardDoc, ReturnType<typeof stripSecretRefs>>();
 
   constructor(
     store: FolderStore,
@@ -911,7 +916,11 @@ export class DashboardService {
    */
   async exportPlan(id: string, p: Principal): Promise<ExportPlan> {
     const { meta, doc } = await this.loadViewable(id, p);
-    const stripped = stripSecretRefs(doc);
+    let stripped = this.exportDocs.get(doc);
+    if (!stripped) {
+      stripped = stripSecretRefs(doc);
+      this.exportDocs.set(doc, stripped);
+    }
     const used = new Set(portability(doc).uploads.map((u) => u.fileId));
     const files =
       used.size > 0 && this.canEdit(meta, p)
