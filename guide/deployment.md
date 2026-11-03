@@ -220,7 +220,7 @@ What holds whatever the list says:
   addresses over plain http; only an IP or CIDR entry does. `localhost` cannot be listed: list
   `127.0.0.1`, and know that this opens every service listening on this machine or container.
 - Cloud metadata addresses (`169.254.169.254`, `169.254.170.2`, `169.254.170.23`, `fd00:ec2::254`, `fd00:ec2::23`,
-  `fd20:ce::254`, `100.100.100.200`) open only through an entry naming exactly that address, never through a range
+  `fd20:ce::254`, `100.100.100.200`, `169.254.0.23`) open only through an entry naming exactly that address, never through a range
   (a `/32` or `/128` entry of one is refused). Do not list them.
 - `0.0.0.0`, `::` and multicast never connect. A redirect from `https://` to `http://` is refused.
 - Addresses in unusual notation (`3232235786`, `0x7f.1`, `::ffff:192.168.1.7`) are the same address to the guard.

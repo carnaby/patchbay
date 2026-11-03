@@ -290,6 +290,76 @@ describe('a self-hosted instance with ALLOW_PRIVATE_HOSTS=127.0.0.1', () => {
     expect(hits).toBe(before + 1);
   });
 
+  it('answers a read-only token of a user without the list the same for listed and unlisted names', async () => {
+    const named = await instance({ ALLOW_PRIVATE_HOSTS: '127.0.0.1, homeassistant.lan' });
+    try {
+      const before = hits;
+      const nobody = await named.mcp('someone@example.com', false);
+      const answer = async (host: string) => {
+        const res = await nobody({ source: { kind: 'http', url: `https://${host}/api` } });
+        return { ...res, text: res.text.split(host).join('HOST') };
+      };
+      const listed = await answer('homeassistant.lan');
+      const unlisted = await answer('pihole.lan');
+      expect(listed).toEqual(unlisted);
+      expect(listed.text).not.toContain('dashboards:write');
+      expect(hits).toBe(before);
+    } finally {
+      await named.close();
+    }
+  });
+
+  it('keeps a read-only preview of a name that resolves to loopback on the public rules', async () => {
+    const both = await instance({ ALLOW_PRIVATE_HOSTS: '127.0.0.1 ::1' });
+    try {
+      const before = hits;
+      // https on 443 is a "mixed" hop for a writer: localhost resolves to a listed address, so the lookup lets it
+      // through (and the connect then fails, nothing listens on 443). A read-only token gets no list at all.
+      const url = 'https://localhost/api/states';
+      const readOnly = await (await both.mcp(ADMIN, false))({ source: { kind: 'http', url } });
+      expect(readOnly.isError).toBe(true);
+      expect(readOnly.text).toContain(URL_MESSAGES.privateOff);
+      const writer = await (await both.mcp(ADMIN, true))({ source: { kind: 'http', url } });
+      expect(writer.isError).toBe(true);
+      expect(writer.text).not.toContain(URL_MESSAGES.privateOff);
+      expect(hits).toBe(before);
+    } finally {
+      await both.close();
+    }
+  });
+
+  it('refuses an http:// secret binding to a user who may not use the list', async () => {
+    const users = await instance({
+      ALLOW_PRIVATE_HOSTS: '127.0.0.1',
+      SECRETS: 'users',
+      SECRETS_KEY: Buffer.alloc(32, 7).toString('base64'),
+    });
+    try {
+      const cookie = await users.login('someone@example.com');
+      for (const sendTo of [`http://127.0.0.1:${port}/api/`, 'https://127.0.0.1:8443/api/']) {
+        const res = await users.call('/api/secrets', {
+          body: { name: 'Home Assistant', sendTo, placement: 'bearer', value: TOKEN },
+          headers: cookie,
+        });
+        expect(res.status, sendTo).toBe(400);
+      }
+      expect((await users.call('/api/secrets', { headers: cookie })).json.secrets).toEqual([]);
+      const admin = await users.login(ADMIN);
+      const ok = await users.call('/api/secrets', {
+        body: {
+          name: 'Home Assistant',
+          sendTo: `http://127.0.0.1:${port}/api/`,
+          placement: 'bearer',
+          value: TOKEN,
+        },
+        headers: admin,
+      });
+      expect(ok.status).toBe(201);
+    } finally {
+      await users.close();
+    }
+  });
+
   it('refuses an http:// address the list does not cover in any spelling, and leaves names to the fetch', async () => {
     const admin = await lan.dashboard(ADMIN);
     const ip = await lan.addDataset(admin, home('http://192.168.0.1/api'));
