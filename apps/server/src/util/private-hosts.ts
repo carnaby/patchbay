@@ -37,15 +37,67 @@ export class PrivateHostsError extends Error {
   }
 }
 
+/**
+ * Address ranges kept per family. One BlockList for both would let an IPv6 rule that covers ::ffff:0:0/96 (such as
+ * "::1/64") match every IPv4 query; canonical addresses are never IPv4-mapped, so the family picks the list.
+ */
+class Ranges {
+  private readonly v4 = new BlockList();
+  private readonly v6 = new BlockList();
+
+  addAddress(ip: string): void {
+    if (isIP(ip) === 4) this.v4.addAddress(ip, 'ipv4');
+    else this.v6.addAddress(ip, 'ipv6');
+  }
+
+  addSubnet(ip: string, prefix: number): void {
+    if (isIP(ip) === 4) this.v4.addSubnet(ip, prefix, 'ipv4');
+    else this.v6.addSubnet(ip, prefix, 'ipv6');
+  }
+
+  has(ip: string): boolean {
+    return isIP(ip) === 4 ? this.v4.check(ip, 'ipv4') : this.v6.check(ip, 'ipv6');
+  }
+}
+
+/** The 128-bit (or 32-bit) value of a canonical IP address. */
+function toBig(ip: string): bigint {
+  if (isIP(ip) === 4) return ip.split('.').reduce((n, part) => (n << 8n) | BigInt(part), 0n);
+  const [head = '', tail] = ip.split('::');
+  const groups = (s: string) => (s ? s.split(':') : []);
+  const left = groups(head);
+  const right = tail === undefined ? [] : groups(tail);
+  const zeros = Array<string>(8 - left.length - right.length).fill('0');
+  return [...left, ...zeros, ...right].reduce((n, g) => (n << 16n) | BigInt(`0x${g}`), 0n);
+}
+
+/** The first address of the range, so a stored and logged entry names the network ("192.168.1.77/24" is .1.0/24). */
+function networkOf(ip: string, prefix: number): string {
+  const v4 = isIP(ip) === 4;
+  const width = v4 ? 32n : 128n;
+  const mask = ((1n << BigInt(prefix)) - 1n) << (width - BigInt(prefix));
+  const net = toBig(ip) & mask;
+  if (v4) return [24n, 16n, 8n, 0n].map((shift) => (net >> shift) & 255n).join('.');
+  const groups = Array.from({ length: 8 }, (_, i) => ((net >> BigInt(112 - 16 * i)) & 0xffffn).toString(16));
+  return canonicalIp(groups.join(':')) ?? ip;
+}
+
+/** Whether an IPv6 range contains ::ffff:0:0, the start of the IPv4-mapped block. */
+function coversMappedSpace(network: string, prefix: number): boolean {
+  const mapped = 0xffffn << 32n;
+  const mask = ((1n << BigInt(prefix)) - 1n) << BigInt(128 - prefix);
+  return (mapped & mask) === toBig(network);
+}
+
 // NEVER and LAN below are deliberately independent of safe-fetch's BLOCKED list: they say what an operator's list may
 // open, not what is blocked by default, and this module stays pure.
 
 /** Never a host: "this network" (0.0.0.0 reaches the machine itself on Linux), multicast, reserved and broadcast. */
-const NEVER = new BlockList();
-NEVER.addSubnet('0.0.0.0', 8, 'ipv4');
-NEVER.addSubnet('224.0.0.0', 3, 'ipv4');
-NEVER.addAddress('::', 'ipv6');
-NEVER.addSubnet('ff00::', 8, 'ipv6');
+const NEVER = new Ranges();
+NEVER.addSubnet('0.0.0.0', 8);
+NEVER.addSubnet('224.0.0.0', 3);
+NEVER.addAddress('::');
+NEVER.addSubnet('ff00::', 8);
 
 /** Cloud and container metadata services, which hand out credentials. */
 export const METADATA_ADDRESSES: ReadonlySet<string> = new Set([
@@ -54,24 +106,23 @@ export const METADATA_ADDRESSES: ReadonlySet<string> = new Set([
   '169.254.170.23', // AWS EKS Pod Identity
   'fd00:ec2::254', // AWS instance metadata over IPv6
   'fd00:ec2::23', // AWS EKS Pod Identity over IPv6
+  'fd20:ce::254', // Google Cloud metadata over IPv6
   '100.100.100.200', // Alibaba Cloud
 ]);
 
 /** Where a name entry's DNS answers may lead: home, office and VPN ranges. */
-const LAN = new BlockList();
-LAN.addSubnet('10.0.0.0', 8, 'ipv4');
-LAN.addSubnet('172.16.0.0', 12, 'ipv4');
-LAN.addSubnet('192.168.0.0', 16, 'ipv4');
-LAN.addSubnet('100.64.0.0', 10, 'ipv4'); // carrier-grade NAT, also Tailscale
-LAN.addSubnet('fc00::', 7, 'ipv6'); // unique local
+const LAN = new Ranges();
+LAN.addSubnet('10.0.0.0', 8);
+LAN.addSubnet('172.16.0.0', 12);
+LAN.addSubnet('192.168.0.0', 16);
+LAN.addSubnet('100.64.0.0', 10); // carrier-grade NAT, also Tailscale
+LAN.addSubnet('fc00::', 7); // unique local
 
 /** A range broader than this would make the guard pointless; fc00::/7 (all unique-local) is the broadest sensible one. */
 const MIN_PREFIX = { 4: 8, 6: 7 } as const;
 const NAME = /^[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]*[a-z0-9_])?)*$/;
 const USAGE =
   'write host names (homeassistant.lan, *.lan), IP addresses (192.168.1.20) or CIDR ranges (192.168.1.0/24), without http:// or a port';
-
-const familyOf = (ip: string) => (isIP(ip) === 4 ? 'ipv4' : 'ipv6');
 
 /**
  * An IP address in the one spelling used for comparisons: IPv4 dotted, IPv6 compressed and lowercase, an IPv4-mapped
@@ -107,7 +158,7 @@ export function parsePrivateHosts(raw: string | undefined): PrivateHosts | null 
   const names = new Set<string>();
   const suffixes: string[] = [];
   const exact = new Set<string>();
-  const ranges = new BlockList();
+  const ranges = new Ranges();
   const entries: string[] = [];
   const refuse = (item: string, why: string) =>
     new PrivateHostsError(`ALLOW_PRIVATE_HOSTS entry "${item}" ${why}`);
@@ -117,6 +168,7 @@ export function parsePrivateHosts(raw: string | undefined): PrivateHosts | null 
   for (const item of items) {
     const entry = item.toLowerCase();
     if (/^[a-z][a-z0-9+.-]*:\/\//.test(entry)) throw refuse(item, `has a scheme: ${USAGE}`);
+    if (entry.includes('@')) throw refuse(item, `has a user name: ${USAGE}`);
 
     const slash = entry.indexOf('/');
     if (slash >= 0) {
@@ -138,24 +190,38 @@ export function parsePrivateHosts(raw: string | undefined): PrivateHosts | null 
           item,
           `is too broad: a range must be at least /${MIN_PREFIX[version]} for IPv${version}`,
         );
-      ranges.addSubnet(ip, prefix, familyOf(ip));
-      entries.push(`${ip}/${prefix}`);
+      if (prefix === (version === 4 ? 32 : 128) && METADATA_ADDRESSES.has(ip))
+        throw refuse(item, `is a metadata address; list the exact address ${ip} without /${prefix}`);
+      const network = networkOf(ip, prefix);
+      // Node's BlockList matches IPv4 queries against IPv6 rules that cover ::ffff:0:0/96, so such a range would
+      // silently open every IPv4 address.
+      if (version === 6 && coversMappedSpace(network, prefix))
+        throw refuse(item, 'covers IPv4-mapped addresses; list IPv4 ranges as IPv4 instead');
+      ranges.addSubnet(network, prefix);
+      entries.push(`${network}/${prefix}`);
       continue;
     }
 
     const ip = canonicalIp(entry);
     if (ip) {
-      if (NEVER.check(ip, familyOf(ip)))
+      if (NEVER.has(ip))
         throw refuse(item, 'is not a host address; to reach this machine, list 127.0.0.1 or ::1');
       exact.add(ip);
-      ranges.addAddress(ip, familyOf(ip));
+      ranges.addAddress(ip);
       entries.push(ip);
       continue;
     }
 
+    // Before the notation check below: "192.168.1.5:80" would otherwise be reported as an unusual address.
+    if (/^[^:]*:\d*$/.test(entry) || /^\[[^\]]*\]:\d*$/.test(entry))
+      throw refuse(item, `has a port: ${USAGE}`);
+
     if (entry.startsWith('*.')) {
       const suffix = canonicalName(entry.slice(2));
       if (!suffix || !NAME.test(suffix)) throw refuse(item, `is not a host name: ${USAGE}`);
+      // "*.1" would become "*.0.0.0.1" in the URL parser's eyes and match no name, silently.
+      if (/^\d+$/.test(suffix.slice(suffix.lastIndexOf('.') + 1)))
+        throw refuse(item, `is not a host name (the last label is numeric): ${USAGE}`);
       if (suffix === 'localhost' || suffix.endsWith('.localhost')) throw refuse(item, thisMachine);
       suffixes.push(suffix);
       entries.push(`*.${suffix}`);
@@ -186,10 +252,10 @@ export function parsePrivateHosts(raw: string | undefined): PrivateHosts | null 
 
   const allowsAddress = (host: string, rawIp: string): boolean => {
     const ip = canonicalIp(rawIp);
-    if (!ip || NEVER.check(ip, familyOf(ip))) return false;
+    if (!ip || NEVER.has(ip)) return false;
     if (METADATA_ADDRESSES.has(ip)) return exact.has(ip);
-    if (ranges.check(ip, familyOf(ip))) return true;
-    return nameListed(host) && LAN.check(ip, familyOf(ip));
+    if (ranges.has(ip)) return true;
+    return nameListed(host) && LAN.has(ip);
   };
 
   return {

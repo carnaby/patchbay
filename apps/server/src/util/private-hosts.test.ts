@@ -27,6 +27,10 @@ describe('parsePrivateHosts', () => {
     ]);
   });
 
+  it('stores a range by its network address', () => {
+    expect(parse('192.168.1.77/24, FD00:1:0:0:5::7/64').entries).toEqual(['192.168.1.0/24', 'fd00:1::/64']);
+  });
+
   it('refuses entries it cannot use, saying what to write', () => {
     const refusals: [string, RegExp][] = [
       ['http://nas.lan', /without http:\/\//],
@@ -47,6 +51,16 @@ describe('parsePrivateHosts', () => {
       ['192.168.001.010', /write 192\.168\.1\.8/],
       ['*', /not a host name/],
       ['fe80::1%eth0', /not a host name/],
+      ['192.168.1.5:80', /has a port/],
+      ['[fd00::1]:8080', /has a port/],
+      ['nas.lan:', /has a port/],
+      ['user@10.0.0.1', /user name/],
+      ['*.1', /last label is numeric/],
+      ['::1/64', /IPv4 instead/],
+      ['::/8', /IPv4 instead/],
+      ['::/7', /IPv4 instead/],
+      ['169.254.169.254/32', /list the exact address 169\.254\.169\.254/],
+      ['fd20:ce::254/128', /list the exact address fd20:ce::254/],
     ];
     for (const [entry, message] of refusals) {
       expect(() => parsePrivateHosts(entry), entry).toThrow(PrivateHostsError);
@@ -109,6 +123,7 @@ describe('matching', () => {
       '::',
       'fd00:ec2::254',
       '100.100.100.200',
+      'fd20:ce::254',
       '64:ff9b::a01:203',
       '8.8.8.8',
       '2606:4700::1111',
@@ -122,6 +137,14 @@ describe('matching', () => {
     expect(hosts.allowsAddress('proxmox.example', '::ffff:192.168.1.10')).toBe(true);
     expect(hosts.allowsAddress('proxmox.example', '10.0.0.6')).toBe(false);
     expect(hosts.allowsAddress('proxmox.example', '172.20.0.2')).toBe(false);
+  });
+
+  it('keeps IPv6 ranges from matching IPv4 addresses', () => {
+    const v6 = parse('fd00::/8, ::1');
+    for (const ip of ['127.0.0.1', '192.168.1.1', '8.8.8.8', '169.254.10.10'])
+      expect(v6.allowsAddress('x', ip), ip).toBe(false);
+    expect(v6.listsHost('8.8.8.8')).toBe(false);
+    expect(parse('192.168.1.0/24').allowsAddress('x', 'fd00::1')).toBe(false);
   });
 
   it('opens loopback only through an address entry, and metadata only through its exact address', () => {
