@@ -12,6 +12,7 @@ import { snapshotGate } from './render/gate.ts';
 import { drawLimits, MAX_PIXELS } from './render/snapshot.ts';
 import { isAcceptableRedirect, redirectMatches } from './routes/oauth.ts';
 import { buildTemplate, listTemplates } from './services/templates.ts';
+import { BusyError } from './util/gate.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { runAsClient } from './util/request-context.ts';
 import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
@@ -820,6 +821,38 @@ describe('MCP tools', () => {
     ]);
     const kids = result.dataChecks.find((c: { datasetId: string }) => c.datasetId === 'kids');
     expect(kids.error).toMatch(/Unknown column "temp"/);
+  });
+
+  it('answers a busy data check after the save without telling the agent to retry the saved batch', async () => {
+    const agent = await ownClient('busy-check@example.com');
+    const { dashboardId } = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'B' } })),
+    );
+    const operations = [
+      { op: 'addDataset', dataset: { id: 'x', name: 'X', source: { kind: 'inline', rows: [{ a: 1 }] } } },
+    ];
+    const busy = vi.spyOn(deps.data, 'loadSource').mockRejectedValue(new BusyError(undefined, 3));
+    let answer: Awaited<ReturnType<typeof agent.callTool>>;
+    let dry: Awaited<ReturnType<typeof agent.callTool>>;
+    try {
+      dry = await agent.callTool({
+        name: 'apply_operations',
+        arguments: { dashboardId, operations, dryRun: true },
+      });
+      answer = await agent.callTool({ name: 'apply_operations', arguments: { dashboardId, operations } });
+    } finally {
+      busy.mockRestore();
+    }
+    expect(JSON.parse(text(dry)).dataChecks[0].error).toMatch(/not checked; .*nothing was saved/);
+    // A retry would add the dataset a second time: the answer has to say the batch is in.
+    expect(answer.isError).toBeFalsy();
+    const result = JSON.parse(text(answer));
+    expect(result.version).toBe(2);
+    expect(result.dataChecks).toEqual([
+      { datasetId: 'x', error: 'The server is busy, so this dataset was not checked; the change is saved.' },
+    ]);
+    const stored = await deps.store.readMeta(dashboardId);
+    expect(stored!.version).toBe(2);
   });
 
   it('lists the tools and the reference', async () => {

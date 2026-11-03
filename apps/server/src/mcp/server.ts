@@ -34,6 +34,7 @@ import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import type { Principal } from '../services/dashboards.ts';
 import { listTemplates } from '../services/templates.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
+import { BusyError } from '../util/gate.ts';
 import { advertise } from './input-schema.ts';
 import { referenceText, SERVER_INSTRUCTIONS } from './reference.ts';
 
@@ -49,6 +50,11 @@ const fail = (message: string): ToolResult => ({ content: [{ type: 'text', text:
 
 /** Rows shown per dataset in apply_operations' data checks: enough to spot a wrong column, small enough to batch. */
 const DATA_CHECK_SAMPLE = 3;
+
+/** A data check the server was too busy to run. It says what was saved: agents retry what reads as a failure. */
+const BUSY_CHECK_SAVED = 'The server is busy, so this dataset was not checked; the change is saved.';
+const BUSY_CHECK_DRY =
+  'The server is busy, so this dataset was not checked; the operations are valid, nothing was saved.';
 
 /**
  * Agents watching an accumulating dataset over MCP saw rows arrive at the rhythm of their own calls, not refreshSec,
@@ -405,7 +411,14 @@ export function createMcp(deps: Deps) {
           // row count when it was the sample size.
           const dataChecks = await Promise.all(
             checkedDatasets.map(async (d) => {
-              const r = await scope.resolve(d);
+              let r: Awaited<ReturnType<typeof scope.resolve>>;
+              try {
+                r = await scope.resolve(d);
+              } catch (e) {
+                // The batch is already applied: a busy answer for the whole call would make the agent send it again.
+                if (!(e instanceof BusyError)) throw e;
+                return { datasetId: d.id, error: args.dryRun ? BUSY_CHECK_DRY : BUSY_CHECK_SAVED };
+              }
               return {
                 datasetId: d.id,
                 rowCount: r.table.rows.length,
