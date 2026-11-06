@@ -58,5 +58,6 @@ describe('JSON sources in the reference', () => {
     expect(text).toContain('upload_data path: "data.items"');
     expect(text).toContain('one row per position, columns in key order');
     expect(text).toContain('Lists of lists ([[t, v], ...]) are not converted');
+    expect(text).toContain('or "in the file" for an upload');
   });
 });

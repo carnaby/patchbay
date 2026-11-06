@@ -207,9 +207,11 @@ above; the data checks of `apply_operations` carry the same `note`.
 
    becomes two rows with the columns `timestamps` (a time), `values` and `status`.
 4. Any other object: without a path its first list property, with a path the object itself as one record.
+5. A single value (a number, a text), as the whole document or where the path ends: an `http` source fails with
+   `The response does not contain a list of records`, an upload reads it as one record with the column `value`.
 
 Lists of lists (`[[time, value], …]`, Prometheus `values`) are not converted. Column-shaped data is held to the same
-cell limit as records, and a cut table says so in its warning.
+cell limit as records: an `http` table is cut and says so in its warning, an upload over the limit is refused.
 
 For an `http` source, `path` is part of the source and is applied on every fetch. For an upload it is a parameter of
 `upload_data` (and of the upload in the web editor): it is applied once, when the file is stored, and the dataset

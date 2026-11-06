@@ -96,10 +96,11 @@ ${UPLOAD_MAX_COLUMNS} columns with names of up to ${UPLOAD_MAX_COLUMN_NAME} char
   Show it as a table with style "list" and columns [{ "field": "title", "link": "link" }, "source", "published"].
   For a sound per new item: sound.trigger { kind: "newRows", key: "id" }.
 - JSON (http responses and JSON uploads): path is a dot path to the records ("data.items"); one that does not exist
-  fails naming where it stopped. A list is the records. An object whose properties (at least two) are all equally
-  long lists of plain values (numbers, text, booleans, null), like { "time": [...], "value": [...] }, is read as
-  columns: one row per position, columns in key order. Any other object gives its first list without a path, or is
-  one record with one. Lists of lists ([[t, v], ...]) are not converted.
+  fails naming where it stopped ("not found in the response", or "in the file" for an upload). A list is the records.
+  An object whose properties (at least two) are all equally long lists of plain values (numbers, text, booleans,
+  null), like { "time": [...], "value": [...] }, is read as columns: one row per position, columns in key order. Any
+  other object gives its first list without a path, or is one record with one.
+  Lists of lists ([[t, v], ...]) are not converted.
 ${addressesLine(network)}
 - refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers. Below the
   source's minimum (a connector's minRefreshSec from list_connectors, ${HTTP_MIN_REFRESH_SEC} s for http, ${FEED_MIN_REFRESH_SEC} s for feeds) it is
