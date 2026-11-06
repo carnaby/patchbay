@@ -406,6 +406,55 @@ describe('dashboards over REST', () => {
     expect(preview.json.suggestions[0].widget.config.kind).toBe('line');
   });
 
+  it('uploads a JSON file at a path, refuses a missing path, and reads column-shaped files as rows', async () => {
+    // Erin's dashboard from the CSV test above (it holds one file): a new dashboard would count against the limit.
+    const cookie = await login('erin@example.com');
+    const id = (await call('/api/dashboards', { cookie })).json[0].id;
+    const upload = (body: Record<string, unknown>) => call(`/api/dashboards/${id}/files`, { body, cookie });
+    const METRICS = {
+      timestamps: ['2026-11-01T00:00:00Z', '2026-11-01T01:00:00Z', '2026-11-01T02:00:00Z'],
+      values: [12.5, null, 14],
+      status: ['ok', 'warn', 'ok'],
+    };
+    const nested = JSON.stringify({
+      meta: { source: 'probe' },
+      data: {
+        items: [
+          { city: 'Oslo', n: 1 },
+          { city: 'Rome', n: 2 },
+        ],
+      },
+      metrics: METRICS,
+    });
+
+    const items = await upload({ name: 'nested.json', content: nested, path: 'data.items' });
+    expect(items.status).toBe(201);
+    expect(items.json).toMatchObject({ rows: 2, columns: 2 });
+    const series = await upload({ name: 'nested.json', content: nested, path: 'metrics' });
+    expect(series.json).toMatchObject({ rows: 3, columns: 3 });
+    const columns = await upload({ name: 'metrics.json', content: JSON.stringify(METRICS) });
+    expect(columns.json).toMatchObject({ rows: 3, columns: 3 });
+    const csv = await upload({ name: 'a.csv', content: 'n\n1\n2\n', path: 'data.items' });
+    expect(csv.status).toBe(201);
+    expect(csv.json).toMatchObject({ rows: 2, columns: 1 });
+
+    const missing = await upload({ name: 'nested.json', content: nested, path: 'data.rows' });
+    expect(missing.status).toBe(400);
+    expect(missing.json.error).toBe('Path "data.rows" not found in the file (stopped at "rows")');
+    expect((await upload({ name: 'x.json', content: nested, path: 'x'.repeat(201) })).status).toBe(400);
+    // Refused uploads store nothing.
+    expect((await call(`/api/dashboards/${id}/files`, { cookie })).json).toHaveLength(5);
+
+    const preview = await call(`/api/dashboards/${id}/preview`, {
+      body: { dataset: { source: { kind: 'upload', fileId: items.json.id } } },
+      cookie,
+    });
+    expect(preview.json.result.table.rows).toEqual([
+      { city: 'Oslo', n: 1 },
+      { city: 'Rome', n: 2 },
+    ]);
+  });
+
   it('versions every change and can restore', async () => {
     const cookie = await login('frank@example.com');
     const id = (await call('/api/dashboards', { body: { title: 'v1' }, cookie })).json.envelope.meta.id;
@@ -997,8 +1046,8 @@ describe('MCP tools', () => {
     // two more branches of the step union, advertised again wherever steps are accepted; -> 42,700: the dataset source (proposal 0005), one more branch of the
     // source union, advertised wherever a source is accepted; -> 42,800: preview_data says which drafts need
     // dashboardId; -> 44,000: the status widget joins WidgetSchema, one more branch of the widget union, its field
-    // descriptions in get_reference instead).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(44_000);
+    // descriptions in get_reference instead; -> 44,200: upload_data's optional `path` for JSON files).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(44_200);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(
@@ -1387,6 +1436,57 @@ describe('MCP tools', () => {
     expect(read.rows.length).toBeGreaterThan(50);
     expect(read.rows.length).toBeLessThan(500);
     expect(read.note).toMatch(/select fewer columns/);
+  });
+
+  it('uploads JSON at a path over MCP, and previews a column-shaped upload as rows', async () => {
+    const agent = await ownClient('json-paths@example.com');
+    const id = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'Paths' } })),
+    ).dashboardId;
+    const METRICS = {
+      timestamps: ['2026-11-01T00:00:00Z', '2026-11-01T01:00:00Z', '2026-11-01T02:00:00Z'],
+      values: [12.5, null, 14],
+      status: ['ok', 'warn', 'ok'],
+    };
+    const nested = JSON.stringify({
+      meta: { source: 'probe' },
+      data: {
+        items: [
+          { city: 'Oslo', n: 1 },
+          { city: 'Rome', n: 2 },
+        ],
+      },
+      metrics: METRICS,
+    });
+    const upload = (name: string, content: string, path?: string) =>
+      agent.callTool({
+        name: 'upload_data',
+        arguments: { dashboardId: id, name, format: 'json', content, ...(path ? { path } : {}) },
+      });
+
+    const items = JSON.parse(text(await upload('nested.json', nested, 'data.items')));
+    expect(items.file).toMatchObject({ rows: 2, columns: 2 });
+    expect(items.sample.map((r: { city: string }) => r.city)).toEqual(['Oslo', 'Rome']);
+    const missing = await upload('nested.json', nested, 'data.rows');
+    expect(missing.isError).toBe(true);
+    expect(text(missing)).toContain('Path "data.rows" not found in the file (stopped at "rows")');
+
+    const columns = JSON.parse(text(await upload('metrics.json', JSON.stringify(METRICS))));
+    expect(columns.file).toMatchObject({ rows: 3, columns: 3 });
+    const preview = JSON.parse(
+      text(
+        await agent.callTool({
+          name: 'preview_data',
+          arguments: { dashboardId: id, source: { kind: 'upload', fileId: columns.file.id } },
+        }),
+      ),
+    );
+    expect(preview.columns).toEqual([
+      { name: 'timestamps', type: 'time' },
+      { name: 'values', type: 'number' },
+      { name: 'status', type: 'string' },
+    ]);
+    expect(preview.rowCount).toBe(3);
   });
 
   it('grows accumulate history without viewers only when the data is requested, and says so', async () => {
