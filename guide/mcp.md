@@ -308,7 +308,9 @@ is answered at a glance on a phone or an unattended wall screen.
 - A click (or Enter) on a tile, a fold, a section header or the "+N more sections" line lists all its checks; Escape
   closes the list.
 - `suggest_widgets` proposes it when a column is named `status`, `state` or `health`, or holds mostly status words
-  (a small set of at most 12 distinct values). A column that is only named like a state is offered with a lower score.
+  (a small set of at most 12 distinct values). It comes first only when the rows look like one per check (at most 10
+  rows per entity on average). An event log such as CI runs or payments, where a tile would keep the worst state of
+  every row, and a column only named like a state are offered below the raw data table.
 
 ## Start pages: clocks, feeds and search
 

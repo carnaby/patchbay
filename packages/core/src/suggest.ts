@@ -329,7 +329,10 @@ function mapSuggestion(
   };
 }
 
-/** Share of a column's non-null values that are in the status vocabulary, from the profile's most frequent values. */
+/**
+ * Share of a column's non-null values that are in the status vocabulary, from the profile's most frequent values: a
+ * lower bound, since values outside the top ones are not counted.
+ */
 function vocabularyShare(column: ColumnProfile, rows: number): number {
   const present = rows - column.nulls;
   if (present <= 0) return 0;
@@ -337,11 +340,14 @@ function vocabularyShare(column: ColumnProfile, rows: number): number {
   return known / present;
 }
 
+/** More rows per entity than this, on average, and the rows look like events rather than one per check. */
+const STATUS_ROWS_PER_ENTITY = 10;
+
 /**
  * Many checks, each with a state (a monitor's output): one tile per entity says at a glance what is broken and
  * where, which a long table of mostly "ok" rows does not. A column only named like a state (an issue tracker's
- * "open"/"closed") is still offered, lower down: its values would all read as warnings. Vocabularies are small, so
- * a column with more than 12 distinct values is not taken for a status by its values.
+ * "open"/"closed") is still offered, below the table: its values would all read as warnings. Vocabularies are small,
+ * so a column with more than 12 distinct values is not taken for a status by its values.
  */
 function statusSuggestion(profile: TableProfile): Suggestion | null {
   const words = (c: ColumnProfile) =>
@@ -359,12 +365,21 @@ function statusSuggestion(profile: TableProfile): Suggestion | null {
     .slice(0, 3)
     .map((t) => `"${t.value}"`)
     .join(', ');
+  const entity = profile.columns.find((c) => c.name === fields.entity);
+  const perEntity = entity?.distinct ? profile.rows / entity.distinct : profile.rows;
+  // A monitor has a row or a few per check. Many rows per entity read like a log of events (CI runs, payments), and
+  // a tile keeps the worst state of all its rows: a project that failed once last week would stay red.
+  const events = perEntity > STATUS_ROWS_PER_ENTITY;
+  const note = events
+    ? ` With ${Math.round(perEntity)} rows per "${fields.entity}" this looks like a log of events, not current checks: a tile keeps the worst state of all its rows.`
+    : '';
   return {
     title: 'Status',
-    rationale: `"${status.name}" holds a state per row${examples ? ` (${examples})` : ''}: a status widget shows one tile per "${fields.entity}" in the colour of its worst check${fields.group ? `, in sections by "${fields.group}"` : ''}, and spells out what is failing instead of a long table of ok rows.`,
+    rationale: `"${status.name}" holds a state per row${examples ? ` (${examples})` : ''}: a status widget shows one tile per "${fields.entity}" in the colour of its worst check${fields.group ? `, in sections by "${fields.group}"` : ''}, and spells out what is failing instead of a long table of ok rows.${note}`,
     widget: { type: 'status', title: 'Status', config: fields },
     transforms: [],
-    score: words(status) ? 97 : 60,
+    // Below the raw data table (30) unless it looks like current checks with known states.
+    score: !words(status) ? 20 : events ? 25 : 97,
   };
 }
 

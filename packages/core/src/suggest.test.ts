@@ -394,12 +394,69 @@ describe('status suggestions', () => {
     expect(s.score).toBe(97);
   });
 
-  it('offers a column named status with other values lower down', () => {
+  it('offers a column only named status below the table, since its values would all read as warnings', () => {
     const rows = Array.from({ length: 10 }, (_, i) => ({
       ticket: `T-${i}`,
       status: i % 2 ? 'open' : 'closed',
     }));
-    expect(statusOf(rows)?.score).toBe(60);
+    const all = suggestWidgets(profileTable(inferTable(rows)), { max: 20 });
+    const table = all.find((s) => s.widget.type === 'table')!;
+    expect(statusOf(rows)!.score).toBe(20);
+    expect(statusOf(rows)!.score).toBeLessThan(table.score);
+  });
+
+  it('ranks an event log below the time chart and the table: a tile would keep the worst state of every row', () => {
+    // CI runs: 300 rows over 5 projects, each failed now and then. A tile per project would stay red for good.
+    const start = Date.UTC(2026, 10, 1);
+    const rows = Array.from({ length: 300 }, (_, i) => ({
+      project: `p${i % 5}`,
+      branch: ['main', 'next', 'dev'][i % 3],
+      status: i % 7 === 0 ? 'failed' : 'success',
+      duration: 60 + (i % 13) * 7,
+      started_at: new Date(start + i * 3_600_000).toISOString(),
+    }));
+    const all = suggestWidgets(profileTable(inferTable(rows)), { max: 20 });
+    const status = all.find((s) => s.widget.type === 'status')!;
+    const table = all.find((s) => s.widget.type === 'table')!;
+    const timeChart = all.find((s) => s.widget.type === 'chart' && s.score === 95)!;
+    expect(status.score).toBe(25);
+    expect(status.score).toBeLessThan(table.score);
+    expect(status.score).toBeLessThan(timeChart.score);
+    expect(status.rationale).toMatch(/60 rows per "project"/);
+    expect(all[0]!.widget.type).not.toBe('status');
+  });
+
+  it('takes rows as one per check up to 10 rows per entity on average', () => {
+    const log = (perHost: number) =>
+      ['api', 'db', 'cache', 'queue', 'web'].flatMap((host) =>
+        Array.from({ length: perHost }, (_, i) => ({ host, status: i ? 'ok' : 'fail' })),
+      );
+    expect(statusOf(log(10))!.score).toBe(97);
+    expect(statusOf(log(11))!.score).toBe(25);
+  });
+
+  it('needs more than half of the values in the vocabulary to take a column by its values', () => {
+    const rows = (ok: number) =>
+      Array.from({ length: 10 }, (_, i) => ({ host: `h${i % 5}`, result: i < ok ? 'ok' : 'pending' }));
+    expect(statusOf(rows(5))).toBeUndefined();
+    expect(statusOf(rows(6))).toMatchObject({ score: 97, widget: { config: { status: 'result' } } });
+  });
+
+  it('takes a column by its values only with at most 12 distinct values', () => {
+    const rows = (distinct: number) => [
+      ...Array.from({ length: 20 }, (_, i) => ({ host: `h${i % 5}`, result: 'ok' })),
+      ...Array.from({ length: distinct - 1 }, (_, i) => ({ host: `h${i % 5}`, result: `code-${i}` })),
+    ];
+    expect(statusOf(rows(12))?.widget.config).toMatchObject({ status: 'result' });
+    expect(statusOf(rows(13))).toBeUndefined();
+  });
+
+  it('prefers a column named like a state over another column of status words', () => {
+    const rows = ['api', 'db', 'cache'].flatMap((service) => [
+      { service, result: 'ok', status: 'ok' },
+      { service, result: 'fail', status: 'up' },
+    ]);
+    expect(statusOf(rows)).toMatchObject({ score: 97, widget: { config: { status: 'status' } } });
   });
 
   it('needs something to make tiles of, and a group of 2 to 10 values', () => {
