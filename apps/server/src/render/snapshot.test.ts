@@ -782,6 +782,30 @@ describe('status snapshots', () => {
     expect(text).toContain('+2 more sections · 8 ok');
   });
 
+  it('draws control characters from monitor output as plain text instead of failing the snapshot', () => {
+    // ANSI colour codes, a NUL and a vertical tab: XML forbids them, and one of them made resvg refuse the whole SVG.
+    const output = '\u001b[31mFAILED\u001b[0m: exit 1\u0000\u000b \u001b]0;title\u0007done';
+    const rows = [{ service: 'backup', status: 'fail', detail: output }];
+    const config = { entity: 'service', status: 'status', detail: 'detail' };
+    const svg = body(statusModel(inferTable(rows), StatusConfigSchema.parse(config)));
+    expect(svg).toContain('FAILED: exit 1 done');
+    expect([...svg].filter((ch) => ch < ' ' && !'\t\n\r'.includes(ch))).toEqual([]);
+    const data = { ...checks, datasetId: 'm', table: inferTable(rows) };
+    const status = widget({ id: 'esc', type: 'status', datasetId: 'm', config });
+    expect(decodePng(renderWidgetPng(status, data)).width).toBeGreaterThan(0);
+    const table = widget({ id: 'tab', type: 'table', title: 'Out', datasetId: 'm', config: {} });
+    expect(decodePng(renderWidgetPng(table, data)).width).toBeGreaterThan(0);
+    const chart = widget({
+      id: 'ch',
+      type: 'chart',
+      title: 'Out',
+      datasetId: 'm',
+      config: { kind: 'bar', x: 'service', y: ['n'] },
+    });
+    const labelled = inferTable([{ service: '\u001b[1mbackup\u001b[0m', n: 1 }]);
+    expect(decodePng(renderWidgetPng(chart, { ...data, table: labelled })).width).toBeGreaterThan(0);
+  });
+
   it('cuts a long name to its tile instead of drawing past it', () => {
     const long = 'a-service-name-far-too-long-for-any-tile-in-this-widget';
     const m = statusModel(

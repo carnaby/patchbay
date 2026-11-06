@@ -45,7 +45,7 @@ import { Resvg, type ResvgRenderOptions } from '@resvg/resvg-js';
 import * as echarts from 'echarts';
 import { collectGarbage } from './gc.ts';
 import { statusSvg } from './status-svg.ts';
-import { FONT, text, truncate } from './svg.ts';
+import { FONT, text, truncate, xmlSafe } from './svg.ts';
 
 // The same Natural Earth countries the browser's map chunk registers: no tiles, so snapshots work offline too.
 echarts.registerMap(WORLD_MAP, world as Parameters<typeof echarts.registerMap>[1]);
@@ -116,7 +116,8 @@ function echartsSvg(option: Record<string, unknown>, width: number, height: numb
       animation: false,
       textStyle: { ...(option.textStyle as object), fontFamily: FONT },
     });
-    return chart.renderToSVGString();
+    // Labels come from the data; ECharts escapes markup in them but not control characters.
+    return xmlSafe(chart.renderToSVGString());
   } finally {
     chart.dispose();
   }
