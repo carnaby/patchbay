@@ -131,6 +131,7 @@ export interface StatusSection {
   other: boolean;
   level: StatusLevel;
   counts: StatusCounts;
+  /** Worst first, then in the order of their first row; "Other" last within its level, all-off tiles at the end. */
   tiles: StatusTile[];
 }
 
@@ -140,6 +141,7 @@ export interface StatusModel {
   /** The worst level of all checks; off when there are none. */
   level: StatusLevel;
   counts: StatusCounts;
+  /** Worst first, then in the order of their first row; "Other" last within its level. */
   sections: StatusSection[];
   /** Checks counted, after the caps. */
   checks: number;
@@ -219,13 +221,10 @@ function buildTile(key: string, draft: TileDraft): StatusTile {
 }
 
 function buildSection(key: string, draft: SectionDraft): StatusSection {
+  // The drafts are in the order their first row came, and the sort is stable: tiles of the same level keep the row
+  // order, so a sort step in the pipeline decides it ("NUC, NAS, Internet" is rarely alphabetical).
   const tiles = [...draft.tiles].map(([tileKey, t]) => buildTile(tileKey, t));
-  tiles.sort(
-    (a, b) =>
-      RANK[a.level] - RANK[b.level] ||
-      Number(a.other) - Number(b.other) ||
-      collator.compare(a.entity, b.entity),
-  );
+  tiles.sort((a, b) => RANK[a.level] - RANK[b.level] || Number(a.other) - Number(b.other));
   const counts = emptyCounts();
   for (const t of tiles) for (const level of STATUS_LEVELS) counts[level] += t.counts[level];
   return { key, label: draft.label, other: draft.other, level: worstOf(counts), counts, tiles };
@@ -299,13 +298,9 @@ export function statusModel(table: DataTable, config: StatusConfig): StatusModel
     counts[check.level]++;
     checks++;
   }
+  // Worst first; within a level in the order of their first row, as tiles are (buildSection).
   const built = [...sections].map(([key, draft]) => buildSection(key, draft));
-  built.sort(
-    (a, b) =>
-      RANK[a.level] - RANK[b.level] ||
-      Number(a.other) - Number(b.other) ||
-      collator.compare(a.label ?? '', b.label ?? ''),
-  );
+  built.sort((a, b) => RANK[a.level] - RANK[b.level] || Number(a.other) - Number(b.other));
   return {
     grouped: groupField !== undefined,
     summary: config.summary,

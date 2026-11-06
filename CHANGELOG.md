@@ -6,6 +6,12 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Changed
+
+- **Status widget**: sections and tiles of the same level now keep the order of the dataset's rows instead of being
+  sorted by name, so a `sort` transform sets the order (for example "NUC, NAS, Internet"). The worst level still
+  comes first and "Other" last within its level.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added

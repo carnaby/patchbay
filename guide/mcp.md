@@ -305,6 +305,9 @@ is answered at a glance on a phone or an unattended wall screen.
   checks is the same link; a click elsewhere on the tile still lists its checks. Other values (relative paths,
   `javascript:`) are ignored, and folds such as "+N more ok" carry no link. The editor and `suggest_widgets` take a
   column named `url`, `link` or `href`; `suggest_widgets` also one that holds addresses.
+- Sections and tiles are ordered worst first (failing, warning, ok, then all off). Within a level they keep the order
+  of their first row in the dataset, so a `sort` transform decides it, for example by an order column you add to the
+  data; rows without a group or an entity are collected under "Other", last within its level.
 - States are `fail`, `warn`, `ok` and `off` with common synonyms (`down`, `degraded`, `healthy`, `paused`, …),
   case-insensitive; `true`/`false` read as ok/fail; anything else counts as `warn`. `levels` maps other values.
 - Nothing scrolls. When the widget is too small, off tiles fold into "+N off", then ok tiles into "+N more ok", then

@@ -36,15 +36,15 @@ function shape(layout: StatusLayout): Record<string, string[]> {
 
 const FULL = {
   nas: ['cue', 'blog', 'immich', 'nas', 'watchtower', 'umami'],
-  internet: ['blog.example.com', 'patchbay', 'status'],
-  nuc: ['home-assistant', 'nuc', 'pihole', 'grafana', 'old-wiki'],
+  nuc: ['home-assistant', 'pihole', 'nuc', 'grafana', 'old-wiki'],
+  internet: ['blog.example.com', 'status', 'patchbay'],
 };
 
 describe('statusFit', () => {
   it('draws every tile when there is room, problem tiles two columns wide', () => {
     const layout = statusFit(infra, { width: 480, height: 1000 });
     expect([layout.columns, layout.height, layout.fits, layout.clamped]).toEqual([3, 502, true, false]);
-    expect(layout.sections.map((s) => s.section.label)).toEqual(['nas', 'internet', 'nuc']);
+    expect(layout.sections.map((s) => s.section.label)).toEqual(['nas', 'nuc', 'internet']);
     expect(shape(layout)).toEqual(FULL);
     const [cue, blog, immich] = layout.sections[0]!.items;
     expect([cue!.span, cue!.x, cue!.y, cue!.height]).toEqual([2, 0, 52, 104]);
@@ -56,10 +56,14 @@ describe('statusFit', () => {
   });
 
   it('folds off tiles first, then ok tiles, from the last section upwards', () => {
-    // One pixel short: folding the two off tiles of nuc saves no row, folding its ok tiles does.
-    expect(shape(statusFit(infra, { width: 480, height: 501 }))).toEqual({
+    // One pixel short: folding the two off tiles of nuc saves no row, and neither do the ok tiles of internet (the
+    // last section, so folded first); folding the ok tiles of nuc does.
+    const short = statusFit(infra, { width: 480, height: 501 });
+    expect(short.height).toBe(444);
+    expect(shape(short)).toEqual({
       ...FULL,
       nuc: ['+3 more ok', '+2 off'],
+      internet: ['+3 more ok'],
     });
     const tighter = statusFit(infra, { width: 480, height: 443 });
     expect(tighter.height).toBe(386);
@@ -71,7 +75,11 @@ describe('statusFit', () => {
   });
 
   it('folds calm sections to their header line, last first', () => {
-    expect(shape(statusFit(infra, { width: 480, height: 385 }))).toMatchObject({ nuc: ['(header)'] });
+    expect(shape(statusFit(infra, { width: 480, height: 385 }))).toEqual({
+      nas: ['cue', '+4 more ok', 'umami'],
+      nuc: ['+3 more ok', '+2 off'],
+      internet: ['(header)'],
+    });
     const both = statusFit(infra, { width: 480, height: 335 });
     expect(both.height).toBe(286);
     expect(shape(both)).toEqual({
@@ -313,7 +321,7 @@ describe('statusFit', () => {
     expect([layout.sections[0]!.header, layout.sections[0]!.collapsed]).toEqual([false, false]);
     expect(shape(layout)).toEqual({ '': ['cue', '+10 more ok', '+3 off'] });
     const ok = layout.sections[0]!.items[1]!.item;
-    expect(ok.kind === 'more' && statusMoreNames(ok.tiles)).toBe('blog, blog.example.com, home-assistant, …');
+    expect(ok.kind === 'more' && statusMoreNames(ok.tiles)).toBe('blog, immich, nas, …');
   });
 
   it('clamps long details to two lines before giving up a problem tile', () => {

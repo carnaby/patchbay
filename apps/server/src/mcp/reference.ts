@@ -207,7 +207,9 @@ ${tableFns}
 - status { entity, status, group?, label?, kind?, detail?, since?, link?, levels?, summary }   one tile per entity
   For monitors and health checks: each row is a check, entity names its tile (a service, project or host), group its
   section (e.g. the machine a service runs on). A tile takes the colour of its worst check, fail > warn > ok > off;
-  tiles whose checks are all off are grey and last. Values are matched case-insensitively: ${vocabulary};
+  tiles whose checks are all off are grey and last. Sections and tiles go worst first and, within a level, in the
+  order of their first row, so a sort step sets it ("NUC, NAS, Internet"); "Other" (no group or entity) comes last
+  within its level. Values are matched case-insensitively: ${vocabulary};
   true = ok, false = fail; anything else, also empty, is warn. levels { "<value>": "fail|warn|ok|off" } (at most
   ${STATUS_LIMITS.levels}) maps your own values first. label names a check, kind summarises ok checks ("container ×3"), detail is
   shown in full for fail and warn checks, since (a time column) as "9 hours ago"; link (a column of http(s) addresses)
