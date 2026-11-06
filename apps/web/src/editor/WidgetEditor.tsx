@@ -803,7 +803,8 @@ function StatusFields({
 }) {
   const c = widget.config;
   const notTime = (col: Column) => col.type !== 'time';
-  // levels is set over MCP or in the JSON in v1; the editor only says it is there and leaves it untouched.
+  // levels has no editor in v1, and the app edits no widget as JSON: it is set through operations, in practice by an
+  // agent over MCP. The editor says it is there and leaves it untouched.
   const mapped = Object.keys(c.levels ?? {}).length;
   return (
     <>
@@ -879,8 +880,8 @@ function StatusFields({
       />
       {mapped ? (
         <p className="text-xs text-muted">
-          {mapped} status value{mapped === 1 ? '' : 's'} mapped by "levels"; change them over MCP or in the
-          JSON.
+          {mapped} status value{mapped === 1 ? '' : 's'} mapped by "levels"; an AI agent can change them over
+          MCP.
         </p>
       ) : null}
     </>
