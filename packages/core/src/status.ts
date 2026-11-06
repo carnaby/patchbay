@@ -536,7 +536,11 @@ export function statusDetailChars(tileWidth: number): number {
 export function wrapText(text: string, chars: number): string[] {
   const width = Math.max(1, Math.floor(chars));
   const lines: string[] = [];
-  for (const paragraph of text.split(/\r?\n/)) {
+  // A trailing newline adds no line in `pre-line`, but a blank line between paragraphs does: dropping it would
+  // underestimate the height.
+  const paragraphs = text.split(/\r?\n/);
+  if (paragraphs.length > 1 && !paragraphs[paragraphs.length - 1]!.trim()) paragraphs.pop();
+  for (const paragraph of paragraphs) {
     let line = '';
     for (const word of paragraph.split(/\s+/).filter(Boolean)) {
       let rest = word;
@@ -556,7 +560,7 @@ export function wrapText(text: string, chars: number): string[] {
         line = rest;
       }
     }
-    if (line) lines.push(line);
+    lines.push(line);
   }
   return lines.length ? lines : [''];
 }

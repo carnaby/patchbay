@@ -188,5 +188,9 @@ describe('wrapText', () => {
     ]);
     expect(wrapText('one\ntwo   three', 20)).toEqual(['one', 'two three']);
     expect(wrapText('', 10)).toEqual(['']);
+    // Blank lines inside a detail are drawn by `pre-line`, a trailing newline is not.
+    expect(wrapText('a\n\nb', 10)).toEqual(['a', '', 'b']);
+    expect(wrapText('a\n', 10)).toEqual(['a']);
+    expect(wrapText('a\n\n', 10)).toEqual(['a', '']);
   });
 });
