@@ -519,7 +519,7 @@ export class DataService {
     const run = () => this.pipeline.run(input, transforms, inputs);
     // A large table can fill the pipeline worker's heap: it waits for its turn with the other heavy jobs. The tables a
     // join or union reads are copied to the worker too, so they count.
-    const heavy = transforms.length > 0 && cellsOf(input, inputs) >= HEAVY_PIPELINE_CELLS;
+    const heavy = transforms.length > 0 && cellsOf(input, transforms, inputs) >= HEAVY_PIPELINE_CELLS;
     return heavy ? heavyWork.run(run) : run();
   }
 

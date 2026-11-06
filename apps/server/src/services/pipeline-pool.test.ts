@@ -310,10 +310,29 @@ describe('steps that read other datasets', () => {
       tables: { big: { name: 'Big', table: orders } },
       self: { id: 's', name: 'S' },
     };
-    expect(cellsOf(small, bigInputs)).toBe(1 + 3000 * 2);
+    expect(cellsOf(small, union, bigInputs)).toBe(1 + 3000 * 2);
     expect(runsInline(small, union, 1000, bigInputs)).toBe(false);
     expect(runsInline(small, union, 100_000, bigInputs)).toBe(true);
     // A join can multiply rows, so it never runs on the calling thread.
     expect(runsInline(small, join, 100_000, inputs)).toBe(false);
+  });
+
+  it('counts a table once per reference, so repeated unions cannot hide a large run on the calling thread', () => {
+    const small = inferTable([{ country: 'SK' }]);
+    const bigInputs: PipelineInputs = {
+      tables: { big: { name: 'Big', table: orders } },
+      self: { id: 's', name: 'S' },
+    };
+    // 6,000 cells each, under the 20,000-cell inline threshold once, far over it four times.
+    const repeated = steps([{ type: 'union', with: ['big', 'big', 'big', 'big'] }]);
+    expect(cellsOf(small, repeated, bigInputs)).toBe(1 + 4 * 3000 * 2);
+    expect(runsInline(small, repeated, 20_000, bigInputs)).toBe(false);
+    const spread = steps([
+      { type: 'union', with: ['big', 'big'] },
+      { type: 'union', with: ['big', 'big'] },
+      { type: 'sort', by: [{ field: 'country' }] },
+    ]);
+    expect(cellsOf(small, spread, bigInputs)).toBe(1 + 4 * 3000 * 2);
+    expect(runsInline(small, spread, 20_000, bigInputs)).toBe(false);
   });
 });

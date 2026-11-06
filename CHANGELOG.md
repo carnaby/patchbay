@@ -49,6 +49,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   rows is no longer treated as failed: a filter that keeps no rows shows the widget's normal empty state with the
   warning badge, the editor preview shows the table under the warning, and sound cues ring again.
   Agents get the text as `warning` instead of `error`.
+- A union that lists the same dataset several times (in one step or across steps) is now counted at its real size, so
+  it runs in a pipeline worker and waits for its heavy-work turn instead of stalling the server for other viewers.
 
 ## [0.1.0] - 2026-10-31
 

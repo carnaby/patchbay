@@ -708,4 +708,24 @@ describe('processShared', () => {
       heavy.mockRestore();
     }
   });
+
+  it('counts a table a union repeats once per reference for the heavy turn', async () => {
+    const data = new DataService(connectors, store);
+    const heavy = vi.spyOn(heavyWork, 'run');
+    try {
+      // A quarter of the heavy threshold, read four times: as much work as one table at the threshold.
+      const repeated = doc(
+        inline('x', [{ i: 1 }], { transforms: [{ type: 'union', with: ['big', 'big', 'big', 'big'] }] }),
+        inline('big', [{ i: 2 }]),
+      );
+      const steps = byId(repeated, 'x').transforms;
+      const main = inferTable([{ i: 1, j: 0 }]);
+      const big = rowsOf(HEAVY_PIPELINE_CELLS / 8);
+      const r = await data.processShared(main, steps, { tables: { big: { name: 'Big', table: big } }, self });
+      expect(r.table.rows).toHaveLength(1 + 4 * (HEAVY_PIPELINE_CELLS / 8));
+      expect(heavy).toHaveBeenCalledTimes(1);
+    } finally {
+      heavy.mockRestore();
+    }
+  });
 });
