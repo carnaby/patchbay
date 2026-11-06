@@ -57,6 +57,7 @@ import {
   toast,
 } from '../components/ui.tsx';
 import { api, errorMessage } from '../lib/api.ts';
+import { countLabel } from '../lib/count-label.ts';
 import { useConnectors } from '../lib/hooks.ts';
 import { withRetry } from '../lib/retry.ts';
 import { credentialErrorHint, introducedSecretIds, introducedSecretRefs } from '../lib/secrets.ts';
@@ -361,13 +362,13 @@ function SourceEditor({
   });
   const fileInput = useRef<HTMLInputElement>(null);
   const upload = useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async ({ file, path }: { file: File; path: string }) => {
       if (file.size > 5 * 1024 * 1024) throw new Error('Files are limited to 5 MB');
       const content = await file.text();
       // Uploads take turns on the server: a busy answer means "later", not "no".
       return withRetry(() =>
         api<UploadedFile>(`/api/dashboards/${dashboardId}/files`, {
-          body: { name: file.name, content },
+          body: { name: file.name, content, ...(path ? { path } : {}) },
           dashboardId,
         }),
       );
@@ -375,9 +376,11 @@ function SourceEditor({
     onSuccess: (file) => {
       qc.invalidateQueries({ queryKey: ['files', dashboardId] });
       onChange({ kind: 'upload', fileId: file.id });
-      toast(`Uploaded ${file.name}: ${file.rows.toLocaleString('en')} rows, ${file.columns} columns`);
+      toast(`Uploaded ${file.name}: ${countLabel(file.rows, 'row')}, ${countLabel(file.columns, 'column')}`);
     },
   });
+  // Applied when the file is chosen: the server reads a JSON file at this path once and stores the table it finds.
+  const [uploadPath, setUploadPath] = useState('');
   const [inlineText, setInlineText] = useState(() =>
     source.kind === 'inline'
       ? JSON.stringify(source.rows, null, 1)
@@ -395,6 +398,7 @@ function SourceEditor({
     if (source.kind !== 'http' || method === (source.method ?? 'GET')) return;
     // Neither direction carries a body over: a GET has none, and a fresh POST starts empty.
     setBodyDraft('');
+    setUploadPath('');
     setBodyProblem(null);
     onChange(withMethod(source, method));
   };
@@ -412,6 +416,7 @@ function SourceEditor({
   const setKind = (kind: Source['kind']) => {
     if (kind === source.kind) return;
     setBodyDraft('');
+    setUploadPath('');
     setBodyProblem(null);
     if (kind === 'dataset' && candidates[0]) onChange({ kind, id: candidates[0].id });
     if (kind === 'connector') onChange({ kind, connector: connectors?.[0]?.id ?? 'demo.signal', params: {} });
@@ -600,7 +605,7 @@ function SourceEditor({
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) upload.mutate(file);
+              if (file) upload.mutate({ file, path: uploadPath.trim() });
               e.target.value = '';
             }}
           />
@@ -611,7 +616,7 @@ function SourceEditor({
             onDrop={(e) => {
               e.preventDefault();
               const file = e.dataTransfer.files[0];
-              if (file) upload.mutate(file);
+              if (file) upload.mutate({ file, path: uploadPath.trim() });
             }}
             className="flex w-full flex-col items-center gap-2 rounded-xl border border-dashed border-line-strong px-4 py-8 text-sm text-ink-2 transition hover:border-ink-2 hover:bg-surface"
           >
@@ -624,6 +629,21 @@ function SourceEditor({
               Stored inside this dashboard's folder. Columns and types are detected automatically.
             </span>
           </button>
+          <Field
+            label="Path to the list (JSON files, optional)"
+            hint='Dot path inside the JSON file, e.g. "data.items". Set it before choosing the file; leave empty to auto-detect. CSV files ignore it.'
+          >
+            {(fid) => (
+              <Input
+                id={fid}
+                value={uploadPath}
+                spellCheck={false}
+                maxLength={200}
+                placeholder="data.items"
+                onChange={(e) => setUploadPath(e.target.value)}
+              />
+            )}
+          </Field>
           {files.data?.length ? (
             <Field label="Use file">
               {(fid) => (
@@ -634,7 +654,7 @@ function SourceEditor({
                 >
                   {files.data.map((f) => (
                     <option key={f.id} value={f.id}>
-                      {f.name} · {f.rows.toLocaleString('en')} rows
+                      {f.name} · {countLabel(f.rows, 'row')}
                     </option>
                   ))}
                 </Select>

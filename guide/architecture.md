@@ -152,6 +152,13 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
   parses RSS, Atom and JSON Feed into fixed columns and turns every text into plain text at parse time, so nothing
   downstream renders feed markup. A feed is fetched at most every 5 minutes per address, shared by all dashboards
   (publishers block faster polling); `OFFLINE=1` serves a deterministic sample.
+- **JSON records** (`http` sources and JSON uploads) are found by one module in core (`packages/core/src/records.ts`):
+  the optional dot `path`, then a list as records, an object of equally long lists of plain values (at least two) as
+  columns turned into rows, any other object as its first list (without a path) or as one record. Column-shaped data
+  is turned into at most one row more than the cell limit keeps, so a dense response never builds more than records
+  would; an upload over the limit is measured and refused before any row is built. An upload's `path` comes with the
+  upload request and is applied once, in the pipeline worker, before the file becomes its stored table; the stored
+  file and the `upload` source do not record it.
 - **Pipelines run on the server.** The browser, the MCP agent and the PNG renderer therefore always agree on the numbers,
   and the browser never downloads more than it displays (10,000 rows max, at most 4 MB as JSON).
 - **Datasets can build on each other** (`source.kind: "dataset"`, and the `join` and `union` steps). The graph lives

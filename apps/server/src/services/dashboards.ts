@@ -1271,7 +1271,14 @@ export class DashboardService {
   async uploadFile(
     id: string,
     p: Principal,
-    input: { name: string; content: string; format?: UploadFormat | undefined; fileId?: string | undefined },
+    input: {
+      name: string;
+      content: string;
+      format?: UploadFormat | undefined;
+      fileId?: string | undefined;
+      /** JSON only: where the records are; applied once, before the file becomes its stored table. */
+      path?: string | undefined;
+    },
   ): Promise<UploadedFile> {
     const { meta, doc } = await this.load(id);
     this.assertCanEdit(meta, p);
@@ -1327,14 +1334,19 @@ export class DashboardService {
   private async parseAndSave(
     id: string,
     meta: StoredMeta,
-    input: { name: string; content: string; fileId?: string | undefined },
+    input: { name: string; content: string; fileId?: string | undefined; path?: string | undefined },
     format: UploadFormat,
     maxCells: number,
     refused: (e: UploadError) => HttpError,
   ): Promise<UploadedFile> {
     let table: DataTable;
     try {
-      table = await this.uploads.parse({ content: input.content, format, maxCells });
+      table = await this.uploads.parse({
+        content: input.content,
+        format,
+        maxCells,
+        ...(input.path ? { path: input.path } : {}),
+      });
     } catch (e) {
       if (e instanceof UploadError) throw refused(e);
       if (e instanceof PipelineError) throw badRequest(`Could not read the file: ${e.message}`);

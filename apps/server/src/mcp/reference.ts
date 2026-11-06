@@ -83,7 +83,9 @@ ${UPLOAD_MAX_COLUMNS} columns with names of up to ${UPLOAD_MAX_COLUMN_NAME} char
 ## Dataset
 { id, name, source, transforms: Transform[], refreshSec, accumulate }
 - source.kind "connector": { connector: "<id from list_connectors>", params: {...} }
-- source.kind "upload": { fileId } (from upload_data)
+- source.kind "upload": { fileId } (from upload_data; for JSON whose records sit deeper, upload with
+  upload_data path: "data.items". The path is applied once, when the file is stored: another path means uploading
+  the file again. CSV files ignore it.)
 - source.kind "inline": { rows: [{...}, ...] } (small data you create yourself)
 - source.kind "dataset": { id } (the processed rows of another dataset of this dashboard; see Combining datasets)
 - source.kind "http": { url: "${urlExample(network)}", path?: "data.items", secrets?: ["sec_..."] } (JSON APIs; see Secrets)
@@ -93,6 +95,12 @@ ${UPLOAD_MAX_COLUMNS} columns with names of up to ${UPLOAD_MAX_COLUMN_NAME} char
   Fetched at most every ${FEED_MIN_REFRESH_SEC / 60} minutes (a lower refreshSec is raised). No secrets: only public feeds.
   Show it as a table with style "list" and columns [{ "field": "title", "link": "link" }, "source", "published"].
   For a sound per new item: sound.trigger { kind: "newRows", key: "id" }.
+- JSON (http responses and JSON uploads): path is a dot path to the records ("data.items"); one that does not exist
+  fails naming where it stopped ("not found in the response", or "in the file" for an upload). A list is the records.
+  An object whose properties (at least two) are all equally long lists of plain values (numbers, text, booleans,
+  null), like { "time": [...], "value": [...] }, is read as columns: one row per position, columns in key order. Any
+  other object gives its first list without a path, or is one record with one.
+  Lists of lists ([[t, v], ...]) are not converted.
 ${addressesLine(network)}
 - refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers. Below the
   source's minimum (a connector's minRefreshSec from list_connectors, ${HTTP_MIN_REFRESH_SEC} s for http, ${FEED_MIN_REFRESH_SEC} s for feeds) it is

@@ -18,15 +18,18 @@ import {
   type DatasetResult,
   type DataTable,
   FEED_MIN_REFRESH_SEC,
+  findRecords,
   HTTP_MIN_REFRESH_SEC,
   type HttpMethod,
   hashTable,
   INFER_MAX_COLUMNS,
   inferTableCapped,
   isStaticSource,
+  PathNotFoundError,
   PIPELINE_LIMITS,
   type PipelineInputs,
   type PipelineResult,
+  pickPath,
   sourceSecretIds,
   TableTooWideError,
   type Transform,
@@ -67,28 +70,23 @@ export const DEFAULT_CACHE_BYTES = 32 * 1024 * 1024;
 const RESULT_CACHE_BYTES = 8 * 1024 * 1024;
 const BUFFER_BYTES = 16 * 1024 * 1024;
 
-function pick(json: unknown, path: string | undefined): unknown {
-  if (!path) return json;
-  let cur: unknown = json;
-  for (const part of path.split('.').filter(Boolean)) {
-    if (cur === null || typeof cur !== 'object' || !Object.hasOwn(cur, part)) {
-      throw new HttpError(400, `Path "${path}" not found in the response (stopped at "${part}")`);
-    }
-    cur = (cur as Record<string, unknown>)[part];
+/**
+ * Finds the records in a JSON response with the rules JSON uploads use too (`findRecords` in core): the given path,
+ * then a list, a column-shaped object's rows, the first array property or the object itself. At most `maxCells` cells
+ * of column-shaped data are turned into rows; `cappedTable` then cuts the table and says so. `maxCells` is required
+ * because this runs on the main thread: a call without it would turn a dense response into rows without bound.
+ */
+export function recordsFrom(json: unknown, path: string | undefined, maxCells: number): unknown[] {
+  let target: unknown;
+  try {
+    target = pickPath(json, path, 'response');
+  } catch (e) {
+    if (e instanceof PathNotFoundError) throw new HttpError(400, e.message);
+    throw e;
   }
-  return cur;
-}
-
-/** Finds the array of records in a JSON response: the given path, the root, or the first array property. */
-export function recordsFrom(json: unknown, path?: string): unknown[] {
-  const target = pick(json, path);
-  if (Array.isArray(target)) return target;
-  if (target && typeof target === 'object') {
-    const firstArray = Object.values(target).find(Array.isArray);
-    if (firstArray && !path) return firstArray;
-    return [target];
-  }
-  throw new HttpError(400, 'The response does not contain a list of records');
+  const records = findRecords(target, { viaPath: Boolean(path), maxCells });
+  if (!records) throw new HttpError(400, 'The response does not contain a list of records');
+  return records;
 }
 
 /**
@@ -453,7 +451,10 @@ export class DataService {
           ...(this.upstreamTest ? { test: this.upstreamTest } : {}),
         }),
       );
-      const { table, capped } = cappedTable(recordsFrom(json, source.path), this.maxSourceCells);
+      const { table, capped } = cappedTable(
+        recordsFrom(json, source.path, this.maxSourceCells),
+        this.maxSourceCells,
+      );
       const entry: CacheEntry = { table, at: Date.now(), stamp: '', ...(capped ? { capped } : {}) };
       this.tables.set(key, entry, approxTableBytes(table), HTTP_TTL_MS);
       return entry;

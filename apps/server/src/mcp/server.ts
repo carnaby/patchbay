@@ -581,12 +581,20 @@ export function createMcp(deps: Deps) {
           name: z.string().min(1).max(200).describe('File name, e.g. "sales-2026.csv"'),
           format: z.enum(['csv', 'json']),
           content: z.string().min(1),
+          path: z
+            .string()
+            .max(200)
+            .optional()
+            .describe('JSON only: dot path to the records, e.g. "data.items"'),
         }),
         annotations: write,
       },
       tool(
         SCOPES.write,
-        async (args: { dashboardId: string; name: string; format: 'csv' | 'json'; content: string }, p) => {
+        async (
+          args: { dashboardId: string; name: string; format: 'csv' | 'json'; content: string; path?: string },
+          p,
+        ) => {
           const file = await dashboards.uploadFile(args.dashboardId, p, args);
           const datasetId = slug(args.name.replace(/\.(csv|json)$/i, '')).slice(0, 30) || 'data';
           const dataset = DatasetSchema.parse({
