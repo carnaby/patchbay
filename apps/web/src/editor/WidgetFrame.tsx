@@ -212,11 +212,11 @@ export const WidgetFrame = memo(function WidgetFrame({
             missing={result ? soundRuleMissingColumns(widget.sound, result.table) : []}
           />
         ) : null}
-        {result && ((result.error && result.table.rows.length > 0) || result.warning) ? (
-          <span className="shrink-0 text-[11px] text-warn" title={result.error ?? result.warning}>
+        {result && !result.error && result.warning ? (
+          <span className="shrink-0 text-[11px] text-warn" title={result.warning}>
             {/* A capped source or a cut parent is current but incomplete; only a cached copy is stale. Inherited
                 warnings are joined, so a mix with a cached copy reads stale. */}
-            {result.error || result.warning?.includes(CACHED_DATA_WARNING) ? 'stale' : 'partial'}
+            {result.warning.includes(CACHED_DATA_WARNING) ? 'stale' : 'partial'}
           </span>
         ) : null}
         <span className="flex-1" />
