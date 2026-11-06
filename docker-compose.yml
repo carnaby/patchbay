@@ -4,7 +4,7 @@
 # 3. docker compose up -d
 services:
   patchbay:
-    # Prebuilt image: `latest` follows main, release tags (e.g. 0.1.0) are fixed. Set PATCHBAY_TAG in .env to pin one.
+    # Prebuilt image: `latest` follows main, release tags (e.g. 0.2.0) are fixed. Set PATCHBAY_TAG in .env to pin one.
     image: ghcr.io/carnaby/patchbay:${PATCHBAY_TAG:-latest}
     # To build from this checkout instead, replace the line above with:
     # build: .

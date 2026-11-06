@@ -28,7 +28,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: Image tag or digest (e.g. `ghcr.io/carnaby/patchbay:0.1.0`), a commit SHA, or "patchbay.me.uk".
+      description: Image tag or digest (e.g. `ghcr.io/carnaby/patchbay:0.2.0`), a commit SHA, or "patchbay.me.uk".
     validations:
       required: true
   - type: dropdown

@@ -1,7 +1,7 @@
 {
   "name": "@patchbay/server",
   "description": "Patchbay server: REST, SSE, MCP, OAuth, connectors, storage and the PNG renderer.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "homepage": "https://github.com/carnaby/patchbay#readme",
