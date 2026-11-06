@@ -706,7 +706,8 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
   const summaryHeight = model.summary ? M.summaryHeight : 0;
   let clamp = false;
   // Sections sort worst first, so the calm ones (no problem tile) are a run at the end. Counted once: a problem
-  // section emptied by the last step is not calm, its header names where the hidden problems are.
+  // section emptied by the last step is not calm. It folds away into "+N more problems" (see measure), not into the
+  // "+N more sections" line.
   let calm = 0;
   while (calm < states.length && states[states.length - 1 - calm]!.problems.length === 0) calm++;
   /** Calm sections at the end taken out of the list: merged into one line, or, once `dropped`, left out. */
