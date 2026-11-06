@@ -3,6 +3,7 @@
  * sections (say, the machine it runs on). Pure and without DOM: the browser and the snapshot renderer build the same
  * model here, and both ask `statusFit` which tiles fit, so a screen and the image an agent looks at agree.
  */
+import { stripAnsi } from './ansi.ts';
 import { formatRelative } from './format.ts';
 import type { StatusConfig } from './schema.ts';
 import type { Column, DataTable, Scalar } from './table.ts';
@@ -159,9 +160,10 @@ const emptyCounts = (): StatusCounts => ({ fail: 0, warn: 0, ok: 0, off: 0 });
 const worstOf = (c: StatusCounts): StatusLevel => (c.fail ? 'fail' : c.warn ? 'warn' : c.ok ? 'ok' : 'off');
 const isProblem = (level: StatusLevel) => level === 'fail' || level === 'warn';
 
+/** A text cell as both renderers show it: monitor output often carries terminal colour codes, which read as noise. */
 function cellText(value: Scalar | undefined): string | null {
   if (value === null || value === undefined) return null;
-  const text = String(value).trim();
+  const text = stripAnsi(String(value)).trim();
   return text === '' ? null : text;
 }
 

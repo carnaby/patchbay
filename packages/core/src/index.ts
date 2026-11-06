@@ -1,4 +1,5 @@
 export * from './aggregate.ts';
+export * from './ansi.ts';
 export * from './attribution.ts';
 export * from './cells.ts';
 export * from './chart.ts';

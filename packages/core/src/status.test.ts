@@ -282,6 +282,41 @@ describe('status model', () => {
     expect(allChecks(seconds).every((c) => c.since === null)).toBe(true);
   });
 
+  it('reads terminal colour codes in the text columns as plain text', () => {
+    const m = statusModel(
+      inferTable([
+        {
+          machine: '\u001b[34mnas\u001b[0m',
+          service: '\u001b[1mcue\u001b[0m',
+          name: '\u001b[32mcue-backup\u001b[0m',
+          kind: 'backup\u001b[K',
+          status: 'fail',
+          detail: '\u001b[31mFAILED\u001b[0m: exit 1 \u001b]0;title\u0007done \u001b[',
+        },
+        { machine: 'nas', service: 'blog', name: 'blog-web', kind: 'web', status: 'ok', detail: '\u001b[0m' },
+      ]),
+      StatusConfigSchema.parse({
+        entity: 'service',
+        status: 'status',
+        group: 'machine',
+        label: 'name',
+        kind: 'kind',
+        detail: 'detail',
+      }),
+    );
+    // The coloured and the plain "nas" are one section.
+    expect(m.sections.map((s) => s.label)).toEqual(['nas']);
+    const [cue, blog] = m.sections[0]!.tiles;
+    expect(cue!.entity).toBe('cue');
+    expect(cue!.problems[0]).toMatchObject({
+      label: 'cue-backup',
+      kind: 'backup',
+      detail: 'FAILED: exit 1 done',
+    });
+    // Nothing but codes is no detail at all.
+    expect(blog!.checks[0]!.detail).toBeNull();
+  });
+
   it('finds the tiles of an open panel again in new data, and drops the ones that are gone', () => {
     const keys = [tile('nas', 'cue').key, tile('nas', 'blog').key];
     expect(names(statusTilesByKey(infra(), keys))).toEqual(['cue', 'blog']);
