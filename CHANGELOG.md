@@ -9,8 +9,9 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 ### Changed
 
 - **Status widget**: sections and tiles of the same level now keep the order of the dataset's rows instead of being
-  sorted by name, so a `sort` transform sets the order (for example "NUC, NAS, Internet"). The worst level still
-  comes first and "Other" last within its level.
+  sorted by name, so a `sort` transform sets the order (for example "NUC, NAS, Internet"). Without one, calm
+  sections follow the order in which the source sends its rows; add a `sort` step for a fixed order. The worst
+  level still comes first and "Other" last within its level.
 
 ### Fixed
 

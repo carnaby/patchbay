@@ -108,6 +108,37 @@ describe('statusFit', () => {
     expect(shape(short)).toEqual({ x: ['x1'], y: ['+3 more ok', '+3 off'] });
   });
 
+  /** n ok and m off tiles, optionally under one section "a" and after a failing section "x". */
+  const calmTiles = (ok: number, off: number, grouping: 'flat' | 'one' | 'after-fail') => {
+    const machine = grouping === 'flat' ? {} : { machine: 'a' };
+    const rows = [
+      ...(grouping === 'after-fail' ? [{ machine: 'x', service: 'x1', status: 'fail' }] : []),
+      ...Array.from({ length: ok }, (_, i) => ({ ...machine, service: `ok${i}`, status: 'ok' })),
+      ...Array.from({ length: off }, (_, i) => ({ ...machine, service: `off${i}`, status: 'off' })),
+    ];
+    const group = grouping === 'flat' ? {} : { group: 'machine' };
+    return statusModel(
+      inferTable(rows),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', ...group }),
+    );
+  };
+
+  it('folds the off tiles too when the ok fold saved a row but still does not fit', () => {
+    // The off fold alone saves nothing (twelve cells or ten take four rows), so it is skipped at first; after the ok
+    // fold, four cells take two rows and "+3 off" brings them to one.
+    const flat = statusFit(calmTiles(9, 3, 'flat'), { width: 480, height: 135 });
+    expect([flat.fits, flat.height]).toEqual([true, 78]);
+    expect(shape(flat)).toEqual({ '': ['+9 more ok', '+3 off'] });
+    // With sections the same two folds come before the header line.
+    expect(shape(statusFit(calmTiles(6, 3, 'one'), { width: 480, height: 140 }))).toEqual({
+      a: ['+6 more ok', '+3 off'],
+    });
+    expect(shape(statusFit(calmTiles(6, 3, 'after-fail'), { width: 480, height: 200 }))).toEqual({
+      x: ['x1'],
+      a: ['+6 more ok', '+3 off'],
+    });
+  });
+
   it('folds calm sections to their header line, last first', () => {
     expect(shape(statusFit(infra, { width: 480, height: 385 }))).toEqual({
       nas: ['cue', '+4 more ok', 'umami'],

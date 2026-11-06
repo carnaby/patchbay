@@ -812,9 +812,11 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
   const reversed = [...states].reverse();
   // Each step reports whether it changed anything. A single tile is never folded into a "+1" of the same size. A step
   // with an undo is a fold of tiles that are fine: it stays only when the layout gets shorter, because folding three
-  // tiles into one cell of the same row hides their names and gains nothing. `widen` folds more of the same section
-  // when the step alone saved nothing: ok and off tiles can share their last row, so only both folds free it.
-  const steps: { apply: () => boolean; widen?: () => boolean; undo?: () => void }[] = [
+  // tiles into one cell of the same row hides their names and gains nothing. `widen` also folds the section's off
+  // tiles when the ok fold leaves the layout too tall, and stays only if that makes it shorter (`narrow` takes it
+  // back): an off fold skipped as useless before can save a row once the ok tiles are one cell, and ok and off tiles
+  // can share a row that only both folds free.
+  const steps: { apply: () => boolean; widen?: () => boolean; narrow?: () => void; undo?: () => void }[] = [
     ...reversed.map((s) => ({
       apply: () => {
         if (s.offFolded || s.off.length < 2) return false;
@@ -837,6 +839,9 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
           if (s.offFolded || s.off.length < 2) return false;
           s.offFolded = widened = true;
           return true;
+        },
+        narrow: () => {
+          if (widened) s.offFolded = widened = false;
         },
         undo: () => {
           s.okFolded = false;
@@ -902,7 +907,11 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
     if (layout.fits) break;
     if (!step.apply()) continue;
     let next = measure();
-    if (step.widen && next.height >= layout.height && step.widen()) next = measure();
+    if (step.widen && !next.fits && step.widen()) {
+      const wider = measure();
+      if (wider.height < next.height) next = wider;
+      else step.narrow?.();
+    }
     if (step.undo && next.height >= layout.height) step.undo();
     else layout = next;
   }
