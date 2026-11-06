@@ -870,6 +870,16 @@ function StatusFields({
           hint='Time columns; shown as "9 hours ago"'
           onChange={(v) => setConfig({ since: v }, 'Changed since column')}
         />
+        <ColumnSelect
+          label="Link"
+          value={c.link}
+          columns={columns}
+          optional
+          filter={(col) => col.type === 'string'}
+          noneLabel="No link"
+          hint="Opens the service in a new tab"
+          onChange={(v) => setConfig({ link: v }, 'Changed link column')}
+        />
       </div>
       <Toggle
         label="Summary line"
