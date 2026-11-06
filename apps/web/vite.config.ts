@@ -1,6 +1,12 @@
+import { readFileSync } from 'node:fs';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
+
+// The release PR bumps the root package.json; reading it here keeps the footer from carrying a second copy to forget.
+const { version } = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as {
+  version: string;
+};
 
 const api = process.env.PATCHBAY_API ?? 'http://localhost:8787';
 const proxied = [
@@ -56,6 +62,7 @@ const forMaps = (id: string, getModuleInfo: GetModuleInfo) =>
   MAP_BODY.test(id) || !reachedByPages(id, getModuleInfo);
 
 export default defineConfig({
+  define: { __APP_VERSION__: JSON.stringify(version) },
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,

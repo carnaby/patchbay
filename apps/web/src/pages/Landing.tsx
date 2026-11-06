@@ -552,6 +552,7 @@ function Footer() {
             Privacy
           </Link>
           <span>MIT licensed</span>
+          <span>v{__APP_VERSION__}</span>
         </div>
       </div>
     </footer>
