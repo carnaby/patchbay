@@ -211,6 +211,14 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
   Errors quote the document's URL, never the request. The HTTP cache key includes the owner, secret id and revision,
   so a public dataset never gets a secret-backed response, two users never share one, and replacing a value
   invalidates at once. Values are decrypted per request and never reach pipeline workers, which only see rows.
+- **POST sources.** An `http` source with `method: "POST"` sends its JSON `body` (at most 16,384 characters as JSON and
+  32 levels deep, checked by the schema on every write path) through the same `safeFetchJson`: the SSRF guard, the
+  private-host policy, secret bindings and limits apply unchanged. A 3xx answer to a POST is an error, never followed,
+  because following would resend the body elsewhere (307, 308) or turn it into a GET (301 to 303). The cache key adds
+  the method and a SHA-256 of the body, so two queries on one URL never share a response; GET keys are unchanged.
+  `DashboardService` refuses to preview a POST source for a read-only caller, since a preview sends a body of the
+  caller's choosing; saved POST sources load for every viewer. Under `URL_SOURCES=signed-in` the showcase's URLs are
+  trusted for GET only.
 - **Private hosts.** `ALLOW_PRIVATE_HOSTS` is parsed once (`util/private-hosts.ts`) into a policy object. There is no
   global: `DashboardService.assertMayFetchUrl` returns it for a dashboard whose owner `PRIVATE_HOSTS_FOR` names, and
   `DataService` passes it to `safeFetchJson` and, through `FeedService`, to `safeFetchText`. safe-fetch classifies each

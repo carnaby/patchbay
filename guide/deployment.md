@@ -324,17 +324,17 @@ hard links they are copied, and the server says so once in its log.
 Anyone can create anonymous dashboards, so everything a stranger can make the server hold or do is bounded. The
 defaults suit one container with 384 MB of memory; raise them only with more memory.
 
-| Variable                     | Default  | What it bounds                                                                                             |
-| ---------------------------- | -------- | ---------------------------------------------------------------------------------------------------------- |
-| `UPLOAD_MAX_CELLS`           | 500000   | Rows × columns of an upload to an owned dashboard, and of an HTTP response or inline rows in memory.       |
-| `UPLOAD_MAX_CELLS_ANONYMOUS` | 200000   | The same for anonymous dashboards.                                                                         |
-| `DATA_CACHE_MB`              | 32       | Parsed tables (uploads, inline rows, HTTP responses) kept between requests, least recently used first out. |
-| `PIPELINE_WORKER_MEMORY_MB`  | 96       | Heap of each pipeline worker; a job that needs more fails instead of exhausting the container.             |
-| `PIPELINE_WORKERS`           | CPUs − 1 | Pipeline worker threads (at most 4). Each one can take its whole heap: keep `1` at 384 MB.                 |
-| `URL_SOURCES`                | everyone | `signed-in`: http and feed sources load only for dashboards owned by a signed-in user.                     |
-| `MEMORY_LIMIT_MB`            | detected | Memory the guard measures against (see [Memory guard](#memory-guard)); `0` turns the guard off.            |
-| `MEMORY_SOFT_FRACTION`       | 0.8      | Share of that memory above which new heavy work gets 503; lower on small limits (128 MB stay free).        |
-| `MEMORY_HARD_FRACTION`       | 0.9      | Share above which writes, MCP calls and new live streams get 503 too; lower on small limits (64 MB free).  |
+| Variable                     | Default  | What it bounds                                                                                                   |
+| ---------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
+| `UPLOAD_MAX_CELLS`           | 500000   | Rows × columns of an upload to an owned dashboard, and of an HTTP response or inline rows in memory.             |
+| `UPLOAD_MAX_CELLS_ANONYMOUS` | 200000   | The same for anonymous dashboards.                                                                               |
+| `DATA_CACHE_MB`              | 32       | Parsed tables (uploads, inline rows, HTTP responses) kept between requests, least recently used first out.       |
+| `PIPELINE_WORKER_MEMORY_MB`  | 96       | Heap of each pipeline worker; a job that needs more fails instead of exhausting the container.                   |
+| `PIPELINE_WORKERS`           | CPUs − 1 | Pipeline worker threads (at most 4). Each one can take its whole heap: keep `1` at 384 MB.                       |
+| `URL_SOURCES`                | everyone | `signed-in`: http and feed sources load only for dashboards owned by a signed-in user (showcase URLs: GET only). |
+| `MEMORY_LIMIT_MB`            | detected | Memory the guard measures against (see [Memory guard](#memory-guard)); `0` turns the guard off.                  |
+| `MEMORY_SOFT_FRACTION`       | 0.8      | Share of that memory above which new heavy work gets 503; lower on small limits (128 MB stay free).              |
+| `MEMORY_HARD_FRACTION`       | 0.9      | Share above which writes, MCP calls and new live streams get 503 too; lower on small limits (64 MB free).        |
 
 Fixed limits, for reference: uploads are parsed in the pipeline worker and refused as soon as they pass the cell limit;
 an upload has at most 500 columns with names of up to 200 characters, and a JSON upload nests at most 64 levels and
@@ -372,7 +372,7 @@ showcase off, point `SHOWCASE_DIR` at an empty folder. Restart after changing fi
 startup. Their dashboards are public and read-only (an admin delete lasts until the next restart). The video and
 poster routes are not behind the API rate limiter, so put a CDN or a proxy limit in front when the server is exposed
 directly. With `URL_SOURCES=signed-in`, the exact URLs that appear in them still load for
-anonymous copies; any other http or feed URL needs a signed-in owner as before.
+anonymous copies (as GET requests only); any other http or feed URL needs a signed-in owner as before.
 
 ### Memory budget
 

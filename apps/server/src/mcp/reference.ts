@@ -122,6 +122,25 @@ create or change them.
 - Data fetched with a secret is shown to everyone who can view the dashboard. Keep such dashboards private unless the
   user says otherwise.
 
+## POST queries (http sources)
+Some read APIs take their query in a POST body: GraphQL (GitHub), PostHog, ClickHouse over HTTP, Sentry, Notion
+search. Add method: "POST" and body to an http source. Without method a source is a GET; body needs method "POST";
+a POST without body sends an empty one.
+- body is any JSON value, usually an object such as { "query": "..." }. Send the object itself, never a string holding JSON
+  (a string is sent as a JSON string, and one that looks like JSON is refused). It goes out as application/json, at most ${LIMITS.httpBody.toLocaleString('en-US')} characters as JSON and ${LIMITS.httpBodyDepth} levels deep.
+- Only for read queries. The request is sent again on every refresh, preview, data check and page load (an identical
+  body is answered from a ${HTTP_MIN_REFRESH_SEC} s cache), so never point it at an endpoint that creates, changes or deletes anything.
+- The body is part of the document: editors, agents, exports and the viewers of a public dashboard see it. Never put a key or token in it.
+  Bind a secret instead (see Secrets); APIs like GitHub's read the token from a header.
+- A redirect answer to a POST is an error, never followed: the body is not resent anywhere. Use the final address.
+- Previewing a POST source (preview_data, get_data with a draft) needs the dashboards:write scope: a read-only token
+  is refused before anything is sent. Saved dashboards with POST sources still load for everyone who may view them.
+- path, secrets, the address rules and the response limits work as for GET.
+Example, GitHub GraphQL with a secret bound to https://api.github.com/graphql and sent as Authorization: Bearer.
+GraphQL needs the object with a "query" key, not the bare query text:
+{ "kind": "http", "url": "https://api.github.com/graphql", "method": "POST",
+  "body": { "query": "{ viewer { login } }" }, "secrets": ["sec_..."], "path": "data.viewer" }
+
 ## Transforms (run in order, on the server)
 Every step has a stable id ("s1", "s2", … assigned automatically, or your own). Address steps by id with the step
 operations below instead of resending the whole pipeline.

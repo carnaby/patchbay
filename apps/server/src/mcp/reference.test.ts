@@ -51,3 +51,25 @@ describe('the status widget in the reference', () => {
     expect(text).toContain('## Sound cues (chart, kpi, gauge, table, map, status)');
   });
 });
+
+describe('POST queries in the reference', () => {
+  it('documents method and body, the read-only intent, the limits, redirects, preview and a GitHub example', () => {
+    const text = referenceText('https://dash.example.com');
+    expect(text).toContain('## POST queries (http sources)');
+    for (const words of [
+      'Add method: "POST" and body to an http source',
+      'never a string holding JSON',
+      'at most 16,384 characters as JSON and 32 levels deep',
+      'Only for read queries',
+      'sent again on every refresh',
+      'Never put a key or token in it',
+      'A redirect answer to a POST is an error, never followed',
+      'needs the dashboards:write scope',
+      '"url": "https://api.github.com/graphql", "method": "POST"',
+      '"body": { "query": "{ viewer { login } }" }',
+      '"path": "data.viewer"',
+    ]) {
+      expect(text, words).toContain(words);
+    }
+  });
+});

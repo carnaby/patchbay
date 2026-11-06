@@ -6,6 +6,14 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Added
+
+- **POST for `http` sources**: `method: "POST"` with a JSON `body` (at most 16,384 characters) loads read APIs that
+  take their query in a POST body, such as GitHub GraphQL, PostHog or ClickHouse over HTTP. The editor has a GET / POST
+  switch and a JSON body field; agents find the fields and a GitHub example in `get_reference`. The request repeats on
+  every refresh, so use it for read queries; keys stay in secrets, never in the body. A redirect answer to a POST is an
+  error instead of being followed, and a read-only token cannot preview a POST source.
+
 ## [0.2.1] - 2026-11-06
 
 ### Changed
