@@ -1,5 +1,6 @@
 import {
   creditLine,
+  effectiveRefreshSec,
   isDataWidgetType,
   type SoundRule,
   soundRuleMissingColumns,
@@ -78,6 +79,8 @@ export const WidgetFrame = memo(function WidgetFrame({
   const { data: secretsStatus } = useSecretsStatus();
   const apply = useEditor((s) => s.apply);
   const query = useDatasetResult(dashboardId, dataset, live);
+  // A derived dataset has no refreshSec of its own: it is live when a dataset it reads is (a primitive, like sync.ts).
+  const refreshSec = useEditor((s) => (dataset && s.doc ? effectiveRefreshSec(s.doc, dataset.id) : 0));
   const attributions = useAttributions();
   const credit = useMemo(
     () => (dataset && datasets ? creditLine(widgetAttributions(datasets, [widget], attributions)) : ''),
@@ -99,7 +102,7 @@ export const WidgetFrame = memo(function WidgetFrame({
     };
   }, [flashAt]);
 
-  const isLive = Boolean(dataset && dataset.refreshSec > 0);
+  const isLive = refreshSec > 0;
   const result = query.data;
 
   const duplicate = () => {
