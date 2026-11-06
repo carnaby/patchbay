@@ -96,6 +96,84 @@ describe('parseUpload', () => {
       ...Array.from({ length: rows }, () => Array.from({ length: cols }, (_, i) => i % 10).join(',')),
     ].join('\n');
 
+  /** A metrics API answer in columns: an ISO time, a number with a gap, a status. */
+  const METRICS = {
+    timestamps: ['2026-11-01T00:00:00Z', '2026-11-01T01:00:00Z', '2026-11-01T02:00:00Z'],
+    values: [12.5, null, 14],
+    status: ['ok', 'warn', 'ok'],
+  };
+  const NESTED_FILE = {
+    meta: { source: 'probe', count: 5 },
+    data: {
+      items: [
+        { city: 'Oslo', n: 1 },
+        { city: 'Rome', n: 2 },
+      ],
+    },
+    metrics: METRICS,
+  };
+
+  it('reads a JSON file at a path, turns column-shaped data into rows, and names a missing path', () => {
+    const content = JSON.stringify(NESTED_FILE);
+    const json = (path?: string) => parseUpload({ content, format: 'json', maxCells: 1000, path });
+    expect(json('data.items').rows).toEqual([
+      { city: 'Oslo', n: 1 },
+      { city: 'Rome', n: 2 },
+    ]);
+    expect(json('metrics').columns.map((c) => c.name)).toEqual(['timestamps', 'values', 'status']);
+    expect(json('metrics').rows).toHaveLength(3);
+    expect(json('meta.count').rows).toEqual([{ value: 5 }]);
+    expect(json().rows).toHaveLength(1);
+    expect(() => json('data.rows')).toThrow(UploadError);
+    expect(() => json('data.rows')).toThrow('Path "data.rows" not found in the file (stopped at "rows")');
+  });
+
+  it('reads a column-shaped file without a path, and anything looser as before', () => {
+    const json = (value: unknown) =>
+      parseUpload({ content: JSON.stringify(value), format: 'json', maxCells: 1000 });
+    expect(json(METRICS).columns.map((c) => c.name)).toEqual(['timestamps', 'values', 'status']);
+    expect(json(METRICS).rows[1]).toEqual({
+      timestamps: Date.parse('2026-11-01T01:00:00Z'),
+      values: null,
+      status: 'warn',
+    });
+    expect(json({ values: [1, 2, 3] }).rows).toEqual([{ value: 1 }, { value: 2 }, { value: 3 }]);
+    expect(json({ timestamps: [1, 2, 3], values: [5, 6] }).rows).toEqual([
+      { value: 1 },
+      { value: 2 },
+      { value: 3 },
+    ]);
+    expect(json({ timestamps: [1, 2], values: [{ v: 5 }, { v: 6 }] }).rows).toEqual([
+      { value: 1 },
+      { value: 2 },
+    ]);
+    expect(json(7).rows).toEqual([{ value: 7 }]);
+  });
+
+  it('refuses a column-shaped file over the cell limit, naming its rows and columns', () => {
+    const columns = (count: number, length: number) =>
+      JSON.stringify(
+        Object.fromEntries(
+          Array.from({ length: count }, (_, c) => [`c${c}`, Array.from({ length }, (_, i) => i)]),
+        ),
+      );
+    const json = (content: string) => () => parseUpload({ content, format: 'json', maxCells: 100 });
+    // Few enough values for the check before parsing, too many cells once read as columns.
+    expect(json(columns(5, 50))).toThrow(UploadError);
+    expect(json(columns(5, 50))).toThrow(
+      'The file has 50 rows × 5 columns; this dashboard accepts files of up to 100 cells',
+    );
+    // More positions than the limit has cells: still every column counted, not one.
+    expect(json(columns(2, 140))).toThrow('The file has 140 rows × 2 columns;');
+    expect(json(columns(5, 20))()).toMatchObject({ rows: { length: 20 } });
+  });
+
+  it('ignores a path for CSV', () => {
+    expect(
+      parseUpload({ content: 'a,b\n1,2\n', format: 'csv', maxCells: 100, path: 'data.items' }).rows,
+    ).toEqual([{ a: 1, b: 2 }]);
+  });
+
   it('accepts files up to the cell limit', () => {
     const table = parseUpload({ content: csv(50, 20), format: 'csv', maxCells: 1000 });
     expect(table.rows).toHaveLength(50);

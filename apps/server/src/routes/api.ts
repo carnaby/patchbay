@@ -433,6 +433,8 @@ export function apiRoutes(deps: Deps) {
         content: z.string(),
         format: z.enum(['csv', 'json', 'table']).optional(),
         fileId: FileIdSchema.optional(),
+        // Applied by the parser to JSON only, so a CSV upload may carry it.
+        path: z.string().max(200).optional(),
       })
       .parse(await c.req.json());
     return c.json(await dashboards.uploadFile(c.req.param('id'), c.get('principal'), body), 201);

@@ -48,7 +48,7 @@ Scopes:
 | `list_secrets`     | read  | The user's saved secrets for HTTP sources: id, name, origin, path prefix, how each is sent, timestamps. Never values. See "Secrets" below.                                                                                                                                                                                                     |
 | `create_dashboard` | write | New dashboard (private by default), optionally from a template.                                                                                                                                                                                                                                                                                |
 | `apply_operations` | write | Atomic batch of operations; `dryRun` to validate only; `baseVersion` for optimistic concurrency. Returns the change log, a data check for every dataset the batch added or changed (also through step operations) and every dataset built on them, and `warnings` (a URL that looks like it holds a key, hard-to-see colours, truncated bars). |
-| `upload_data`      | write | Store CSV/JSON (≤ 5 MB) in a dashboard; returns the file id, profile, a ready `addDataset` op and suggestions.                                                                                                                                                                                                                                 |
+| `upload_data`      | write | Store CSV/JSON (≤ 5 MB) in a dashboard; `path` picks the records inside a JSON file. Returns the file id, profile, a ready `addDataset` op and suggestions.                                                                                                                                                                                    |
 | `restore_version`  | write | Restore an earlier version (as a new version).                                                                                                                                                                                                                                                                                                 |
 | `set_visibility`   | write | Public or private.                                                                                                                                                                                                                                                                                                                             |
 
@@ -187,6 +187,36 @@ accept unrelated edits. The web editor does not offer intervals below the minimu
 
 For accumulating datasets, `get_data` answers with `watchers` (open browsers right now) and a `note` with the summary
 above; the data checks of `apply_operations` carry the same `note`.
+
+## JSON sources: `path` and column-shaped data
+
+`http` sources and JSON uploads find their records the same way:
+
+1. `path` (optional, a dot path such as `"data.items"`) walks into the document. Empty parts are skipped and a list
+   is walked by index (`"items.0"`). A path that does not exist fails with
+   `Path "data.items" not found in the response (stopped at "data")`, or `in the file` for an upload.
+2. A list is the records.
+3. An object whose properties are all lists of the same length (at least 1) holding plain values (numbers, text,
+   booleans, `null`), with at least two properties, is read as columns: row _i_ takes element _i_ of every list, and
+   the columns keep the object's key order. Keys that are whole numbers (years, for example) come first, in ascending
+   order: that is how JSON objects are read in JavaScript.
+
+   ```json
+   { "timestamps": ["2026-11-01T00:00:00Z", "2026-11-01T01:00:00Z"], "values": [12.5, null], "status": ["ok", "warn"] }
+   ```
+
+   becomes two rows with the columns `timestamps` (a time), `values` and `status`.
+4. Any other object: without a path its first list property, with a path the object itself as one record.
+5. A single value (a number, a text), as the whole document or where the path ends: an `http` source fails with
+   `The response does not contain a list of records`, an upload reads it as one record with the column `value`.
+
+Lists of lists (`[[time, value], …]`, Prometheus `values`) are not converted. Column-shaped data is held to the same
+cell limit as records: an `http` table is cut and says so in its warning, an upload over the limit is refused.
+
+For an `http` source, `path` is part of the source and is applied on every fetch. For an upload it is a parameter of
+`upload_data` (and of the upload in the web editor): it is applied once, when the file is stored, and the dataset
+reads the table found there. Reading another part of the same file means uploading it again with another path. CSV
+files ignore `path`; a path the file does not have refuses the upload and stores nothing.
 
 ## Combining datasets
 
