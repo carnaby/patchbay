@@ -22,7 +22,7 @@ vi.mock('../util/safe-fetch.ts', async (original) => ({
   safeFetchJson: (url: string, options?: unknown) => fetchMock(url, options),
 }));
 
-const { DataService } = await import('./data.ts');
+const { DataService, recordsFrom } = await import('./data.ts');
 const { InlineRunner } = await import('./pipeline-pool.ts');
 
 let dir: string;
@@ -230,6 +230,76 @@ describe('results', () => {
 
 describe('http sources', () => {
   const http = (url: string) => dataset({ kind: 'http', url });
+
+  /** A metrics API answer in columns: an ISO time, a number with a gap, a status. */
+  const METRICS = {
+    timestamps: ['2026-11-01T00:00:00Z', '2026-11-01T01:00:00Z', '2026-11-01T02:00:00Z'],
+    values: [12.5, null, 14],
+    status: ['ok', 'warn', 'ok'],
+  };
+
+  it('turns a column-shaped response into one row per position with every column', async () => {
+    fetchMock.mockResolvedValue(METRICS);
+    const data = new DataService(connectors, store);
+    const r = await data.resolve(target, http('https://metrics.example/series'));
+    expect(r.error).toBeUndefined();
+    expect(r.table.columns).toEqual([
+      { name: 'timestamps', type: 'time' },
+      { name: 'values', type: 'number' },
+      { name: 'status', type: 'string' },
+    ]);
+    expect(r.table.rows).toEqual([
+      { timestamps: Date.parse('2026-11-01T00:00:00Z'), values: 12.5, status: 'ok' },
+      { timestamps: Date.parse('2026-11-01T01:00:00Z'), values: null, status: 'warn' },
+      { timestamps: Date.parse('2026-11-01T02:00:00Z'), values: 14, status: 'ok' },
+    ]);
+  });
+
+  it('reads record-shaped, single-list and loose objects exactly as before', async () => {
+    const bodies: Record<string, unknown> = {
+      'https://shapes.example/envelope': { count: 2, results: [{ a: 1 }, { a: 2 }] },
+      'https://shapes.example/single': { values: [1, 2, 3] },
+      'https://shapes.example/unequal': { timestamps: [1, 2, 3], values: [5, 6] },
+      'https://shapes.example/nested': { timestamps: [1, 2], values: [{ v: 5 }, { v: 6 }] },
+    };
+    fetchMock.mockImplementation(async (url) => bodies[url]);
+    const data = new DataService(connectors, store);
+    const rows = async (name: string) =>
+      (await data.resolve(target, http(`https://shapes.example/${name}`))).table.rows;
+    expect(await rows('envelope')).toEqual([{ a: 1 }, { a: 2 }]);
+    expect(await rows('single')).toEqual([{ value: 1 }, { value: 2 }, { value: 3 }]);
+    expect(await rows('unequal')).toEqual([{ value: 1 }, { value: 2 }, { value: 3 }]);
+    expect(await rows('nested')).toEqual([{ value: 1 }, { value: 2 }]);
+  });
+
+  it('converts column-shaped data at a path, and names a missing path as before', async () => {
+    fetchMock.mockResolvedValue({ data: METRICS });
+    const data = new DataService(connectors, store);
+    const at = (path: string) =>
+      data.resolve(target, dataset({ kind: 'http', url: 'https://paths.example/x', path }));
+    expect((await at('data')).table.rows).toHaveLength(3);
+    expect((await at('data.items')).error).toBe(
+      'Path "data.items" not found in the response (stopped at "items")',
+    );
+  });
+
+  it('builds no more rows from a long column-shaped response than the cell limit keeps, and says so', async () => {
+    const n = 100_000;
+    fetchMock.mockResolvedValue({
+      t: Array.from({ length: n }, (_, i) => i),
+      v: Array.from({ length: n }, () => 1),
+    });
+    const data = new DataService(connectors, store, new InlineRunner(), { maxSourceCells: 500 });
+    const r = await data.resolve(target, http('https://dense.example/x'));
+    expect(r.table.rows).toHaveLength(250);
+    expect(r.warning).toMatch(/first 250 rows/);
+    expect(r.error).toBeUndefined();
+  });
+
+  it('bounds the rows recordsFrom builds by the cell limit it is given', () => {
+    const long = { t: Array.from({ length: 1000 }, (_, i) => i), v: Array.from({ length: 1000 }, () => 1) };
+    expect(recordsFrom(long, undefined, 500)).toHaveLength(251);
+  });
 
   it('remembers a failing address instead of asking it again on every read', async () => {
     // A response without records fails in the service itself, like any upstream error would.
