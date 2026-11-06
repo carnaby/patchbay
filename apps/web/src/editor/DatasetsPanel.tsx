@@ -356,13 +356,13 @@ function SourceEditor({
   });
   const fileInput = useRef<HTMLInputElement>(null);
   const upload = useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async ({ file, path }: { file: File; path: string }) => {
       if (file.size > 5 * 1024 * 1024) throw new Error('Files are limited to 5 MB');
       const content = await file.text();
       // Uploads take turns on the server: a busy answer means "later", not "no".
       return withRetry(() =>
         api<UploadedFile>(`/api/dashboards/${dashboardId}/files`, {
-          body: { name: file.name, content },
+          body: { name: file.name, content, ...(path ? { path } : {}) },
           dashboardId,
         }),
       );
@@ -373,6 +373,8 @@ function SourceEditor({
       toast(`Uploaded ${file.name}: ${file.rows.toLocaleString('en')} rows, ${file.columns} columns`);
     },
   });
+  // Applied when the file is chosen: the server reads a JSON file at this path once and stores the table it finds.
+  const [uploadPath, setUploadPath] = useState('');
   const [inlineText, setInlineText] = useState(() =>
     source.kind === 'inline'
       ? JSON.stringify(source.rows, null, 1)
@@ -579,7 +581,7 @@ function SourceEditor({
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) upload.mutate(file);
+              if (file) upload.mutate({ file, path: uploadPath.trim() });
               e.target.value = '';
             }}
           />
@@ -590,7 +592,7 @@ function SourceEditor({
             onDrop={(e) => {
               e.preventDefault();
               const file = e.dataTransfer.files[0];
-              if (file) upload.mutate(file);
+              if (file) upload.mutate({ file, path: uploadPath.trim() });
             }}
             className="flex w-full flex-col items-center gap-2 rounded-xl border border-dashed border-line-strong px-4 py-8 text-sm text-ink-2 transition hover:border-ink-2 hover:bg-surface"
           >
@@ -603,6 +605,21 @@ function SourceEditor({
               Stored inside this dashboard's folder. Columns and types are detected automatically.
             </span>
           </button>
+          <Field
+            label="Path to the list (JSON files, optional)"
+            hint='Dot path inside the JSON file, e.g. "data.items". Set it before choosing the file; leave empty to auto-detect. CSV files ignore it.'
+          >
+            {(fid) => (
+              <Input
+                id={fid}
+                value={uploadPath}
+                spellCheck={false}
+                maxLength={200}
+                placeholder="data.items"
+                onChange={(e) => setUploadPath(e.target.value)}
+              />
+            )}
+          </Field>
           {files.data?.length ? (
             <Field label="Use file">
               {(fid) => (
