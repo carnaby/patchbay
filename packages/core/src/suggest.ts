@@ -6,8 +6,11 @@
  * visitor for free; an MCP agent gets the same suggestions plus the profile and
  * can refine them with its own judgement.
  */
+import { fieldRef } from './expr.ts';
+import { DATASET_DEPTH, DATASET_INPUTS, type LineageDoc, lineageDepth, upstreamClosure } from './lineage.ts';
 import type { ColumnProfile, TableProfile } from './profile.ts';
-import type { WidgetInput } from './schema.ts';
+import type { DatasetInput, Source, WidgetInput } from './schema.ts';
+import { isStatusWord, STATUS_COLUMN_NAMES, statusFields } from './status.ts';
 import type { TimeUnit, TransformInput } from './transforms.ts';
 
 export interface Suggestion {
@@ -31,6 +34,44 @@ export interface SuggestOptions {
   now?: number;
   /** The dataset keeps a rolling history (`accumulate`), so its rows are successive readings of one source. */
   accumulate?: boolean;
+}
+
+export interface SuggestionParent {
+  id: string;
+  name: string;
+  source: Source;
+  transforms: readonly TransformInput[];
+  refreshSec?: number;
+  accumulate?: number;
+}
+
+/**
+ * The dataset a suggestion's extra steps run in: derived from the saved parent, so accepting a suggestion never
+ * copies its source or steps (copies drift, and each one runs its own pipeline). Where one more level would pass the
+ * lineage limits, it falls back to a copy, which reads the same data at the same depth.
+ */
+export function suggestionDataset(
+  doc: LineageDoc<SuggestionParent>,
+  parentId: string,
+  id: string,
+  title: string,
+  transforms: readonly TransformInput[],
+): DatasetInput {
+  const parent = doc.datasets.find((d) => d.id === parentId);
+  if (!parent) throw new Error(`Unknown dataset "${parentId}"`);
+  const name = `${parent.name}: ${title}`.slice(0, 120);
+  const fits =
+    lineageDepth(doc, parentId) + 1 <= DATASET_DEPTH &&
+    upstreamClosure(doc, parentId).length + 1 <= DATASET_INPUTS;
+  if (fits) return { id, name, source: { kind: 'dataset', id: parentId }, transforms: [...transforms] };
+  return {
+    id,
+    name,
+    source: parent.source,
+    transforms: [...parent.transforms, ...transforms],
+    refreshSec: parent.refreshSec ?? 0,
+    accumulate: parent.accumulate ?? 0,
+  };
 }
 
 const DAY = 86_400_000;
@@ -169,11 +210,6 @@ function timeOrder(before: readonly TransformInput[], field: string) {
   return { steps, dir: 'asc' as const, kept: false };
 }
 
-const IDENT = /^[A-Za-z_$][A-Za-z0-9_$.]*$/;
-const RESERVED = new Set(['true', 'false', 'null', 'and', 'or', 'not']);
-const fieldRef = (name: string) =>
-  IDENT.test(name) && !RESERVED.has(name) ? name : `\`${name.replace(/[\\`]/g, '\\$&')}\``;
-
 function duration(ms: number): string {
   if (ms >= 2 * DAY) return `${Math.round(ms / DAY)} days`;
   const hours = Math.max(1, Math.round(ms / 3_600_000));
@@ -293,6 +329,61 @@ function mapSuggestion(
   };
 }
 
+/**
+ * Share of a column's non-null values that are in the status vocabulary, from the profile's most frequent values: a
+ * lower bound, since values outside the top ones are not counted.
+ */
+function vocabularyShare(column: ColumnProfile, rows: number): number {
+  const present = rows - column.nulls;
+  if (present <= 0) return 0;
+  const known = (column.top ?? []).reduce((n, t) => n + (isStatusWord(t.value) ? t.count : 0), 0);
+  return known / present;
+}
+
+/** More rows per entity than this, on average, and the rows look like events rather than one per check. */
+const STATUS_ROWS_PER_ENTITY = 10;
+
+/**
+ * Many checks, each with a state (a monitor's output): one tile per entity says at a glance what is broken and
+ * where, which a long table of mostly "ok" rows does not. A column only named like a state (an issue tracker's
+ * "open"/"closed") is still offered, below the table: its values would all read as warnings. Vocabularies are small,
+ * so a column with more than 12 distinct values is not taken for a status by its values.
+ */
+function statusSuggestion(profile: TableProfile): Suggestion | null {
+  const words = (c: ColumnProfile) =>
+    c.type === 'string' && c.distinct <= 12 && vocabularyShare(c, profile.rows) > 0.5;
+  const status =
+    profile.columns.find((c) => c.type === 'string' && STATUS_COLUMN_NAMES.includes(c.name.toLowerCase())) ??
+    profile.columns.find(words);
+  if (!status) return null;
+  const fields = statusFields(profile.columns, status.name, {
+    entity: (c) => c.role === 'dimension',
+    group: (c) => c.role === 'dimension' && c.distinct >= 2 && c.distinct <= 10,
+    link: (c) => c.role === 'url',
+  });
+  if (!fields) return null;
+  const examples = (status.top ?? [])
+    .slice(0, 3)
+    .map((t) => `"${t.value}"`)
+    .join(', ');
+  const entity = profile.columns.find((c) => c.name === fields.entity);
+  const perEntity = entity?.distinct ? profile.rows / entity.distinct : profile.rows;
+  // A monitor has a row or a few per check. Many rows per entity read like a log of events (CI runs, payments), and
+  // a tile keeps the worst state of all its rows: a project that failed once last week would stay red.
+  const events = perEntity > STATUS_ROWS_PER_ENTITY;
+  const note = events
+    ? ` With ${Math.round(perEntity)} rows per "${fields.entity}" this looks like a log of events, not current checks: a tile keeps the worst state of all its rows.`
+    : '';
+  return {
+    title: 'Status',
+    rationale: `"${status.name}" holds a state per row${examples ? ` (${examples})` : ''}: a status widget shows one tile per "${fields.entity}" in the colour of its worst check${fields.group ? `, in sections by "${fields.group}"` : ''}, and spells out what is failing instead of a long table of ok rows.${note}`,
+    widget: { type: 'status', title: 'Status', config: fields },
+    transforms: [],
+    // Below the raw data table (30) unless it looks like current checks with known states.
+    score: !words(status) ? 20 : events ? 25 : 97,
+  };
+}
+
 export function suggestWidgets(profile: TableProfile, options: SuggestOptions = {}): Suggestion[] {
   const max = options.max ?? 6;
   const existing = options.transforms ?? [];
@@ -339,6 +430,9 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
       score: 98,
     });
   }
+
+  const status = statusSuggestion(profile);
+  if (status) out.push(status);
 
   // A single row is a set of headline numbers, not a chart.
   if (profile.rows === 1) {
@@ -455,6 +549,25 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
           { type: 'aggregate', groupBy: [dim.name], metrics: [{ op: 'sum', field: m.name, as: m.name }] },
         ],
         score: 60,
+      });
+    }
+    // Above six parts a donut stops being readable; a sorted bar of percentages keeps part-to-whole.
+    if (m && summary?.op === 'sum' && dim.distinct >= 7 && dim.distinct <= 12) {
+      const as = [dim.name, m.name].includes('share') ? 'share_pct' : 'share';
+      out.push({
+        title: `${label(m)} share by ${label(dim)} (%)`,
+        rationale: `"${dim.name}" has ${dim.distinct} categories: each bar is its percentage of the total ${label(m)}.`,
+        widget: {
+          type: 'chart',
+          title: `Share of ${label(m)} (%)`,
+          config: { kind: 'bar', x: dim.name, y: [as], horizontal: true, format: { style: 'percent' } },
+        },
+        transforms: [
+          { type: 'aggregate', groupBy: [dim.name], metrics: [{ op: 'sum', field: m.name, as: m.name }] },
+          { type: 'derive', as, expr: `round(${fieldRef(m.name)} / col_sum(${fieldRef(m.name)}) * 100, 1)` },
+          { type: 'sort', by: [{ field: as, dir: 'desc' }] },
+        ],
+        score: 58,
       });
     }
   }

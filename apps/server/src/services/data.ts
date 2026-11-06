@@ -11,6 +11,8 @@
  * viewers on one dashboard costs one parse, not one per viewer.
  */
 import {
+  CACHED_DATA_WARNING,
+  type DashboardDoc,
   type Dataset,
   type DatasetResult,
   type DataTable,
@@ -20,11 +22,13 @@ import {
   INFER_MAX_COLUMNS,
   inferTableCapped,
   isStaticSource,
+  PIPELINE_LIMITS,
+  type PipelineInputs,
   type PipelineResult,
   sourceSecretIds,
   TableTooWideError,
   type Transform,
-  TransformError,
+  upstreamOf,
   wireSize,
 } from '@patchbay/core';
 
@@ -36,14 +40,19 @@ import { BusyError, Gate } from '../util/gate.ts';
 import { HEAVY_FILE_BYTES, HEAVY_PIPELINE_CELLS, heavyWork } from '../util/heavy.ts';
 import { approxTableBytes, ByteLru } from '../util/lru.ts';
 import { OutboundLimiter } from '../util/outbound.ts';
+import type { PrivateHosts } from '../util/private-hosts.ts';
 import { currentClient } from '../util/request-context.ts';
 import { type Credential, safeFetchJson, type UpstreamTestSeam } from '../util/safe-fetch.ts';
-import { InlineRunner, type PipelineRunner } from './pipeline-pool.ts';
+import { cellsOf, InlineRunner, type PipelineRunner } from './pipeline-pool.ts';
 import { MAX_RESULT_BYTES, tooLargeResult } from './result-wire.ts';
+import { errorResult, ResolveScope, type ScopeOptions } from './scope.ts';
 import type { UploadInput } from './upload-parse.ts';
 
 export const MAX_ROWS_OUT = 10_000;
-const MAX_ROWS_IN = 100_000;
+
+/** The message for a dataset resolved without its document: it reads other datasets, which only a scope can load. */
+export const readsOtherDatasets = (id: string) =>
+  `Dataset "${id}" reads other datasets and can only be loaded with its dashboard`;
 /** Default cap on the table an HTTP source may produce; a 5 MB body of short values is far more. */
 export const DEFAULT_MAX_SOURCE_CELLS = 500_000;
 const HTTP_TTL_MS = HTTP_MIN_REFRESH_SEC * 1000;
@@ -87,7 +96,11 @@ export function recordsFrom(json: unknown, path?: string): unknown[] {
  */
 export function cappedTable(records: unknown[], maxCells: number): { table: DataTable; capped: boolean } {
   try {
-    return inferTableCapped(records, { maxRows: MAX_ROWS_IN, maxCells, maxColumns: INFER_MAX_COLUMNS });
+    return inferTableCapped(records, {
+      maxRows: PIPELINE_LIMITS.maxRows,
+      maxCells,
+      maxColumns: INFER_MAX_COLUMNS,
+    });
   } catch (e) {
     if (e instanceof TableTooWideError) throw new HttpError(400, e.message);
     throw e;
@@ -115,6 +128,14 @@ function fnv(text: string): string {
 export interface DashboardTarget {
   id: string;
   ownerId: string | null;
+  /** A read-only token's preview: the operator's private hosts never apply, whoever the owner is. */
+  publicOnly?: boolean;
+  /**
+   * An unsaved draft's preview: it shows the accumulated history of the datasets it reads but never adds to it. Its
+   * fetch may be a reading of its own (another cache entry, a viewer's network rights), and the owner's history
+   * must hold only the dashboard's own readings.
+   */
+  preview?: boolean;
 }
 
 /** Decrypts a dataset's credentials or throws an HttpError with a message that is safe to show any viewer. */
@@ -122,8 +143,12 @@ export type CredentialResolver = (target: DashboardTarget, dataset: Dataset) => 
 
 export interface DataServiceOptions {
   credentials?: CredentialResolver;
-  /** Throws when this instance does not fetch URLs (http and feed sources) for the dashboard. */
-  urlPolicy?: (target: DashboardTarget, url: string) => void;
+  /**
+   * Called before every http or feed load: throws when this instance does not fetch the URL for the dashboard,
+   * otherwise returns the private hosts (ALLOW_PRIVATE_HOSTS) its sources may reach, or null for public addresses
+   * only. DashboardService decides, by the dashboard's owner.
+   */
+  urlPolicy?: (target: DashboardTarget, url: string) => PrivateHosts | null;
   /** OFFLINE=1: feeds return their deterministic sample instead of fetching. */
   offline?: boolean;
   /** Memory for parsed tables (uploads, inline rows, HTTP responses), in bytes. */
@@ -149,9 +174,11 @@ interface Loaded {
   credentialKey: string;
   /** For sources that change only when edited: which content this is. A new reading exactly when it changes. */
   stamp?: string;
+  /** The cached table `table` was cut from, when it is a new object on every load (a feed's first items). */
+  origin?: DataTable;
 }
 
-type Computed = Pick<DatasetResult, 'table' | 'hash' | 'truncated' | 'trace' | 'error'>;
+export type Computed = Pick<DatasetResult, 'table' | 'hash' | 'truncated' | 'trace' | 'error'>;
 
 interface HistoryBuffer {
   rows: DataTable['rows'];
@@ -170,17 +197,33 @@ export class DataService {
    */
   private readonly tables: ByteLru<CacheEntry>;
   private readonly loading = new Map<string, Promise<CacheEntry>>();
-  /** Recent pipeline results, keyed by the identity of the input table. */
-  private readonly results = new ByteLru<Computed>(RESULT_CACHE_BYTES);
-  private readonly computing = new Map<string, Promise<Computed>>();
+  /**
+   * Recent pipeline results, keyed by the identity of the input table: capped results for widgets, and (keys starting
+   * with "full|") uncapped ones that derived datasets read. One byte budget for both.
+   */
+  private readonly results = new ByteLru<Computed | PipelineResult>(RESULT_CACHE_BYTES);
+  private readonly computing = new Map<string, Promise<Computed | PipelineResult>>();
   private readonly tableIds = new WeakMap<DataTable, number>();
   private nextTableId = 1;
+  /**
+   * Capped results by uncapped table and row limit. Widget answers and the live hub serialise once per table object
+   * (ResultWire), so a dataset read through a scope must give every request the same capped table while its uncapped
+   * one is shared, not a new slice to hash, serialise and budget each time.
+   */
+  private readonly finished = new WeakMap<DataTable, Map<number, Computed>>();
+  /**
+   * Final capped results of datasets resolved through a scope, keyed by their lineage, the readings of its roots and
+   * the target's policy (ResolveScope.finalKey). Without them every request re-runs the whole chain: a parent too
+   * large for `results` is processed again for each reader. Only capped tables are kept, never an uncapped parent.
+   */
+  private readonly finals = new ByteLru<DatasetResult>(RESULT_CACHE_BYTES);
+  private readonly finalizing = new Map<string, Promise<DatasetResult>>();
   /** Rolling buffers for `accumulate`, keyed by dashboard + dataset. In memory by design. */
   private readonly buffers = new ByteLru<HistoryBuffer>(BUFFER_BYTES);
 
   private readonly pipeline: PipelineRunner;
   private readonly credentialsFor: CredentialResolver;
-  private readonly urlPolicy: (target: DashboardTarget, url: string) => void;
+  private readonly urlPolicy: (target: DashboardTarget, url: string) => PrivateHosts | null;
   private readonly upstreamTest: UpstreamTestSeam | undefined;
   private readonly feeds: FeedService;
   private readonly maxSourceCells: number;
@@ -203,7 +246,7 @@ export class DataService {
       (async () => {
         throw new HttpError(403, 'Credentials are turned off on this server.');
       });
-    this.urlPolicy = options.urlPolicy ?? (() => {});
+    this.urlPolicy = options.urlPolicy ?? (() => null);
     this.upstreamTest = options.upstreamTest;
     this.tables = new ByteLru(options.cacheBytes ?? DEFAULT_CACHE_BYTES);
     this.maxSourceCells = options.maxSourceCells ?? DEFAULT_MAX_SOURCE_CELLS;
@@ -224,6 +267,7 @@ export class DataService {
   dropCaches() {
     this.tables.clear();
     this.results.clear();
+    this.finals.clear();
   }
 
   /**
@@ -258,6 +302,16 @@ export class DataService {
       { table, at: stamp.mtimeMs, stamp: stamp.key },
       approxTableBytes(table),
     );
+  }
+
+  /**
+   * A stored upload's whole table, for an export; the caller checked who may read it (DashboardService.exportPlan).
+   * The stamp names the stored file this table was read from, so a reader across several loads can tell when the
+   * file under this id was replaced in between.
+   */
+  async uploadTable(target: DashboardTarget, fileId: string): Promise<{ table: DataTable; stamp: string }> {
+    const { table, stamp } = await this.loadUpload(target, fileId);
+    return { table, stamp: stamp ?? '' };
   }
 
   /**
@@ -327,6 +381,7 @@ export class DataService {
     target: DashboardTarget,
     dataset: Dataset,
     source: Extract<Dataset['source'], { kind: 'http' }>,
+    privateHosts: PrivateHosts | null,
   ): Promise<Loaded> {
     // Resolved on every call, before the cache: the switch, the owner's rights and the binding apply at once.
     const credentials = sourceSecretIds(source).length ? await this.credentialsFor(target, dataset) : [];
@@ -334,12 +389,15 @@ export class DataService {
       .map((c) => `${target.ownerId}/${c.id}@${c.revision}`)
       .sort()
       .join(',');
-    const key = `http:${credentialKey}|${source.url}#${source.path ?? ''}`;
+    // A response fetched with the operator's private hosts never answers a dashboard that may not use them.
+    const key = `http:${privateHosts ? 'lan|' : ''}${credentialKey}|${source.url}#${source.path ?? ''}`;
     let entry = this.tables.get(key);
     if (!entry) {
       let pending = this.loading.get(key);
       if (!pending) {
-        pending = this.fetchHttp(key, source, credentials).finally(() => this.loading.delete(key));
+        pending = this.fetchHttp(key, source, credentials, privateHosts).finally(() =>
+          this.loading.delete(key),
+        );
         this.loading.set(key, pending);
       }
       entry = await pending;
@@ -357,11 +415,13 @@ export class DataService {
     key: string,
     source: Extract<Dataset['source'], { kind: 'http' }>,
     credentials: Credential[],
+    privateHosts: PrivateHosts | null,
   ): Promise<CacheEntry> {
     try {
       const json = await this.outbound.run(currentClient(), source.url, () =>
         safeFetchJson(source.url, {
           credentials,
+          ...(privateHosts ? { privateHosts } : {}),
           ...(this.upstreamTest ? { test: this.upstreamTest } : {}),
         }),
       );
@@ -388,7 +448,7 @@ export class DataService {
           table: r.table,
           fetchedAt: r.fetchedAt,
           credentialKey: '',
-          ...(r.stale ? { warning: `Showing cached data: ${r.stale}` } : {}),
+          ...(r.stale ? { warning: `${CACHED_DATA_WARNING}: ${r.stale}` } : {}),
         };
       }
       case 'inline':
@@ -396,14 +456,19 @@ export class DataService {
       case 'upload':
         return this.loadUpload(target, source.fileId);
       case 'http':
-        this.urlPolicy(target, source.url);
-        return this.loadHttp(target, dataset, source);
+        return this.loadHttp(target, dataset, source, this.urlPolicy(target, source.url));
       case 'feed': {
-        this.urlPolicy(target, source.url);
-        const feed = await this.feeds.load(source.url);
+        const feed = await this.feeds.load(source.url, this.urlPolicy(target, source.url));
         const rows = feed.table.rows.slice(0, source.limit);
-        return { table: { columns: feed.table.columns, rows }, fetchedAt: feed.fetchedAt, credentialKey: '' };
+        return {
+          table: { columns: feed.table.columns, rows },
+          fetchedAt: feed.fetchedAt,
+          credentialKey: '',
+          origin: feed.table,
+        };
       }
+      case 'dataset':
+        throw new HttpError(400, readsOtherDatasets(dataset.id));
     }
   }
 
@@ -415,6 +480,8 @@ export class DataService {
     const source = `${JSON.stringify(dataset.source)}|${loaded.credentialKey}`;
     let buffer = this.buffers.get(key);
     if (!buffer || buffer.source !== source) buffer = { rows: [], reading: '', source, rowBytes: 0 };
+    // A preview works on a copy that is never stored (see DashboardTarget.preview).
+    if (target.preview) buffer = { ...buffer, rows: [...buffer.rows] };
     // Only append when the source actually produced a new reading: a new fetch time, or for an upload or inline
     // rows, new content. Merely reading a static source again is not a reading.
     const reading = loaded.stamp ?? `t${fetchedAt}`;
@@ -429,7 +496,7 @@ export class DataService {
       if (buffer.rows.length > dataset.accumulate)
         buffer.rows.splice(0, buffer.rows.length - dataset.accumulate);
     }
-    this.buffers.set(key, buffer, 128 + buffer.rows.length * buffer.rowBytes);
+    if (!target.preview) this.buffers.set(key, buffer, 128 + buffer.rows.length * buffer.rowBytes);
     const columns = table.columns.some((c) => c.name === 'fetched_at')
       ? table.columns
       : [...table.columns, { name: 'fetched_at', type: 'time' as const }];
@@ -445,26 +512,51 @@ export class DataService {
     return id;
   }
 
-  private async compute(input: DataTable, transforms: Transform[], max: number): Promise<Computed> {
-    const run = () => this.pipeline.run(input, transforms);
-    // A large table can fill the pipeline worker's heap: it waits for its turn with the other heavy jobs.
-    const heavy = transforms.length > 0 && input.rows.length * input.columns.length >= HEAVY_PIPELINE_CELLS;
-    const { table, trace }: PipelineResult = await (heavy ? heavyWork.run(run) : run());
+  private async run(
+    input: DataTable,
+    transforms: Transform[],
+    inputs?: PipelineInputs,
+  ): Promise<PipelineResult> {
+    const run = () => this.pipeline.run(input, transforms, inputs);
+    // A large table can fill the pipeline worker's heap: it waits for its turn with the other heavy jobs. The tables a
+    // join or union reads are copied to the worker too, so they count.
+    const heavy = transforms.length > 0 && cellsOf(input, transforms, inputs) >= HEAVY_PIPELINE_CELLS;
+    return heavy ? heavyWork.run(run) : run();
+  }
+
+  /** Caps a processed table for widgets, agents and snapshots: the last `max` rows, the wire size check, the hash. */
+  finish(result: PipelineResult, max = MAX_ROWS_OUT): Computed {
+    const { table, trace } = result;
+    let byMax = this.finished.get(table);
+    const hit = byMax?.get(max);
+    if (hit) return hit.trace === trace ? hit : { ...hit, trace };
     const truncated = table.rows.length > max;
     const out: DataTable = truncated ? { columns: table.columns, rows: table.rows.slice(-max) } : table;
     // Measured in the compact form the web app reads, before anything is hashed, kept or serialised: a result too
     // large to send is an error for every reader alike (widget, agent, snapshot), and only the error is kept.
     const size = wireSize(out, 'arrays');
-    if (size > MAX_RESULT_BYTES) return tooLargeResult({ table: out, hash: '', truncated, trace }, size);
-    return { table: out, hash: hashTable(out), truncated, trace };
+    const computed =
+      size > MAX_RESULT_BYTES
+        ? tooLargeResult({ table: out, hash: '', truncated, trace }, size)
+        : { table: out, hash: hashTable(out), truncated, trace };
+    if (!byMax) {
+      byMax = new Map();
+      this.finished.set(table, byMax);
+    }
+    byMax.set(max, computed);
+    return computed;
+  }
+
+  private async compute(input: DataTable, transforms: Transform[], max: number): Promise<Computed> {
+    return this.finish(await this.run(input, transforms), max);
   }
 
   /** The same input table with the same steps gives the same result: computed once for concurrent callers. */
   private computeShared(input: DataTable, transforms: Transform[], max: number): Promise<Computed> {
     const key = `${this.tableId(input)}|${max}|${JSON.stringify(transforms)}`;
-    const hit = this.results.get(key);
+    const hit = this.results.get(key) as Computed | undefined;
     if (hit) return Promise.resolve(hit);
-    let pending = this.computing.get(key);
+    let pending = this.computing.get(key) as Promise<Computed> | undefined;
     if (!pending) {
       pending = this.compute(input, transforms, max)
         .then((c) => {
@@ -478,6 +570,98 @@ export class DataService {
   }
 
   /**
+   * An uncapped pipeline result, shared by concurrent callers like `computeShared`: a burst of viewers of a dashboard
+   * with derived datasets costs one run per dataset. The key names every table the run reads (and the names a union
+   * labels rows with), so two runs over the same table that join or union different tables never share a result.
+   * `fresh` inputs (accumulate buffers, a new table on every call) are never shared.
+   */
+  processShared(
+    input: DataTable,
+    transforms: Transform[],
+    inputs?: PipelineInputs,
+    fresh = false,
+  ): Promise<PipelineResult> {
+    if (fresh) return this.run(input, transforms, inputs);
+    const read = inputs
+      ? JSON.stringify([
+          inputs.self,
+          Object.entries(inputs.tables).map(([id, t]) => [id, t.name, this.tableId(t.table)]),
+        ])
+      : '';
+    const key = `full|${this.tableId(input)}|${read}|${JSON.stringify(transforms)}`;
+    const hit = this.results.get(key) as PipelineResult | undefined;
+    if (hit) return Promise.resolve(hit);
+    let pending = this.computing.get(key) as Promise<PipelineResult> | undefined;
+    if (!pending) {
+      pending = this.run(input, transforms, inputs)
+        .then((r) => {
+          this.results.set(key, r, approxTableBytes(r.table), RESULT_TTL_MS);
+          return r;
+        })
+        .finally(() => this.computing.delete(key));
+      this.computing.set(key, pending);
+    }
+    return pending;
+  }
+
+  /**
+   * The table a dataset's pipeline starts from: its source, or the accumulated history of it. `reading` names what
+   * was loaded (absent for a history, which is a new table on every call): equal readings are the same cached table
+   * object, fetched with the same credentials, and so give the same result.
+   */
+  async loadInput(
+    target: DashboardTarget,
+    dataset: Dataset,
+  ): Promise<{ table: DataTable; fetchedAt: number; warning?: string; fresh: boolean; reading?: string }> {
+    const loaded = await this.loadSource(target, dataset);
+    const fresh = dataset.accumulate > 0;
+    return {
+      table: fresh ? this.accumulate(target, dataset, loaded) : loaded.table,
+      fetchedAt: loaded.fetchedAt,
+      fresh,
+      ...(loaded.warning ? { warning: loaded.warning } : {}),
+      ...(fresh
+        ? {}
+        : {
+            reading: JSON.stringify([
+              this.tableId(loaded.origin ?? loaded.table),
+              loaded.credentialKey,
+              loaded.fetchedAt,
+              loaded.warning ?? '',
+            ]),
+          }),
+    };
+  }
+
+  /**
+   * A scope's final result under `key` (see `finals`): reused for RESULT_TTL_MS, and built once for concurrent
+   * scopes, which then all hold the same object and so the same serialisation. A failure is never kept.
+   */
+  sharedFinal(key: string, build: () => Promise<DatasetResult>): Promise<DatasetResult> {
+    const hit = this.finals.get(key);
+    if (hit) return Promise.resolve(hit);
+    let pending = this.finalizing.get(key);
+    if (!pending) {
+      pending = build()
+        .then((r) => {
+          const bytes =
+            approxTableBytes(r.table) +
+            2 * (key.length + r.hash.length + (r.error?.length ?? 0) + (r.warning?.length ?? 0));
+          this.finals.set(key, r, bytes, RESULT_TTL_MS);
+          return r;
+        })
+        .finally(() => this.finalizing.delete(key));
+      this.finalizing.set(key, pending);
+    }
+    return pending;
+  }
+
+  /** One per request, hub tick, snapshot or MCP call: see `ResolveScope`. */
+  scope(target: DashboardTarget, doc: DashboardDoc, options: ScopeOptions = {}): ResolveScope {
+    return new ResolveScope(this, target, doc, options);
+  }
+
+  /**
    * Errors of the dataset itself come back in the result, for the widget to show. A BusyError is thrown instead:
    * the server, not the dataset, is the problem, and callers answer 503 or skip a refresh.
    */
@@ -488,6 +672,7 @@ export class DataService {
   ): Promise<DatasetResult> {
     const base = { datasetId: dataset.id };
     try {
+      if (upstreamOf(dataset).length) throw new HttpError(400, readsOtherDatasets(dataset.id));
       const loaded = await this.loadSource(target, dataset);
       const max = options.maxRows ?? MAX_ROWS_OUT;
       const computed =
@@ -498,22 +683,11 @@ export class DataService {
         ...base,
         ...computed,
         fetchedAt: new Date(loaded.fetchedAt).toISOString(),
-        ...(computed.error || loaded.warning ? { error: computed.error ?? loaded.warning } : {}),
+        ...(loaded.warning ? { warning: loaded.warning } : {}),
       };
     } catch (e) {
       if (e instanceof BusyError) throw e;
-      const message =
-        e instanceof HttpError || e instanceof TransformError || e instanceof Error
-          ? e.message
-          : 'Failed to load data';
-      return {
-        ...base,
-        table: { columns: [], rows: [] },
-        fetchedAt: new Date().toISOString(),
-        hash: `error:${message}`,
-        truncated: false,
-        error: message,
-      };
+      return errorResult(dataset.id, e);
     }
   }
 

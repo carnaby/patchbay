@@ -206,6 +206,7 @@ class Env {
         mcp: generous(),
         creates: generous(),
         snapshots: generous(),
+        exports: generous(),
       },
     });
     return this;
@@ -1197,6 +1198,82 @@ describe('secrets over MCP', () => {
     expect(ok.isError).toBeFalsy();
   });
 
+  it('needs the write scope to preview a dataset that reads a secret-backed one, even on a public dashboard', async () => {
+    const cookie = await env.login('mcp-derived-preview@example.com');
+    const s = await env.secret(cookie);
+    const dash = await env.dashboard(cookie);
+    expect((await env.ops(dash, cookie, [addDataset(http('orders', '/v1/orders', [s.id]))])).status).toBe(
+      200,
+    );
+    const pub = await env.call(`/api/dashboards/${dash}/settings`, {
+      method: 'PATCH',
+      body: { visibility: 'public', confirmPublicSecrets: true },
+      cookie,
+    });
+    expect(pub.status).toBe(200);
+    const readOnly = await env.mcp(await env.pat(cookie, ['dashboards:read']));
+    const mark = upstream.received.length;
+    for (const draft of [
+      { source: { kind: 'dataset', id: 'orders' } },
+      {
+        source: { kind: 'inline', rows: [{ id: 1 }] },
+        transforms: [{ type: 'join', with: 'orders', on: ['id'] }],
+      },
+    ]) {
+      const res = await readOnly.callTool({
+        name: 'preview_data',
+        arguments: { dashboardId: dash, ...draft },
+      });
+      expect(res.isError).toBe(true);
+      expect(text(res)).toMatch(/dashboards:write/);
+    }
+    // A viewer of the public dashboard, with the write scope, is no editor: the lineage's secrets and uploads stay
+    // with the editors.
+    const file = await env.call(`/api/dashboards/${dash}/files`, {
+      body: { name: 'sheet.csv', content: 'id,total\n1,2\n' },
+      cookie,
+    });
+    expect(file.status).toBe(201);
+    expect(
+      (
+        await env.ops(dash, cookie, [
+          addDataset({ id: 'sheet', name: 'Sheet', source: { kind: 'upload', fileId: file.json.id } }),
+        ])
+      ).status,
+    ).toBe(200);
+    const viewer = await env.mcp(await env.pat(await env.login('mcp-derived-viewer@example.com')));
+    for (const [draft, message] of [
+      [
+        { source: { kind: 'dataset', id: 'orders' } },
+        'Only editors of this dashboard can preview sources that use secrets',
+      ],
+      [
+        { source: { kind: 'inline', rows: [{ id: 1 }] }, transforms: [{ type: 'union', with: ['sheet'] }] },
+        'Only editors of this dashboard can preview its uploaded files',
+      ],
+    ] as const) {
+      const res = await viewer.callTool({ name: 'preview_data', arguments: { dashboardId: dash, ...draft } });
+      expect(res.isError).toBe(true);
+      expect(text(res)).toBe(message);
+    }
+    expect(upstream.since(mark)).toEqual([]);
+    const loose = await readOnly.callTool({
+      name: 'preview_data',
+      arguments: { source: { kind: 'dataset', id: 'orders' } },
+    });
+    expect(text(loose)).toBe('Derived sources read the saved datasets of a dashboard; pass dashboardId');
+    // The owner's agent with the write scope previews it on a private dashboard.
+    const priv = await env.dashboard(cookie);
+    await env.ops(priv, cookie, [addDataset(http('orders', '/v1/orders', [s.id]))]);
+    const writer = await env.mcp(await env.pat(cookie));
+    const ok = await writer.callTool({
+      name: 'preview_data',
+      arguments: { dashboardId: priv, source: { kind: 'dataset', id: 'orders' } },
+    });
+    expect(ok.isError).toBeFalsy();
+    expect(text(ok)).toContain('"total"');
+  });
+
   it('lists secrets, uses them on private dashboards and warns about keys in URLs', async () => {
     const cookie = await env.login('mcp-secrets@example.com');
     const s = await env.secret(cookie, { name: 'Shop', placement: 'query', paramName: 'api_key' });
@@ -1404,6 +1481,15 @@ describe('canary', () => {
         http('slow', '/v1/slow', all),
         http('gone', '/v1/orders?gone=1', [header.id]),
         http('bq', '/v1/whoami?bq=1', [bearer.id, query.id]),
+        { id: 'who-derived', name: 'who-derived', source: { kind: 'dataset', id: 'who' } },
+        // "same" ends at /v1/orders with all three credentials, so its account matches who's and the join carries
+        // who's echoes of the credentials into a dataset that holds no secret reference of its own.
+        {
+          id: 'orders-joined',
+          name: 'orders-joined',
+          source: { kind: 'dataset', id: 'same' },
+          transforms: [{ type: 'join', with: 'who', on: ['account'] }],
+        },
       ];
       expect((await c.ops(dash, owner, datasets.map(addDataset))).status).toBe(200);
       await c.ops(dash, owner, [
@@ -1423,9 +1509,29 @@ describe('canary', () => {
         await c.call(`/api/dashboards/${dash}/data/${d.id}`, { cookie: owner });
         await c.call(`/api/dashboards/${dash}/suggest/${d.id}`, { cookie: owner });
       }
+      const joined = (await c.call(`/api/dashboards/${dash}/data/orders-joined`, { cookie: owner })).json;
+      expect(joined.table.rows).toHaveLength(2);
+      expect(joined.table.rows[0].echoAuth).toContain('[redacted]');
       await c.call(`/api/dashboards/${dash}/preview`, {
         cookie: owner,
         body: { dataset: { source: datasets[0]!.source } },
+      });
+      // Derived drafts, one standing in for a saved dataset: their upstream is fetched with the credentials.
+      const joinDraft = {
+        source: { kind: 'dataset', id: 'same' },
+        transforms: [{ type: 'join', with: 'who', on: ['account'] }],
+      };
+      for (const editing of [undefined, 'orders-joined']) {
+        const draft = await c.call(`/api/dashboards/${dash}/preview`, {
+          cookie: owner,
+          body: { dataset: joinDraft, ...(editing ? { editing } : {}) },
+        });
+        expect(draft.status).toBe(200);
+        expect(draft.json.result.table.rows[0].echoAuth).toContain('[redacted]');
+      }
+      await c.call(`/api/dashboards/${dash}/preview`, {
+        cookie: owner,
+        body: { dataset: { source: { kind: 'dataset', id: 'who' } } },
       });
       await c.call(`/api/dashboards/${dash}/preview`, {
         cookie: owner,
@@ -1520,6 +1626,12 @@ describe('canary', () => {
       }
       await call('preview_data', { source: datasets[0]!.source });
       await call('preview_data', { dashboardId: created, source: datasets[6]!.source });
+      for (const dashboardId of [dash, created]) {
+        const derived = await call('preview_data', { dashboardId, ...joinDraft });
+        expect(derived.isError, text(derived)).toBeFalsy();
+        expect(text(derived)).toContain('echoAuth');
+        await call('preview_data', { dashboardId, source: { kind: 'dataset', id: 'who' } });
+      }
       await call('preview_data', { source: { kind: 'http', url: `${API}/admin/orders`, secrets: all } });
       await call('upload_data', {
         dashboardId: created,

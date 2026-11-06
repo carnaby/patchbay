@@ -77,6 +77,9 @@ and runs as a single process you can host anywhere.
 - 🗺️ **Maps without tiles.** Points (earthquakes, stations) and tracks (the ISS) on a bundled world map, sized and
   coloured by value, with optional day/night shading. No tile server and no third-party requests, so maps work
   offline and in agent snapshots.
+- 🚦 **Status at a glance.** Monitor checks (containers, backups, certificates, sites) as one tile per service in
+  the colour of its worst check, in sections per machine, with what is failing spelled out and the rest folded into
+  "+N" so it never scrolls on a wall screen.
 - 📰 **News and start-page widgets.** Clocks (digital or analog, any time zone), headlines from any RSS, Atom or JSON
   feed, and a search box.
 - 📺 **Made for wall screens.** In presentation mode the toolbar and cursor hide and the Screen Wake Lock keeps the
@@ -90,6 +93,9 @@ and runs as a single process you can host anywhere.
 - 🔐 **Yours.** Sign in with Google; dashboards are private or public. Anyone can build a public dashboard without an
   account and claim it later. Deleting your account removes your dashboards, uploads, secrets and tokens at once.
 - 🗂️ **Boring storage.** One folder per dashboard. Delete the folder and the dashboard is gone. SQLite only indexes.
+- 📦 **Export and import.** Download a dashboard with its uploaded data as one `.patchbay.json` file and import it
+  on any Patchbay server: share a template, move from the public instance to your own, or keep a backup. Stored
+  secrets never leave the account.
 - 🎬 **Use cases on the landing page.** Tabs with a short video, the prompt that built the dashboard, a live
   read-only example and a one-click editable copy. Add your own by dropping a folder into `showcase/`.
 - 🌗 **Accessible charts.** Colour-blind-validated palette, light and dark themes, no dual axes, tables as an
@@ -270,7 +276,9 @@ request. The editor names each connector's data source next to its parameters.
 Plus your own data:
 
 - **Files:** CSV or JSON uploads (up to 5 MB, stored in the dashboard's folder), or a table pasted as inline rows.
-- **Any HTTPS JSON endpoint**, public or your own, fetched through an SSRF guard.
+- **Any HTTPS JSON endpoint**, public or your own, fetched through an SSRF guard. A self-hosted instance can also
+  open services on its own network (Home Assistant, Prometheus), over plain http too: `ALLOW_PRIVATE_HOSTS` in
+  [guide/deployment.md](guide/deployment.md#home-network-sources-allow_private_hosts).
 - **Private APIs:** an endpoint that needs a key uses a **secret** saved under Settings → Secrets. It is sent as a
   bearer token, a header or a query parameter, only to the origin and path prefix it is bound to, and its value never
   reaches the browser, the dashboard document or the agent. The instance switch `SECRETS` decides who may store them.
@@ -319,7 +327,9 @@ after every step.
   OAuth registrations per /56) and per user; `DEV_LOGIN` refuses to start unless `PUBLIC_URL` is localhost.
 - User-supplied URLs: HTTPS only, IANA special-purpose ranges blocked (IPv6 only within global unicast), including IPv6
   forms that embed IPv4 (mapped, translated, NAT64, Teredo, 6to4); the check runs inside the socket's DNS lookup (no
-  DNS-rebinding window); redirects re-checked; size and time capped.
+  DNS-rebinding window); redirects re-checked; size and time capped. A self-hosted instance may open
+  listed hosts of its own network (`ALLOW_PRIVATE_HOSTS`, administrators' dashboards by default); names reach only LAN
+  ranges, cloud metadata addresses only when listed exactly.
 - Markdown is rendered without raw HTML; SVG text in snapshots is escaped.
 - Resource limits everywhere: request bodies (1 MB; 8 MB for uploads and MCP), upload files (5 MB and 500,000
   cells, 200,000 on anonymous dashboards), uploads per dashboard (20 files / 25 MB as stored), documents (1 MB), new
@@ -368,7 +378,7 @@ described in [guide/deployment.md](guide/deployment.md#limits-for-a-small-public
 ## Deployment
 
 One container with a volume. Images for `linux/amd64` and `linux/arm64` are published to GHCR:
-`ghcr.io/carnaby/patchbay:latest` follows `main`, release tags (`0.1.0`, `0.1`) stay fixed, and every commit is
+`ghcr.io/carnaby/patchbay:latest` follows `main`, release tags (`0.2.0`, `0.2`) stay fixed, and every commit is
 also tagged with its full SHA.
 
 A production-style `docker-compose.yml` with Caddy (automatic HTTPS) is included. Point a DNS record at the server,

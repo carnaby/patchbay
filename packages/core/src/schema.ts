@@ -8,10 +8,15 @@
  */
 import { z } from 'zod';
 import { isValidTimeZone } from './clock.ts';
+import { IdSchema } from './ids.ts';
+import { DATASET_DEPTH, DATASET_INPUTS, lineageIssues } from './lineage.ts';
 import { SEARCH_ENGINES } from './search.ts';
 import { SoundRuleSchema } from './sound.ts';
+import { STATUS_LEVELS, STATUS_LIMITS } from './status.ts';
 import { COLOR_TOKENS } from './theme.ts';
 import { ExpressionSchema, TransformSchema, withStepIds } from './transforms.ts';
+
+export { IdSchema };
 
 export const SCHEMA_VERSION = 1;
 export const GRID_COLUMNS = 12;
@@ -31,6 +36,10 @@ export const LIMITS = {
    */
   inlineColumns: 200,
   transforms: 40,
+  /** Longest chain of datasets reading datasets (source kind "dataset", join and union); bounds the work per request. */
+  datasetDepth: DATASET_DEPTH,
+  /** Datasets one dataset reads, directly or through others. */
+  datasetInputs: DATASET_INPUTS,
   markdown: 20_000,
   title: 120,
   description: 1000,
@@ -40,13 +49,6 @@ export const LIMITS = {
    */
   documentBytes: 1_000_000,
 } as const;
-
-export const IdSchema = z
-  .string()
-  .regex(
-    /^[a-z0-9][a-z0-9_-]{0,39}$/,
-    'Ids are 1-40 chars of a-z, 0-9, "_" or "-", starting with a letter or digit',
-  );
 
 /** Ids of saved secrets. Not secret themselves: they appear in public documents and grant nothing. */
 export const SecretIdSchema = z
@@ -61,6 +63,9 @@ export const FEED_MIN_REFRESH_SEC = 300;
 /** HTTP sources are cached this long per address, so a faster refresh would only re-read the cache. */
 export const HTTP_MIN_REFRESH_SEC = 30;
 
+/** Ids of uploaded files. Unique within one dashboard's folder, not across dashboards: copies and imports keep them. */
+export const FileIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/);
+
 export const SourceSchema = z.discriminatedUnion('kind', [
   z
     .strictObject({
@@ -70,7 +75,7 @@ export const SourceSchema = z.discriminatedUnion('kind', [
     })
     .describe('A built-in public API connector, see list_connectors'),
   z
-    .strictObject({ kind: z.literal('upload'), fileId: z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/) })
+    .strictObject({ kind: z.literal('upload'), fileId: FileIdSchema })
     .describe('A CSV/JSON file uploaded into this dashboard'),
   z
     .strictObject({
@@ -81,7 +86,8 @@ export const SourceSchema = z.discriminatedUnion('kind', [
   z
     .strictObject({
       kind: z.literal('http'),
-      url: z.url({ protocol: /^https$/ }).max(2000),
+      // http:// is the server's decision (ALLOW_PRIVATE_HOSTS), which this pure schema cannot see.
+      url: z.url({ protocol: /^https?$/ }).max(2000),
       path: z
         .string()
         .max(200)
@@ -96,15 +102,19 @@ export const SourceSchema = z.discriminatedUnion('kind', [
         .describe('Saved secret ids (list_secrets), sent only to the address each is bound to'),
     })
     .describe(
-      'An HTTPS JSON endpoint. Private networks are blocked. Credentials only via "secrets", never in the URL',
+      'A JSON endpoint; http:// and private hosts only if the server allows. Credentials only via "secrets", never in URL',
     ),
   z
     .strictObject({
       kind: z.literal('feed'),
-      url: z.url({ protocol: /^https$/ }).max(2000),
+      // http:// is the server's decision (ALLOW_PRIVATE_HOSTS), which this pure schema cannot see.
+      url: z.url({ protocol: /^https?$/ }).max(2000),
       limit: z.number().int().min(1).max(200).default(30),
     })
     .describe('An RSS, Atom or JSON Feed, or a web page that announces one'),
+  z
+    .strictObject({ kind: z.literal('dataset'), id: IdSchema })
+    .describe('The processed rows of another dataset of this dashboard, fetched once and shared'),
 ]);
 export type Source = z.infer<typeof SourceSchema>;
 
@@ -140,6 +150,7 @@ export const DatasetSchema = z.strictObject({
     ),
 });
 export type Dataset = z.infer<typeof DatasetSchema>;
+export type DatasetInput = z.input<typeof DatasetSchema>;
 
 export const FormatSchema = z.strictObject({
   style: z.enum(['number', 'compact', 'percent', 'currency']).default('number'),
@@ -345,6 +356,25 @@ export const SearchConfigSchema = z.strictObject({
 });
 export type SearchConfig = z.infer<typeof SearchConfigSchema>;
 
+export const StatusConfigSchema = z.strictObject({
+  // Field descriptions live in the MCP reference text: every byte here is paid on each MCP connection.
+  entity: field,
+  status: field,
+  group: field.optional(),
+  label: field.optional(),
+  kind: field.optional(),
+  detail: field.optional(),
+  since: field.optional(),
+  link: field.optional(),
+  levels: z
+    .record(z.string().min(1).max(40), z.enum(STATUS_LEVELS))
+    .refine((m) => Object.keys(m).length <= STATUS_LIMITS.levels, `At most ${STATUS_LIMITS.levels} levels`)
+    .optional(),
+  summary: z.boolean().default(true),
+});
+export type StatusConfig = z.infer<typeof StatusConfigSchema>;
+export type StatusConfigInput = z.input<typeof StatusConfigSchema>;
+
 const widgetBase = {
   id: IdSchema,
   title: z.string().max(120).optional(),
@@ -359,6 +389,7 @@ export const WidgetSchema = z.discriminatedUnion('type', [
   z.strictObject({ ...dataWidgetBase, type: z.literal('gauge'), config: GaugeConfigSchema }),
   z.strictObject({ ...dataWidgetBase, type: z.literal('table'), config: TableConfigSchema }),
   z.strictObject({ ...dataWidgetBase, type: z.literal('map'), config: MapConfigSchema }),
+  z.strictObject({ ...dataWidgetBase, type: z.literal('status'), config: StatusConfigSchema }),
   z.strictObject({ ...widgetBase, type: z.literal('text'), config: TextConfigSchema }),
   z.strictObject({ ...widgetBase, type: z.literal('clock'), config: ClockConfigSchema }),
   z.strictObject({ ...widgetBase, type: z.literal('search'), config: SearchConfigSchema }),
@@ -448,6 +479,7 @@ export function integrityIssues(doc: DashboardDoc): string[] {
       if (step.id) stepIds.add(step.id);
     }
   }
+  issues.push(...lineageIssues(doc));
   const widgetIds = new Set<string>();
   for (const w of doc.widgets) {
     if (widgetIds.has(w.id)) issues.push(`Duplicate widget id "${w.id}"`);

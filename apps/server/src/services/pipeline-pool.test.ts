@@ -1,9 +1,15 @@
 import type { ResourceLimits } from 'node:worker_threads';
-import { inferTable, runPipeline, type Transform, TransformSchema } from '@patchbay/core';
+import {
+  inferTable,
+  type PipelineInputs,
+  runPipeline,
+  type Transform,
+  TransformSchema,
+} from '@patchbay/core';
 import { afterAll, describe, expect, it } from 'vitest';
 import { FakeWorker, settle } from '../util/fake-worker.test-helper.ts';
 import { runAsClient } from '../util/request-context.ts';
-import { runsInline, WorkerPool } from './pipeline-pool.ts';
+import { cellsOf, runsInline, WorkerPool } from './pipeline-pool.ts';
 import { UploadError } from './upload-parse.ts';
 
 const steps = (list: unknown[]) => list.map((s) => TransformSchema.parse(s)) as Transform[];
@@ -271,5 +277,62 @@ describe('worker pool lifecycle', () => {
       workers[0]!.exit();
       await pool.close();
     }
+  });
+});
+
+describe('steps that read other datasets', () => {
+  const orders = inferTable(
+    Array.from({ length: 3000 }, (_, i) => ({ id: i, country: i % 2 ? 'SK' : 'CZ' })),
+  );
+  const countries = inferTable([
+    { country: 'SK', region: 'Central' },
+    { country: 'CZ', region: 'Central' },
+  ]);
+  const inputs: PipelineInputs = {
+    tables: { countries: { name: 'Countries', table: countries } },
+    self: { id: 'orders', name: 'Orders' },
+  };
+  const join = steps([{ type: 'join', with: 'countries', on: ['country'] }]);
+
+  it('gives the same result in a worker as inline', async () => {
+    const pool = new WorkerPool({ size: 1, timeoutMs: 20_000, inlineBelowCells: 10 });
+    try {
+      expect(await pool.run(orders, join, inputs)).toEqual(runPipeline(orders, join, inputs));
+    } finally {
+      await pool.close();
+    }
+  });
+
+  it('counts the cells of the inputs for the inline threshold', () => {
+    const small = inferTable([{ country: 'SK' }]);
+    const union = steps([{ type: 'union', with: ['big'] }]);
+    const bigInputs: PipelineInputs = {
+      tables: { big: { name: 'Big', table: orders } },
+      self: { id: 's', name: 'S' },
+    };
+    expect(cellsOf(small, union, bigInputs)).toBe(1 + 3000 * 2);
+    expect(runsInline(small, union, 1000, bigInputs)).toBe(false);
+    expect(runsInline(small, union, 100_000, bigInputs)).toBe(true);
+    // A join can multiply rows, so it never runs on the calling thread.
+    expect(runsInline(small, join, 100_000, inputs)).toBe(false);
+  });
+
+  it('counts a table once per reference, so repeated unions cannot hide a large run on the calling thread', () => {
+    const small = inferTable([{ country: 'SK' }]);
+    const bigInputs: PipelineInputs = {
+      tables: { big: { name: 'Big', table: orders } },
+      self: { id: 's', name: 'S' },
+    };
+    // 6,000 cells each, under the 20,000-cell inline threshold once, far over it four times.
+    const repeated = steps([{ type: 'union', with: ['big', 'big', 'big', 'big'] }]);
+    expect(cellsOf(small, repeated, bigInputs)).toBe(1 + 4 * 3000 * 2);
+    expect(runsInline(small, repeated, 20_000, bigInputs)).toBe(false);
+    const spread = steps([
+      { type: 'union', with: ['big', 'big'] },
+      { type: 'union', with: ['big', 'big'] },
+      { type: 'sort', by: [{ field: 'country' }] },
+    ]);
+    expect(cellsOf(small, spread, bigInputs)).toBe(1 + 4 * 3000 * 2);
+    expect(runsInline(small, spread, 20_000, bigInputs)).toBe(false);
   });
 });

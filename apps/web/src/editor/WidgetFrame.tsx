@@ -1,5 +1,7 @@
 import {
+  CACHED_DATA_WARNING,
   creditLine,
+  effectiveRefreshSec,
   isDataWidgetType,
   type SoundRule,
   soundRuleMissingColumns,
@@ -70,16 +72,20 @@ export const WidgetFrame = memo(function WidgetFrame({
   const dataset = useEditor((s) =>
     'datasetId' in widget ? s.doc?.datasets.find((d) => d.id === widget.datasetId) : undefined,
   );
+  // The credit line follows the whole lineage, so it needs every dataset of the document.
+  const datasets = useEditor((s) => s.doc?.datasets);
   const flashAt = useEditor((s) => s.flash[widget.id]);
   const entityColors = useEditor((s) => s.doc?.colors);
   const isOwner = useEditor((s) => Boolean(s.access?.isOwner));
   const { data: secretsStatus } = useSecretsStatus();
   const apply = useEditor((s) => s.apply);
   const query = useDatasetResult(dashboardId, dataset, live);
+  // A derived dataset has no refreshSec of its own: it is live when a dataset it reads is (a primitive, like sync.ts).
+  const refreshSec = useEditor((s) => (dataset && s.doc ? effectiveRefreshSec(s.doc, dataset.id) : 0));
   const attributions = useAttributions();
   const credit = useMemo(
-    () => (dataset ? creditLine(widgetAttributions([dataset], [widget], attributions)) : ''),
-    [dataset, widget, attributions],
+    () => (dataset && datasets ? creditLine(widgetAttributions(datasets, [widget], attributions)) : ''),
+    [dataset, datasets, widget, attributions],
   );
   const [flashing, setFlashing] = useState(false);
   // Per screen and not saved: the table is a way to read this map, not a setting of the dashboard.
@@ -97,7 +103,7 @@ export const WidgetFrame = memo(function WidgetFrame({
     };
   }, [flashAt]);
 
-  const isLive = Boolean(dataset && dataset.refreshSec > 0);
+  const isLive = refreshSec > 0;
   const result = query.data;
 
   const duplicate = () => {
@@ -206,9 +212,11 @@ export const WidgetFrame = memo(function WidgetFrame({
             missing={result ? soundRuleMissingColumns(widget.sound, result.table) : []}
           />
         ) : null}
-        {result?.error && result.table.rows.length > 0 ? (
-          <span className="shrink-0 text-[11px] text-warn" title={result.error}>
-            stale
+        {result && !result.error && result.warning ? (
+          <span className="shrink-0 text-[11px] text-warn" title={result.warning}>
+            {/* A capped source or a cut parent is current but incomplete; only a cached copy is stale. Inherited
+                warnings are joined, so a mix with a cached copy reads stale. */}
+            {result.warning.includes(CACHED_DATA_WARNING) ? 'stale' : 'partial'}
           </span>
         ) : null}
         <span className="flex-1" />

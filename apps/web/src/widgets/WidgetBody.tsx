@@ -25,6 +25,7 @@ import { useNow, useTheme } from '../lib/hooks.ts';
 import { ClockBody } from './ClockBody.tsx';
 import { EChart } from './EChart.tsx';
 import { SearchBody } from './SearchBody.tsx';
+import { StatusBody } from './StatusBody.tsx';
 
 // Its own chunk: the base map and the map-only ECharts modules are downloaded only when a dashboard has a map.
 const MapBody = lazy(() => import('./MapBody.tsx'));
@@ -76,6 +77,8 @@ export function WidgetBody({
       return <GaugeBody widget={widget} result={result} />;
     case 'table':
       return <TableBody widget={widget} result={result} />;
+    case 'status':
+      return <StatusBody widget={widget} result={result} />;
     case 'map':
       return (
         <Suspense
@@ -213,7 +216,7 @@ export function TableBody({
   const table = result.table;
   const columns = useMemo(() => tableColumns(widget.config, table), [widget.config, table]);
   // Compiled once per result and config, not per cell.
-  const rules = useMemo(() => compileTableRules(widget.config), [widget.config]);
+  const rules = useMemo(() => compileTableRules(widget.config, table), [widget.config, table]);
   const rows = useMemo(() => {
     if (!sort) return table.rows;
     return [...table.rows].sort((a, b) => {

@@ -68,6 +68,24 @@ describe('parseBinding', () => {
     expect(parseBinding('https://api.example.com:443/x/').origin).toBe('https://api.example.com');
   });
 
+  it('binds to http:// and other ports only when the server allows private hosts', () => {
+    expect(() => parseBinding('http://192.168.1.20:8123/api/')).toThrow('only sent to https://');
+    expect(() => parseBinding('https://nas.lan:8443/')).toThrow('default HTTPS port');
+    expect(parseBinding('http://192.168.1.20:8123/api', { privateHosts: true })).toEqual({
+      origin: 'http://192.168.1.20:8123',
+      pathPrefix: '/api/',
+    });
+    expect(parseBinding('https://nas.lan:8443/', { privateHosts: true }).origin).toBe('https://nas.lan:8443');
+    expect(() => parseBinding('ftp://nas.lan/', { privateHosts: true })).toThrow('only sent to https://');
+    // The scheme is part of the origin: an http binding never matches the https address of the same host.
+    expect(
+      bindingMatches(
+        { origin: 'http://192.168.1.20:8123', pathPrefix: '/api/' },
+        'https://192.168.1.20:8123/api/x',
+      ).ok,
+    ).toBe(false);
+  });
+
   it('refuses what a binding cannot be', () => {
     for (const bad of [
       'http://api.example.com/',

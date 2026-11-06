@@ -1,4 +1,5 @@
-import type { Dataset, Widget } from './schema.ts';
+import { type LineageDataset, lineageDatasets } from './lineage.ts';
+import type { Widget } from './schema.ts';
 
 /**
  * The credit lines to show for these widgets, one per distinct source, in the order the widgets come.
@@ -6,18 +7,20 @@ import type { Dataset, Widget } from './schema.ts';
  * it, not only the editor. `attributions` maps a connector id to its credit text (ConnectorInfo.attribution).
  */
 export function widgetAttributions(
-  datasets: readonly Pick<Dataset, 'id' | 'source'>[],
+  datasets: readonly LineageDataset[],
   widgets: readonly Pick<Widget, 'type'>[],
   attributions: Readonly<Record<string, string>>,
 ): string[] {
-  const byId = new Map(datasets.map((d) => [d.id, d.source]));
   const lines = new Set<string>();
   for (const widget of widgets) {
     const datasetId = 'datasetId' in widget && typeof widget.datasetId === 'string' ? widget.datasetId : null;
-    const source = datasetId ? byId.get(datasetId) : undefined;
-    if (source?.kind !== 'connector') continue;
-    const line = attributions[source.connector]?.trim();
-    if (line) lines.add(line);
+    if (!datasetId) continue;
+    // A derived or combined dataset shows the provider's data too, and the credit is required where it is shown.
+    for (const d of lineageDatasets({ datasets }, datasetId)) {
+      if (d.source.kind !== 'connector') continue;
+      const line = attributions[d.source.connector]?.trim();
+      if (line) lines.add(line);
+    }
   }
   return [...lines];
 }

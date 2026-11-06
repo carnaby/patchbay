@@ -123,6 +123,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       anonymousStorageBytes: config.anonymousStorageBytes,
       userStorageBytes: config.userStorageBytes,
       trustedUrls: trustedSourceUrls(useCases),
+      privateHosts: config.privateHosts,
+      privateHostsFor: config.privateHostsFor,
     },
   );
   const wire = new ResultWire();
@@ -131,6 +133,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
     if (!deep) return;
     data.dropCaches();
     wire.dropCaches();
+    // Up to LIMITS.datasetInputs full tables per watched room, outside the byte-bounded caches.
+    hub.dropSeeds();
   });
   return {
     config,
@@ -157,6 +161,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       creates: new RateLimiter(20, 1),
       // A few images at once (a dashboard and some of its widgets), then one every two seconds.
       snapshots: new RateLimiter(4, 30),
+      // A backup script exporting every dashboard in a row, at one every two seconds after the first ten.
+      exports: new RateLimiter(10, 30),
     },
   };
 }

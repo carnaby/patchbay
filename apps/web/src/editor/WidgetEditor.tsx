@@ -15,6 +15,8 @@ import {
   SOUND_IDS,
   type SoundRule,
   type Suggestion,
+  statusDefaults,
+  suggestionDataset,
   type TableProfile,
   type Widget,
   type WidgetInput,
@@ -22,6 +24,7 @@ import {
 } from '@patchbay/core';
 import { useQuery } from '@tanstack/react-query';
 import {
+  Activity,
   AreaChart,
   BarChart3,
   CircleDot,
@@ -58,6 +61,7 @@ import {
 import { api } from '../lib/api.ts';
 import { previewSound, SOUND_LABELS } from '../lib/sounds.ts';
 import { groupTimeZones, timeZones } from '../lib/time-zones.ts';
+import { datasetInSync, lineageKey } from '../state/dataset-keys.ts';
 import { useEditor } from '../state/editor.ts';
 import { useDatasetResult } from '../state/sync.ts';
 import {
@@ -75,6 +79,7 @@ const TYPE_OPTIONS: { value: WidgetType; label: string; icon: ReactNode }[] = [
   { value: 'gauge', label: 'Gauge', icon: <Gauge className="size-3.5" /> },
   { value: 'table', label: 'Table', icon: <Table2 className="size-3.5" /> },
   { value: 'map', label: 'Map', icon: <MapIcon className="size-3.5" /> },
+  { value: 'status', label: 'Status', icon: <Activity className="size-3.5" /> },
   { value: 'text', label: 'Text', icon: <Type className="size-3.5" /> },
   { value: 'clock', label: 'Clock', icon: <Clock className="size-3.5" /> },
   { value: 'search', label: 'Search', icon: <Search className="size-3.5" /> },
@@ -147,6 +152,9 @@ export function defaultsFor(type: WidgetType, columns: Column[], previous?: Widg
       return { style: 'digital', hourCycle: localHourCycle(), showDate: true, showSeconds: false };
     case 'search':
       return { engine: 'google' };
+    case 'status':
+      // Name rules shared with the suggestions, so a dataset of checks needs no further clicks.
+      return statusDefaults(columns);
   }
 }
 
@@ -189,14 +197,18 @@ function NewWidget({ onCreated }: { onCreated: (id: string) => void }) {
   const apply = useEditor((s) => s.apply);
   const [datasetId, setDatasetId] = useState(datasets[0]?.id ?? '');
   const { columns } = useColumns(datasetId);
+  const lineage = useEditor((s) => (s.doc && datasetId ? lineageKey(s.doc, datasetId) : ''));
+  const inSync = useEditor((s) => datasetInSync(s.saved, s.doc, datasetId));
   const suggestions = useQuery({
-    queryKey: ['suggest', dashboardId, datasetId, JSON.stringify(datasets.find((d) => d.id === datasetId))],
+    // Keyed on the lineage (a derived dataset follows its parent) and fetched only once the server knows the
+    // current definitions: it profiles the saved dataset, not the unsaved one.
+    queryKey: ['suggest', dashboardId, datasetId, lineage],
     queryFn: () =>
       api<{ profile: TableProfile; suggestions: Suggestion[] }>(
         `/api/dashboards/${dashboardId}/suggest/${datasetId}`,
         { dashboardId },
       ),
-    enabled: Boolean(datasetId),
+    enabled: Boolean(datasetId) && inSync,
   });
 
   const create = (widget: Omit<WidgetInput, 'id'>, transforms: Suggestion['transforms'] = []) => {
@@ -206,17 +218,11 @@ function NewWidget({ onCreated }: { onCreated: (id: string) => void }) {
     const ops = [];
     let targetDataset = datasetId;
     if (transforms.length) {
-      const source = doc.datasets.find((d) => d.id === datasetId)!;
       const dsTaken = new Set(doc.datasets.map((d) => d.id));
-      targetDataset = slug(`${source.id}-${widget.title ?? 'view'}`, dsTaken).slice(0, 40);
+      targetDataset = slug(`${datasetId}-${widget.title ?? 'view'}`, dsTaken).slice(0, 40);
       ops.push({
         op: 'addDataset' as const,
-        dataset: {
-          ...source,
-          id: targetDataset,
-          name: `${source.name}: ${widget.title ?? 'view'}`.slice(0, 120),
-          transforms: [...source.transforms, ...transforms],
-        },
+        dataset: suggestionDataset(doc, datasetId, targetDataset, widget.title ?? 'view', transforms),
       });
     }
     ops.push({
@@ -399,6 +405,9 @@ function EditWidget({ widget }: { widget: Widget }) {
           <TableFields widget={widget} columns={columns} setConfig={setConfig} />
         ) : null}
         {widget.type === 'map' ? <MapFields widget={widget} columns={columns} setConfig={setConfig} /> : null}
+        {widget.type === 'status' ? (
+          <StatusFields widget={widget} columns={columns} setConfig={setConfig} />
+        ) : null}
         {widget.type === 'clock' ? <ClockFields config={widget.config} setConfig={setConfig} /> : null}
         {widget.type === 'search' ? <SearchFields config={widget.config} setConfig={setConfig} /> : null}
         {widget.type === 'text' ? (
@@ -429,7 +438,7 @@ function EditWidget({ widget }: { widget: Widget }) {
         <TableRulesFields widget={widget} columns={columns} setConfig={setConfig} />
       ) : null}
 
-      {isDataWidgetType(widget.type) ? (
+      {isDataWidgetType(widget.type) && widget.type !== 'status' ? (
         <FormatFields
           format={'format' in widget.config ? widget.config.format : undefined}
           setConfig={setConfig}
@@ -779,6 +788,112 @@ function MapFields({
         checked={c.terminator}
         onChange={(v) => setConfig({ terminator: v }, v ? 'Shaded the night side' : 'Removed night shading')}
       />
+    </>
+  );
+}
+
+function StatusFields({
+  widget,
+  columns,
+  setConfig,
+}: {
+  widget: Extract<Widget, { type: 'status' }>;
+  columns: Column[];
+  setConfig: SetConfig;
+}) {
+  const c = widget.config;
+  const notTime = (col: Column) => col.type !== 'time';
+  // levels has no editor in v1, and the app edits no widget as JSON: it is set through operations, in practice by an
+  // agent over MCP. The editor says it is there and leaves it untouched.
+  const mapped = Object.keys(c.levels ?? {}).length;
+  return (
+    <>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <ColumnSelect
+          label="One tile per"
+          value={c.entity}
+          columns={columns}
+          filter={notTime}
+          hint="e.g. service or host"
+          onChange={(v) => v && setConfig({ entity: v }, 'Changed tile column')}
+        />
+        <ColumnSelect
+          label="Status"
+          value={c.status}
+          columns={columns}
+          filter={notTime}
+          hint="fail, warn, ok, off and common synonyms; anything else counts as warn"
+          onChange={(v) => v && setConfig({ status: v }, 'Changed status column')}
+        />
+        <ColumnSelect
+          label="Sections by"
+          value={c.group}
+          columns={columns}
+          optional
+          noneLabel="No sections"
+          filter={notTime}
+          hint="e.g. the machine a service runs on"
+          onChange={(v) => setConfig({ group: v }, 'Changed sections')}
+        />
+        <ColumnSelect
+          label="Check name"
+          value={c.label}
+          columns={columns}
+          optional
+          filter={notTime}
+          onChange={(v) => setConfig({ label: v }, 'Changed check name column')}
+        />
+        <ColumnSelect
+          label="Summarise ok checks by"
+          value={c.kind}
+          columns={columns}
+          optional
+          filter={notTime}
+          hint='e.g. "container ×3"'
+          onChange={(v) => setConfig({ kind: v }, 'Changed check kind column')}
+        />
+        <ColumnSelect
+          label="Detail"
+          value={c.detail}
+          columns={columns}
+          optional
+          filter={notTime}
+          hint="Shown in full for failing and warning checks"
+          onChange={(v) => setConfig({ detail: v }, 'Changed detail column')}
+        />
+        <ColumnSelect
+          label="Since"
+          value={c.since}
+          columns={columns}
+          optional
+          filter={(col) => col.type === 'time'}
+          hint='Time columns; shown as "9 hours ago"'
+          onChange={(v) => setConfig({ since: v }, 'Changed since column')}
+        />
+        <ColumnSelect
+          label="Link"
+          value={c.link}
+          columns={columns}
+          optional
+          filter={(col) => col.type === 'string'}
+          noneLabel="No link"
+          hint="Opens the service in a new tab"
+          onChange={(v) => setConfig({ link: v }, 'Changed link column')}
+        />
+      </div>
+      <Toggle
+        label="Summary line"
+        checked={c.summary}
+        onChange={(summary) =>
+          setConfig({ summary }, summary ? 'Showed the summary line' : 'Hid the summary line')
+        }
+      />
+      {mapped ? (
+        <p className="text-xs text-muted">
+          {mapped} status value{mapped === 1 ? '' : 's'} mapped by "levels"; an AI agent can change them over
+          MCP.
+        </p>
+      ) : null}
     </>
   );
 }

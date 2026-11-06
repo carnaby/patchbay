@@ -14,6 +14,8 @@ import {
   type Source,
   type Suggestion,
   sourceSecretIds,
+  stepInputsOf,
+  suggestionDataset,
   type TableProfile,
   type TransformInput,
   type UploadedFile,
@@ -25,8 +27,10 @@ import {
   ArrowLeft,
   Database,
   FileUp,
+  GitBranchPlus,
   Globe,
   KeyRound,
+  Layers,
   Plug,
   Plus,
   Radio,
@@ -35,7 +39,7 @@ import {
   Table2,
   Trash2,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
   Button,
@@ -56,7 +60,7 @@ import { useConnectors } from '../lib/hooks.ts';
 import { withRetry } from '../lib/retry.ts';
 import { credentialErrorHint, introducedSecretIds, introducedSecretRefs } from '../lib/secrets.ts';
 import { useEditor } from '../state/editor.ts';
-import { fromWire } from '../state/sync.ts';
+import { fromWire, useDatasetColumns } from '../state/sync.ts';
 import {
   type CredentialContext,
   CredentialsField,
@@ -65,6 +69,15 @@ import {
   urlHint,
   useCredentialContext,
 } from './CredentialsField.tsx';
+import {
+  deleteBlocker,
+  derivedDraft,
+  formatInterval,
+  refreshLine,
+  secretsTooltip,
+  slug,
+  sourceCandidates,
+} from './dataset-lineage.ts';
 import { askPublicSecrets } from './public-secrets.tsx';
 import { TransformEditor } from './TransformEditor.tsx';
 
@@ -79,9 +92,6 @@ const REFRESH_OPTIONS = [
   { value: 3600, label: 'Every hour' },
 ];
 
-const formatInterval = (sec: number) =>
-  sec < 60 ? `${sec} s` : sec < 3600 ? `${Math.round(sec / 60)} min` : `${Math.round(sec / 360) / 10} h`;
-
 /** Skip previews for sources that are obviously not ready yet. */
 const previewable = (source: Source) =>
   !((source.kind === 'http' || source.kind === 'feed') && source.url.length < 12) &&
@@ -95,26 +105,25 @@ interface PreviewResponse {
   suggestions: Suggestion[];
 }
 
-async function previewRequest(dashboardId: string, dataset: unknown): Promise<PreviewResponse> {
+// `editing` names the saved dataset the draft replaces: the server checks the graph with the draft in its place
+// (otherwise a draft id that collides with a saved one is renamed).
+async function previewRequest(
+  dashboardId: string,
+  dataset: unknown,
+  editing?: string,
+): Promise<PreviewResponse> {
   const res = await api<PreviewResponse>(`/api/dashboards/${dashboardId}/preview?rows=arrays`, {
-    body: { dataset },
+    body: { dataset, ...(editing ? { editing } : {}) },
     dashboardId,
   });
   return { ...res, result: fromWire(res.result) };
 }
 
-function slug(text: string, taken: Set<string>) {
-  const base =
-    text
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 30) || 'data';
-  if (!taken.has(base)) return base;
-  for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
-}
-
-export function sourceSummary(source: Source, connectors: ConnectorInfo[] | undefined) {
+export function sourceSummary(
+  source: Source,
+  connectors: ConnectorInfo[] | undefined,
+  datasets: readonly Dataset[],
+): ReactNode {
   switch (source.kind) {
     case 'connector': {
       const c = connectors?.find((x) => x.id === source.connector);
@@ -129,6 +138,15 @@ export function sourceSummary(source: Source, connectors: ConnectorInfo[] | unde
       return new URL(source.url).host;
     case 'feed':
       return `Feed · ${new URL(source.url).host}`;
+    case 'dataset':
+      return (
+        <>
+          from{' '}
+          <strong className="font-medium text-ink-2">
+            {datasets.find((d) => d.id === source.id)?.name ?? source.id}
+          </strong>
+        </>
+      );
   }
 }
 
@@ -141,6 +159,7 @@ export function DatasetsPanel({
   onClose: () => void;
   dashboardId: string;
 }) {
+  const doc = useEditor((s) => s.doc);
   const datasets = useEditor((s) => s.doc?.datasets ?? []);
   const widgets = useEditor((s) => s.doc?.widgets ?? []);
   const apply = useEditor((s) => s.apply);
@@ -189,16 +208,20 @@ export function DatasetsPanel({
           </p>
           {datasets.map((d) => {
             const users = widgets.filter((w) => 'datasetId' in w && w.datasetId === d.id).length;
+            const blocker = doc ? deleteBlocker(doc, d.id) : null;
+            const lock = doc ? secretsTooltip(doc, d.id) : null;
             return (
               <Card key={d.id} className="flex items-center gap-3 p-3">
                 <Database className="size-4 shrink-0 text-muted" />
                 <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setEditing(d.id)}>
                   <div className="truncate text-sm font-medium">{d.name}</div>
                   <div className="flex items-center gap-1 truncate text-xs text-muted">
-                    {sourceSecretIds(d.source).length ? (
-                      <KeyRound className="size-3 shrink-0" aria-label="Uses secrets" />
+                    {lock ? (
+                      <span title={lock} className="inline-flex">
+                        <KeyRound className="size-3 shrink-0" aria-label={lock} />
+                      </span>
                     ) : null}
-                    {sourceSummary(d.source, connectors)} · {d.transforms.length} step
+                    {sourceSummary(d.source, connectors, datasets)} · {d.transforms.length} step
                     {d.transforms.length === 1 ? '' : 's'} · {users} widget{users === 1 ? '' : 's'}
                   </div>
                 </button>
@@ -209,7 +232,24 @@ export function DatasetsPanel({
                   </Badge>
                 ) : null}
                 <IconButton
+                  label="New dataset from this one"
+                  onClick={() => {
+                    if (!doc) return;
+                    const draft = derivedDraft(doc, d.id);
+                    const err = apply(
+                      [{ op: 'addDataset', dataset: draft }],
+                      `Added dataset "${draft.name}"`,
+                    );
+                    if (err) toast(err, 'bad');
+                    else setEditing(draft.id);
+                  }}
+                >
+                  <GitBranchPlus className="size-3.5" />
+                </IconButton>
+                <IconButton
                   label="Delete dataset"
+                  disabled={Boolean(blocker)}
+                  title={blocker ?? 'Delete dataset'}
                   onClick={() => {
                     const err = apply(
                       [{ op: 'removeDataset', id: d.id, cascade: true }],
@@ -297,11 +337,15 @@ function SourceEditor({
   dashboardId,
   source,
   credentials,
+  doc,
+  editingId,
   onChange,
 }: {
   dashboardId: string;
   source: Source;
   credentials: CredentialContext;
+  doc: DashboardDoc | null;
+  editingId: string | null;
   onChange: (s: Source) => void;
 }) {
   const { data: connectors } = useConnectors();
@@ -344,8 +388,11 @@ function SourceEditor({
   const connector =
     source.kind === 'connector' ? connectors?.find((c) => c.id === source.connector) : undefined;
 
+  const candidates = useMemo(() => (doc ? sourceCandidates(doc, editingId) : []), [doc, editingId]);
+
   const setKind = (kind: Source['kind']) => {
     if (kind === source.kind) return;
+    if (kind === 'dataset' && candidates[0]) onChange({ kind, id: candidates[0].id });
     if (kind === 'connector') onChange({ kind, connector: connectors?.[0]?.id ?? 'demo.signal', params: {} });
     if (kind === 'upload') onChange({ kind, fileId: files.data?.[0]?.id ?? 'none' });
     if (kind === 'inline') onChange({ kind, rows: [] });
@@ -404,8 +451,45 @@ function SourceEditor({
               </>
             ),
           },
+          ...(candidates.length > 0 || source.kind === 'dataset'
+            ? [
+                {
+                  value: 'dataset' as const,
+                  label: (
+                    <>
+                      <Layers className="size-3.5" />
+                      Another dataset
+                    </>
+                  ),
+                },
+              ]
+            : []),
         ]}
       />
+
+      {source.kind === 'dataset' ? (
+        <Field
+          label="Dataset"
+          hint="Its processed rows are the input here. It is loaded once for every dataset that reads it, so they stay in sync."
+        >
+          {(fid) => (
+            <Select
+              id={fid}
+              value={source.id}
+              onChange={(e) => onChange({ kind: 'dataset', id: e.target.value })}
+            >
+              {candidates.some((c) => c.id === source.id) ? null : (
+                <option value={source.id}>{source.id} (missing)</option>
+              )}
+              {candidates.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+      ) : null}
 
       {source.kind === 'feed' ? (
         <div className="grid gap-3 sm:grid-cols-[1fr_8rem]">
@@ -651,6 +735,7 @@ function DatasetEditor({
   onDone: () => void;
 }) {
   const apply = useEditor((s) => s.apply);
+  const doc = useEditor((s) => s.doc);
   // The version the user started editing from. The prop keeps updating when an
   // agent changes the dataset meanwhile; diffing against that would silently
   // revert the agent's edit, so the diff must be against this snapshot.
@@ -676,10 +761,18 @@ function DatasetEditor({
   // Default the name to the connector's name until the user types their own.
   const [nameTouched, setNameTouched] = useState(Boolean(initial));
   useEffect(() => {
-    if (nameTouched || draft.source.kind !== 'connector') return;
-    const c = connectors?.find((x) => x.id === (draft.source as { connector: string }).connector);
-    if (c && c.name !== draft.name) setDraft((d) => ({ ...d, name: c.name }));
-  }, [draft.source, connectors, nameTouched, draft.name]);
+    if (nameTouched) return;
+    let wanted: string | undefined;
+    if (draft.source.kind === 'connector') {
+      const id = draft.source.connector;
+      wanted = connectors?.find((x) => x.id === id)?.name;
+    } else if (draft.source.kind === 'dataset') {
+      const id = draft.source.id;
+      const parent = doc?.datasets.find((x) => x.id === id)?.name;
+      if (parent) wanted = `${parent} (derived)`.slice(0, 120);
+    }
+    if (wanted && wanted !== draft.name) setDraft((d) => ({ ...d, name: wanted }));
+  }, [draft.source, connectors, doc, nameTouched, draft.name]);
 
   // A connector serves the same reading until its minimum interval has passed, so faster choices would only promise
   // a refresh that never shows (agents get theirs raised on save; here they are simply not offered).
@@ -713,20 +806,40 @@ function DatasetEditor({
       draftIds.some((id) => !initialIds.includes(id)));
   const blockedByCredentials = refsChanged && issues.length > 0;
 
-  const previewBody = { source: debounced.source, transforms: debounced.transforms };
+  // The name travels too: the server needs the draft as it will be saved. `editing` is the saved dataset it replaces.
+  const editingId = initial?.id;
+  const previewBody = { name: debounced.name, source: debounced.source, transforms: debounced.transforms };
   const preview = useQuery({
-    queryKey: ['preview', dashboardId, JSON.stringify(previewBody)],
-    queryFn: () => previewRequest(dashboardId, previewBody),
+    queryKey: ['preview', dashboardId, editingId ?? null, JSON.stringify(previewBody)],
+    queryFn: () => previewRequest(dashboardId, previewBody, editingId),
     retry: false,
     enabled: previewable(debounced.source) && !previewBlocked,
   });
   const raw = useQuery({
-    queryKey: ['preview', dashboardId, JSON.stringify({ source: debounced.source, transforms: [] })],
-    queryFn: () => previewRequest(dashboardId, { source: debounced.source }),
+    queryKey: [
+      'preview',
+      dashboardId,
+      editingId ?? null,
+      JSON.stringify({ name: debounced.name, source: debounced.source }),
+    ],
+    queryFn: () => previewRequest(dashboardId, { name: debounced.name, source: debounced.source }, editingId),
     retry: false,
     enabled: previewable(debounced.source) && !previewBlocked,
   });
   const baseColumns = raw.data?.result.table.columns.map((c) => c.name) ?? [];
+  const baseTypes = Object.fromEntries(raw.data?.result.table.columns.map((c) => [c.name, c.type]) ?? []);
+
+  const candidates = useMemo(() => (doc ? sourceCandidates(doc, editingId ?? null) : []), [doc, editingId]);
+  // Only the datasets the steps read: loading every other dataset when the editor opens would be wasted work.
+  const columnsOf = useDatasetColumns(dashboardId, stepInputsOf(draft));
+  const parentId = draft.source.kind === 'dataset' ? draft.source.id : undefined;
+  const parent = parentId ? doc?.datasets.find((d) => d.id === parentId) : undefined;
+  // Union labels its own rows after where they came from: the parent of a derived dataset, otherwise this dataset.
+  const self = parent
+    ? { id: parent.id, name: parent.name }
+    : initial
+      ? { id: initial.id, name: draft.name }
+      : undefined;
 
   const save = async (extraWidgets: { widget: WidgetInput; transforms: TransformInput[] }[] = []) => {
     const doc = useEditor.getState().doc!;
@@ -758,14 +871,11 @@ function DatasetEditor({
       if (transforms.length) {
         target = slug(`${id}-${widget.title ?? 'view'}`, datasetIds).slice(0, 40);
         datasetIds.add(target);
+        // The dataset is saved in this same batch: the suggestion reads it instead of copying its source and steps.
+        const withDraft = { datasets: [...doc.datasets.filter((d) => d.id !== id), dataset] };
         ops.push({
           op: 'addDataset',
-          dataset: {
-            ...dataset,
-            id: target,
-            name: `${draft.name}: ${widget.title ?? 'view'}`.slice(0, 120),
-            transforms: [...draft.transforms, ...transforms],
-          },
+          dataset: suggestionDataset(withDraft, id, target, widget.title ?? 'view', transforms),
         });
       }
       const wid = slug(widget.title ?? widget.type, widgetIds);
@@ -792,7 +902,16 @@ function DatasetEditor({
         dashboardId={dashboardId}
         source={draft.source}
         credentials={credentials}
-        onChange={(source) => setDraft((d) => ({ ...d, source }))}
+        doc={doc}
+        editingId={initial?.id ?? null}
+        onChange={(source) =>
+          // A derived dataset has no interval or history of its own (the server would refuse them).
+          setDraft((d) => ({
+            ...d,
+            source,
+            ...(source.kind === 'dataset' ? { refreshSec: 0, accumulate: 0 } : {}),
+          }))
+        }
       />
 
       <Field label="Name">
@@ -814,70 +933,80 @@ function DatasetEditor({
         <TransformEditor
           steps={draft.transforms}
           baseColumns={baseColumns}
+          baseTypes={baseTypes}
           trace={result?.trace}
+          datasets={candidates.map((c) => ({ id: c.id, name: c.name }))}
+          columnsOf={columnsOf}
+          self={self}
           onChange={(transforms) => setDraft((d) => ({ ...d, transforms }))}
         />
       </section>
 
-      <section className="grid gap-3 sm:grid-cols-2">
-        <Field
-          label="Live refresh"
-          hint={
-            staticSource
-              ? 'Uploaded files and inline rows change only when you edit them, so there is nothing to refresh.'
-              : `While someone is watching, the server refreshes and pushes changes. Public APIs are cached to respect their limits${minRefreshSec > 1 ? `: this one updates at most every ${formatInterval(minRefreshSec)}` : ''}.`
-          }
-          error={
-            refreshTooFast
-              ? staticSource
-                ? 'This source never changes on its own. Choose Off.'
-                : `This source updates at most every ${formatInterval(minRefreshSec)}. Choose a longer interval.`
-              : null
-          }
-        >
-          {(fid) => (
-            <Select
-              id={fid}
-              value={draft.refreshSec}
-              onChange={(e) => setDraft((d) => ({ ...d, refreshSec: Number(e.target.value) }))}
-            >
-              {/* Agents may save any interval (one raised to a connector's minimum, say): show it as it is. */}
-              {REFRESH_OPTIONS.some((o) => o.value === draft.refreshSec) ? null : (
-                <option value={draft.refreshSec}>Every {formatInterval(draft.refreshSec)}</option>
-              )}
-              {REFRESH_OPTIONS.map((o) => (
-                <option
-                  key={o.value}
-                  value={o.value}
-                  disabled={o.value > 0 && (staticSource || o.value < minRefreshSec)}
-                >
-                  {o.label}
-                </option>
-              ))}
-            </Select>
-          )}
-        </Field>
-        <Field
-          label="Keep history (rows)"
-          hint='For sources returning only the current value: keeps the last N readings with a "fetched_at" time. 0 = off.'
-        >
-          {(fid) => (
-            <Input
-              id={fid}
-              type="number"
-              min={0}
-              max={5000}
-              value={draft.accumulate}
-              onChange={(e) =>
-                setDraft((d) => ({
-                  ...d,
-                  accumulate: Math.min(5000, Math.max(0, Number(e.target.value) || 0)),
-                }))
-              }
-            />
-          )}
-        </Field>
-      </section>
+      {draft.source.kind === 'dataset' ? (
+        <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">
+          {doc ? refreshLine(doc, draft.source.id) : null}
+        </p>
+      ) : (
+        <section className="grid gap-3 sm:grid-cols-2">
+          <Field
+            label="Live refresh"
+            hint={
+              staticSource
+                ? 'Uploaded files and inline rows change only when you edit them, so there is nothing to refresh.'
+                : `While someone is watching, the server refreshes and pushes changes. Public APIs are cached to respect their limits${minRefreshSec > 1 ? `: this one updates at most every ${formatInterval(minRefreshSec)}` : ''}.`
+            }
+            error={
+              refreshTooFast
+                ? staticSource
+                  ? 'This source never changes on its own. Choose Off.'
+                  : `This source updates at most every ${formatInterval(minRefreshSec)}. Choose a longer interval.`
+                : null
+            }
+          >
+            {(fid) => (
+              <Select
+                id={fid}
+                value={draft.refreshSec}
+                onChange={(e) => setDraft((d) => ({ ...d, refreshSec: Number(e.target.value) }))}
+              >
+                {/* Agents may save any interval (one raised to a connector's minimum, say): show it as it is. */}
+                {REFRESH_OPTIONS.some((o) => o.value === draft.refreshSec) ? null : (
+                  <option value={draft.refreshSec}>Every {formatInterval(draft.refreshSec)}</option>
+                )}
+                {REFRESH_OPTIONS.map((o) => (
+                  <option
+                    key={o.value}
+                    value={o.value}
+                    disabled={o.value > 0 && (staticSource || o.value < minRefreshSec)}
+                  >
+                    {o.label}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          <Field
+            label="Keep history (rows)"
+            hint='For sources returning only the current value: keeps the last N readings with a "fetched_at" time. 0 = off.'
+          >
+            {(fid) => (
+              <Input
+                id={fid}
+                type="number"
+                min={0}
+                max={5000}
+                value={draft.accumulate}
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    accumulate: Math.min(5000, Math.max(0, Number(e.target.value) || 0)),
+                  }))
+                }
+              />
+            )}
+          </Field>
+        </section>
+      )}
 
       <section className="space-y-2">
         <div className="flex items-center gap-2">
@@ -902,6 +1031,12 @@ function DatasetEditor({
           />
         ) : result ? (
           <>
+            {result.warning ? (
+              <p className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
+                <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" />
+                <span>{result.warning}</span>
+              </p>
+            ) : null}
             <PreviewTable result={result} />
             {preview.data?.profile ? (
               <div className="flex flex-wrap gap-1">

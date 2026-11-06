@@ -16,18 +16,25 @@ import {
   type DashboardMeta,
   type Dataset,
   type DataTable,
+  DocumentError,
   describePlacement,
   docSecretIds,
+  emptyDashboard,
   FEED_MIN_REFRESH_SEC,
   HTTP_MIN_REFRESH_SEC,
   isStaticSource,
   LIMITS,
+  lineageDatasets,
+  lineageIssues,
+  lineageSecretIds,
   MAX_SECRETS_PER_USER,
+  MAX_TABLE_FILE_BYTES,
   normalizeLayout,
   OpError,
   parseBinding,
   parseDashboard,
   placementConflict,
+  portability,
   type SecretInfo,
   type SecretMode,
   type SecretPlacement,
@@ -36,7 +43,9 @@ import {
   secretRefChanges,
   secretValueIssue,
   sourceSecretIds,
+  stripSecretRefs,
   type UploadedFile,
+  upstreamOf,
   type VersionInfo,
   type Visibility,
 } from '@patchbay/core';
@@ -52,12 +61,21 @@ import { newDashboardId, newId, randomToken, safeEqual, sha256 } from '../util/c
 import { badRequest, forbidden, HttpError, notFound, unauthorized } from '../util/errors.ts';
 import { Gate } from '../util/gate.ts';
 import { heavyWork } from '../util/heavy.ts';
+import type { NetworkAccess, PrivateHosts, PrivateHostsFor } from '../util/private-hosts.ts';
 import { currentClient } from '../util/request-context.ts';
-import type { Credential } from '../util/safe-fetch.ts';
+import { type Credential, checkUrl, URL_MESSAGES } from '../util/safe-fetch.ts';
 import type { DashboardTarget } from './data.ts';
 import { PipelineError } from './pipeline-pool.ts';
 import { buildTemplate } from './templates.ts';
-import { jsonUploadProblem, parseUpload, UploadError, type UploadInput } from './upload-parse.ts';
+import {
+  columnCountProblem,
+  jsonUploadProblem,
+  parseUpload,
+  tooLarge,
+  UploadError,
+  type UploadFormat,
+  type UploadInput,
+} from './upload-parse.ts';
 
 export interface Principal {
   user: UserRow | null;
@@ -100,8 +118,27 @@ const TOKEN_PUBLISH =
   'Make it public in the web app; it would show data fetched with your secrets to anyone. Tokens cannot do this.';
 const URL_SOURCES_SIGNED_IN =
   'This server loads data from URLs (http and feed sources) only for dashboards with an owner. Sign in and claim this dashboard first.';
+const PREVIEW_PRIVATE_READ_ONLY =
+  "Previewing plain http://, another port or a private host (ALLOW_PRIVATE_HOSTS) needs the dashboards:write scope, because it reaches the server operator's network. Reconnect with write access.";
+const PREVIEW_SECRETS_NEEDS_WRITE =
+  'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.';
+export const DERIVED_NEEDS_DASHBOARD =
+  'Derived sources read the saved datasets of a dashboard; pass dashboardId';
 const TOKEN_PUBLIC_EDIT =
   'This dashboard is public and shows data fetched with secrets, so agents and tokens cannot change it: a person has to make this change in the Patchbay web app. Ask the user to do it there, or to make the dashboard private first.';
+
+/** An id for a draft that names no saved dataset, so a preview never stands in for one by accident. */
+function freeDatasetId(doc: DashboardDoc, base: string): string {
+  const taken = new Set(doc.datasets.map((d) => d.id));
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
+}
+
+/** Where a draft is previewed: the dashboard, plus its document with the draft in it. */
+export interface PreviewTarget extends DashboardTarget {
+  doc: DashboardDoc;
+  dataset: Dataset;
+}
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 /**
@@ -143,6 +180,23 @@ function copyTitle(title: string): string {
   }
   return `${kept.trimEnd()}${COPY_SUFFIX}`;
 }
+
+const parsedUrl = (url: string): URL | null => {
+  try {
+    return new URL(url);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Plain http:// or a port other than the default: what only ALLOW_PRIVATE_HOSTS opens, so a dashboard whose owner
+ * may not use the list hears that, not the public instance's advice to ask the operator.
+ */
+const needsList = (url: string) => {
+  const parsed = parsedUrl(url);
+  return parsed !== null && (parsed.protocol === 'http:' || parsed.port !== '');
+};
 
 /** Says what to do about it, because the reader is often an agent that just added inline rows. */
 function documentTooLarge(doc: DashboardDoc, bytes: number): HttpError {
@@ -257,10 +311,32 @@ function uploadsFull(adding: number, used: number): HttpError {
   );
 }
 
-function withoutSecrets(d: Dataset): Dataset {
-  if (d.source.kind !== 'http' || !d.source.secrets) return d;
-  const { secrets: _removed, ...source } = d.source;
-  return { ...d, source };
+/** The refusal for a packed table over its size limit; uploads and the declarations of an import both use it. */
+const tableTooLarge = (name: string, bytes: number) =>
+  badRequest(
+    `The file "${name}" in this export is too large to import (${mb(bytes)}; at most ${mb(MAX_TABLE_FILE_BYTES)} per file).`,
+    { code: 'IMPORT_FILE_TOO_LARGE' },
+  );
+
+/** What an import says about each file it will upload next, checked before the dashboard is created. */
+export interface DeclaredFile {
+  id: string;
+  name: string;
+  rows: number;
+  columns: number;
+  /** Bytes of the packed table that will be uploaded. */
+  bytes: number;
+}
+
+const fileExists = (fileId: string) =>
+  new HttpError(409, `This dashboard already has file "${fileId}"`, { code: 'FILE_EXISTS' });
+
+export interface ExportPlan {
+  target: DashboardTarget;
+  doc: DashboardDoc;
+  /** Uploaded files to include: only those a dataset uses, and only for editors. */
+  files: UploadedFile[];
+  secretsRemovedFrom: string[];
 }
 
 function secretName(raw: string): string {
@@ -301,6 +377,10 @@ export interface DashboardServiceOptions {
   urlSources?: UrlSourcesMode;
   /** Exact source URLs from the repository's showcase; URL_SOURCES=signed-in lets these through. */
   trustedUrls?: ReadonlySet<string>;
+  /** ALLOW_PRIVATE_HOSTS, parsed; null when the operator listed none. */
+  privateHosts?: PrivateHosts | null;
+  /** PRIVATE_HOSTS_FOR: whose dashboards may use them. */
+  privateHostsFor?: PrivateHostsFor;
   /** Disk space all anonymous dashboards may take together; 0 = no limit. */
   anonymousStorageBytes?: number;
   /** Disk space one signed-in user's dashboards may take; 0 = no limit. Administrators are exempt. */
@@ -336,7 +416,14 @@ export class DashboardService {
   private readonly uploadMaxCellsAnonymous: number;
   private readonly urlSources: UrlSourcesMode;
   private readonly trustedUrls: ReadonlySet<string>;
+  private readonly privateHosts: PrivateHosts | null;
+  private readonly privateHostsMode: PrivateHostsFor;
   private readonly uploadGate: Gate;
+  /**
+   * The export form of each stored document, made once: the store shares a parsed document among its readers, so
+   * concurrent exports of it share one stripped document and therefore one serialisation (FolderStore.serializedDoc).
+   */
+  private readonly exportDocs = new WeakMap<DashboardDoc, ReturnType<typeof stripSecretRefs>>();
 
   constructor(
     store: FolderStore,
@@ -351,6 +438,8 @@ export class DashboardService {
     this.uploadMaxCellsAnonymous = options.uploadMaxCellsAnonymous ?? DEFAULT_UPLOAD_MAX_CELLS_ANONYMOUS;
     this.urlSources = options.urlSources ?? 'everyone';
     this.trustedUrls = options.trustedUrls ?? new Set();
+    this.privateHosts = options.privateHosts ?? null;
+    this.privateHostsMode = options.privateHostsFor ?? 'admins';
     this.uploadGate = options.uploadGate ?? newUploadGate();
     this.store = store;
     this.index = index;
@@ -510,23 +599,106 @@ export class DashboardService {
    * on its operator's connection must not fetch arbitrary addresses for strangers. Checked at use time (DataService
    * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
    * exception is a URL that appears verbatim in the repository's showcase, so anonymous copies of a use case work;
-   * matching is exact (no normalising), so a variant of a trusted URL is still refused.
+   * matching is exact (no normalising), so a variant of a trusted URL is still refused. Returns the private hosts
+   * the dashboard's sources may reach (null: public addresses only), decided by its owner, never by the viewer.
    */
-  assertMayFetchUrl(target: DashboardTarget, url: string) {
+  assertMayFetchUrl(target: DashboardTarget, url: string): PrivateHosts | null {
     if (this.urlSources === 'signed-in' && target.ownerId === null && !this.trustedUrls.has(url))
       throw forbidden(URL_SOURCES_SIGNED_IN);
+    const hosts = target.publicOnly ? null : this.privateHostsFor(target.ownerId);
+    // Without this, the dashboard would get the public instance's answer, which tells it to ask the operator.
+    if (!hosts && this.privateHosts && needsList(url))
+      throw forbidden(target.publicOnly ? PREVIEW_PRIVATE_READ_ONLY : this.privateHostsRefusal());
+    return hosts;
   }
 
-  private checkUrlSources(meta: StoredMeta, before: DashboardDoc, after: DashboardDoc) {
-    if (this.urlSources !== 'signed-in' || meta.ownerId !== null) return;
+  /**
+   * Whether a URL loads only with the operator's list: http://, another port, a listed host, or an address the
+   * public rules refuse (safe-fetch's `checkUrl` says which). A name that merely resolves into a listed range cannot
+   * be told apart here; a read-only preview's fetch refuses it (`publicOnly`).
+   */
+  private needsPrivateHosts(url: string): boolean {
+    const parsed = parsedUrl(url);
+    if (!this.privateHosts || !parsed) return false;
+    if (needsList(url) || this.privateHosts.listsHost(parsed.hostname)) return true;
+    try {
+      checkUrl(url, null);
+      return false;
+    } catch (e) {
+      return e instanceof HttpError && e.message === URL_MESSAGES.privateOff;
+    }
+  }
+
+  /**
+   * The operator's private hosts for the owners PRIVATE_HOSTS_FOR names, null for everyone else. Applied at use time,
+   * so a change of the setting or of ADMIN_EMAILS takes effect at once, also for documents saved before.
+   */
+  privateHostsFor(ownerId: string | null): PrivateHosts | null {
+    if (!this.privateHosts) return null;
+    if (this.privateHostsMode === 'everyone') return this.privateHosts;
+    if (!ownerId) return null;
+    if (this.privateHostsMode === 'signed-in') return this.privateHosts;
+    return this.users.isAdmin(this.users.byId(ownerId)) ? this.privateHosts : null;
+  }
+
+  /** For the MCP reference: what this user's dashboards may reach. Entries only to users who may use them. */
+  networkAccess(userId: string | null): NetworkAccess {
+    if (!this.privateHosts) return { kind: 'public' };
+    const hosts = this.privateHostsFor(userId);
+    return hosts ? { kind: 'private', entries: hosts.entries } : { kind: 'not-yours' };
+  }
+
+  private privateHostsRefusal(): string {
+    return this.privateHostsMode === 'admins'
+      ? 'On this server, only dashboards owned by an administrator can load from private hosts (ALLOW_PRIVATE_HOSTS).'
+      : 'On this server, only dashboards with an owner can load from private hosts (ALLOW_PRIVATE_HOSTS). Sign in and claim this dashboard first.';
+  }
+
+  /**
+   * The rules on the URL sources a write adds or changes. Every write that takes a document from a caller passes
+   * through here by way of checkWriteRules (ops, full saves, dry runs, imports). A restore keeps only the URL_SOURCES
+   * rule: it brings back what was stored, and the fetch decides about private hosts.
+   */
+  private checkUrlSources(
+    ownerId: string | null,
+    before: DashboardDoc,
+    after: DashboardDoc,
+    options: { restore?: boolean } = {},
+  ) {
     const previous = new Map(before.datasets.map((d) => [d.id, JSON.stringify(d.source)]));
-    const added = after.datasets.some(
-      (d) =>
-        (d.source.kind === 'http' || d.source.kind === 'feed') &&
-        previous.get(d.id) !== JSON.stringify(d.source) &&
-        !this.trustedUrls.has(d.source.url),
+    const changed = after.datasets.flatMap((d) =>
+      (d.source.kind === 'http' || d.source.kind === 'feed') &&
+      previous.get(d.id) !== JSON.stringify(d.source)
+        ? [{ id: d.id, url: d.source.url }]
+        : [],
     );
-    if (added) throw badRequest(URL_SOURCES_SIGNED_IN);
+    if (
+      this.urlSources === 'signed-in' &&
+      ownerId === null &&
+      changed.some((s) => !this.trustedUrls.has(s.url))
+    )
+      throw badRequest(URL_SOURCES_SIGNED_IN);
+    if (!options.restore) for (const s of changed) this.checkPrivateHosts(ownerId, s.id, s.url);
+  }
+
+  /**
+   * http:// and other ports are saved only where they can load: an early, readable answer for the editor and agents.
+   * The fetch (safe-fetch) is the boundary and its `checkUrl` the rule, so this only spares a dataset that can never
+   * load. A host name not in the list passes, because it may resolve into a listed range: the fetch decides.
+   */
+  private checkPrivateHosts(ownerId: string | null, datasetId: string, url: string) {
+    if (!needsList(url)) return;
+    // Without a list only http:// is refused here, as the schema did before; another port is left to the fetch.
+    if (!this.privateHosts && parsedUrl(url)?.protocol !== 'http:') return;
+    const hosts = this.privateHostsFor(ownerId);
+    if (this.privateHosts && !hosts)
+      throw badRequest(`Dataset "${datasetId}": ${this.privateHostsRefusal()}`);
+    try {
+      checkUrl(url, hosts);
+    } catch (e) {
+      if (e instanceof HttpError) throw badRequest(`Dataset "${datasetId}": ${e.message}`);
+      throw e;
+    }
   }
 
   private publicMeta(m: StoredMeta, title: string): DashboardMeta {
@@ -670,6 +842,31 @@ export class DashboardService {
     return { envelope: this.envelope(meta, doc, principal), ...(editKey ? { editKey } : {}) };
   }
 
+  /**
+   * The rules every write of a document passes, whichever way it arrives: a commit (operations, a full save, a
+   * restore), the dry run that answers like one, and an import, which writes a new dashboard (`before` is null). A
+   * rule added here reaches all of them; one added beside a single caller would let the others write around it.
+   */
+  private checkWriteRules(
+    target: Pick<StoredMeta, 'ownerId' | 'visibility'>,
+    before: DashboardDoc | null,
+    after: DashboardDoc,
+    p: Principal,
+    options: SecretWriteOptions = {},
+  ) {
+    // Nothing before a new dashboard: every dataset counts as added.
+    const previous = before ?? emptyDashboard(after.title);
+    this.checkUrlSources(target.ownerId, previous, after, { restore: options.restore === true });
+    this.checkSecretRefs(target, previous, after, p, options);
+    // Null, not the empty document: a new dashboard pays for all of its bytes and cannot be an old one kept loading.
+    this.checkSize(target.ownerId, before, after);
+    // A restore brings back what was stored before, like the secret checks above allow.
+    const inline = options.restore
+      ? null
+      : (inlineTooWide(previous, after) ?? inlineTextTooLong(previous, after));
+    if (inline) throw inline;
+  }
+
   /** Writes a new version under the lock; `mutate` receives the latest document. */
   private async commit(
     id: string,
@@ -681,14 +878,7 @@ export class DashboardService {
       const { meta, doc } = await this.load(id);
       this.assertCanEdit(meta, p);
       const next = mutate(doc, meta);
-      this.checkUrlSources(meta, doc, next.doc);
-      this.checkSecretRefs(meta, doc, next.doc, p, secretOptions);
-      this.checkSize(meta.ownerId, doc, next.doc);
-      // A restore brings back what was stored before, like the secret checks above allow.
-      const inline = secretOptions.restore
-        ? null
-        : (inlineTooWide(doc, next.doc) ?? inlineTextTooLong(doc, next.doc));
-      if (inline) throw inline;
+      this.checkWriteRules(meta, doc, next.doc, p, secretOptions);
       const actor = actorOf(p);
       const updated: StoredMeta = {
         ...meta,
@@ -758,11 +948,7 @@ export class DashboardService {
       this.checkOpsConnectors(doc, applied.doc, ops);
       const result = this.raiseRefreshToMinimum(doc, applied);
       // A dry run answers exactly like the save would, so agents learn about secret rules before saving.
-      this.checkUrlSources(meta, doc, result.doc);
-      this.checkSecretRefs(meta, doc, result.doc, p, options);
-      this.checkSize(meta.ownerId, doc, result.doc);
-      const inline = inlineTooWide(doc, result.doc) ?? inlineTextTooLong(doc, result.doc);
-      if (inline) throw inline;
+      this.checkWriteRules(meta, doc, result.doc, p, options);
       return { envelope: this.envelope(meta, result.doc, p), changes: result.changes, dryRun: true };
     }
     return this.commit(
@@ -843,8 +1029,9 @@ export class DashboardService {
     const { meta, doc } = await this.loadViewable(id, p);
     // Secrets belong to the dashboard's owner. Anyone else's copy would hold dead references (or be rejected, when
     // anonymous), so they are removed and the copy loads its URLs without credentials.
-    const strip = !(p.user && meta.ownerId === p.user.id) && docSecretIds(doc).length > 0;
-    const datasets = strip ? doc.datasets.map(withoutSecrets) : doc.datasets;
+    const stripped = stripSecretRefs(doc);
+    const strip = !(p.user && meta.ownerId === p.user.id) && stripped.datasetIds.length > 0;
+    const copied = strip ? stripped.doc : doc;
     const used = new Set(doc.datasets.flatMap((d) => (d.source.kind === 'upload' ? [d.source.fileId] : [])));
     // The copy's uploads share the original's bytes on disk, but they count towards the copy's owner in full: the
     // original may be deleted, and the index measures each dashboard on its own.
@@ -853,7 +1040,7 @@ export class DashboardService {
       this.assertUserRoom(p.user.id, 2 * jsonBytes(doc) + storedBytes(files));
     }
     const created = await this.create(p, {
-      doc: { ...doc, datasets, title: copyTitle(doc.title) },
+      doc: { ...copied, title: copyTitle(doc.title) },
       ...(strip ? { changes: ['Created', 'Removed secret references (secrets belong to their owner)'] } : {}),
     });
     // Only files the copied datasets actually use: unreferenced uploads stay private to editors. Viewers may copy
@@ -866,6 +1053,31 @@ export class DashboardService {
       await this.updateSize(id);
     }
     return created;
+  }
+
+  /**
+   * What an export of `id` may hold for `p`. Anyone who can view gets the document, which they can read anyway, with
+   * secret references removed: those name one account's secrets on one server. Uploaded tables only for editors, the
+   * people who can list and preview them already; viewers see data only through datasets.
+   */
+  async exportPlan(id: string, p: Principal): Promise<ExportPlan> {
+    const { meta, doc } = await this.loadViewable(id, p);
+    let stripped = this.exportDocs.get(doc);
+    if (!stripped) {
+      stripped = stripSecretRefs(doc);
+      this.exportDocs.set(doc, stripped);
+    }
+    const used = new Set(portability(doc).uploads.map((u) => u.fileId));
+    const files =
+      used.size > 0 && this.canEdit(meta, p)
+        ? (await this.store.listFiles(id)).filter((f) => used.has(f.id))
+        : [];
+    return {
+      target: { id, ownerId: meta.ownerId },
+      doc: stripped.doc,
+      files,
+      secretsRemovedFrom: stripped.datasetIds,
+    };
   }
 
   async delete(id: string, p: Principal) {
@@ -953,32 +1165,116 @@ export class DashboardService {
     return this.index.listByOwner(p.user.id);
   }
 
+  /**
+   * A new dashboard from the document of an export file (packages/core/src/export.ts). The document is untrusted, so
+   * it passes the rules a save does (checkWriteRules, like commit); secret references are always removed,
+   * because they name one account's secrets on one server. Ids stay as they are, upload file ids included: the files
+   * follow as uploads that name their id (uploadFile with fileId), so nothing in the document is rewritten. What
+   * those files will need is checked here first, so an import that cannot fit is refused before anything exists.
+   */
+  async importDashboard(
+    p: Principal,
+    input: { doc: unknown; files?: DeclaredFile[] | undefined; visibility?: Visibility | undefined },
+  ): Promise<{ envelope: DashboardEnvelope; editKey?: string; notes: string[] }> {
+    let parsed: DashboardDoc;
+    try {
+      parsed = parseDashboard(input.doc);
+    } catch (e) {
+      if (e instanceof DocumentError)
+        throw badRequest(`The dashboard in this file is not valid: ${e.issues.slice(0, 3).join('; ')}`, {
+          issues: e.issues,
+        });
+      throw e;
+    }
+    const stripped = stripSecretRefs(parsed);
+    // A new dashboard has nothing before it, so every dataset counts as added.
+    const before = emptyDashboard(parsed.title);
+    // The layout clean-up of every write; applyOps with no operations only normalises and re-validates.
+    const normalized = applyOps(stripped.doc, []).doc;
+    const [bad] = this.unknownConnectors(before, normalized);
+    if (bad) throw badRequest(`Dataset "${bad.datasetId}": ${unknownConnectorMessage(bad.connector)}`);
+    const { doc, changes } = this.raiseRefreshToMinimum(before, { doc: normalized, changes: [] });
+    const ownerId = p.user?.id ?? null;
+    // What create will store; create refuses a private anonymous dashboard itself.
+    const visibility: Visibility = p.user ? (input.visibility ?? 'private') : 'public';
+    this.checkWriteRules({ ownerId, visibility }, null, doc, p);
+    this.checkDeclaredFiles(ownerId, doc, input.files ?? []);
+    const names = stripped.datasetIds.map((id) => `"${doc.datasets.find((d) => d.id === id)?.name ?? id}"`);
+    const notes = [
+      ...(names.length
+        ? [
+            `Removed secret references from ${names.join(', ')}: secrets belong to their owner. Add your own under Credentials.`,
+          ]
+        : []),
+      ...changes,
+    ];
+    const created = await this.create(p, {
+      doc,
+      visibility: input.visibility,
+      changes: ['Imported from a Patchbay export file', ...notes],
+    });
+    return { ...created, notes };
+  }
+
+  /**
+   * The declared files against the upload limits of the dashboard's future owner, with the messages of the real
+   * uploads. Those are checked again for real, so a wrong declaration only fails later; this is for refusing early
+   * and whole.
+   */
+  private checkDeclaredFiles(ownerId: string | null, doc: DashboardDoc, files: DeclaredFile[]) {
+    if (files.length > MAX_FILES) throw uploadsFull(0, 0);
+    const used = new Set(portability(doc).uploads.map((u) => u.fileId));
+    const maxCells = ownerId === null ? this.uploadMaxCellsAnonymous : this.uploadMaxCells;
+    const seen = new Set<string>();
+    let total = 0;
+    for (const f of files) {
+      const label = `File "${f.name.slice(0, 120)}"`;
+      if (seen.has(f.id)) throw badRequest(`${label} is listed twice`);
+      seen.add(f.id);
+      if (!used.has(f.id))
+        throw badRequest(`${label} is not used by any dataset of this dashboard`, {
+          code: 'FILE_NOT_REFERENCED',
+        });
+      if (f.bytes > MAX_TABLE_FILE_BYTES) throw tableTooLarge(f.name.slice(0, 120), f.bytes);
+      // An export holds up to MAX_FILES tables: the refusal says which one.
+      const columns = columnCountProblem(f.columns);
+      if (columns) throw badRequest(`${label}: ${columns.message}`);
+      if (f.rows * f.columns > maxCells)
+        throw badRequest(
+          `${label}: ${tooLarge(f.rows, f.columns, maxCells, false).message}${this.cellsHint(ownerId)}`,
+        );
+      total += f.bytes;
+    }
+    // A stored table takes about the bytes of the packed text it comes from.
+    if (total > MAX_DASHBOARD_BYTES) throw uploadsFull(total, 0);
+    this.assertRoom(ownerId, total + 2 * documentBytes(doc));
+  }
+
   async uploadFile(
     id: string,
     p: Principal,
-    input: { name: string; content: string; format?: 'csv' | 'json' | undefined },
+    input: { name: string; content: string; format?: UploadFormat | undefined; fileId?: string | undefined },
   ): Promise<UploadedFile> {
-    const { meta } = await this.load(id);
+    const { meta, doc } = await this.load(id);
     this.assertCanEdit(meta, p);
-    if (Buffer.byteLength(input.content) > MAX_FILE_BYTES) throw badRequest('Files are limited to 5 MB');
+    const bytes = Buffer.byteLength(input.content);
+    if (input.format === 'table') {
+      if (bytes > MAX_TABLE_FILE_BYTES) throw tableTooLarge(input.name, bytes);
+    } else if (bytes > MAX_FILE_BYTES) throw badRequest('Files are limited to 5 MB');
+    if (input.fileId !== undefined) await this.assertFileSlot(id, doc, input.fileId);
     const existing = await this.store.listFiles(id);
     if (existing.length >= MAX_FILES || storedBytes(existing) >= MAX_DASHBOARD_BYTES) {
       throw uploadsFull(0, storedBytes(existing));
     }
     // Before parsing: the stored file is rarely much smaller than the upload.
     this.assertRoom(meta.ownerId, Buffer.byteLength(input.content));
-    const format =
+    const format: UploadFormat =
       input.format ?? (/\.json$/i.test(input.name) || /^\s*[[{]/.test(input.content) ? 'json' : 'csv');
     const maxCells = meta.ownerId === null ? this.uploadMaxCellsAnonymous : this.uploadMaxCells;
-    const refused = (e: UploadError) => {
-      const hint =
-        e.tooLarge && meta.ownerId === null && maxCells < this.uploadMaxCells
-          ? ` Dashboards of signed-in users accept up to ${this.uploadMaxCells.toLocaleString('en-US')} cells.`
-          : '';
-      return badRequest(e.message + hint);
-    };
+    const refused = (e: UploadError) =>
+      badRequest(e.message + (e.tooLarge ? this.cellsHint(meta.ownerId) : ''));
     // Here, not only in the worker: a hostile document is refused in milliseconds without taking a queue place.
-    if (format === 'json') {
+    if (format === 'json' || format === 'table') {
       const problem = jsonUploadProblem(input.content, maxCells);
       if (problem) throw refused(problem);
     }
@@ -989,11 +1285,32 @@ export class DashboardService {
     );
   }
 
+  /** What to tell an anonymous owner whose file hit the cell limit: signed-in users have a higher one. */
+  private cellsHint(ownerId: string | null) {
+    return ownerId === null && this.uploadMaxCellsAnonymous < this.uploadMaxCells
+      ? ` Dashboards of signed-in users accept up to ${this.uploadMaxCells.toLocaleString('en-US')} cells.`
+      : '';
+  }
+
+  /**
+   * An upload may name its file id only to supply a file the document uses and the dashboard does not have: what an
+   * import does, so the document keeps its ids. It never replaces a stored file, which copies may share through hard
+   * links; a retried upload whose first attempt landed gets FILE_EXISTS.
+   */
+  private async assertFileSlot(id: string, doc: DashboardDoc, fileId: string) {
+    if (!doc.datasets.some((d) => d.source.kind === 'upload' && d.source.fileId === fileId))
+      throw badRequest(
+        `No dataset of this dashboard uses file "${fileId}". Upload without fileId to add a new file.`,
+        { code: 'FILE_NOT_REFERENCED' },
+      );
+    if (await this.store.fileStamp(id, fileId)) throw fileExists(fileId);
+  }
+
   private async parseAndSave(
     id: string,
     meta: StoredMeta,
-    input: { name: string; content: string },
-    format: 'csv' | 'json',
+    input: { name: string; content: string; fileId?: string | undefined },
+    format: UploadFormat,
     maxCells: number,
     refused: (e: UploadError) => HttpError,
   ): Promise<UploadedFile> {
@@ -1006,7 +1323,7 @@ export class DashboardService {
       throw e;
     }
     const file = {
-      id: `f_${newId()}`.slice(0, 20),
+      id: input.fileId ?? `f_${newId()}`.slice(0, 20),
       name: input.name.slice(0, 120),
       rows: table.rows.length,
       columns: table.columns.length,
@@ -1016,6 +1333,9 @@ export class DashboardService {
     // The limits count bytes on disk, known only once serialised. Checked under the lock, so that concurrent
     // uploads cannot both squeeze in.
     const written = await this.store.withLock(id, async () => {
+      // Again under the lock: two uploads of the same imported file must not both be stored.
+      if (input.fileId !== undefined && (await this.store.fileStamp(id, input.fileId)))
+        throw fileExists(input.fileId);
       const files = await this.store.listFiles(id);
       const used = storedBytes(files);
       const bytes = await this.store.saveFile(id, { ...file, table }, (bytes) => {
@@ -1054,38 +1374,86 @@ export class DashboardService {
   /**
    * Where an unsaved dataset definition may be previewed. Raw uploads and secrets are for editors only: a preview
    * resolves secrets against the dashboard's owner, so it must be the owner (or their agent) asking. Without a
-   * dashboard, only the caller's own secrets can be used.
+   * dashboard, only the caller's own secrets can be used. Derived drafts read the saved datasets, and every secret
+   * and upload in their lineage counts as theirs.
+   *
+   * `doc` is the saved document with the draft in place of `editing` (when that dataset exists) or added under an
+   * id no saved dataset has; `dataset` is the draft under that id.
    */
   async previewTarget(
     p: Principal,
     dashboardId: string | undefined,
-    dataset: Dataset,
-    options: { requireEdit?: boolean } = {},
-  ): Promise<DashboardTarget> {
-    const upload = dataset.source.kind === 'upload';
+    draft: Dataset,
+    options: { requireEdit?: boolean; editing?: string } = {},
+  ): Promise<PreviewTarget> {
     // A preview sends the credentials to a URL of the caller's choosing (within the binding) without saving
-    // anything, so it is a use of the secret, not a read: read-only tokens may not do it.
-    if (p.readOnly && sourceSecretIds(dataset.source).length > 0) {
-      throw forbidden(
-        'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.',
-      );
+    // anything, so it is a use of the secret, not a read: read-only tokens may not do it. Checked before the
+    // dashboard is loaded, so such a token learns nothing about it.
+    if (p.readOnly && sourceSecretIds(draft.source).length > 0) throw forbidden(PREVIEW_SECRETS_NEEDS_WRITE);
+    if (!dashboardId && upstreamOf(draft).length > 0) throw badRequest(DERIVED_NEEDS_DASHBOARD);
+    const viewable = dashboardId ? await this.loadViewable(dashboardId, p) : null;
+    const meta = viewable?.meta ?? null;
+    // Before anything about the draft: someone who may not edit learns nothing from its cycle or its sources.
+    if (options.requireEdit && meta && !this.canEdit(meta, p))
+      throw forbidden('You cannot edit this dashboard');
+    let doc: DashboardDoc;
+    let dataset: Dataset;
+    if (viewable) {
+      const saved = viewable.doc;
+      const editing =
+        options.editing && saved.datasets.some((d) => d.id === options.editing) ? options.editing : undefined;
+      dataset = { ...draft, id: editing ?? freeDatasetId(saved, draft.id) };
+      doc = {
+        ...saved,
+        datasets: editing
+          ? saved.datasets.map((d) => (d.id === dataset.id ? dataset : d))
+          : [...saved.datasets, dataset],
+      };
+      // Interval and history do not change the rows a preview shows; only the graph must hold, so a preview cannot
+      // smuggle a cycle past validation.
+      const issues = lineageIssues({
+        datasets: doc.datasets.map((d) => (d.id === dataset.id ? { ...d, refreshSec: 0, accumulate: 0 } : d)),
+      });
+      if (issues.length) throw badRequest(issues.join('; '));
+    } else {
+      dataset = draft;
+      doc = { ...emptyDashboard('Preview'), datasets: [draft] };
     }
-    if (!dashboardId) {
+    // A draft reads its lineage with the owner's credentials: previewing it is a use of every secret in it, or a
+    // read-only token could re-run a secret-backed source by previewing a dataset derived from it.
+    const lineage = lineageDatasets(doc, dataset.id);
+    const secrets = lineageSecretIds(doc, dataset.id).length > 0;
+    const upload = lineage.some((d) => d.source.kind === 'upload');
+    if (p.readOnly && secrets) throw forbidden(PREVIEW_SECRETS_NEEDS_WRITE);
+    // The owner's network rights (ALLOW_PRIVATE_HOSTS) stay with the owner: a viewer's preview of a URL of the
+    // viewer's choosing runs with the viewer's own rights. That holds for the saved roots a derived draft reads as
+    // well: for a viewer they load with the viewer's network rights, so a root on a private host fails for a viewer
+    // without the list, as the root itself would if the viewer previewed it.
+    const ownerId = meta && this.canEdit(meta, p) ? meta.ownerId : (p.user?.id ?? null);
+    // Reaching the operator's network is a use as well: it runs requests the token's owner could not otherwise make.
+    // Only for someone who may use the list, though: the refusal depends on the list's entries, so it would let
+    // every signed-in user probe them. Every URL in the lineage counts, the saved roots' too.
+    if (p.readOnly && this.privateHostsFor(ownerId) !== null) {
+      const urls = lineage.flatMap((d) =>
+        d.source.kind === 'http' || d.source.kind === 'feed' ? [d.source.url] : [],
+      );
+      if (urls.some((url) => this.needsPrivateHosts(url))) throw forbidden(PREVIEW_PRIVATE_READ_ONLY);
+    }
+    const publicOnly = p.readOnly ? { publicOnly: true } : {};
+    if (!dashboardId || !meta) {
       if (upload) throw badRequest('Uploaded files need dashboardId');
       if (!p.user) throw unauthorized();
-      return { id: 'preview00', ownerId: p.user.id };
+      return { id: 'preview00', ownerId: p.user.id, ...publicOnly, preview: true, doc, dataset };
     }
-    const { meta } = await this.loadViewable(dashboardId, p);
-    const needsEdit = options.requireEdit || upload || sourceSecretIds(dataset.source).length > 0;
-    if (needsEdit && !this.canEdit(meta, p)) {
-      if (options.requireEdit) throw forbidden('You cannot edit this dashboard');
+    if ((upload || secrets) && !this.canEdit(meta, p)) {
       throw forbidden(
         upload
           ? 'Only editors of this dashboard can preview its uploaded files'
           : 'Only editors of this dashboard can preview sources that use secrets',
       );
     }
-    return { id: dashboardId, ownerId: meta.ownerId };
+    // Secrets and uploads need an editor (above), so nothing else the target carries changes meaning for a viewer.
+    return { id: dashboardId, ownerId, ...publicOnly, preview: true, doc, dataset };
   }
 
   // Secrets ------------------------------------------------------------------------------------------------------
@@ -1170,13 +1538,22 @@ export class DashboardService {
   ): SecretInfo {
     const user = this.secretsWriter(p);
     const name = secretName(input.name);
+    // The operator's private hosts, if this user's dashboards may use them: plain http:// and other ports then pass
+    // the binding's syntax, and the host is checked below.
+    const hosts = this.privateHostsFor(user.id);
     let binding: { origin: string; pathPrefix: string };
     try {
-      binding = parseBinding(input.sendTo);
+      binding = parseBinding(input.sendTo, { privateHosts: hosts !== null });
     } catch (e) {
       if (e instanceof BindingError) throw badRequest(e.message);
       throw e;
     }
+    // A binding is permanent, so it must name a host the list names itself, not one that resolves into it today.
+    const origin = new URL(binding.origin);
+    if ((origin.protocol === 'http:' || origin.port !== '') && !hosts?.listsHost(origin.hostname))
+      throw badRequest(
+        `Secrets go over http:// or to another port only for hosts listed in ALLOW_PRIVATE_HOSTS by name or address; ${origin.hostname} is not.`,
+      );
     const paramName = input.paramName?.trim() || null;
     const paramIssue = secretParamIssue(input.placement, paramName);
     if (paramIssue) throw badRequest(paramIssue);
@@ -1258,7 +1635,7 @@ export class DashboardService {
    * blocks unrelated edits or autosave.
    */
   private checkSecretRefs(
-    meta: StoredMeta,
+    meta: Pick<StoredMeta, 'ownerId' | 'visibility'>,
     before: DashboardDoc,
     after: DashboardDoc,
     p: Principal,

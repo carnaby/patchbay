@@ -34,7 +34,7 @@ describe('table columns', () => {
     ]);
     // A column's format overrides the table's; the others keep the table's.
     expect(cols[1]!.format).toEqual({ style: 'currency', currency: 'EUR' });
-    const rules = compileTableRules(config);
+    const rules = compileTableRules(config, table);
     expect(cellStyle(table.rows[0]!, cols[1]!, rules, t).text).toBe('€1,234.5');
   });
 
@@ -42,7 +42,7 @@ describe('table columns', () => {
     const config = TableConfigSchema.parse({ format: { style: 'number', decimals: 1 } });
     const cols = tableColumns(config, table);
     expect(cols.map((c) => c.field)).toEqual(['name', 'price', 'pct', 'status']);
-    expect(cellStyle(table.rows[0]!, cols[2]!, compileTableRules(config), t).text).toBe('12.3');
+    expect(cellStyle(table.rows[0]!, cols[2]!, compileTableRules(config, table), t).text).toBe('12.3');
   });
 
   it('keeps a configured column missing from the data, as a string column', () => {
@@ -66,7 +66,7 @@ describe('cellStyle', () => {
     ],
   });
   const cols = tableColumns(config, table);
-  const rules = compileTableRules(config);
+  const rules = compileTableRules(config, table);
   const style = (r: number, c: number) => cellStyle(table.rows[r]!, cols[c]!, rules, t);
 
   it('tints the whole row for a row rule, keeping the normal ink, and names the rule', () => {
@@ -103,14 +103,14 @@ describe('cellStyle', () => {
         { when: 'stock > 100', color: 'accent-2' },
       ],
     });
-    const out = cellStyle(table.rows[2]!, tableColumns(two, table)[0]!, compileTableRules(two), t);
+    const out = cellStyle(table.rows[2]!, tableColumns(two, table)[0]!, compileTableRules(two, table), t);
     expect(out.background).toBe(resolveColor('accent-1', t, 'fill'));
   });
 
   it('a rule that fails on a row just does not match', () => {
     const bad = TableConfigSchema.parse({ rules: [{ when: 'upper(stock) == "X"', color: 'accent-1' }] });
     expect(
-      cellStyle(table.rows[0]!, tableColumns(bad, table)[0]!, compileTableRules(bad), t).background,
+      cellStyle(table.rows[0]!, tableColumns(bad, table)[0]!, compileTableRules(bad, table), t).background,
     ).toBeUndefined();
   });
 
@@ -238,4 +238,15 @@ describe('reference lines', () => {
     ).toThrow(/not one of the chart's y columns/);
     expect(add({ kind: 'line', x: 'station', y: ['temp'], referenceLines: [{ stat: 'max' }] })).not.toThrow();
   });
+});
+
+it('colours rows by a rule that compares with the whole table', () => {
+  const table = inferTable([
+    { city: 'A', temp: 10 },
+    { city: 'B', temp: 30 },
+  ]);
+  const config = TableConfigSchema.parse({ rules: [{ when: 'temp > col_avg(temp)', color: 'negative' }] });
+  const rules = compileTableRules(config, table);
+  expect(rules.matching(table.rows[0]!)).toHaveLength(0);
+  expect(rules.matching(table.rows[1]!)).toHaveLength(1);
 });

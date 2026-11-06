@@ -6,8 +6,34 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-06
+
 ### Added
 
+- **Status widget** (`type: "status"`): monitor checks as one tile per service, host or project in the colour of the
+  worst check, in sections (for example per machine), with failing checks listed in full and ok checks summarised
+  per kind. What does not fit is folded into "+N" tiles instead of scrolling, and calm sections into one
+  "+N more sections" line before any problem is hidden, so it stays readable on a phone and an unattended wall
+  screen, and snapshots draw the same tiles. Suggested first for monitor checks (a row or a few per check, not an
+  event log), editable in the widget editor; the vocabulary of states is in `get_reference`. An optional `link`
+  column (a service's web address) puts an ↗ icon on its tile that opens the site in a new tab.
+- **Combining datasets**: a dataset can take its rows from another dataset of the same dashboard (`source.kind:
+  "dataset"`), pipelines can `join` (look up columns) and `union` (append rows, with a column naming the origin)
+  other datasets, and expressions get whole-table functions such as `col_sum(x, by?)` for shares of total and
+  differences from the average. Shared sources are fetched and processed once per request, refresh or snapshot. The
+  editor has an "Another dataset" source, a one-click "New dataset from this one", step editors for both new steps
+  and presets for share and difference; suggestions derive from the saved dataset instead of copying it.
+- **Export and import**: _Export file_ in a dashboard's Details and sharing panel downloads the dashboard and its
+  uploaded data as one `.patchbay.json` file; _Import file_ on the New dashboard page (and _Import_ on My dashboards)
+  turns such a file into a new dashboard on any server. Stored secrets, the owner, sharing and history are never
+  exported. New endpoints: `GET /api/dashboards/:id/export`, `POST /api/dashboards/import`; uploads accept
+  `format: "table"` and a `fileId` the document references.
+- **Home network sources** (`ALLOW_PRIVATE_HOSTS`, `PRIVATE_HOSTS_FOR`): a self-hosted instance can let http and feed
+  sources, and secrets, reach chosen hosts on its own network, also over plain `http://` and on any port;
+  administrators' dashboards only by default. Off unless set: a public instance behaves as before, except that an
+  `http://` address now gets a message explaining why instead of `Invalid URL`, a URL with another port says that
+  only the default HTTPS port works (instead of the private-network text), and a malformed redirect answers
+  `502 Invalid redirect`.
 - **Showcase format**: an optional `video-square.mp4` per use case for narrow screens, and one optional CSV
   attachment declared in `meta.json`, served as a download and listed with its row count.
 
@@ -21,6 +47,10 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 - A page translated by the browser (Google Translate and similar) no longer crashes with a `removeChild`
   `NotFoundError`. Widgets are marked `translate="no"`, so their live values keep updating.
+- A dataset whose source was cut to the size limit, served from a cached copy, or derived from a parent over 100,000
+  rows is no longer treated as failed: a filter that keeps no rows shows the widget's normal empty state with the
+  warning badge, the editor preview shows the table under the warning, and sound cues ring again.
+  Agents get the text as `warning` instead of `error`.
 
 ## [0.1.0] - 2026-10-31
 
@@ -80,5 +110,6 @@ The server was reviewed adversarially before release, and every finding has a re
 - Hostile feeds are parsed in linear time off the main thread; snapshot drawing is bounded per render.
 - `URL_SOURCES=signed-in` keeps strangers from making a public instance fetch arbitrary addresses.
 
-[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/carnaby/patchbay/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/carnaby/patchbay/releases/tag/v0.1.0

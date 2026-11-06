@@ -26,7 +26,7 @@ A dashboard is one JSON document:
 
 - **Datasets** describe where data comes from (`source`) and how it is processed (`transforms`), plus live behaviour
   (`refreshSec`, `accumulate`).
-- **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `map`), or show something that needs no
+- **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `map`, `status`), or show something that needs no
   dataset (`text`, `clock`, `search`). Several widgets can share one dataset.
   `text`, `clock` and `search` show no dataset (`isDataWidgetType`): no `datasetId`, no data query, no sound.
 - **Layout** is a single 12-column grid. Small screens stack widgets in reading order; there is deliberately no second,
@@ -88,9 +88,58 @@ inside SQLite (loses the "a dashboard is a folder" property and easy inspection)
 data directory, so scaling is vertical. A Postgres-backed index plus object storage would be the path to multiple
 instances.
 
+## 3a. Export and import
+
+A dashboard can leave its server as one `.patchbay.json` file (_Details and sharing → Export file_) and come back as
+a new dashboard on any server (_New dashboard → Import file_, or _Import_ on _My dashboards_):
+
+```json
+{
+  "format": "patchbay-dashboard",
+  "version": 1,
+  "exportedAt": "2026-11-03T10:00:00.000Z",
+  "secretsRemovedFrom": ["orders"],
+  "doc": { "schemaVersion": 1, "title": "…", "datasets": [], "widgets": [], "layout": [] },
+  "files": [
+    {
+      "id": "f_x1y2z3",
+      "name": "sales.csv",
+      "columns": [{ "name": "date", "type": "time" }],
+      "data": [[1767225600000]]
+    }
+  ]
+}
+```
+
+- The document is carried whole: dataset, step, widget, layout and file ids are never rewritten, so every reference
+  inside it stays valid. Uploaded files travel as the typed tables the server stores (times as epoch milliseconds),
+  so column types survive exactly; only files a dataset uses are included.
+- Never in the file: stored secrets and secret references (they name one account's secrets on one server; the
+  importer adds their own under Credentials), the owner, sharing settings, edit keys, version history and accumulated
+  live history. A key someone typed straight into a dataset URL is part of the document and does travel; the export
+  dialog warns about such URLs.
+- Anyone who can view a dashboard can export its document, a read-only token included. Uploaded files are included
+  only for its editors, the people who can already list and preview them.
+- Limits: a file up to 32 MB, at most 20 files, 7 MB per table. A stored upload can take more than 7 MB as a table
+  (packed, CSV values gain quotes and brackets and dates become 13-digit numbers), so the export dialog warns when an
+  included table is near or over that limit: it is exported, but no Patchbay server imports it again. Anonymous
+  imports are public, with the edit key kept in the importing browser; signed-in imports are private to the importer.
+- `GET /api/dashboards/:id/export` streams the file within the response budget, a part of a table at a time (see
+  [deployment](deployment.md#memory-budget)). An import is `POST /api/dashboards/import` with
+  `{ doc, files: [{ id, name, rows, columns, bytes }] }`, which runs every rule a save runs and checks what the
+  files will need before anything is created, then one `POST /api/dashboards/:id/files` per file with
+  `{ name, format: "table", fileId, content }`. An upload may name its `fileId` only when a dataset uses that id and
+  the dashboard does not have the file yet; a stored file is never replaced (`409 FILE_EXISTS`).
+- A reader accepts every `version` up to its own and refuses newer files with a clear message; any change to the
+  envelope's shape bumps `version`. Import also accepts a bare document and the answer of `GET /api/dashboards/:id`.
+
 ## 4. Data: connectors, pipelines, live updates
 
-`DataService.resolve(dataset)` = load source → (optionally) accumulate → run pipeline → cap rows.
+`DataService` resolves datasets in a **scope**, one per request, live tick, snapshot or MCP call: load source →
+(optionally) accumulate → run pipeline → cap rows. A scope loads and processes each dataset of the document at most
+once, however many datasets read it. Across scopes, the final capped result of a dataset in a lineage is reused for
+a few seconds while the same roots give the same cached tables (keyed by the definitions it depends on, those
+tables, the owner and the row cap), so a burst of viewers costs one run of the chain, not one per request.
 
 - **Connectors** are small modules with a parameter spec, a `fetch` against a fixed upstream host, and a `sample` that
   produces deterministic synthetic data of the same shape. `OFFLINE=1` switches every connector to `sample`, which keeps
@@ -105,6 +154,19 @@ instances.
   (publishers block faster polling); `OFFLINE=1` serves a deterministic sample.
 - **Pipelines run on the server.** The browser, the MCP agent and the PNG renderer therefore always agree on the numbers,
   and the browser never downloads more than it displays (10,000 rows max, at most 4 MB as JSON).
+- **Datasets can build on each other** (`source.kind: "dataset"`, and the `join` and `union` steps). The graph lives
+  in `packages/core/src/lineage.ts` and is checked on every write: no unknown ids, no cycles, at most 4 levels and 8
+  datasets read by one dataset, and no `refreshSec` or `accumulate` on a derived dataset (it refreshes with its
+  source). A child always receives its parent's full processed table (up to 100,000 rows; a longer parent gives its
+  last 100,000 and a warning), never the 10,000 rows sent to widgets, so aggregates over a derived dataset are not
+  computed on a truncated input. A join or union produces at most 100,000 rows. The scope resolves the tables a join
+  or union reads before the run, so a pipeline worker stays a pure function of its message, and credentials never
+  leave the main thread. An upstream failure shows on every dataset built on it as `Source dataset "<id>" failed: …`
+  (naming the dataset that actually failed); the age of a combined result is the age of its oldest input. Datasets
+  read only datasets of the same document: one document has one owner, one visibility and one set of editors, which
+  is what keeps the secret rules intact. Expressions can also use whole-table functions (`col_sum(x, by?)` …),
+  computed once per step over the rows at that point of the pipeline. A preview of a draft never adds to a saved
+  dataset's accumulated history, it only reads it.
 - **Results are serialised once and shared** (`services/result-wire.ts`). The web app asks for rows as arrays
   (`?rows=arrays`, column names once instead of in every row; `decodeTable` in core turns them back); other clients
   get rows as objects. Concurrent readers of a result and every subscriber of a live push send the same bytes, and the
@@ -149,9 +211,21 @@ instances.
   Errors quote the document's URL, never the request. The HTTP cache key includes the owner, secret id and revision,
   so a public dataset never gets a secret-backed response, two users never share one, and replacing a value
   invalidates at once. Values are decrypted per request and never reach pipeline workers, which only see rows.
+- **Private hosts.** `ALLOW_PRIVATE_HOSTS` is parsed once (`util/private-hosts.ts`) into a policy object. There is no
+  global: `DashboardService.assertMayFetchUrl` returns it for a dashboard whose owner `PRIVATE_HOSTS_FOR` names, and
+  `DataService` passes it to `safeFetchJson` and, through `FeedService`, to `safeFetchText`. safe-fetch classifies each
+  hop (public; https on 443 with the list: public or listed; plain http or another port: listed only) and checks every
+  resolved address inside the socket's lookup, as for public addresses. Responses fetched with the list are cached
+  under separate keys, so a dashboard without it never receives one. OAuth client documents never get the list.
 
 **Live updates.** `LiveHub` keeps a "room" per dashboard while at least one browser is subscribed over SSE. Each live
-dataset gets its own interval; results are hashed and pushed only when the hash changed. N viewers share one refresh
+dataset gets its own interval; a tick also re-runs every dataset that reads the one that ticked, parents first, taking
+everything else from the room's latest tables, so a static sibling is not fetched again (an input that has no timer
+of its own, `http`, `feed` and connector sources included, is reused from those tables until the dashboard changes;
+a room keeps at most 8, drops them all when memory runs short, and loads any other through the data caches).
+Live datasets that share a dataset refresh together, one round at a time, so a viewer never sees a child built from an
+older reading than its parent: a slow member paces the chains of its own group, while unrelated live chains refresh
+independently. Results are hashed and pushed only when the hash changed. N viewers share one refresh
 loop and an unwatched dashboard costs nothing. SSE was chosen over WebSockets because traffic is one-directional
 (writes go through normal HTTP requests), it works through every proxy, and reconnection is built into `EventSource`.
 
@@ -319,11 +393,14 @@ may want a limit in their reverse proxy.
 
 ## 10. Testing strategy
 
-- `packages/core`: unit tests for the expression language (including injection attempts), every transform, op atomicity,
+- `packages/core`: unit tests for the expression language (including injection attempts), every transform, the dataset graph (cycles,
+  limits, lineage keys), join and union, whole-table functions, op atomicity,
   colour tokens and contrast in both themes, series colours, table cell styling, reference lines,
   layout normalisation, profiling and suggestions.
 - `apps/server`: worker pool and render worker tests (identical results to inline, main thread stays responsive,
-  timeouts and running out of heap replace the worker, queue limit), and integration tests through `app.request()` against a real temporary data directory: permissions,
+  timeouts and running out of heap replace the worker, queue limit), resolution scopes (one load per shared parent,
+  error and age propagation), live refresh of dependents, a replay of the field-test dashboards with derived datasets
+  (same rows, byte-identical PNG as the hand-made copies), and integration tests through `app.request()` against a real temporary data directory: permissions,
   conflicts, claims, uploads, versioning, folder deletion, admin access, the complete OAuth flow, and MCP tools driven by
   the official MCP client.
 - The web app was verified end to end with Playwright during development (editing, undo, live agent edits arriving in an

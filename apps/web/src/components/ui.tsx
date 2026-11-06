@@ -251,6 +251,11 @@ export function Segmented<T extends string>({
 /** Open overlays, innermost last: Escape and the Tab trap belong to the innermost one only. */
 const overlayStack: symbol[] = [];
 
+/** Whether any overlay is open; page-wide shortcuts leave Escape to it. */
+export function hasOpenOverlay(): boolean {
+  return overlayStack.length > 0;
+}
+
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 

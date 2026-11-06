@@ -559,6 +559,7 @@ describe('private dashboards and missing ones look the same', () => {
       ['/versions', {}],
       ['/events', {}],
       ['/files', {}],
+      ['/export', {}],
       ['/data/x', {}],
       ['/snapshot.png', {}],
       ['/ops', { body: { ops: [{ op: 'setTitle', title: 'x' }] } }],

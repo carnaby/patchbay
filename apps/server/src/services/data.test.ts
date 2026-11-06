@@ -1,18 +1,25 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Dataset, DatasetSchema, inferTable, type PipelineResult } from '@patchbay/core';
+import {
+  CACHED_DATA_WARNING,
+  type Dataset,
+  DatasetSchema,
+  inferTable,
+  type PipelineResult,
+} from '@patchbay/core';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConnectorService } from '../connectors/registry.ts';
 import { FolderStore } from '../store/folder-store.ts';
 import { HttpError } from '../util/errors.ts';
 import { BusyError, Gate } from '../util/gate.ts';
 import { OutboundLimiter } from '../util/outbound.ts';
+import { parsePrivateHosts } from '../util/private-hosts.ts';
 
-const fetchMock = vi.hoisted(() => vi.fn<(url: string) => Promise<unknown>>());
+const fetchMock = vi.hoisted(() => vi.fn<(url: string, options?: unknown) => Promise<unknown>>());
 vi.mock('../util/safe-fetch.ts', async (original) => ({
   ...(await original<typeof import('../util/safe-fetch.ts')>()),
-  safeFetchJson: (url: string) => fetchMock(url),
+  safeFetchJson: (url: string, options?: unknown) => fetchMock(url, options),
 }));
 
 const { DataService } = await import('./data.ts');
@@ -159,7 +166,8 @@ describe('uploaded files', () => {
     }).resolve(target, narrow);
     expect(capped.table.columns).toHaveLength(300);
     expect(capped.table.rows).toHaveLength(100);
-    expect(capped.error).toMatch(/first 100 rows of the inline rows/);
+    expect(capped.warning).toMatch(/first 100 rows of the inline rows/);
+    expect(capped.error).toBeUndefined();
   });
 
   it('answers busy instead of queueing without limit, and does not fold that into the result', async () => {
@@ -203,6 +211,21 @@ describe('results', () => {
     expect(a.table.rows).toEqual([{ a: 1 }]);
     expect(b.table.rows).toEqual([{ a: 2 }]);
   });
+
+  it('marks a cached connector copy with the text the widget badge reads as stale', async () => {
+    const service = new ConnectorService({ offline: true });
+    vi.spyOn(service, 'load').mockResolvedValue({
+      table: inferTable([{ a: 1 }]),
+      fetchedAt: 1_000,
+      stale: 'upstream is down',
+    });
+    const r = await new DataService(service, store).resolve(
+      target,
+      dataset({ kind: 'connector', connector: 'weather.current', params: {} }),
+    );
+    expect(r.error).toBeUndefined();
+    expect(r.warning).toBe(`${CACHED_DATA_WARNING}: upstream is down`);
+  });
 });
 
 describe('http sources', () => {
@@ -220,6 +243,38 @@ describe('http sources', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('passes the private hosts the policy grants, and never serves those responses to other dashboards', async () => {
+    const lan = parsePrivateHosts('192.168.1.0/24')!;
+    const policy = vi.fn((t: { ownerId: string | null }) => (t.ownerId === 'admin' ? lan : null));
+    fetchMock.mockResolvedValueOnce([{ who: 'lan' }]).mockResolvedValueOnce([{ who: 'public' }]);
+    const data = new DataService(connectors, store, new InlineRunner(), { urlPolicy: policy });
+    const url = 'https://nas.example/api';
+    expect((await data.resolve({ id: target.id, ownerId: 'admin' }, http(url))).table.rows).toEqual([
+      { who: 'lan' },
+    ]);
+    expect((await data.resolve(target, http(url))).table.rows).toEqual([{ who: 'public' }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]![1]).toMatchObject({ privateHosts: lan });
+    expect(fetchMock.mock.calls[1]![1]).not.toHaveProperty('privateHosts');
+  });
+
+  it('does not share a concurrent fetch between a dashboard with the private hosts and one without', async () => {
+    const lan = parsePrivateHosts('192.168.1.0/24')!;
+    const policy = (t: { ownerId: string | null }) => (t.ownerId === 'admin' ? lan : null);
+    fetchMock.mockImplementation(async (_url, options) => [
+      { who: (options as { privateHosts?: unknown } | undefined)?.privateHosts ? 'lan' : 'public' },
+    ]);
+    const data = new DataService(connectors, store, new InlineRunner(), { urlPolicy: policy });
+    const url = 'https://nas.example/slow';
+    const [a, b] = await Promise.all([
+      data.resolve({ id: target.id, ownerId: 'admin' }, http(url)),
+      data.resolve(target, http(url)),
+    ]);
+    expect(a.table.rows).toEqual([{ who: 'lan' }]);
+    expect(b.table.rows).toEqual([{ who: 'public' }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps at most maxSourceCells cells of a response and says so', async () => {
     const wide = Array.from({ length: 1000 }, (_, i) =>
       Object.fromEntries(Array.from({ length: 10 }, (_, c) => [`c${c}`, i])),
@@ -228,7 +283,8 @@ describe('http sources', () => {
     const data = new DataService(connectors, store, new InlineRunner(), { maxSourceCells: 2500 });
     const r = await data.resolve(target, http('https://wide.example/x'));
     expect(r.table.rows).toHaveLength(250);
-    expect(r.error).toMatch(/first 250 rows/);
+    expect(r.warning).toMatch(/first 250 rows/);
+    expect(r.error).toBeUndefined();
   });
 
   it('never builds more than maxSourceCells cells when a wide record follows narrow ones', async () => {
@@ -243,7 +299,7 @@ describe('http sources', () => {
     const r = await data.resolve(target, http('https://late-wide.example/x'));
     expect(r.table.columns).toHaveLength(400);
     expect(r.table.rows.length * r.table.columns.length).toBeLessThanOrEqual(500_000);
-    expect(r.error).toMatch(/first 1,250 rows/);
+    expect(r.warning).toMatch(/first 1,250 rows/);
     fetchMock.mockResolvedValue([
       {},
       Object.fromEntries(Array.from({ length: 47_000 }, (_, c) => [`k${c}`, 1])),

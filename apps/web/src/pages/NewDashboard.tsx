@@ -4,6 +4,7 @@ import { Bitcoin, CloudSun, FileQuestion, Info, Plus, Radio, ShoppingCart, Waves
 import { type ComponentType, useState } from 'react';
 import { Link, useNavigate } from 'react-router';
 import { PageContainer } from '../components/AppShell.tsx';
+import { ImportDashboardCard } from '../components/ImportDashboard.tsx';
 import { Badge, Button, Card, cx, Field, Input, Spinner } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
 import { saveEditKey } from '../lib/edit-keys.ts';
@@ -128,6 +129,8 @@ export default function NewDashboard() {
           Create dashboard
         </Button>
       </Card>
+
+      <ImportDashboardCard />
 
       {user === null ? (
         <p className="mt-4 flex gap-2 text-sm text-ink-2">

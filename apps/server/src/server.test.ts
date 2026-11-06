@@ -12,9 +12,11 @@ import { snapshotGate } from './render/gate.ts';
 import { drawLimits, MAX_PIXELS } from './render/snapshot.ts';
 import { isAcceptableRedirect, redirectMatches } from './routes/oauth.ts';
 import { buildTemplate, listTemplates } from './services/templates.ts';
+import { BusyError } from './util/gate.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { runAsClient } from './util/request-context.ts';
 import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
+import { APP_VERSION } from './util/version.ts';
 
 const BASE = 'http://localhost:8787';
 let dir: string;
@@ -432,6 +434,146 @@ describe('dashboards over REST', () => {
   });
 });
 
+describe('derived datasets over REST', () => {
+  const rows = [
+    { city: 'A', temp: 1 },
+    { city: 'B', temp: 3 },
+  ];
+  // Task 7's preview test reuses this dashboard: the `creates` limiter allows 20 creates per client in this file.
+  let derivedCookie = '';
+  let derivedId = '';
+  async function derivedDashboard(cookie: string) {
+    const { envelope } = (await call('/api/dashboards', { body: {}, cookie })).json;
+    const id = envelope.meta.id as string;
+    const res = await call(`/api/dashboards/${id}/ops`, {
+      cookie,
+      body: {
+        ops: [
+          { op: 'addDataset', dataset: { id: 'root', name: 'Root', source: { kind: 'inline', rows } } },
+          ...['c1', 'c2', 'c3'].map((c, i) => ({
+            op: 'addDataset',
+            dataset: {
+              id: c,
+              name: c,
+              source: { kind: 'dataset', id: 'root' },
+              transforms: [{ type: 'derive', as: 'k', expr: `temp * ${i + 1}` }],
+            },
+          })),
+          ...['c1', 'c2', 'c3'].map((c) => ({
+            op: 'addWidget',
+            widget: { id: `w-${c}`, type: 'table', datasetId: c, config: {} },
+          })),
+        ],
+      },
+    });
+    expect(res.status).toBe(200);
+    return id;
+  }
+  const rootLoads = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.filter((c) => (c[1] as { id: string }).id === 'root').length;
+
+  it('serves a derived dataset and loads its parent once per snapshot', async () => {
+    derivedCookie = await login('derived-rest@example.com');
+    derivedId = await derivedDashboard(derivedCookie);
+    const cookie = derivedCookie;
+    const id = derivedId;
+    const data = await call(`/api/dashboards/${id}/data/c3`, { cookie });
+    expect(data.status).toBe(200);
+    expect(data.json.table.rows.map((r: { k: number }) => r.k)).toEqual([3, 9]);
+    const suggest = await call(`/api/dashboards/${id}/suggest/c3`, { cookie });
+    expect(suggest.status).toBe(200);
+    expect(suggest.json.profile.rows).toBe(2);
+    const spy = vi.spyOn(deps.data, 'loadSource');
+    try {
+      const png = await app.request(`${BASE}/api/dashboards/${id}/snapshot.png`, { headers: { cookie } });
+      expect(png.status).toBe(200);
+      expect(rootLoads(spy)).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('previews drafts against the saved datasets, without replacing one and refusing cycles', async () => {
+    // Run alone (-t), the test above did not create the dashboard.
+    if (!derivedId) {
+      derivedCookie = await login('derived-rest@example.com');
+      derivedId = await derivedDashboard(derivedCookie);
+    }
+    const cookie = derivedCookie;
+    const id = derivedId;
+    const added = await call(`/api/dashboards/${id}/ops`, {
+      cookie,
+      body: {
+        ops: [
+          // A saved dataset that happens to be called "preview" must not be replaced by a draft.
+          {
+            op: 'addDataset',
+            dataset: {
+              id: 'preview',
+              name: 'P',
+              source: { kind: 'inline', rows: [{ temp: 1 }, { temp: 3 }] },
+            },
+          },
+          {
+            op: 'addDataset',
+            dataset: { id: 'kid', name: 'Kid', source: { kind: 'dataset', id: 'preview' } },
+          },
+        ],
+      },
+    });
+    expect(added.status).toBe(200);
+    const draft = await call(`/api/dashboards/${id}/preview`, {
+      cookie,
+      body: {
+        dataset: {
+          source: { kind: 'dataset', id: 'preview' },
+          transforms: [{ type: 'filter', expr: 'temp > 2' }],
+        },
+      },
+    });
+    expect(draft.status).toBe(200);
+    expect(draft.json.result.table.rows).toEqual([{ temp: 3 }]);
+    expect(draft.json.result.datasetId).toBe('preview-2');
+    // Editing a saved dataset previews the draft in its place, so its readers see the change.
+    const edited = await call(`/api/dashboards/${id}/preview`, {
+      cookie,
+      body: {
+        editing: 'root',
+        dataset: { source: { kind: 'inline', rows: [{ city: 'C', temp: 5 }] } },
+      },
+    });
+    expect(edited.status).toBe(200);
+    expect(edited.json.result.table.rows).toEqual([{ city: 'C', temp: 5 }]);
+    expect(edited.json.result.datasetId).toBe('root');
+    const cycle = await call(`/api/dashboards/${id}/preview`, {
+      cookie,
+      body: { editing: 'preview', dataset: { source: { kind: 'dataset', id: 'kid' } } },
+    });
+    expect(cycle.status).toBe(400);
+    expect(cycle.json.error).toContain('Datasets "preview" → "kid" → "preview" form a cycle');
+    // Someone else cannot preview drafts against the (private) dashboard: it does not exist for them.
+    const stranger = await login('derived-preview-stranger@example.com');
+    const refused = await call(`/api/dashboards/${id}/preview`, {
+      cookie: stranger,
+      body: { dataset: { source: { kind: 'dataset', id: 'preview' } } },
+    });
+    expect(refused.status).toBe(404);
+    // A viewer of the now public dashboard is told it cannot edit, before anything about the draft (its cycle).
+    const shared = await call(`/api/dashboards/${id}/settings`, {
+      method: 'PATCH',
+      body: { visibility: 'public' },
+      cookie,
+    });
+    expect(shared.status).toBe(200);
+    const viewer = await call(`/api/dashboards/${id}/preview`, {
+      cookie: stranger,
+      body: { editing: 'preview', dataset: { source: { kind: 'dataset', id: 'kid' } } },
+    });
+    expect(viewer.status).toBe(403);
+    expect(viewer.json.error).toBe('You cannot edit this dashboard');
+  });
+});
+
 function pkce() {
   const verifier = randomBytes(32).toString('base64url');
   return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
@@ -605,6 +747,10 @@ describe('MCP tools', () => {
     client = await connectAgent('agent-owner@example.com');
   });
 
+  it('names the running release to agents', () => {
+    expect(client.getServerVersion()).toMatchObject({ name: 'patchbay', version: APP_VERSION });
+  });
+
   it('refuses a nested request body before the MCP SDK parses it', async () => {
     const cookie = await login('mcp-bomb@example.com');
     const pat = await call('/api/tokens', { body: { name: 'bomb', scopes: ['dashboards:write'] }, cookie });
@@ -635,6 +781,154 @@ describe('MCP tools', () => {
   const text = (r: { content?: unknown }) =>
     (r.content as { type: string; text?: string }[]).find((c) => c.type === 'text')!.text!;
 
+  it('renders derived datasets with one load of their parent, and checks dependents of a changed parent', async () => {
+    const agent = await ownClient('derived-agent@example.com');
+    const created = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'D' } })),
+    );
+    const dashboardId = created.dashboardId as string;
+    const apply = async (operations: unknown[]) =>
+      JSON.parse(
+        text(await agent.callTool({ name: 'apply_operations', arguments: { dashboardId, operations } })),
+      );
+    await apply([
+      {
+        op: 'addDataset',
+        dataset: { id: 'root', name: 'Root', source: { kind: 'inline', rows: [{ temp: 1 }, { temp: 3 }] } },
+      },
+      {
+        op: 'addDataset',
+        dataset: {
+          id: 'kids',
+          name: 'Kids',
+          source: { kind: 'dataset', id: 'root' },
+          transforms: [{ type: 'filter', expr: 'temp > 2' }],
+        },
+      },
+      { op: 'addWidget', widget: { id: 'w1', type: 'table', datasetId: 'root', config: {} } },
+      { op: 'addWidget', widget: { id: 'w2', type: 'table', datasetId: 'kids', config: {} } },
+    ]);
+    const spy = vi.spyOn(deps.data, 'loadSource');
+    try {
+      const shot = await agent.callTool({ name: 'render_snapshot', arguments: { dashboardId } });
+      expect(shot.isError).toBeFalsy();
+      expect(spy.mock.calls.filter((c) => (c[1] as { id: string }).id === 'root')).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+    const got = JSON.parse(
+      text(await agent.callTool({ name: 'get_data', arguments: { dashboardId, datasetId: 'kids' } })),
+    );
+    expect(got.sample ?? got.rows).toBeDefined();
+    // Renaming the parent's column through a step op breaks the child: the same answer says so.
+    const result = await apply([
+      { op: 'addStep', datasetId: 'root', step: { type: 'rename', map: { temp: 'celsius' } } },
+    ]);
+    const kids = result.dataChecks.find((c: { datasetId: string }) => c.datasetId === 'kids');
+    expect(kids.error).toMatch(/Unknown column "temp"/);
+  });
+
+  it('reports a capped or cached source as a warning, not a failure, also when a filter leaves no rows', async () => {
+    const agent = await ownClient('warning-agent@example.com');
+    const { dashboardId } = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'W' } })),
+    );
+    const warning = 'Showing the first 2 rows of the inline rows';
+    const load = deps.data.loadSource.bind(deps.data);
+    const spy = vi.spyOn(deps.data, 'loadSource').mockImplementation(async (t, dataset) => {
+      const loaded = await load(t, dataset);
+      return dataset.id === 'root' ? { ...loaded, warning } : loaded;
+    });
+    try {
+      const applied = JSON.parse(
+        text(
+          await agent.callTool({
+            name: 'apply_operations',
+            arguments: {
+              dashboardId,
+              operations: [
+                {
+                  op: 'addDataset',
+                  dataset: {
+                    id: 'root',
+                    name: 'Root',
+                    source: { kind: 'inline', rows: [{ t: 1 }, { t: 3 }] },
+                  },
+                },
+                {
+                  op: 'addDataset',
+                  dataset: {
+                    id: 'none',
+                    name: 'None',
+                    source: { kind: 'dataset', id: 'root' },
+                    transforms: [{ type: 'filter', expr: 't > 10' }],
+                  },
+                },
+                { op: 'addWidget', widget: { id: 'w', type: 'table', datasetId: 'none', config: {} } },
+              ],
+            },
+          }),
+        ),
+      );
+      for (const check of applied.dataChecks) {
+        expect(check.error, check.datasetId).toBeUndefined();
+        expect(check.warning, check.datasetId).toBe(warning);
+      }
+      const got = JSON.parse(
+        text(await agent.callTool({ name: 'get_data', arguments: { dashboardId, datasetId: 'none' } })),
+      );
+      expect(got.error).toBeUndefined();
+      expect(got.warning).toBe(warning);
+      const preview = await agent.callTool({
+        name: 'preview_data',
+        arguments: {
+          dashboardId,
+          source: { kind: 'dataset', id: 'root' },
+          transforms: [{ type: 'filter', expr: 't > 10' }],
+        },
+      });
+      expect(preview.isError).toBeFalsy();
+      expect(JSON.parse(text(preview)).warning).toBe(warning);
+      const shot = await agent.callTool({ name: 'render_snapshot', arguments: { dashboardId } });
+      expect(text(shot)).not.toContain('Data problems');
+      expect(text(shot)).toContain(`none: ${warning}`);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('answers a busy data check after the save without telling the agent to retry the saved batch', async () => {
+    const agent = await ownClient('busy-check@example.com');
+    const { dashboardId } = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'B' } })),
+    );
+    const operations = [
+      { op: 'addDataset', dataset: { id: 'x', name: 'X', source: { kind: 'inline', rows: [{ a: 1 }] } } },
+    ];
+    const busy = vi.spyOn(deps.data, 'loadSource').mockRejectedValue(new BusyError(undefined, 3));
+    let answer: Awaited<ReturnType<typeof agent.callTool>>;
+    let dry: Awaited<ReturnType<typeof agent.callTool>>;
+    try {
+      dry = await agent.callTool({
+        name: 'apply_operations',
+        arguments: { dashboardId, operations, dryRun: true },
+      });
+      answer = await agent.callTool({ name: 'apply_operations', arguments: { dashboardId, operations } });
+    } finally {
+      busy.mockRestore();
+    }
+    expect(JSON.parse(text(dry)).dataChecks[0].error).toMatch(/not checked; .*nothing was saved/);
+    // A retry would add the dataset a second time: the answer has to say the batch is in.
+    expect(answer.isError).toBeFalsy();
+    const result = JSON.parse(text(answer));
+    expect(result.version).toBe(2);
+    expect(result.dataChecks).toEqual([
+      { datasetId: 'x', error: 'The server is busy, so this dataset was not checked; the change is saved.' },
+    ]);
+    const stored = await deps.store.readMeta(dashboardId);
+    expect(stored!.version).toBe(2);
+  });
+
   it('lists the tools and the reference', async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name);
@@ -654,6 +948,40 @@ describe('MCP tools', () => {
     expect(text(ref)).toContain('sparingly');
   });
 
+  it('suggests derived datasets for saved data and explains the copies of a preview', async () => {
+    const agent = await connectAgent('derived-suggest@example.com');
+    extraClients.push(agent);
+    const text = (r: { content?: unknown }) =>
+      (r.content as { type: string; text?: string }[]).find((c) => c.type === 'text')!.text!;
+    const call = async (name: string, args: Record<string, unknown>) =>
+      JSON.parse(text(await agent.callTool({ name, arguments: args })));
+    const { dashboardId } = await call('create_dashboard', { title: 'S' });
+    const rows = Array.from({ length: 30 }, (_, i) => ({
+      region: ['EU', 'US', 'Asia'][i % 3],
+      revenue: 100 + i,
+    }));
+    await call('apply_operations', {
+      dashboardId,
+      operations: [
+        { op: 'addDataset', dataset: { id: 'sales', name: 'Sales', source: { kind: 'inline', rows } } },
+      ],
+    });
+    const suggested = await call('suggest_widgets', { dashboardId, datasetId: 'sales' });
+    const added = suggested.suggestions
+      .flatMap((s: { ops: { op: string; dataset?: unknown }[] }) => s.ops)
+      .filter((o: { op: string }) => o.op === 'addDataset')
+      .map((o: { dataset: { source: unknown; transforms: unknown[] } }) => o.dataset);
+    expect(added.length).toBeGreaterThan(0);
+    for (const d of added) expect(d.source).toEqual({ kind: 'dataset', id: 'sales' });
+    const preview = await call('preview_data', { source: { kind: 'inline', rows } });
+    expect(preview.suggestionsNote).toMatch(/suggest_widgets/);
+    const reference = text(await agent.callTool({ name: 'get_reference', arguments: {} }));
+    expect(reference).toContain('## Combining datasets');
+    expect(reference).toContain('- col_sum(x, by?): ');
+    expect(reference).toContain('Chains are at most 4 deep; a dataset reads at most 8 others');
+    expect(reference).toContain('Source dataset "<id>" failed');
+  });
+
   it('keeps tools/list compact', async () => {
     const list = await client.listTools();
     // Every client pays for this on every connection. It was 55.7 KB before shared subschemas were emitted once;
@@ -665,8 +993,12 @@ describe('MCP tools', () => {
     // map widget (proposal 0006), one more branch of the widget union with its shared fields and its colour map,
     // descriptions cut to a few words; -> 38,500: the clock and search widgets (proposal 0009), two more branches of
     // the widget union, without field descriptions; -> 39,300: the feed source and the table's column `link` and
-    // `style`).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(39_300);
+    // `style`; -> 39,400: the http source's description mentions http:// and private hosts (ALLOW_PRIVATE_HOSTS); -> 42,200: the join and union steps (proposal 0005),
+    // two more branches of the step union, advertised again wherever steps are accepted; -> 42,700: the dataset source (proposal 0005), one more branch of the
+    // source union, advertised wherever a source is accepted; -> 42,800: preview_data says which drafts need
+    // dashboardId; -> 44,000: the status widget joins WidgetSchema, one more branch of the widget union, its field
+    // descriptions in get_reference instead).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(44_000);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(

@@ -15,7 +15,13 @@
  */
 import { availableParallelism } from 'node:os';
 import { type ResourceLimits, Worker } from 'node:worker_threads';
-import { type DataTable, type PipelineResult, runPipeline, type Transform } from '@patchbay/core';
+import {
+  type DataTable,
+  type PipelineInputs,
+  type PipelineResult,
+  runPipeline,
+  type Transform,
+} from '@patchbay/core';
 import { BusyError } from '../util/gate.ts';
 import { memoryGuard } from '../util/memory-pressure.ts';
 import { currentClient } from '../util/request-context.ts';
@@ -29,7 +35,7 @@ import {
 import { parseUpload, UploadError, type UploadInput } from './upload-parse.ts';
 
 export interface PipelineRunner {
-  run(table: DataTable, transforms: Transform[]): Promise<PipelineResult>;
+  run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs): Promise<PipelineResult>;
   /** Parses an uploaded file into a table, off the main thread when workers are on. */
   parseUpload(input: UploadInput): Promise<DataTable>;
   /** Asks idle workers to collect their garbage (under memory pressure, util/memory-pressure.ts). */
@@ -48,8 +54,8 @@ export class PipelineError extends Error {
 
 /** Runs on the calling thread. Used when workers are disabled (PIPELINE_WORKERS=0). */
 export class InlineRunner implements PipelineRunner {
-  async run(table: DataTable, transforms: Transform[]) {
-    return runPipeline(table, transforms);
+  async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs) {
+    return runPipeline(table, transforms, inputs);
   }
   async parseUpload(input: UploadInput) {
     return parseUpload(input);
@@ -58,7 +64,7 @@ export class InlineRunner implements PipelineRunner {
 }
 
 type Message =
-  | { kind: 'pipeline'; table: DataTable; transforms: Transform[] }
+  | { kind: 'pipeline'; table: DataTable; transforms: Transform[]; inputs?: PipelineInputs }
   | { kind: 'upload'; input: UploadInput };
 
 interface Job {
@@ -109,13 +115,45 @@ const CHEAP_STEPS = new Set<Transform['type']>([
   'aggregate',
   'timeBucket',
   'fillNull',
+  // union only appends rows it was given; join can multiply them.
+  'union',
 ]);
 const MAX_INLINE_STEPS = 4;
 
+const cellCount = (t: DataTable) => t.rows.length * Math.max(t.columns.length, 1);
+
+/**
+ * The input size of a run, for the inline threshold and the heavy turn: its table, plus each table a join or union
+ * reads once per reference. Inputs are keyed by id, so a union listing one table four times receives it once but
+ * appends it four times; counting it once let such a run pass as small and stall the calling thread.
+ */
+export function cellsOf(table: DataTable, transforms: readonly Transform[], inputs?: PipelineInputs): number {
+  let cells = cellCount(table);
+  if (!inputs) return cells;
+  const counted = new Set<string>();
+  const add = (id: string) => {
+    if (!Object.hasOwn(inputs.tables, id)) return;
+    counted.add(id);
+    cells += cellCount(inputs.tables[id]!.table);
+  };
+  for (const step of transforms) {
+    if (step.type === 'join') add(step.with);
+    else if (step.type === 'union') for (const id of step.with) add(id);
+  }
+  // A table passed but not referenced is still copied to a worker.
+  for (const [id, { table: t }] of Object.entries(inputs.tables)) if (!counted.has(id)) cells += cellCount(t);
+  return cells;
+}
+
 /** Whether a pipeline is cheap enough to run on the calling thread. */
-export function runsInline(table: DataTable, transforms: Transform[], inlineBelowCells: number): boolean {
+export function runsInline(
+  table: DataTable,
+  transforms: Transform[],
+  inlineBelowCells: number,
+  inputs?: PipelineInputs,
+): boolean {
   return (
-    table.rows.length * Math.max(table.columns.length, 1) < inlineBelowCells &&
+    cellsOf(table, transforms, inputs) < inlineBelowCells &&
     transforms.length <= MAX_INLINE_STEPS &&
     transforms.every((t) => CHEAP_STEPS.has(t.type))
   );
@@ -292,13 +330,13 @@ export class WorkerPool implements PipelineRunner {
     });
   }
 
-  run(table: DataTable, transforms: Transform[]): Promise<PipelineResult> {
+  run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs): Promise<PipelineResult> {
     if (transforms.length === 0) return Promise.resolve({ table, trace: [] });
     // The configured size, not the live slots: while a worker is being replaced there may be none, and that work
     // must wait for the replacement rather than run here.
-    if (this.size === 0 || runsInline(table, transforms, this.inlineBelowCells)) {
+    if (this.size === 0 || runsInline(table, transforms, this.inlineBelowCells, inputs)) {
       try {
-        return Promise.resolve(runPipeline(table, transforms));
+        return Promise.resolve(runPipeline(table, transforms, inputs));
       } catch (e) {
         return Promise.reject(e);
       }
@@ -306,14 +344,15 @@ export class WorkerPool implements PipelineRunner {
     // A large table is copied to the worker and grows its heap: no such job starts while memory is short. Small
     // tables go to a worker only for their expressions, and refusing them would break ordinary dashboards. Tables
     // over HEAVY_PIPELINE_CELLS run inside a heavy turn (services/data.ts) and pass here as part of it.
-    if (table.rows.length * Math.max(table.columns.length, 1) >= this.inlineBelowCells) {
+    // Inputs count too: a small table joined to a large one copies the large one.
+    if (cellsOf(table, transforms, inputs) >= this.inlineBelowCells) {
       try {
         memoryGuard.admitHeavy({ oneShot: true });
       } catch (e) {
         return Promise.reject(e);
       }
     }
-    return this.submit({ kind: 'pipeline', table, transforms });
+    return this.submit({ kind: 'pipeline', table, transforms, ...(inputs ? { inputs } : {}) });
   }
 
   parseUpload(input: UploadInput): Promise<DataTable> {

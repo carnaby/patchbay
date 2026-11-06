@@ -258,8 +258,12 @@ export class MemoryGuard {
   private running = 0;
   /** When the last heavy job ended. */
   private heavyEndedAt = Number.NEGATIVE_INFINITY;
-  /** Set inside a running heavy job: what it starts is part of work already running. */
-  private readonly inside = new AsyncLocalStorage<true>();
+  /**
+   * Set inside a running heavy job: what it starts is part of work already running. Marked released when the job
+   * ends, because an async context outlives it: a run its caller gave up on (a deadline) may still be waiting for its
+   * turn, and is new work again when that turn comes.
+   */
+  private readonly inside = new AsyncLocalStorage<{ released: boolean }>();
   private poll: NodeJS.Timeout | null = null;
 
   constructor(options: MemoryGuardOptions = { reader: null }) {
@@ -334,7 +338,7 @@ export class MemoryGuard {
    */
   admitHeavy(options: { oneShot?: boolean } = {}) {
     const level = this.level();
-    if (level === 'normal' || this.inside.getStore()) return;
+    if (level === 'normal' || this.held()) return;
     if (level === 'soft' && this.idleFor(this.options.coolDownMs) && this.roomForOneJob()) {
       if (options.oneShot) this.heavyEndedAt = this.options.now();
       return;
@@ -348,12 +352,14 @@ export class MemoryGuard {
    * job starts meanwhile. A job inside a running one is part of it and runs at once.
    */
   async runHeavy<T>(task: () => Promise<T>): Promise<T> {
-    if (this.inside.getStore()) return task();
+    if (this.held()) return task();
     this.admitHeavy();
     this.running++;
+    const job = { released: false };
     try {
-      return await this.inside.run(true, task);
+      return await this.inside.run(job, task);
     } finally {
+      job.released = true;
       this.running--;
       this.heavyEndedAt = this.options.now();
     }
@@ -366,19 +372,25 @@ export class MemoryGuard {
    * admission, the first one keeps the resting server's one admission and the rest are refused.
    */
   reserveHeavy(): HeavyReservation {
-    if (this.inside.getStore()) return { run: (task) => task(), release: () => {} };
+    if (this.held()) return { run: (task) => task(), release: () => {} };
     this.admitHeavy();
     this.running++;
-    let released = false;
+    const job = { released: false };
     return {
-      run: (task) => this.inside.run(true, task),
+      run: (task) => this.inside.run(job, task),
       release: () => {
-        if (released) return;
-        released = true;
+        if (job.released) return;
+        job.released = true;
         this.running--;
         this.heavyEndedAt = this.options.now();
       },
     };
+  }
+
+  /** Inside heavy work that is still running. */
+  private held(): boolean {
+    const job = this.inside.getStore();
+    return job !== undefined && !job.released;
   }
 
   /** Heavy jobs running now (diagnostics and tests). */
