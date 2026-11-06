@@ -131,6 +131,7 @@ export interface StatusSection {
   other: boolean;
   level: StatusLevel;
   counts: StatusCounts;
+  /** Worst first, then in the order of their first row; "Other" last within its level, all-off tiles at the end. */
   tiles: StatusTile[];
 }
 
@@ -140,6 +141,7 @@ export interface StatusModel {
   /** The worst level of all checks; off when there are none. */
   level: StatusLevel;
   counts: StatusCounts;
+  /** Worst first, then in the order of their first row; "Other" last within its level. */
   sections: StatusSection[];
   /** Checks counted, after the caps. */
   checks: number;
@@ -219,13 +221,10 @@ function buildTile(key: string, draft: TileDraft): StatusTile {
 }
 
 function buildSection(key: string, draft: SectionDraft): StatusSection {
+  // The drafts are in the order their first row came, and the sort is stable: tiles of the same level keep the row
+  // order, so a sort step in the pipeline decides it ("NUC, NAS, Internet" is rarely alphabetical).
   const tiles = [...draft.tiles].map(([tileKey, t]) => buildTile(tileKey, t));
-  tiles.sort(
-    (a, b) =>
-      RANK[a.level] - RANK[b.level] ||
-      Number(a.other) - Number(b.other) ||
-      collator.compare(a.entity, b.entity),
-  );
+  tiles.sort((a, b) => RANK[a.level] - RANK[b.level] || Number(a.other) - Number(b.other));
   const counts = emptyCounts();
   for (const t of tiles) for (const level of STATUS_LEVELS) counts[level] += t.counts[level];
   return { key, label: draft.label, other: draft.other, level: worstOf(counts), counts, tiles };
@@ -299,13 +298,9 @@ export function statusModel(table: DataTable, config: StatusConfig): StatusModel
     counts[check.level]++;
     checks++;
   }
+  // Worst first; within a level in the order of their first row, as tiles are (buildSection).
   const built = [...sections].map(([key, draft]) => buildSection(key, draft));
-  built.sort(
-    (a, b) =>
-      RANK[a.level] - RANK[b.level] ||
-      Number(a.other) - Number(b.other) ||
-      collator.compare(a.label ?? '', b.label ?? ''),
-  );
+  built.sort((a, b) => RANK[a.level] - RANK[b.level] || Number(a.other) - Number(b.other));
   return {
     grouped: groupField !== undefined,
     summary: config.summary,
@@ -692,7 +687,8 @@ interface FitState {
  * soon as everything fits: off tiles, then ok tiles, then calm sections to their header line, then the ok and off
  * cells of sections with problems, then the calm header lines at the end into one "+N more sections" line (one more
  * section at a time), then that line too, then details to two lines, then problem tiles into "+N more problems"
- * (a section left without problem tiles folds away with them).
+ * (a section left without problem tiles folds away with them). A fold of calm tiles or header lines that leaves the
+ * layout as tall as before is undone and the next step tried.
  * What is broken outranks the names of calm sections, whose counts stay in the summary line. Nothing scrolls: the
  * widget runs unattended on wall screens, so what does not fit is folded and counted, never cut off.
  */
@@ -814,55 +810,110 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
   };
 
   const reversed = [...states].reverse();
-  // Each step reports whether it changed anything. A single tile is never folded into a "+1" of the same size.
-  const steps: (() => boolean)[] = [
-    ...reversed.map((s) => () => {
-      if (s.offFolded || s.off.length < 2) return false;
-      s.offFolded = true;
-      return true;
-    }),
-    ...reversed.map((s) => () => {
-      if (s.okFolded || s.ok.length < 2) return false;
-      s.okFolded = true;
-      return true;
+  // Each step reports whether it changed anything. A single tile is never folded into a "+1" of the same size. A step
+  // with an undo is a fold of tiles that are fine: it stays only when the layout gets shorter, because folding three
+  // tiles into one cell of the same row hides their names and gains nothing. `widen` also folds the section's off
+  // tiles when the ok fold leaves the layout too tall, and stays only if that makes it shorter (`narrow` takes it
+  // back): an off fold skipped as useless before can save a row once the ok tiles are one cell, and ok and off tiles
+  // can share a row that only both folds free.
+  const steps: { apply: () => boolean; widen?: () => boolean; narrow?: () => void; undo?: () => void }[] = [
+    ...reversed.map((s) => ({
+      apply: () => {
+        if (s.offFolded || s.off.length < 2) return false;
+        s.offFolded = true;
+        return true;
+      },
+      undo: () => {
+        s.offFolded = false;
+      },
+    })),
+    ...reversed.map((s) => {
+      let widened = false;
+      return {
+        apply: () => {
+          if (s.okFolded || s.ok.length < 2) return false;
+          s.okFolded = true;
+          return true;
+        },
+        widen: () => {
+          if (s.offFolded || s.off.length < 2) return false;
+          s.offFolded = widened = true;
+          return true;
+        },
+        narrow: () => {
+          if (widened) s.offFolded = widened = false;
+        },
+        undo: () => {
+          s.okFolded = false;
+          if (widened) s.offFolded = widened = false;
+        },
+      };
     }),
     ...(model.grouped
-      ? reversed.map((s) => () => {
-          if (s.headerOnly || s.problems.length > 0) return false;
-          s.headerOnly = true;
-          return true;
-        })
+      ? reversed.map((s) => ({
+          apply: () => {
+            if (s.headerOnly || s.problems.length > 0) return false;
+            s.headerOnly = true;
+            return true;
+          },
+          undo: () => {
+            s.headerOnly = false;
+          },
+        }))
       : []),
-    ...reversed.map((s) => () => {
-      if (s.bare || s.problems.length === 0 || s.ok.length + s.off.length === 0) return false;
-      s.bare = true;
-      return true;
-    }),
+    ...reversed.map((s) => ({
+      apply: () => {
+        if (s.bare || s.problems.length === 0 || s.ok.length + s.off.length === 0) return false;
+        s.bare = true;
+        return true;
+      },
+    })),
     // Two header lines into one saves a line; one into "+1 more section" would save nothing.
     ...(model.grouped
-      ? Array.from({ length: Math.max(0, calm - 1) }, (_, i) => () => {
-          const n = i + 2;
-          if (!states.slice(-n).every((s) => s.headerOnly)) return false;
-          folded = n;
-          return true;
+      ? Array.from({ length: Math.max(0, calm - 1) }, (_, i) => {
+          let before = 0;
+          return {
+            apply: () => {
+              const n = i + 2;
+              if (!states.slice(-n).every((s) => s.headerOnly)) return false;
+              before = folded;
+              folded = n;
+              return true;
+            },
+            undo: () => {
+              folded = before;
+            },
+          };
         })
       : []),
-    () => {
-      if (!model.grouped || calm === 0 || !states.slice(-calm).every((s) => s.headerOnly)) return false;
-      folded = calm;
-      dropped = true;
-      return true;
+    {
+      apply: () => {
+        if (!model.grouped || calm === 0 || !states.slice(-calm).every((s) => s.headerOnly)) return false;
+        folded = calm;
+        dropped = true;
+        return true;
+      },
     },
-    () => {
-      if (clamp) return false;
-      clamp = true;
-      return true;
+    {
+      apply: () => {
+        if (clamp) return false;
+        clamp = true;
+        return true;
+      },
     },
   ];
   let layout = measure();
   for (const step of steps) {
     if (layout.fits) break;
-    if (step()) layout = measure();
+    if (!step.apply()) continue;
+    let next = measure();
+    if (step.widen && !next.fits && step.widen()) {
+      const wider = measure();
+      if (wider.height < next.height) next = wider;
+      else step.narrow?.();
+    }
+    if (step.undo && next.height >= layout.height) step.undo();
+    else layout = next;
   }
   // Problems are hidden only for the problem tiles themselves to fit, and then until they do: a tile is counted, never
   // cut. Only a box too small for the summary line and one cell stays over.

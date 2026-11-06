@@ -132,24 +132,24 @@ describe('status schema', () => {
 });
 
 describe('status model', () => {
-  it('counts every check and orders sections by their worst level', () => {
+  it('counts every check and orders sections by their worst level, then by their first row', () => {
     const m = infra();
     expect(m.counts).toEqual({ fail: 1, warn: 0, ok: 20, off: 5 });
     expect([m.checks, m.level, m.truncated, m.grouped]).toEqual([26, 'fail', false, true]);
     expect(statusSummary(m)).toBe('1 problem · 20 ok · 5 off');
-    expect(m.sections.map((s) => s.label)).toEqual(['nas', 'internet', 'nuc']);
+    expect(m.sections.map((s) => s.label)).toEqual(['nas', 'nuc', 'internet']);
     expect(m.sections.map(statusSectionTitle)).toEqual([
       'nas · 1 problem · 10 ok · 2 off',
-      'internet · 5 ok',
       'nuc · 5 ok · 3 off',
+      'internet · 5 ok',
     ]);
   });
 
   it('puts problem tiles first and all-off tiles last', () => {
     expect(names(section('nas').tiles)).toEqual(['cue', 'blog', 'immich', 'nas', 'watchtower', 'umami']);
     expect(section('nas').tiles.map((t) => t.level)).toEqual(['fail', 'ok', 'ok', 'ok', 'ok', 'off']);
-    expect(names(section('nuc').tiles)).toEqual(['home-assistant', 'nuc', 'pihole', 'grafana', 'old-wiki']);
-    expect(names(section('internet').tiles)).toEqual(['blog.example.com', 'patchbay', 'status']);
+    expect(names(section('nuc').tiles)).toEqual(['home-assistant', 'pihole', 'nuc', 'grafana', 'old-wiki']);
+    expect(names(section('internet').tiles)).toEqual(['blog.example.com', 'status', 'patchbay']);
   });
 
   it('lists the problem in full and summarises the rest per kind', () => {
@@ -228,14 +228,44 @@ describe('status model', () => {
     ];
     const grouped = StatusConfigSchema.parse({ entity: 'service', status: 'status', group: 'machine' });
     const m = statusModel(inferTable(rows), grouped);
-    expect(m.sections.map((s) => s.label)).toEqual(['alpha', 'zeta', 'Other']);
+    expect(m.sections.map((s) => s.label)).toEqual(['zeta', 'alpha', 'Other']);
     expect(names(m.sections[2]!.tiles)).toEqual(['b', 'Other']);
     // The worst level decides first: a failing "Other" comes before calm sections.
     const failing = statusModel(
       inferTable([...rows, { machine: null, service: 'd', status: 'down' }]),
       grouped,
     );
-    expect(failing.sections.map((s) => s.label)).toEqual(['Other', 'alpha', 'zeta']);
+    expect(failing.sections.map((s) => s.label)).toEqual(['Other', 'zeta', 'alpha']);
+  });
+
+  it('keeps the row order among sections and tiles of the same level, so a sort step decides it', () => {
+    const grouped = StatusConfigSchema.parse({ entity: 'service', status: 'status', group: 'machine' });
+    const rows = [
+      { machine: 'NUC', service: 'pihole', status: 'ok' },
+      { machine: 'NAS', service: 'zeta', status: 'ok' },
+      { machine: null, service: 'loose', status: 'ok' },
+      { machine: 'NUC', service: 'grafana', status: 'ok' },
+      { machine: 'Internet', service: 'site', status: 'ok' },
+      { machine: 'NAS', service: 'alpha', status: 'ok' },
+      { machine: 'NAS', service: null, status: 'ok' },
+      { machine: 'NAS', service: 'beta', status: 'ok' },
+    ];
+    const m = statusModel(inferTable(rows), grouped);
+    // "Other" first appears before Internet but stays last among the calm sections, as its tile does in NAS.
+    expect(m.sections.map((s) => s.label)).toEqual(['NUC', 'NAS', 'Internet', 'Other']);
+    expect(names(m.sections[0]!.tiles)).toEqual(['pihole', 'grafana']);
+    expect(names(m.sections[1]!.tiles)).toEqual(['zeta', 'alpha', 'beta', 'Other']);
+    // The level still decides first: a failing section and tile move ahead of the row order.
+    const failing = statusModel(
+      inferTable([...rows, { machine: 'Internet', service: 'site', status: 'down' }]),
+      grouped,
+    );
+    expect(failing.sections.map((s) => s.label)).toEqual(['Internet', 'NUC', 'NAS', 'Other']);
+    const tiles = statusModel(
+      inferTable([...rows, { machine: 'NAS', service: 'beta', status: 'warn' }]),
+      grouped,
+    );
+    expect(names(tiles.sections[0]!.tiles)).toEqual(['beta', 'zeta', 'alpha', 'Other']);
   });
 
   it('reads at most 1000 rows, 40 sections and 300 tiles, and says so', () => {

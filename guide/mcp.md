@@ -305,14 +305,19 @@ is answered at a glance on a phone or an unattended wall screen.
   checks is the same link; a click elsewhere on the tile still lists its checks. Other values (relative paths,
   `javascript:`) are ignored, and folds such as "+N more ok" carry no link. The editor and `suggest_widgets` take a
   column named `url`, `link` or `href`; `suggest_widgets` also one that holds addresses.
+- Sections and tiles are ordered worst first (failing, warning, ok, then all off). Within a level they keep the order
+  of their first row in the dataset, so a `sort` transform decides it, for example by an order column you add to the
+  data; rows without a group or an entity are collected under "Other", last within its level.
 - States are `fail`, `warn`, `ok` and `off` with common synonyms (`down`, `degraded`, `healthy`, `paused`, …),
   case-insensitive; `true`/`false` read as ok/fail; anything else counts as `warn`. `levels` maps other values.
 - Nothing scrolls. When the widget is too small, off tiles fold into "+N off", then ok tiles into "+N more ok", then
   sections without problems into their header line, then the last of those lines into one "+N more sections · 12 ok"
-  line, and that line goes too before any problem tile is hidden. Problem tiles never fold into ok summaries; only when
-  the problem tiles alone do not fit are their details cut to two lines and the rest counted in "+N more problems";
-  a section left without problem tiles folds into it. The summary line always counts everything. `render_snapshot`
-  draws the same tiles and folds as a browser showing a body of that size.
+  line, and that line goes too before any problem tile is hidden. A fold that would not make the widget shorter (three
+  tiles that fill the row a "+3 more ok" cell would take) is skipped, so tiles keep their names wherever they fit.
+  Problem tiles never fold into ok summaries; only when the problem tiles alone do not fit are their details cut to
+  two lines and the rest counted in "+N more problems"; a section left without problem tiles folds into it. The
+  summary line always counts everything. `render_snapshot` draws the same tiles and folds as a browser showing a
+  body of that size.
 - A click (or Enter) on a tile, a fold, a section header or the "+N more sections" line lists all its checks; Escape
   closes the list.
 - `suggest_widgets` proposes it when a column is named `status`, `state` or `health`, or holds mostly status words

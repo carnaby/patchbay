@@ -6,6 +6,21 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-06
+
+### Changed
+
+- **Status widget**: sections and tiles of the same level now keep the order of the dataset's rows instead of being
+  sorted by name, so a `sort` transform sets the order (for example "NUC, NAS, Internet"). Without one, calm
+  sections follow the order in which the source sends its rows; add a `sort` step for a fixed order. The worst
+  level still comes first and "Other" last within its level.
+
+### Fixed
+
+- **Status widget**: a fold such as "+3 more ok" or "+2 off" is no longer applied when it saves no space (the tiles
+  filled the row the fold would take); those tiles stay visible and the next fold is tried, in the browser and in
+  snapshots alike.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added
@@ -110,6 +125,7 @@ The server was reviewed adversarially before release, and every finding has a re
 - Hostile feeds are parsed in linear time off the main thread; snapshot drawing is bounded per render.
 - `URL_SOURCES=signed-in` keeps strangers from making a public instance fetch arbitrary addresses.
 
-[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/carnaby/patchbay/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/carnaby/patchbay/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/carnaby/patchbay/releases/tag/v0.1.0
