@@ -449,8 +449,10 @@ export function statusDefaults(columns: readonly Column[]): StatusFields {
 /* ---------- layout: what fits in a box ---------- */
 
 /**
- * Sizes both renderers draw with, in CSS pixels. The fit estimates text from them, so the glyph width is a little
- * wider than Inter's average: an estimate that ran short would cut the last tile off on screen.
+ * Sizes both renderers draw with, in CSS pixels. The fit estimates text from them. Snapshots draw in Inter, the
+ * browser in the platform's system-ui: 6.6 px per character is above Segoe UI at 12 px (5.5 on mixed text, 6.4 on
+ * semibold capitals) and Inter's mixed text (5.9), but capitals and hex in some phone fonts run wider, so the browser
+ * also measures what it drew and fits once more when a line ran over (StatusBody).
  */
 export const STATUS_METRICS = {
   minTileWidth: 150,

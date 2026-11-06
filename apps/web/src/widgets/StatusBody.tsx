@@ -81,7 +81,22 @@ export function StatusBody({
   const now = useNow(60_000);
   const { ref, size } = useBoxSize();
   const model = useMemo(() => statusModel(result.table, widget.config), [result.table, widget.config]);
-  const layout = useMemo(() => (size ? statusFit(model, size) : null), [model, size]);
+  // The fit estimates text from one average glyph width; a platform font that runs wider (capitals on a phone) can
+  // wrap a detail onto a line the fit did not count, and the bottom would be cut. The overflow is measured once per
+  // size and data, and the fit runs again with it taken off the height: one extra pass, never a loop.
+  const fitKey = useMemo(() => ({ model, size }), [model, size]);
+  const [overflow, setOverflow] = useState<{ key: object; px: number } | null>(null);
+  const shrink = overflow?.key === fitKey ? overflow.px : 0;
+  const layout = useMemo(
+    () => (size ? statusFit(model, { width: size.width, height: size.height - shrink }) : null),
+    [model, size, shrink],
+  );
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node || !layout || shrink) return;
+    const over = node.scrollHeight - node.clientHeight;
+    if (over > 0) setOverflow({ key: fitKey, px: over });
+  }, [ref, layout, fitKey, shrink]);
   const [panel, setPanel] = useState<PanelTarget | null>(null);
   const presenting = useContext(PresentingContext);
   // Presentations run unattended: a panel opened by a stray click beforehand would cover the board for good.
