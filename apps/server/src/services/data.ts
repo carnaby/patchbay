@@ -643,7 +643,9 @@ export class DataService {
     if (!pending) {
       pending = build()
         .then((r) => {
-          const bytes = approxTableBytes(r.table) + 2 * (key.length + r.hash.length + (r.error?.length ?? 0));
+          const bytes =
+            approxTableBytes(r.table) +
+            2 * (key.length + r.hash.length + (r.error?.length ?? 0) + (r.warning?.length ?? 0));
           this.finals.set(key, r, bytes, RESULT_TTL_MS);
           return r;
         })
@@ -680,7 +682,7 @@ export class DataService {
         ...base,
         ...computed,
         fetchedAt: new Date(loaded.fetchedAt).toISOString(),
-        ...(computed.error || loaded.warning ? { error: computed.error ?? loaded.warning } : {}),
+        ...(loaded.warning ? { warning: loaded.warning } : {}),
       };
     } catch (e) {
       if (e instanceof BusyError) throw e;

@@ -1031,6 +1031,12 @@ function DatasetEditor({
           />
         ) : result ? (
           <>
+            {result.warning ? (
+              <p className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
+                <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" />
+                <span>{result.warning}</span>
+              </p>
+            ) : null}
             <PreviewTable result={result} />
             {preview.data?.profile ? (
               <div className="flex flex-wrap gap-1">

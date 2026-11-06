@@ -823,6 +823,75 @@ describe('MCP tools', () => {
     expect(kids.error).toMatch(/Unknown column "temp"/);
   });
 
+  it('reports a capped or cached source as a warning, not a failure, also when a filter leaves no rows', async () => {
+    const agent = await ownClient('warning-agent@example.com');
+    const { dashboardId } = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'W' } })),
+    );
+    const warning = 'Showing the first 2 rows of the inline rows';
+    const load = deps.data.loadSource.bind(deps.data);
+    const spy = vi.spyOn(deps.data, 'loadSource').mockImplementation(async (t, dataset) => {
+      const loaded = await load(t, dataset);
+      return dataset.id === 'root' ? { ...loaded, warning } : loaded;
+    });
+    try {
+      const applied = JSON.parse(
+        text(
+          await agent.callTool({
+            name: 'apply_operations',
+            arguments: {
+              dashboardId,
+              operations: [
+                {
+                  op: 'addDataset',
+                  dataset: {
+                    id: 'root',
+                    name: 'Root',
+                    source: { kind: 'inline', rows: [{ t: 1 }, { t: 3 }] },
+                  },
+                },
+                {
+                  op: 'addDataset',
+                  dataset: {
+                    id: 'none',
+                    name: 'None',
+                    source: { kind: 'dataset', id: 'root' },
+                    transforms: [{ type: 'filter', expr: 't > 10' }],
+                  },
+                },
+                { op: 'addWidget', widget: { id: 'w', type: 'table', datasetId: 'none', config: {} } },
+              ],
+            },
+          }),
+        ),
+      );
+      for (const check of applied.dataChecks) {
+        expect(check.error, check.datasetId).toBeUndefined();
+        expect(check.warning, check.datasetId).toBe(warning);
+      }
+      const got = JSON.parse(
+        text(await agent.callTool({ name: 'get_data', arguments: { dashboardId, datasetId: 'none' } })),
+      );
+      expect(got.error).toBeUndefined();
+      expect(got.warning).toBe(warning);
+      const preview = await agent.callTool({
+        name: 'preview_data',
+        arguments: {
+          dashboardId,
+          source: { kind: 'dataset', id: 'root' },
+          transforms: [{ type: 'filter', expr: 't > 10' }],
+        },
+      });
+      expect(preview.isError).toBeFalsy();
+      expect(JSON.parse(text(preview)).warning).toBe(warning);
+      const shot = await agent.callTool({ name: 'render_snapshot', arguments: { dashboardId } });
+      expect(text(shot)).not.toContain('Data problems');
+      expect(text(shot)).toContain(`none: ${warning}`);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('answers a busy data check after the save without telling the agent to retry the saved batch', async () => {
     const agent = await ownClient('busy-check@example.com');
     const { dashboardId } = JSON.parse(

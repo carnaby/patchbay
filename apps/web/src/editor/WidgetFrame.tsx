@@ -208,8 +208,8 @@ export const WidgetFrame = memo(function WidgetFrame({
             missing={result ? soundRuleMissingColumns(widget.sound, result.table) : []}
           />
         ) : null}
-        {result?.error && result.table.rows.length > 0 ? (
-          <span className="shrink-0 text-[11px] text-warn" title={result.error}>
+        {result && ((result.error && result.table.rows.length > 0) || result.warning) ? (
+          <span className="shrink-0 text-[11px] text-warn" title={result.error ?? result.warning}>
             stale
           </span>
         ) : null}

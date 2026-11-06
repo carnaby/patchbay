@@ -55,7 +55,8 @@ export function useSoundCues(dashboardId: string) {
         entry = { identity, epoch, hash: null, state: null };
         tracked.set(w.id, entry);
       }
-      // A failed refresh serves stale rows; they are not news.
+      // A failed result has no rows to judge. A warning (capped source, cached copy) still carries real rows: a cached
+      // copy keeps its hash, so it cannot ring, while a capped source must keep its rules working.
       if (result.error || result.hash === entry.hash) return false;
       const decision = soundDecision(w.sound, result.table, entry.state, now);
       entry.hash = result.hash;

@@ -426,6 +426,7 @@ export function createMcp(deps: Deps) {
                 columns: r.table.columns.map((c) => `${c.name}:${c.type}`),
                 sampleRows: fitRows(r.table, r.table.rows.slice(0, DATA_CHECK_SAMPLE), SAMPLE_CHARS / 30),
                 error: r.error,
+                ...(r.warning ? { warning: r.warning } : {}),
                 ...(d.accumulate > 0 ? { note: ACCUMULATE_NOTE } : {}),
               };
             }),
@@ -477,6 +478,7 @@ export function createMcp(deps: Deps) {
           const profile = profileTable(result.table);
           return json({
             ...sampleTable(result.table, args.sampleRows),
+            ...(result.warning ? { warning: result.warning } : {}),
             trace: result.trace,
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
             suggestions: suggestionOps(
@@ -526,6 +528,7 @@ export function createMcp(deps: Deps) {
             from: args.from,
             fetchedAt: result.fetchedAt,
             error: result.error,
+            ...(result.warning ? { warning: result.warning } : {}),
             // Open browsers decide whether the history grows on its own, so tell the agent how many there are.
             ...(dataset.accumulate > 0
               ? { watchers: deps.hub.watchers(args.dashboardId), note: ACCUMULATE_NOTE }
@@ -662,14 +665,19 @@ export function createMcp(deps: Deps) {
           const problems = [...results.values()]
             .filter((r) => r.error)
             .map((r) => `${r.datasetId}: ${r.error}`);
+          const warnings = [...results.values()]
+            .filter((r) => r.warning && !r.error)
+            .map((r) => `${r.datasetId}: ${r.warning}`);
+          const lines = [
+            ...(problems.length ? [`Data problems: ${problems.join('; ')}`] : []),
+            ...(warnings.length ? [`Data warnings: ${warnings.join('; ')}`] : []),
+          ];
           return {
             content: [
               { type: 'image', data: png.toString('base64'), mimeType: 'image/png' },
               {
                 type: 'text',
-                text: problems.length
-                  ? `Data problems: ${problems.join('; ')}`
-                  : `Rendered ${needed.length} widget(s).`,
+                text: lines.length ? lines.join('\n') : `Rendered ${needed.length} widget(s).`,
               },
             ],
           };

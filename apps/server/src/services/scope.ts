@@ -186,12 +186,11 @@ export class ResolveScope {
           same ? this.full(dataset.id) : this.process(dataset, [dataset.id]),
         );
         const computed = this.data.finish(full, options.maxRows);
-        const error = computed.error ?? full.warning;
         return {
           datasetId: dataset.id,
           ...computed,
           fetchedAt: new Date(full.fetchedAt).toISOString(),
-          ...(error ? { error } : {}),
+          ...(full.warning ? { warning: full.warning } : {}),
         };
       };
       const key = same ? await this.finalKey(dataset.id, options.maxRows) : undefined;

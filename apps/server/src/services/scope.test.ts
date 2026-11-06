@@ -161,7 +161,10 @@ describe('resolution scopes', () => {
     );
     const child = await data.scope(target, d).resolve(byId(d, 'c'));
     expect(child.table.rows).toEqual([{ first: 5, n: 100_000 }]);
-    expect(child.error).toBe('Source dataset "p" has more than 100,000 rows; only its last 100,000 are used');
+    expect(child.error).toBeUndefined();
+    expect(child.warning).toBe(
+      'Source dataset "p" has more than 100,000 rows; only its last 100,000 are used',
+    );
   });
 
   it('gives every scope the same capped table of a large result, so its serialisation is shared', async () => {
@@ -225,7 +228,9 @@ describe('resolution scopes', () => {
       const r = await data.scope(target, d).resolve(byId(d, id));
       expect(r.error, id).toBe('Source dataset "a" failed: A is down');
     }
-    expect((await data.scope(target, d).resolve(byId(d, 'mix'))).error).toBe('SA is stale; SB is stale');
+    const mix = await data.scope(target, d).resolve(byId(d, 'mix'));
+    expect(mix.warning).toBe('SA is stale; SB is stale');
+    expect(mix.error).toBeUndefined();
   });
 
   it('passes upstream warnings on and dates a result by its oldest input', async () => {
@@ -240,9 +245,15 @@ describe('resolution scopes', () => {
       inline('y', [{ i: 2 }]),
       from('u', 'x', { transforms: [{ type: 'union', with: ['y'] }] }),
     );
-    expect((await data.scope(target, d).resolve(byId(d, 'c'))).error).toBe(
-      'Showing the first 5 rows of the inline rows',
-    );
+    const c = await data.scope(target, d).resolve(byId(d, 'c'));
+    expect(c.warning).toBe('Showing the first 5 rows of the inline rows');
+    expect(c.error).toBeUndefined();
+    // A filter that keeps nothing is an empty result with a warning, not a failure.
+    const none = doc(...d.datasets, from('none', 'p', { transforms: [{ type: 'filter', expr: 'i > 100' }] }));
+    const empty = await data.scope(target, none).resolve(byId(none, 'none'));
+    expect(empty.table.rows).toEqual([]);
+    expect(empty.error).toBeUndefined();
+    expect(empty.warning).toBe('Showing the first 5 rows of the inline rows');
     const seeded = data.scope(target, d, {
       seed: (id) =>
         id === 'x' || id === 'y'
