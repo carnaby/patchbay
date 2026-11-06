@@ -503,11 +503,20 @@ export interface StatusSectionLayout {
   height: number;
 }
 
+/** Calm sections at the end, folded into one header-sized line ("+3 more sections · 12 ok"), a button like a header. */
+export interface StatusMoreSections {
+  sections: StatusSection[];
+  /** Top of the line, relative to the widget body. */
+  y: number;
+}
+
 export interface StatusLayout {
   columns: number;
   /** 0 without the summary line. */
   summaryHeight: number;
+  /** The sections drawn; calm ones folded into `moreSections`, or left out, are not in it. */
   sections: StatusSectionLayout[];
+  moreSections: StatusMoreSections | null;
   /** Details are cut to two lines. */
   clamped: boolean;
   /** Problem tiles counted in "+N more problems". */
@@ -569,6 +578,14 @@ export function statusMoreTitle(item: StatusMore): string {
   const n = item.tiles.length;
   if (item.what === 'problems') return `+${n} more problem${n === 1 ? '' : 's'}`;
   return item.what === 'ok' ? `+${n} more ok` : `+${n} off`;
+}
+
+/** "+3 more sections · 12 ok · 2 off": the folded sections' own counts, as their header lines had them. */
+export function statusMoreSectionsTitle(sections: readonly StatusSection[]): string {
+  const counts = emptyCounts();
+  for (const s of sections) for (const level of STATUS_LEVELS) counts[level] += s.counts[level];
+  const n = sections.length;
+  return `+${n} more section${n === 1 ? '' : 's'} · ${statusCountsText(counts)}`;
 }
 
 /** A few of the folded names, so "+6 more ok" still says which ones. */
@@ -646,8 +663,10 @@ interface FitState {
 /**
  * Which tiles a box of this size shows. Folds one step at a time, each from the last section upwards, and stops as
  * soon as everything fits: off tiles, then ok tiles, then calm sections to their header line, then the ok and off
- * cells of sections with problems, then details to two lines, then problem tiles into "+N more problems". Nothing
- * scrolls: the widget runs unattended on wall screens, so what does not fit is folded and counted, never cut off.
+ * cells of sections with problems, then the calm header lines at the end into one "+N more sections" line (one more
+ * section at a time), then that line too, then details to two lines, then problem tiles into "+N more problems".
+ * What is broken outranks the names of calm sections, whose counts stay in the summary line. Nothing scrolls: the
+ * widget runs unattended on wall screens, so what does not fit is folded and counted, never cut off.
  */
 export function statusFit(model: StatusModel, box: { width: number; height: number }): StatusLayout {
   const M = STATUS_METRICS;
@@ -681,6 +700,13 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
   }));
   const summaryHeight = model.summary ? M.summaryHeight : 0;
   let clamp = false;
+  // Sections sort worst first, so the calm ones (no problem tile) are a run at the end. Counted once: a problem
+  // section emptied by the last step is not calm, its header names where the hidden problems are.
+  let calm = 0;
+  while (calm < states.length && states[states.length - 1 - calm]!.problems.length === 0) calm++;
+  /** Calm sections at the end taken out of the list: merged into one line, or, once `dropped`, left out. */
+  let folded = 0;
+  let dropped = false;
 
   const tileCell = (tile: StatusTile, span: number): Cell => ({
     item: { kind: 'tile', tile, clamp },
@@ -704,7 +730,8 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
       }
     }
     let y = summaryHeight;
-    const sections = states.map((s, i): StatusSectionLayout => {
+    const shown = states.slice(0, states.length - folded);
+    const sections = shown.map((s, i): StatusSectionLayout => {
       if (i > 0) y += M.sectionGap;
       const top = y;
       if (model.grouped) y += M.headerHeight;
@@ -732,10 +759,18 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
         height: y - top,
       };
     });
+    let moreSections: StatusMoreSections | null = null;
+    if (folded && !dropped) {
+      // One more child of the same column of sections, so the same gap as between two sections.
+      if (shown.length) y += M.sectionGap;
+      moreSections = { sections: states.slice(shown.length).map((s) => s.section), y };
+      y += M.headerHeight;
+    }
     return {
       columns,
       summaryHeight,
       sections,
+      moreSections,
       clamped: clamp,
       hiddenProblems: hidden.length,
       height: y,
@@ -768,6 +803,21 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
       s.bare = true;
       return true;
     }),
+    // Two header lines into one saves a line; one into "+1 more section" would save nothing.
+    ...(model.grouped
+      ? Array.from({ length: Math.max(0, calm - 1) }, (_, i) => () => {
+          const n = i + 2;
+          if (!states.slice(-n).every((s) => s.headerOnly)) return false;
+          folded = n;
+          return true;
+        })
+      : []),
+    () => {
+      if (!model.grouped || calm === 0 || !states.slice(-calm).every((s) => s.headerOnly)) return false;
+      folded = calm;
+      dropped = true;
+      return true;
+    },
     () => {
       if (clamp) return false;
       clamp = true;
@@ -779,9 +829,12 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
     if (layout.fits) break;
     if (step()) layout = measure();
   }
+  // Problems are hidden only for the problem tiles themselves to fit. When even hiding all of them cannot do that
+  // (a box too small for anything), hiding gains nothing: the tiles stay and the bottom is cut.
+  const before = layout;
   while (!layout.fits) {
     const from = reversed.find((s) => s.problems.length > 0);
-    if (!from) break;
+    if (!from) return before;
     from.hidden.push(from.problems.pop()!);
     layout = measure();
   }

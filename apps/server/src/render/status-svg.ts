@@ -12,6 +12,7 @@ import {
   type StatusPlaced,
   statusDetailChars,
   statusMoreNames,
+  statusMoreSectionsTitle,
   statusMoreTitle,
   statusProblemHead,
   statusSectionTitle,
@@ -114,24 +115,19 @@ export function statusSvg(
   } else if (model.sections.length === 0) {
     parts.push(text(0, 15, 'No checks', { size: M.textSize, color: theme.muted }));
   }
+  const header = (y: number, title: string) =>
+    text(0, round(y + 13), truncate(title, Math.floor(width / M.charWidth)), {
+      size: M.textSize,
+      weight: 600,
+      color: theme.textSecondary,
+    });
   for (const section of layout.sections) {
     // Nothing below the card: a layout that does not fit at all is cut at the bottom, never drawn over the border.
     if (section.y >= height) break;
-    if (section.header) {
-      parts.push(
-        text(
-          0,
-          round(section.y + 13),
-          truncate(statusSectionTitle(section.section), Math.floor(width / M.charWidth)),
-          {
-            size: M.textSize,
-            weight: 600,
-            color: theme.textSecondary,
-          },
-        ),
-      );
-    }
+    if (section.header) parts.push(header(section.y, statusSectionTitle(section.section)));
     for (const placed of section.items) if (placed.y < height) parts.push(cell(placed, theme, now));
   }
+  const more = layout.moreSections;
+  if (more && more.y < height) parts.push(header(more.y, statusMoreSectionsTitle(more.sections)));
   return parts.join('');
 }

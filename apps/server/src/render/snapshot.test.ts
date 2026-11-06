@@ -753,6 +753,35 @@ describe('status snapshots', () => {
     expect(svg).not.toContain('home-assistant');
   });
 
+  it('folds calm header lines into "+N more sections" before hiding a problem', () => {
+    const svg = body(model, 480, 227);
+    expect(svg).toContain('+2 more sections · 10 ok · 3 off');
+    expect(svg).toContain('fail · cue-backup · 9 hours ago');
+    expect(svg).not.toContain('more problem');
+    expect(svg).not.toContain('internet · 5 ok');
+    // Seven machines with one failing check in the default card: the failing tile is drawn, not "+1 more problem".
+    const rows = Array.from({ length: 7 }, (_, m) =>
+      Array.from({ length: 4 }, (_, s) => ({
+        machine: `m${m}`,
+        service: `m${m}-svc${s}`,
+        status: m === 0 && s === 0 ? 'fail' : 'ok',
+        detail: m === 0 && s === 0 ? 'connection refused' : null,
+      })),
+    ).flat();
+    const config = { entity: 'service', status: 'status', group: 'machine', detail: 'detail' };
+    const many = renderWidgetPng(
+      widget({ id: 'many', type: 'status', title: 'Machines', datasetId: 'm', config }),
+      { ...checks, datasetId: 'm', table: inferTable(rows) },
+    );
+    const img = decodePng(many);
+    // Under the summary line (28) and m0's header (24): the failing tile's fill, two columns wide.
+    const fill = resolveColor('negative', THEMES.light, 'fill');
+    expect(pixelsOf(img, fill, { x: 24, y: 96, w: 380, h: 60 })).toBeGreaterThan(5000);
+    const text = body(statusModel(inferTable(rows), StatusConfigSchema.parse(config)));
+    expect(text).toContain('connection refused');
+    expect(text).toContain('+2 more sections · 8 ok');
+  });
+
   it('cuts a long name to its tile instead of drawing past it', () => {
     const long = 'a-service-name-far-too-long-for-any-tile-in-this-widget';
     const m = statusModel(

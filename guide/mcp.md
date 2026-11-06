@@ -300,9 +300,13 @@ is answered at a glance on a phone or an unattended wall screen.
 - States are `fail`, `warn`, `ok` and `off` with common synonyms (`down`, `degraded`, `healthy`, `paused`, …),
   case-insensitive; `true`/`false` read as ok/fail; anything else counts as `warn`. `levels` maps other values.
 - Nothing scrolls. When the widget is too small, off tiles fold into "+N off", then ok tiles into "+N more ok", then
-  sections without problems into their header line; problem tiles never fold into ok summaries, and the summary line
-  always counts everything. `render_snapshot` draws the same tiles and folds as a browser showing a body of that size.
-- A click (or Enter) on a tile, a fold or a section header lists all its checks; Escape closes the list.
+  sections without problems into their header line, then the last of those lines into one "+N more sections · 12 ok"
+  line, and that line goes too before any problem tile is hidden. Problem tiles never fold into ok summaries; only when
+  the problem tiles alone do not fit are their details cut to two lines and the rest counted in "+N more problems".
+  The summary line always counts everything. `render_snapshot` draws the same tiles and folds as a browser showing a
+  body of that size.
+- A click (or Enter) on a tile, a fold, a section header or the "+N more sections" line lists all its checks; Escape
+  closes the list.
 - `suggest_widgets` proposes it when a column is named `status`, `state` or `health`, or holds mostly status words
   (a small set of at most 12 distinct values). A column that is only named like a state is offered with a lower score.
 

@@ -44,6 +44,7 @@ describe('the status widget in the reference', () => {
       expect(text).toContain(word);
     expect(text).toContain('"+N more ok"');
     expect(text).toContain('"+N more problems"');
+    expect(text).toContain('"+N more sections · 12 ok"');
     expect(text).toContain('"type": "status"');
     expect(text).toContain('status 6x5');
     expect(text).toContain('## Sound cues (chart, kpi, gauge, table, map, status)');

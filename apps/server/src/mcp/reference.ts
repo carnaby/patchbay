@@ -212,8 +212,10 @@ ${tableFns}
   ${STATUS_LIMITS.levels}) maps your own values first. label names a check, kind summarises ok checks ("container ×3"), detail is
   shown in full for fail and warn checks, since (a time column) as "9 hours ago"; summary (default true) puts
   "1 problem · 71 ok · 9 off" on top. Nothing scrolls: when the widget is too small, off tiles fold into "+N off", then
-  ok tiles into "+N more ok", then sections without problems into their header line; problems never fold into ok
-  summaries, and when even they do not fit the rest are counted in "+N more problems". At most ${STATUS_LIMITS.rows} rows,
+  ok tiles into "+N more ok", then sections without problems into their header line, then the last of those lines
+  into one "+N more sections · 12 ok" line, which goes too before any problem is hidden (the summary line keeps every
+  count); problems never fold into ok summaries, and only when the problem tiles alone do not fit are their details
+  cut to two lines and the rest counted in "+N more problems". At most ${STATUS_LIMITS.rows} rows,
   ${STATUS_LIMITS.sections} sections and ${STATUS_LIMITS.tiles} tiles are read.
   Example: { "id": "infra", "type": "status", "datasetId": "checks", "config": { "entity": "service", "status": "status", "group": "machine", "label": "name", "kind": "kind", "detail": "detail", "since": "since" } }
 format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }

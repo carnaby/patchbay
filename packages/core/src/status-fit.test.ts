@@ -8,6 +8,7 @@ import {
   statusFit,
   statusModel,
   statusMoreNames,
+  statusMoreSectionsTitle,
   statusMoreTitle,
   statusSummary,
   wrapText,
@@ -83,8 +84,30 @@ describe('statusFit', () => {
     const bare = statusFit(infra, { width: 480, height: 285 });
     expect([bare.height, bare.clamped]).toEqual([228, false]);
     expect(shape(bare).nas).toEqual(['cue']);
-    const over = statusFit(infra, { width: 480, height: 227 });
-    expect([over.height, over.fits, over.clamped, over.hiddenProblems]).toEqual([174, true, true, 1]);
+    // Calm header lines go before any problem: merged into one line (two headers and a gap become one line,
+    // 228 - 36), then that line goes too (192 - 36); the summary line still counts every check.
+    const merged = statusFit(infra, { width: 480, height: 227 });
+    expect([merged.height, merged.fits, merged.clamped, merged.hiddenProblems]).toEqual([
+      192,
+      true,
+      false,
+      0,
+    ]);
+    expect(shape(merged)).toEqual({ nas: ['cue'] });
+    expect(merged.moreSections && statusMoreSectionsTitle(merged.moreSections.sections)).toBe(
+      '+2 more sections · 10 ok · 3 off',
+    );
+    expect(merged.moreSections!.y).toBe(168);
+    const dropped = statusFit(infra, { width: 480, height: 191 });
+    expect([dropped.height, dropped.fits, dropped.hiddenProblems, dropped.moreSections]).toEqual([
+      156,
+      true,
+      0,
+      null,
+    ]);
+    expect(shape(dropped)).toEqual({ nas: ['cue'] });
+    const over = statusFit(infra, { width: 480, height: 155 });
+    expect([over.height, over.fits, over.clamped, over.hiddenProblems]).toEqual([102, true, true, 1]);
     expect(shape(over).nas).toEqual(['+1 more problem']);
     const more = over.sections[0]!.items[0]!.item;
     expect(more.kind === 'more' && [more.what, more.level, more.tiles.map((t) => t.entity)]).toEqual([
@@ -92,7 +115,112 @@ describe('statusFit', () => {
       'fail',
       ['cue'],
     ]);
-    expect(statusFit(infra, { width: 480, height: 100 }).fits).toBe(false);
+    // Hiding that cannot make it fit gains nothing: the problem tile stays, cut at the bottom.
+    const tiny = statusFit(infra, { width: 480, height: 100 });
+    expect([tiny.fits, tiny.hiddenProblems]).toEqual([false, 0]);
+    expect(shape(tiny).nas).toEqual(['cue']);
+  });
+
+  it('fits the small widget of a phone without hiding its only problem (the 390 px browser check)', () => {
+    const small = statusModel(
+      infraTable(),
+      StatusConfigSchema.parse({ ...INFRA_STATUS_CONFIG, levels: { exited: 'off' } }),
+    );
+    // The body of a 4x3 card stacked on a 390 px wide phone.
+    const layout = statusFit(small, { width: 340, height: 162 });
+    expect([layout.height, layout.fits, layout.hiddenProblems, layout.moreSections]).toEqual([
+      156,
+      true,
+      0,
+      null,
+    ]);
+    expect(shape(layout)).toEqual({ nas: ['cue'] });
+  });
+
+  /** One failing check on m0, the other machines all ok: four services each. */
+  const machines = (n: number) =>
+    statusModel(
+      inferTable(
+        Array.from({ length: n }, (_, m) =>
+          Array.from({ length: 4 }, (_, s) => ({
+            machine: `m${m}`,
+            service: `m${m}-svc${s}`,
+            status: m === 0 && s === 0 ? 'fail' : 'ok',
+            detail: m === 0 && s === 0 ? 'connection refused' : null,
+          })),
+        ).flat(),
+      ),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', group: 'machine', detail: 'detail' }),
+    );
+
+  it.each([
+    [7, 612, 310, 304],
+    [7, 342, 312, 304],
+    [9, 612, 396, 376],
+  ])(
+    'with %i machines in %ix%i keeps the failing tile and merges calm sections',
+    (n, width, height, used) => {
+      const layout = statusFit(machines(n), { width, height });
+      expect([layout.height, layout.fits, layout.hiddenProblems]).toEqual([used, true, 0]);
+      expect(shape(layout).m0).toEqual(['m0-svc0']);
+      // m0 plus four calm headers; the last two calm sections share one line.
+      const merged = layout.moreSections!.sections.map((s) => s.label);
+      expect(merged).toEqual([`m${n - 2}`, `m${n - 1}`]);
+      expect(statusMoreSectionsTitle(layout.moreSections!.sections)).toBe('+2 more sections · 8 ok');
+      expect(layout.sections.map((s) => s.section.label)).toEqual(
+        Array.from({ length: n - 2 }, (_, i) => `m${i}`),
+      );
+    },
+  );
+
+  it('merges calm sections last first, one more at a time, and never folds a single one into "+1"', () => {
+    const model = machines(7);
+    const counts: number[] = [];
+    for (let height = 400; height >= 120; height -= 4) {
+      const layout = statusFit(model, { width: 612, height });
+      if (layout.hiddenProblems) break;
+      counts.push(layout.moreSections?.sections.length ?? 0);
+    }
+    expect(counts).not.toContain(1);
+    // 2, 3, ... 6: every count from two to all six calm sections shows up on the way down.
+    for (const n of [2, 3, 4, 5, 6]) expect(counts).toContain(n);
+    for (let i = 1; i < counts.length; i++) {
+      if (counts[i - 1]! > 0 && counts[i] !== 0) expect(counts[i]).toBeGreaterThanOrEqual(counts[i - 1]!);
+    }
+  });
+
+  it('hides problem tiles from the last section upwards and keeps "+N more problems" with the problems left', () => {
+    const rows = [
+      ...['a1', 'a2'].map((service) => ({ machine: 'a', service, status: 'fail' })),
+      ...['b1', 'b2'].map((service) => ({ machine: 'b', service, status: 'warn' })),
+      { machine: 'c', service: 'c1', status: 'ok' },
+    ];
+    const model = statusModel(
+      inferTable(rows),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', group: 'machine' }),
+    );
+    const at = (hidden: number) => {
+      for (let height = 1000; height > 0; height--) {
+        const layout = statusFit(model, { width: 480, height });
+        if (layout.hiddenProblems === hidden) return layout;
+      }
+      throw new Error(`no box hides ${hidden}`);
+    };
+    const one = at(1);
+    expect(shape(one)).toMatchObject({ a: ['a1', 'a2'], b: ['b1', '+1 more problem'] });
+    const first = one.sections[1]!.items[1]!.item;
+    expect(first.kind === 'more' && [first.level, first.tiles.map((t) => t.entity)]).toEqual([
+      'warn',
+      ['b2'],
+    ]);
+    // b has no problem tile left, so the fold moves home to a, still counting b's tiles, in reading order.
+    const three = at(3);
+    expect(shape(three)).toMatchObject({ a: ['a1', '+3 more problems'], b: ['(header)'] });
+    const moved = three.sections[0]!.items[1]!.item;
+    expect(moved.kind === 'more' && [moved.level, moved.tiles.map((t) => t.entity)]).toEqual([
+      'fail',
+      ['a2', 'b1', 'b2'],
+    ]);
   });
 
   it('never folds a problem tile into an ok or off summary, and fits whenever it says so', () => {

@@ -14,11 +14,13 @@ import {
   STATUS_METRICS,
   type StatusCheck,
   type StatusPlaced,
+  type StatusSection,
   type StatusTile,
   statusConfigProblem,
   statusFit,
   statusModel,
   statusMoreNames,
+  statusMoreSectionsTitle,
   statusMoreTitle,
   statusProblemHead,
   statusSectionTitle,
@@ -118,14 +120,10 @@ export function StatusBody({
             {layout.sections.map((s) => (
               <section key={s.section.key}>
                 {s.header ? (
-                  <button
-                    type="button"
-                    className="block w-full truncate text-left font-semibold text-ink-2 hover:text-ink"
-                    style={{ height: M.headerHeight, ...font(M.textSize, M.headerLine) }}
+                  <HeaderLine
+                    title={statusSectionTitle(s.section)}
                     onClick={() => open(s.section.label ?? 'Checks', s.section.tiles)}
-                  >
-                    {statusSectionTitle(s.section)}
-                  </button>
+                  />
                 ) : null}
                 {s.items.length ? (
                   <div
@@ -145,6 +143,9 @@ export function StatusBody({
                 ) : null}
               </section>
             ))}
+            {layout.moreSections ? (
+              <MoreSections sections={layout.moreSections.sections} onOpen={open} />
+            ) : null}
           </div>
         </>
       ) : null}
@@ -152,6 +153,35 @@ export function StatusBody({
         {panel ? <Checks tiles={statusTilesByKey(model, panel.keys)} theme={theme} now={now} /> : null}
       </Modal>
     </div>
+  );
+}
+
+function HeaderLine({ title, onClick }: { title: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="block w-full truncate text-left font-semibold text-ink-2 hover:text-ink"
+      style={{ height: M.headerHeight, ...font(M.textSize, M.headerLine) }}
+      onClick={onClick}
+    >
+      {title}
+    </button>
+  );
+}
+
+/** Calm sections at the end, folded into one line: like a header, it lists their checks. */
+function MoreSections({ sections, onOpen }: { sections: readonly StatusSection[]; onOpen: Open }) {
+  const title = statusMoreSectionsTitle(sections);
+  return (
+    <HeaderLine
+      title={title}
+      onClick={() =>
+        onOpen(
+          title,
+          sections.flatMap((s) => s.tiles),
+        )
+      }
+    />
   );
 }
 
