@@ -407,9 +407,11 @@ describe('dashboards over REST', () => {
   });
 
   it('uploads a JSON file at a path, refuses a missing path, and reads column-shaped files as rows', async () => {
-    // Erin's dashboard from the CSV test above (it holds one file): a new dashboard would count against the limit.
+    // Reuses Erin's dashboard when the CSV test above made one: another create would count against the limit.
     const cookie = await login('erin@example.com');
-    const id = (await call('/api/dashboards', { cookie })).json[0].id;
+    const own = (await call('/api/dashboards', { cookie })).json;
+    const id = own[0]?.id ?? (await call('/api/dashboards', { body: {}, cookie })).json.envelope.meta.id;
+    const filesBefore = (await call(`/api/dashboards/${id}/files`, { cookie })).json.length;
     const upload = (body: Record<string, unknown>) => call(`/api/dashboards/${id}/files`, { body, cookie });
     const METRICS = {
       timestamps: ['2026-11-01T00:00:00Z', '2026-11-01T01:00:00Z', '2026-11-01T02:00:00Z'],
@@ -443,7 +445,7 @@ describe('dashboards over REST', () => {
     expect(missing.json.error).toBe('Path "data.rows" not found in the file (stopped at "rows")');
     expect((await upload({ name: 'x.json', content: nested, path: 'x'.repeat(201) })).status).toBe(400);
     // Refused uploads store nothing.
-    expect((await call(`/api/dashboards/${id}/files`, { cookie })).json).toHaveLength(5);
+    expect((await call(`/api/dashboards/${id}/files`, { cookie })).json).toHaveLength(filesBefore + 4);
 
     const preview = await call(`/api/dashboards/${id}/preview`, {
       body: { dataset: { source: { kind: 'upload', fileId: items.json.id } } },
