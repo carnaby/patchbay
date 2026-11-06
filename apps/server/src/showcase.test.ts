@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type UseCaseInfo, useCaseDashboardId } from '@patchbay/core';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp, createDeps, syncShowcaseUseCases } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
@@ -12,6 +12,13 @@ import { DashboardService, type Principal } from './services/dashboards.ts';
 import { buildTemplate } from './services/templates.ts';
 import type { UseCase } from './showcase/load.ts';
 import type { StoredMeta } from './store/folder-store.ts';
+
+// Counts the requests an http source would send upstream; feeds use another function and stay real.
+const upstreamJson = vi.hoisted(() => vi.fn(async () => [{ a: 1 }]));
+vi.mock('./util/safe-fetch.ts', async (original) => ({
+  ...(await original<typeof import('./util/safe-fetch.ts')>()),
+  safeFetchJson: upstreamJson,
+}));
 
 let dir: string;
 let deps: Deps;
@@ -567,5 +574,26 @@ describe('trusted URLs through the whole app', () => {
     const res = await app.request('/api/dashboards/anonother1/data/news');
     expect(res.status).toBe(200);
     expect(((await res.json()) as { error?: string }).error).toMatch(/signed-in|sign/i);
+  });
+
+  it('refuses an anonymous POST preview to a trusted URL, while a GET to it still loads', async () => {
+    // The use-time check is the only guard for a preview, and it works only if app.ts hands over the method.
+    const copy = await wireDeps.dashboards.duplicate('scnews', anonymous());
+    const preview = (dataset: object) =>
+      app.request(`/api/dashboards/${copy.envelope.meta.id}/preview`, {
+        method: 'POST',
+        headers: { 'x-edit-key': copy.editKey!, 'content-type': 'application/json' },
+        body: JSON.stringify({ dataset }),
+      });
+    upstreamJson.mockClear();
+
+    const post = await preview({ source: { kind: 'http', url: FEED, method: 'POST', body: { q: 1 } } });
+    expect(JSON.stringify(await post.json())).toMatch(/Sign in/);
+    expect(upstreamJson).not.toHaveBeenCalled();
+
+    const get = await preview({ source: { kind: 'http', url: FEED } });
+    expect(get.status).toBe(200);
+    expect(((await get.json()) as { error?: string }).error).toBeUndefined();
+    expect(upstreamJson).toHaveBeenCalledTimes(1);
   });
 });

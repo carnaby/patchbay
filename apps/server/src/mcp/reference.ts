@@ -133,7 +133,7 @@ a POST without body sends an empty one.
 - The body is part of the document: editors, agents, exports and the viewers of a public dashboard see it. Never put a key or token in it.
   Bind a secret instead (see Secrets); APIs like GitHub's read the token from a header.
 - A redirect answer to a POST is an error, never followed: the body is not resent anywhere. Use the final address.
-- Previewing a POST source (preview_data, get_data with a draft) needs the dashboards:write scope: a read-only token
+- Previewing a POST source (preview_data) needs the dashboards:write scope: a read-only token
   is refused before anything is sent. Saved dashboards with POST sources still load for everyone who may view them.
 - path, secrets, the address rules and the response limits work as for GET.
 Example, GitHub GraphQL with a secret bound to https://api.github.com/graphql and sent as Authorization: Bearer.

@@ -245,6 +245,30 @@ describe('http sources', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('does not serve the cached error of one POST body to another body on the same URL', async () => {
+    const url = 'https://api.example/q';
+    fetchMock.mockImplementation(async (_url, options) => {
+      if ((options as { body?: { q: string } } | undefined)?.body?.q === 'a')
+        throw new HttpError(502, 'Upstream is down');
+      return [{ ok: 1 }];
+    });
+    const data = new DataService(connectors, store);
+    for (let i = 0; i < 2; i++)
+      expect((await data.resolve(target, post(url, { q: 'a' }))).error).toBe('Upstream is down');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const b = await data.resolve(target, post(url, { q: 'b' }));
+    expect(fetchMock.mock.calls.map((c) => (c[1] as { body: unknown }).body)).toEqual([
+      { q: 'a' },
+      { q: 'b' },
+    ]);
+    expect(b.error).toBeUndefined();
+    expect(b.table.rows).toEqual([{ ok: 1 }]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // And the other way round: the cached success of body b does not hide that body a fails.
+    expect((await data.resolve(target, post(url, { q: 'a' }))).error).toBe('Upstream is down');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('passes the private hosts the policy grants, and never serves those responses to other dashboards', async () => {
     const lan = parsePrivateHosts('192.168.1.0/24')!;
     const policy = vi.fn((t: { ownerId: string | null }) => (t.ownerId === 'admin' ? lan : null));

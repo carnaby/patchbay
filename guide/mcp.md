@@ -380,8 +380,8 @@ search. An `http` source sends one with `method: "POST"` and a JSON `body`:
   read their token from a header.
 - **No redirects.** A redirect answer to a POST is an error: following it would resend the body to another address or
   silently turn it into a GET. Use the final address.
-- **Previews need write access.** A token without `dashboards:write` cannot preview a POST source (`preview_data`,
-  or `get_data` with a draft): it is refused before anything is sent, because a POST of the caller's choosing could
+- **Previews need write access.** A token without `dashboards:write` cannot preview a POST source (`preview_data`, or the
+  editor's preview with a read-only token): it is refused before anything is sent, because a POST of the caller's choosing could
   change data at the API. Saved dashboards with POST sources still load for everyone who may view them.
 - Everything else works as for a GET: the address rules, secret bindings, response limits and `path`.
 

@@ -363,6 +363,8 @@ out in parts of 1 MB, each built only once the previous one has been read and gi
 within 60 s ends the download. Each client may start ten exports at once and then one every two seconds (`429` with
 `Retry-After` beyond that); an export with tables is refused under memory pressure like other heavy work.
 
+With the default `URL_SOURCES=everyone`, anyone who can edit a dashboard, including an anonymous visitor, can make the server send a POST with a JSON body of their choosing to any public address, for example a chat or automation webhook, on every refresh. The refresh floor, the shared cache and the per-host limits bound the rate, not the target. On a public instance set `URL_SOURCES=signed-in`, so that only dashboards owned by a signed-in user can do it.
+
 ### Showcase use cases
 
 `SHOWCASE_DIR` points at the folder with the landing page use cases (see the architecture guide). It defaults to
