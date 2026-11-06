@@ -31,6 +31,7 @@ import {
   Button,
   cx,
   EmptyState,
+  hasOpenOverlay,
   IconButton,
   Menu,
   MenuItem,
@@ -161,6 +162,9 @@ function Editor({ id }: { id: string }) {
       const target = e.target as HTMLElement;
       if (target.closest('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey)
         return;
+      // An open dialog (a status widget's list of checks) takes Escape for itself: closing it must not also leave
+      // the maximised widget or end a presentation that is not in full screen.
+      if (e.key === 'Escape' && hasOpenOverlay()) return;
       if (e.key === 'Escape' && useEditor.getState().expanded) {
         useEditor.getState().setExpanded(null);
         return;
