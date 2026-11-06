@@ -830,6 +830,27 @@ describe('status snapshots', () => {
     expect(decodePng(renderWidgetPng(chart, { ...data, table: labelled })).width).toBeGreaterThan(0);
   });
 
+  it('keeps the markup of a chart whose labels end in a cut-off escape sequence', () => {
+    // An escape pass over ECharts' whole SVG would read "\x1b[" plus the next "</t" as one sequence, and an
+    // unterminated "\x1b]" as a title running to the end of the document.
+    const chart = widget({
+      id: 'ch',
+      type: 'chart',
+      title: 'Out',
+      datasetId: 'm',
+      config: { kind: 'bar', x: 'service', y: ['n'] },
+    });
+    const table = inferTable([
+      { service: 'a\u001b[', n: 1 },
+      { service: 'b\u001b]0;title', n: 2 },
+      { service: 'next', n: 3 },
+    ]);
+    const img = decodePng(renderWidgetPng(chart, { ...checks, datasetId: 'm', table }));
+    // All three bars are drawn: the document after the first label survived.
+    const bar = resolveColor('accent-1', THEMES.light, 'mark');
+    expect(pixelsOf(img, bar, { x: 14, y: 36, w: 612, h: 310 })).toBeGreaterThan(1000);
+  });
+
   it('cuts a long name to its tile instead of drawing past it', () => {
     const long = 'a-service-name-far-too-long-for-any-tile-in-this-widget';
     const m = statusModel(

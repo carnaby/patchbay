@@ -15,13 +15,14 @@ const NOT_XML =
   /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
 
 /**
- * Without the characters XML forbids: one of them makes resvg refuse the whole image, every card of it. Also for SVG
- * that ECharts wrote, where an ESC never belongs either.
+ * Without the characters XML forbids: one of them makes resvg refuse the whole image, every card of it. Safe on a
+ * whole document (the SVG ECharts wrote): it removes single characters only, never the markup around them.
  */
-export const xmlSafe = (s: string) => s.replace(ANSI, '').replace(NOT_XML, '');
+export const xmlChars = (s: string) => s.replace(NOT_XML, '');
 
+/** Text for an SVG element: plain text, escape sequences dropped whole, nothing XML forbids, markup escaped. */
 const esc = (s: string) =>
-  xmlSafe(s).replace(
+  xmlChars(s.replace(ANSI, '')).replace(
     /[&<>"']/g,
     (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!,
   );
