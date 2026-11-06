@@ -16,6 +16,7 @@ import { BusyError } from './util/gate.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { runAsClient } from './util/request-context.ts';
 import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
+import { APP_VERSION } from './util/version.ts';
 
 const BASE = 'http://localhost:8787';
 let dir: string;
@@ -744,6 +745,10 @@ describe('MCP tools', () => {
 
   beforeAll(async () => {
     client = await connectAgent('agent-owner@example.com');
+  });
+
+  it('names the running release to agents', () => {
+    expect(client.getServerVersion()).toMatchObject({ name: 'patchbay', version: APP_VERSION });
   });
 
   it('refuses a nested request body before the MCP SDK parses it', async () => {

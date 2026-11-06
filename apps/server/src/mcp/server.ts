@@ -35,6 +35,7 @@ import type { Principal } from '../services/dashboards.ts';
 import { listTemplates } from '../services/templates.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
+import { APP_VERSION } from '../util/version.ts';
 import { advertise } from './input-schema.ts';
 import { referenceText, SERVER_INSTRUCTIONS } from './reference.ts';
 
@@ -177,7 +178,7 @@ export function createMcp(deps: Deps) {
 
   const factory = ({ authInfo }: { authInfo?: AuthInfo }) => {
     const server = new McpServer(
-      { name: 'patchbay', version: '0.1.0' },
+      { name: 'patchbay', version: APP_VERSION },
       { instructions: SERVER_INSTRUCTIONS },
     );
     const userId = authInfo?.extra?.userId as string | undefined;

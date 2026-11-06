@@ -13,10 +13,10 @@ import { Agent, type Dispatcher, fetch as undiciFetch } from 'undici';
 import { HttpError } from './errors.ts';
 import { jsonShapeProblem, MAX_JSON_DEPTH } from './json-shape.ts';
 import type { PrivateHosts } from './private-hosts.ts';
+import { USER_AGENT } from './version.ts';
 
 const MAX_BYTES = 5 * 1024 * 1024;
 const TIMEOUT_MS = 10_000;
-const USER_AGENT = 'Patchbay/0.1 (+https://github.com/carnaby/patchbay)';
 
 /**
  * Every range that must never be reached from user-supplied URLs. IPv6 forms
