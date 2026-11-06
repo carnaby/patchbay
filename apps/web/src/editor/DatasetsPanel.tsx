@@ -398,7 +398,6 @@ function SourceEditor({
     if (source.kind !== 'http' || method === (source.method ?? 'GET')) return;
     // Neither direction carries a body over: a GET has none, and a fresh POST starts empty.
     setBodyDraft('');
-    setUploadPath('');
     setBodyProblem(null);
     onChange(withMethod(source, method));
   };
