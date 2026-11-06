@@ -15,6 +15,7 @@ import {
   SOUND_IDS,
   type SoundRule,
   type Suggestion,
+  statusDefaults,
   suggestionDataset,
   type TableProfile,
   type Widget,
@@ -149,6 +150,9 @@ export function defaultsFor(type: WidgetType, columns: Column[], previous?: Widg
       return { style: 'digital', hourCycle: localHourCycle(), showDate: true, showSeconds: false };
     case 'search':
       return { engine: 'google' };
+    case 'status':
+      // Name rules shared with the suggestions, so a dataset of checks needs no further clicks.
+      return statusDefaults(columns);
   }
 }
 

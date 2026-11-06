@@ -30,6 +30,8 @@ import {
   MAX_SERIES,
   resolveColor,
   searchPlaceholder,
+  statusModel,
+  statusSummary,
   THEMES,
   type ThemeMode,
   tableColumns,
@@ -333,6 +335,12 @@ function widgetBody(
       });
       return out;
     }
+    case 'status':
+      return text(0, 16, truncate(statusSummary(statusModel(table, widget.config)), Math.floor(w / 7)), {
+        size: 13,
+        weight: 600,
+        color: theme.textPrimary,
+      });
   }
 }
 

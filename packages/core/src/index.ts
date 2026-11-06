@@ -17,6 +17,7 @@ export * from './search.ts';
 export * from './secrets.ts';
 export * from './sound.ts';
 export * from './stats.ts';
+export * from './status.ts';
 export * from './suggest.ts';
 export * from './table.ts';
 export * from './theme.ts';
