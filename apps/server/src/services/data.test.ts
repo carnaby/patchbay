@@ -1,7 +1,13 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type Dataset, DatasetSchema, inferTable, type PipelineResult } from '@patchbay/core';
+import {
+  CACHED_DATA_WARNING,
+  type Dataset,
+  DatasetSchema,
+  inferTable,
+  type PipelineResult,
+} from '@patchbay/core';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConnectorService } from '../connectors/registry.ts';
 import { FolderStore } from '../store/folder-store.ts';
@@ -160,7 +166,8 @@ describe('uploaded files', () => {
     }).resolve(target, narrow);
     expect(capped.table.columns).toHaveLength(300);
     expect(capped.table.rows).toHaveLength(100);
-    expect(capped.error).toMatch(/first 100 rows of the inline rows/);
+    expect(capped.warning).toMatch(/first 100 rows of the inline rows/);
+    expect(capped.error).toBeUndefined();
   });
 
   it('answers busy instead of queueing without limit, and does not fold that into the result', async () => {
@@ -203,6 +210,21 @@ describe('results', () => {
     const b = await data.resolve(target, dataset({ kind: 'inline', rows: [{ a: 2 }] }));
     expect(a.table.rows).toEqual([{ a: 1 }]);
     expect(b.table.rows).toEqual([{ a: 2 }]);
+  });
+
+  it('marks a cached connector copy with the text the widget badge reads as stale', async () => {
+    const service = new ConnectorService({ offline: true });
+    vi.spyOn(service, 'load').mockResolvedValue({
+      table: inferTable([{ a: 1 }]),
+      fetchedAt: 1_000,
+      stale: 'upstream is down',
+    });
+    const r = await new DataService(service, store).resolve(
+      target,
+      dataset({ kind: 'connector', connector: 'weather.current', params: {} }),
+    );
+    expect(r.error).toBeUndefined();
+    expect(r.warning).toBe(`${CACHED_DATA_WARNING}: upstream is down`);
   });
 });
 
@@ -261,7 +283,8 @@ describe('http sources', () => {
     const data = new DataService(connectors, store, new InlineRunner(), { maxSourceCells: 2500 });
     const r = await data.resolve(target, http('https://wide.example/x'));
     expect(r.table.rows).toHaveLength(250);
-    expect(r.error).toMatch(/first 250 rows/);
+    expect(r.warning).toMatch(/first 250 rows/);
+    expect(r.error).toBeUndefined();
   });
 
   it('never builds more than maxSourceCells cells when a wide record follows narrow ones', async () => {
@@ -276,7 +299,7 @@ describe('http sources', () => {
     const r = await data.resolve(target, http('https://late-wide.example/x'));
     expect(r.table.columns).toHaveLength(400);
     expect(r.table.rows.length * r.table.columns.length).toBeLessThanOrEqual(500_000);
-    expect(r.error).toMatch(/first 1,250 rows/);
+    expect(r.warning).toMatch(/first 1,250 rows/);
     fetchMock.mockResolvedValue([
       {},
       Object.fromEntries(Array.from({ length: 47_000 }, (_, c) => [`k${c}`, 1])),

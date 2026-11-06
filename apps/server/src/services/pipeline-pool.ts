@@ -120,11 +120,28 @@ const CHEAP_STEPS = new Set<Transform['type']>([
 ]);
 const MAX_INLINE_STEPS = 4;
 
-/** Cells a run holds as input: its table and every table a join or union reads. */
-export function cellsOf(table: DataTable, inputs?: PipelineInputs): number {
-  let cells = table.rows.length * Math.max(table.columns.length, 1);
-  for (const { table: t } of Object.values(inputs?.tables ?? {}))
-    cells += t.rows.length * Math.max(t.columns.length, 1);
+const cellCount = (t: DataTable) => t.rows.length * Math.max(t.columns.length, 1);
+
+/**
+ * The input size of a run, for the inline threshold and the heavy turn: its table, plus each table a join or union
+ * reads once per reference. Inputs are keyed by id, so a union listing one table four times receives it once but
+ * appends it four times; counting it once let such a run pass as small and stall the calling thread.
+ */
+export function cellsOf(table: DataTable, transforms: readonly Transform[], inputs?: PipelineInputs): number {
+  let cells = cellCount(table);
+  if (!inputs) return cells;
+  const counted = new Set<string>();
+  const add = (id: string) => {
+    if (!Object.hasOwn(inputs.tables, id)) return;
+    counted.add(id);
+    cells += cellCount(inputs.tables[id]!.table);
+  };
+  for (const step of transforms) {
+    if (step.type === 'join') add(step.with);
+    else if (step.type === 'union') for (const id of step.with) add(id);
+  }
+  // A table passed but not referenced is still copied to a worker.
+  for (const [id, { table: t }] of Object.entries(inputs.tables)) if (!counted.has(id)) cells += cellCount(t);
   return cells;
 }
 
@@ -136,7 +153,7 @@ export function runsInline(
   inputs?: PipelineInputs,
 ): boolean {
   return (
-    cellsOf(table, inputs) < inlineBelowCells &&
+    cellsOf(table, transforms, inputs) < inlineBelowCells &&
     transforms.length <= MAX_INLINE_STEPS &&
     transforms.every((t) => CHEAP_STEPS.has(t.type))
   );
@@ -328,7 +345,7 @@ export class WorkerPool implements PipelineRunner {
     // tables go to a worker only for their expressions, and refusing them would break ordinary dashboards. Tables
     // over HEAVY_PIPELINE_CELLS run inside a heavy turn (services/data.ts) and pass here as part of it.
     // Inputs count too: a small table joined to a large one copies the large one.
-    if (cellsOf(table, inputs) >= this.inlineBelowCells) {
+    if (cellsOf(table, transforms, inputs) >= this.inlineBelowCells) {
       try {
         memoryGuard.admitHeavy({ oneShot: true });
       } catch (e) {

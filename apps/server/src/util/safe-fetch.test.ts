@@ -3,6 +3,7 @@ import { connect } from 'node:net';
 import { Agent } from 'undici';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { redact, redactJson, safeFetchJson } from './safe-fetch.ts';
+import { APP_VERSION, USER_AGENT } from './version.ts';
 
 /** A value with characters that encoders treat differently: "/", "+", "=", a space and "~". */
 const VALUE = 'Ab/c+D=e f~g_12345';
@@ -86,6 +87,7 @@ describe('small documents', () => {
     server = createServer((req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       if (req.url === '/large') return res.end(JSON.stringify({ pad: 'x'.repeat(20_000) }));
+      if (req.url === '/ua') return res.end(JSON.stringify({ ua: req.headers['user-agent'] }));
       if (req.url === '/many') return res.end(JSON.stringify(Array.from({ length: 1000 }, (_, i) => i)));
       res.end(JSON.stringify({ ok: true }));
     });
@@ -119,5 +121,13 @@ describe('small documents', () => {
     await expect(safeFetchJson('https://small.example/many', { test: { dispatcher } })).resolves.toHaveLength(
       1000,
     );
+  });
+
+  it('names the running release in its user agent', async () => {
+    const [major, minor] = APP_VERSION.split('.');
+    expect(USER_AGENT).toBe(`Patchbay/${major}.${minor} (+https://github.com/carnaby/patchbay)`);
+    await expect(safeFetchJson('https://small.example/ua', { test: { dispatcher } })).resolves.toEqual({
+      ua: USER_AGENT,
+    });
   });
 });

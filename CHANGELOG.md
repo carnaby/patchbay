@@ -45,6 +45,10 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 - A page translated by the browser (Google Translate and similar) no longer crashes with a `removeChild`
   `NotFoundError`. Widgets are marked `translate="no"`, so their live values keep updating.
+- A dataset whose source was cut to the size limit, served from a cached copy, or derived from a parent over 100,000
+  rows is no longer treated as failed: a filter that keeps no rows shows the widget's normal empty state with the
+  warning badge, the editor preview shows the table under the warning, and sound cues ring again.
+  Agents get the text as `warning` instead of `error`.
 
 ## [0.1.0] - 2026-10-31
 

@@ -332,6 +332,20 @@ describe('status model', () => {
     expect(blog!.checks[0]!.detail).toBeNull();
   });
 
+  it('reads a coloured status value by its words, and shows it without the codes', () => {
+    const level = statusLevels({ running: 'ok' });
+    expect(level('\u001b[32mok\u001b[0m')).toBe('ok');
+    expect(level('\u001b[31mFAILED\u001b[0m')).toBe('fail');
+    expect(level('\u001b[1mRunning\u001b[0m')).toBe('ok');
+    const m = statusModel(
+      inferTable([{ service: 'web', status: '\u001b[32mok\u001b[0m' }]),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status' }),
+    );
+    const check = m.sections[0]!.tiles[0]!.checks[0]!;
+    expect(check.level).toBe('ok');
+    expect(check.value).toBe('ok');
+  });
+
   it('finds the tiles of an open panel again in new data, and drops the ones that are gone', () => {
     const keys = [tile('nas', 'cue').key, tile('nas', 'blog').key];
     expect(names(statusTilesByKey(infra(), keys))).toEqual(['cue', 'blog']);

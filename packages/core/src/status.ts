@@ -78,7 +78,8 @@ export function statusLevels(
   for (const [name, level] of Object.entries(levels ?? {})) own.set(normal(name), level);
   return (value) => {
     if (value === null || value === undefined) return 'warn';
-    const text = normal(String(value));
+    // A monitor that colours its states with terminal codes means the word, not an unknown state.
+    const text = normal(stripAnsi(String(value)));
     const mine = own.get(text);
     if (mine) return mine;
     if (typeof value === 'boolean') return value ? 'ok' : 'fail';
@@ -284,7 +285,7 @@ export function statusModel(table: DataTable, config: StatusConfig): StatusModel
     const since = sinceField === undefined ? null : row[sinceField];
     const check: StatusCheck = {
       level: levelOf(raw),
-      value: raw === null || raw === undefined ? '' : String(raw),
+      value: cellText(raw) ?? '',
       label: config.label === undefined ? null : cellText(row[config.label]),
       kind: config.kind === undefined ? null : cellText(row[config.kind]),
       detail: config.detail === undefined ? null : clip(cellText(row[config.detail])),

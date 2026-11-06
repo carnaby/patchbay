@@ -55,7 +55,9 @@ export function useSoundCues(dashboardId: string) {
         entry = { identity, epoch, hash: null, state: null };
         tracked.set(w.id, entry);
       }
-      // A failed refresh serves stale rows; they are not news.
+      // A failed result has no rows to judge. A warning still carries real rows: a capped source keeps its rules
+      // working, and a cached copy is the last real reading (the connector cache is shared across dashboards), so it
+      // rings only for rows this viewer has not seen yet.
       if (result.error || result.hash === entry.hash) return false;
       const decision = soundDecision(w.sound, result.table, entry.state, now);
       entry.hash = result.hash;

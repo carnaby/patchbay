@@ -11,6 +11,7 @@
  * viewers on one dashboard costs one parse, not one per viewer.
  */
 import {
+  CACHED_DATA_WARNING,
   type DashboardDoc,
   type Dataset,
   type DatasetResult,
@@ -447,7 +448,7 @@ export class DataService {
           table: r.table,
           fetchedAt: r.fetchedAt,
           credentialKey: '',
-          ...(r.stale ? { warning: `Showing cached data: ${r.stale}` } : {}),
+          ...(r.stale ? { warning: `${CACHED_DATA_WARNING}: ${r.stale}` } : {}),
         };
       }
       case 'inline':
@@ -519,7 +520,7 @@ export class DataService {
     const run = () => this.pipeline.run(input, transforms, inputs);
     // A large table can fill the pipeline worker's heap: it waits for its turn with the other heavy jobs. The tables a
     // join or union reads are copied to the worker too, so they count.
-    const heavy = transforms.length > 0 && cellsOf(input, inputs) >= HEAVY_PIPELINE_CELLS;
+    const heavy = transforms.length > 0 && cellsOf(input, transforms, inputs) >= HEAVY_PIPELINE_CELLS;
     return heavy ? heavyWork.run(run) : run();
   }
 
@@ -643,7 +644,9 @@ export class DataService {
     if (!pending) {
       pending = build()
         .then((r) => {
-          const bytes = approxTableBytes(r.table) + 2 * (key.length + r.hash.length + (r.error?.length ?? 0));
+          const bytes =
+            approxTableBytes(r.table) +
+            2 * (key.length + r.hash.length + (r.error?.length ?? 0) + (r.warning?.length ?? 0));
           this.finals.set(key, r, bytes, RESULT_TTL_MS);
           return r;
         })
@@ -680,7 +683,7 @@ export class DataService {
         ...base,
         ...computed,
         fetchedAt: new Date(loaded.fetchedAt).toISOString(),
-        ...(computed.error || loaded.warning ? { error: computed.error ?? loaded.warning } : {}),
+        ...(loaded.warning ? { warning: loaded.warning } : {}),
       };
     } catch (e) {
       if (e instanceof BusyError) throw e;

@@ -16,6 +16,7 @@ import { BusyError } from './util/gate.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { runAsClient } from './util/request-context.ts';
 import { isPrivateAddress, safeFetchJson } from './util/safe-fetch.ts';
+import { APP_VERSION } from './util/version.ts';
 
 const BASE = 'http://localhost:8787';
 let dir: string;
@@ -746,6 +747,10 @@ describe('MCP tools', () => {
     client = await connectAgent('agent-owner@example.com');
   });
 
+  it('names the running release to agents', () => {
+    expect(client.getServerVersion()).toMatchObject({ name: 'patchbay', version: APP_VERSION });
+  });
+
   it('refuses a nested request body before the MCP SDK parses it', async () => {
     const cookie = await login('mcp-bomb@example.com');
     const pat = await call('/api/tokens', { body: { name: 'bomb', scopes: ['dashboards:write'] }, cookie });
@@ -821,6 +826,75 @@ describe('MCP tools', () => {
     ]);
     const kids = result.dataChecks.find((c: { datasetId: string }) => c.datasetId === 'kids');
     expect(kids.error).toMatch(/Unknown column "temp"/);
+  });
+
+  it('reports a capped or cached source as a warning, not a failure, also when a filter leaves no rows', async () => {
+    const agent = await ownClient('warning-agent@example.com');
+    const { dashboardId } = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'W' } })),
+    );
+    const warning = 'Showing the first 2 rows of the inline rows';
+    const load = deps.data.loadSource.bind(deps.data);
+    const spy = vi.spyOn(deps.data, 'loadSource').mockImplementation(async (t, dataset) => {
+      const loaded = await load(t, dataset);
+      return dataset.id === 'root' ? { ...loaded, warning } : loaded;
+    });
+    try {
+      const applied = JSON.parse(
+        text(
+          await agent.callTool({
+            name: 'apply_operations',
+            arguments: {
+              dashboardId,
+              operations: [
+                {
+                  op: 'addDataset',
+                  dataset: {
+                    id: 'root',
+                    name: 'Root',
+                    source: { kind: 'inline', rows: [{ t: 1 }, { t: 3 }] },
+                  },
+                },
+                {
+                  op: 'addDataset',
+                  dataset: {
+                    id: 'none',
+                    name: 'None',
+                    source: { kind: 'dataset', id: 'root' },
+                    transforms: [{ type: 'filter', expr: 't > 10' }],
+                  },
+                },
+                { op: 'addWidget', widget: { id: 'w', type: 'table', datasetId: 'none', config: {} } },
+              ],
+            },
+          }),
+        ),
+      );
+      for (const check of applied.dataChecks) {
+        expect(check.error, check.datasetId).toBeUndefined();
+        expect(check.warning, check.datasetId).toBe(warning);
+      }
+      const got = JSON.parse(
+        text(await agent.callTool({ name: 'get_data', arguments: { dashboardId, datasetId: 'none' } })),
+      );
+      expect(got.error).toBeUndefined();
+      expect(got.warning).toBe(warning);
+      const preview = await agent.callTool({
+        name: 'preview_data',
+        arguments: {
+          dashboardId,
+          source: { kind: 'dataset', id: 'root' },
+          transforms: [{ type: 'filter', expr: 't > 10' }],
+        },
+      });
+      expect(preview.isError).toBeFalsy();
+      expect(JSON.parse(text(preview)).warning).toBe(warning);
+      const shot = await agent.callTool({ name: 'render_snapshot', arguments: { dashboardId } });
+      expect(text(shot)).not.toContain('Data problems');
+      expect(text(shot)).toContain(`none: ${warning}`);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('answers a busy data check after the save without telling the agent to retry the saved batch', async () => {
