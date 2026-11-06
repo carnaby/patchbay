@@ -1,8 +1,8 @@
-import { createServer, type Server } from 'node:http';
+import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
 import { connect } from 'node:net';
 import { Agent } from 'undici';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { redact, redactJson, safeFetchJson } from './safe-fetch.ts';
+import { type Credential, redact, redactJson, safeFetchJson, URL_MESSAGES } from './safe-fetch.ts';
 import { APP_VERSION, USER_AGENT } from './version.ts';
 
 /** A value with characters that encoders treat differently: "/", "+", "=", a space and "~". */
@@ -129,5 +129,141 @@ describe('small documents', () => {
     await expect(safeFetchJson('https://small.example/ua', { test: { dispatcher } })).resolves.toEqual({
       ua: USER_AGENT,
     });
+  });
+});
+
+describe('POST', () => {
+  let server: Server;
+  let dispatcher: Agent;
+  const received: { method: string; url: string; headers: IncomingHttpHeaders; body: string }[] = [];
+  const since = (mark: number) => received.slice(mark);
+  const ANSWER = { data: { viewer: { login: 'octo' } } };
+
+  beforeAll(async () => {
+    server = createServer((req, res) => {
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        received.push({ method: req.method ?? '', url: req.url ?? '', headers: req.headers, body });
+        if (req.url === '/v1/moved-307' || req.url === '/v1/moved-302') {
+          res.writeHead(req.url.endsWith('307') ? 307 : 302, { location: '/v1/graphql' });
+          return res.end();
+        }
+        if (req.url === '/v1/to-metadata') {
+          res.writeHead(307, { location: 'http://169.254.169.254/latest/meta-data/' });
+          return res.end();
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(ANSWER));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    dispatcher = new Agent({
+      connect: (_options, callback) => {
+        const socket = connect(port, '127.0.0.1');
+        socket.once('connect', () => callback(null, socket));
+        socket.once('error', (e) => callback(e, null));
+      },
+    });
+  });
+
+  afterAll(async () => {
+    await dispatcher.close();
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  });
+
+  it('sends the body as JSON with its content type', async () => {
+    const mark = received.length;
+    const body = { query: '{ viewer { login } }', variables: { n: 1 } };
+    await expect(
+      safeFetchJson('https://api.example.com/v1/graphql', { method: 'POST', body, test: { dispatcher } }),
+    ).resolves.toEqual(ANSWER);
+    const sent = since(mark);
+    expect(sent.map((r) => [r.method, r.url, r.body])).toEqual([
+      ['POST', '/v1/graphql', JSON.stringify(body)],
+    ]);
+    expect(sent[0]!.headers['content-type']).toBe('application/json');
+    expect(sent[0]!.headers.accept).toBe('application/json');
+  });
+
+  it('sends an empty POST without a content type, and a GET exactly as before', async () => {
+    const mark = received.length;
+    await safeFetchJson('https://api.example.com/v1/empty', { method: 'POST', test: { dispatcher } });
+    await safeFetchJson('https://api.example.com/v1/get', { test: { dispatcher } });
+    const [empty, get] = since(mark);
+    expect([empty!.method, empty!.body, empty!.headers['content-type']]).toEqual(['POST', '', undefined]);
+    expect([get!.method, get!.body, get!.headers['content-type']]).toEqual(['GET', '', undefined]);
+  });
+
+  it('never follows a redirect of a POST: one request, then the error', async () => {
+    for (const path of ['/v1/moved-307', '/v1/moved-302', '/v1/to-metadata']) {
+      const start = received.length;
+      await expect(
+        safeFetchJson(`https://api.example.com${path}`, {
+          method: 'POST',
+          body: { q: 1 },
+          test: { dispatcher },
+        }),
+        path,
+      ).rejects.toThrow(URL_MESSAGES.postRedirect);
+      expect(since(start).map((r) => [r.method, r.url])).toEqual([['POST', path]]);
+    }
+    // A GET still follows the same answer.
+    const mark = received.length;
+    await expect(
+      safeFetchJson('https://api.example.com/v1/moved-302', { test: { dispatcher } }),
+    ).resolves.toEqual(ANSWER);
+    expect(since(mark).map((r) => [r.method, r.url])).toEqual([
+      ['GET', '/v1/moved-302'],
+      ['GET', '/v1/graphql'],
+    ]);
+  });
+
+  it('keeps the address rules: nothing private, plain or on another port, and nothing sent', async () => {
+    const mark = received.length;
+    const refused: [string, string][] = [
+      ['https://127.0.0.1/v1/graphql', URL_MESSAGES.privateOff],
+      ['https://[::1]/v1/graphql', URL_MESSAGES.privateOff],
+      ['https://169.254.169.254/latest/meta-data/', URL_MESSAGES.privateOff],
+      ['http://api.example.com/v1/graphql', URL_MESSAGES.httpOff],
+      ['https://api.example.com:8443/v1/graphql', URL_MESSAGES.portOff],
+    ];
+    for (const [url, message] of refused) {
+      await expect(
+        safeFetchJson(url, { method: 'POST', body: { q: 1 }, test: { dispatcher } }),
+        url,
+      ).rejects.toThrow(message);
+    }
+    expect(since(mark)).toEqual([]);
+  });
+
+  it('sends a secret only to its bound address, and stops a redirect after the first hop', async () => {
+    const credential: Credential = {
+      id: 'sec_AAAAAAAAAAAAAAAA',
+      revision: 1,
+      origin: 'https://api.example.com',
+      pathPrefix: '/v1/',
+      placement: 'header',
+      paramName: 'X-API-Key',
+      value: VALUE,
+    };
+    const post = { method: 'POST' as const, body: { q: 1 }, credentials: [credential], test: { dispatcher } };
+    const mark = received.length;
+    await expect(safeFetchJson('https://api.example.com/v1/graphql', post)).resolves.toEqual(ANSWER);
+    await expect(safeFetchJson('https://api.example.com/v2/graphql', post)).rejects.toThrow(
+      'Credentials for this source are bound to another address.',
+    );
+    await expect(safeFetchJson('https://api.example.com/v1/moved-307', post)).rejects.toThrow(
+      URL_MESSAGES.postRedirect,
+    );
+    expect(since(mark).map((r) => [r.method, r.url, r.headers['x-api-key'], r.body])).toEqual([
+      ['POST', '/v1/graphql', VALUE, '{"q":1}'],
+      ['POST', '/v1/moved-307', VALUE, '{"q":1}'],
+    ]);
   });
 });
