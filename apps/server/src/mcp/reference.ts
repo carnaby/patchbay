@@ -215,8 +215,8 @@ ${tableFns}
   ok tiles into "+N more ok", then sections without problems into their header line, then the last of those lines
   into one "+N more sections · 12 ok" line, which goes too before any problem is hidden (the summary line keeps every
   count); problems never fold into ok summaries, and only when the problem tiles alone do not fit are their details
-  cut to two lines and the rest counted in "+N more problems". At most ${STATUS_LIMITS.rows} rows,
-  ${STATUS_LIMITS.sections} sections and ${STATUS_LIMITS.tiles} tiles are read.
+  cut to two lines and the rest counted in "+N more problems" (a section left without problem tiles folds into it).
+  At most ${STATUS_LIMITS.rows} rows, ${STATUS_LIMITS.sections} sections and ${STATUS_LIMITS.tiles} tiles are read.
   Example: { "id": "infra", "type": "status", "datasetId": "checks", "config": { "entity": "service", "status": "status", "group": "machine", "label": "name", "kind": "kind", "detail": "detail", "since": "since" } }
 format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }
 

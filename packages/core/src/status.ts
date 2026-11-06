@@ -497,7 +497,7 @@ export interface StatusPlaced {
 export interface StatusSectionLayout {
   section: StatusSection;
   header: boolean;
-  /** Folded to its header line (rule 5), or emptied of tiles by the overflow rule. */
+  /** Folded to its header line (rule 5). */
   collapsed: boolean;
   /** Top of the header, or of the grid when there is no header. */
   y: number;
@@ -666,7 +666,8 @@ interface FitState {
  * Which tiles a box of this size shows. Folds one step at a time, each from the last section upwards, and stops as
  * soon as everything fits: off tiles, then ok tiles, then calm sections to their header line, then the ok and off
  * cells of sections with problems, then the calm header lines at the end into one "+N more sections" line (one more
- * section at a time), then that line too, then details to two lines, then problem tiles into "+N more problems".
+ * section at a time), then that line too, then details to two lines, then problem tiles into "+N more problems"
+ * (a section left without problem tiles folds away with them).
  * What is broken outranks the names of calm sections, whose counts stay in the summary line. Nothing scrolls: the
  * widget runs unattended on wall screens, so what does not fit is folded and counted, never cut off.
  */
@@ -733,10 +734,16 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
     }
     let y = summaryHeight;
     const shown = states.slice(0, states.length - folded);
-    const sections = shown.map((s, i): StatusSectionLayout => {
-      if (i > 0) y += M.sectionGap;
+    // A problem section whose tiles are all hidden folds away, header and all: the "+N more problems" cell names its
+    // tiles and the summary line counts its checks. Hiding runs last, so its ok and off cells are already gone. The
+    // section that holds the cell stays, without a header when it was emptied too.
+    const emptied = (s: FitState) => s.hidden.length > 0 && s.problems.length === 0;
+    const drawn = shown.flatMap((s, i) => (!emptied(s) || (hidden.length && i === home) ? [{ s, i }] : []));
+    const sections = drawn.map(({ s, i }, n): StatusSectionLayout => {
+      if (n > 0) y += M.sectionGap;
       const top = y;
-      if (model.grouped) y += M.headerHeight;
+      const header = model.grouped && !emptied(s);
+      if (header) y += M.headerHeight;
       const cells: Cell[] = [];
       if (!s.headerOnly) {
         for (const tile of s.problems) cells.push(tileCell(tile, wide));
@@ -754,8 +761,8 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
       y += placed.height;
       return {
         section: s.section,
-        header: model.grouped,
-        collapsed: model.grouped && placed.items.length === 0,
+        header,
+        collapsed: header && placed.items.length === 0,
         y: top,
         items: placed.items,
         height: y - top,
@@ -764,7 +771,7 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
     let moreSections: StatusMoreSections | null = null;
     if (folded && !dropped) {
       // One more child of the same column of sections, so the same gap as between two sections.
-      if (shown.length) y += M.sectionGap;
+      if (sections.length) y += M.sectionGap;
       moreSections = { sections: states.slice(shown.length).map((s) => s.section), y };
       y += M.headerHeight;
     }
@@ -831,12 +838,11 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
     if (layout.fits) break;
     if (step()) layout = measure();
   }
-  // Problems are hidden only for the problem tiles themselves to fit. When even hiding all of them cannot do that
-  // (a box too small for anything), hiding gains nothing: the tiles stay and the bottom is cut.
-  const before = layout;
+  // Problems are hidden only for the problem tiles themselves to fit, and then until they do: a tile is counted, never
+  // cut. Only a box too small for the summary line and one cell stays over.
   while (!layout.fits) {
     const from = reversed.find((s) => s.problems.length > 0);
-    if (!from) return before;
+    if (!from) break;
     from.hidden.push(from.problems.pop()!);
     layout = measure();
   }

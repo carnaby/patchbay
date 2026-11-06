@@ -782,6 +782,30 @@ describe('status snapshots', () => {
     expect(text).toContain('+2 more sections · 8 ok');
   });
 
+  it('counts failing machines in a small body and never draws a tile across the card border', () => {
+    const rows = Array.from({ length: 4 }, (_, m) =>
+      Array.from({ length: 4 }, (_, s) => ({
+        machine: `m${m}`,
+        service: `m${m}-svc${s}`,
+        status: s === 0 ? 'fail' : 'ok',
+        detail: s === 0 ? 'connection refused' : null,
+      })),
+    ).flat();
+    const m = statusModel(
+      inferTable(rows),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', group: 'machine', detail: 'detail' }),
+    );
+    const svg = body(m, 340, 162);
+    expect(svg).toContain('+4 more problems');
+    expect(svg).not.toContain('connection refused');
+    const bottoms = [...svg.matchAll(/<rect x="[^"]*" y="([^"]*)" width="[^"]*" height="([^"]*)"/g)].map(
+      ([, y, h]) => Number(y) + Number(h),
+    );
+    expect(Math.max(...bottoms)).toBeLessThanOrEqual(162);
+    // A box too small for even one cell draws the summary line and no cell at all.
+    expect(body(m, 340, 60)).not.toContain('<rect');
+  });
+
   it('draws control characters from monitor output as plain text instead of failing the snapshot', () => {
     // ANSI colour codes, a NUL and a vertical tab: XML forbids them, and one of them made resvg refuse the whole SVG.
     const output = '\u001b[31mFAILED\u001b[0m: exit 1\u0000\u000b \u001b]0;title\u0007done';

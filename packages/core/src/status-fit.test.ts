@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   inferTable,
+  STATUS_METRICS,
   StatusConfigSchema,
   type StatusLayout,
   type StatusModel,
@@ -106,19 +107,21 @@ describe('statusFit', () => {
       null,
     ]);
     expect(shape(dropped)).toEqual({ nas: ['cue'] });
+    // Hiding cue empties nas, so its header folds away too: the fold names cue, the summary counts nas.
     const over = statusFit(infra, { width: 480, height: 155 });
-    expect([over.height, over.fits, over.clamped, over.hiddenProblems]).toEqual([102, true, true, 1]);
-    expect(shape(over).nas).toEqual(['+1 more problem']);
+    expect([over.height, over.fits, over.clamped, over.hiddenProblems]).toEqual([78, true, true, 1]);
+    expect(shape(over)).toEqual({ nas: ['+1 more problem'] });
+    expect(over.sections[0]!.header).toBe(false);
     const more = over.sections[0]!.items[0]!.item;
     expect(more.kind === 'more' && [more.what, more.level, more.tiles.map((t) => t.entity)]).toEqual([
       'problems',
       'fail',
       ['cue'],
     ]);
-    // Hiding that cannot make it fit gains nothing: the problem tile stays, cut at the bottom.
+    // Too small for the problem tile: it is counted, never cut.
     const tiny = statusFit(infra, { width: 480, height: 100 });
-    expect([tiny.fits, tiny.hiddenProblems]).toEqual([false, 0]);
-    expect(shape(tiny).nas).toEqual(['cue']);
+    expect([tiny.height, tiny.fits, tiny.hiddenProblems]).toEqual([78, true, 1]);
+    expect(shape(tiny)).toEqual({ nas: ['+1 more problem'] });
   });
 
   it('fits the small widget of a phone without hiding its only problem (the 390 px browser check)', () => {
@@ -213,14 +216,64 @@ describe('statusFit', () => {
       'warn',
       ['b2'],
     ]);
-    // b has no problem tile left, so the fold moves home to a, still counting b's tiles, in reading order.
+    // b has no problem tile left, so its header folds away and the fold moves home to a, naming b's tiles too.
     const three = at(3);
-    expect(shape(three)).toMatchObject({ a: ['a1', '+3 more problems'], b: ['(header)'] });
+    expect(shape(three)).toEqual({ a: ['a1', '+3 more problems'] });
     const moved = three.sections[0]!.items[1]!.item;
     expect(moved.kind === 'more' && [moved.level, moved.tiles.map((t) => t.entity)]).toEqual([
       'fail',
       ['a2', 'b1', 'b2'],
     ]);
+  });
+
+  /** Every machine has one failing check and three ok ones. */
+  const failing = (n: number) =>
+    statusModel(
+      inferTable(
+        Array.from({ length: n }, (_, m) =>
+          Array.from({ length: 4 }, (_, s) => ({
+            machine: `m${m}`,
+            service: `m${m}-svc${s}`,
+            status: s === 0 ? 'fail' : 'ok',
+            detail: s === 0 ? 'connection refused' : null,
+          })),
+        ).flat(),
+      ),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', group: 'machine', detail: 'detail' }),
+    );
+
+  /** Nothing drawn below the box: no cell, and no header line. */
+  const inside = (layout: StatusLayout, height: number) =>
+    layout.sections.every(
+      (s) =>
+        (!s.header || s.y + STATUS_METRICS.headerHeight <= height) &&
+        s.items.every((p) => p.y + p.height <= height),
+    ) &&
+    (!layout.moreSections || layout.moreSections.y + STATUS_METRICS.headerHeight <= height);
+
+  it.each([3, 4])('counts %i failing machines in a phone body instead of cutting their tiles', (n) => {
+    const layout = statusFit(failing(n), { width: 340, height: 162 });
+    expect([layout.height, layout.fits, layout.hiddenProblems]).toEqual([78, true, n]);
+    expect(inside(layout, 162)).toBe(true);
+    // Every section was emptied: one fold under the summary line, without a header, naming every failing tile.
+    expect(layout.sections).toHaveLength(1);
+    expect(layout.sections[0]!.header).toBe(false);
+    const fold = layout.sections[0]!.items[0]!.item;
+    expect(
+      fold.kind === 'more' && [statusMoreTitle(fold), fold.level, fold.tiles.map((t) => t.entity)],
+    ).toEqual([`+${n} more problems`, 'fail', Array.from({ length: n }, (_, m) => `m${m}-svc0`)]);
+  });
+
+  it('fits every box that holds the summary line and one fold, and draws nothing below it', () => {
+    for (const model of [infra, flat, failing(3), failing(4), machines(7)]) {
+      for (const width of [340, 480, 612]) {
+        for (let height = 78; height <= 700; height += 7) {
+          const layout = statusFit(model, { width, height });
+          expect(layout.fits).toBe(true);
+          expect(inside(layout, height)).toBe(true);
+        }
+      }
+    }
   });
 
   it('never folds a problem tile into an ok or off summary, and fits whenever it says so', () => {

@@ -125,7 +125,11 @@ export function statusSvg(
     // Nothing below the card: a layout that does not fit at all is cut at the bottom, never drawn over the border.
     if (section.y >= height) break;
     if (section.header) parts.push(header(section.y, statusSectionTitle(section.section)));
-    for (const placed of section.items) if (placed.y < height) parts.push(cell(placed, theme, now));
+    // A cell that would end below the body would cross the card's padding and border (the body has no clip): left
+    // out. The fit only leaves one there in a box too small for the summary line and one cell.
+    for (const placed of section.items) {
+      if (placed.y + placed.height <= height) parts.push(cell(placed, theme, now));
+    }
   }
   const more = layout.moreSections;
   if (more && more.y < height) parts.push(header(more.y, statusMoreSectionsTitle(more.sections)));
