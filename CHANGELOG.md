@@ -6,6 +6,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-06
+
 ### Changed
 
 - **Status widget**: sections and tiles of the same level now keep the order of the dataset's rows instead of being
@@ -123,6 +125,7 @@ The server was reviewed adversarially before release, and every finding has a re
 - Hostile feeds are parsed in linear time off the main thread; snapshot drawing is bounded per render.
 - `URL_SOURCES=signed-in` keeps strangers from making a public instance fetch arbitrary addresses.
 
-[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/carnaby/patchbay/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/carnaby/patchbay/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/carnaby/patchbay/releases/tag/v0.1.0
