@@ -14,7 +14,7 @@ the compose file for exactly this; it runs the prebuilt image from GHCR, so the 
 git clone https://github.com/carnaby/patchbay.git && cd patchbay
 cp .env.example .env
 #   PATCHBAY_DOMAIN=dash.example.com
-#   PATCHBAY_TAG=0.1.0              (optional; default latest, which follows main)
+#   PATCHBAY_TAG=0.2.0              (optional; default latest, which follows main)
 #   GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
 #   ADMIN_EMAILS=you@example.com
 #   PRUNE_ANONYMOUS_AFTER_DAYS=60   (optional, see "Anonymous dashboards and disk space")
@@ -49,7 +49,7 @@ Runs Patchbay on a machine at home (a NAS, a mini PC) without opening a port on 
 container dials out to Cloudflare; Cloudflare terminates TLS for your hostname and forwards requests through the
 tunnel to `http://patchbay:8787` on the compose project's private network. Images come prebuilt from GHCR
 (`ghcr.io/carnaby/patchbay` for `linux/amd64` and `linux/arm64`: `latest` follows `main`, releases are tagged
-`0.1.0` and `0.1`, and every commit is also tagged with its full SHA), so the
+`0.2.0` and `0.2`, and every commit is also tagged with its full SHA), so the
 machine needs no checkout and no build. Everything is in [`deploy/nas/`](../deploy/nas/).
 
 You need a domain whose DNS is on Cloudflare (any plan, including Free).

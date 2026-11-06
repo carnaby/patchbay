@@ -378,7 +378,7 @@ described in [guide/deployment.md](guide/deployment.md#limits-for-a-small-public
 ## Deployment
 
 One container with a volume. Images for `linux/amd64` and `linux/arm64` are published to GHCR:
-`ghcr.io/carnaby/patchbay:latest` follows `main`, release tags (`0.1.0`, `0.1`) stay fixed, and every commit is
+`ghcr.io/carnaby/patchbay:latest` follows `main`, release tags (`0.2.0`, `0.2`) stay fixed, and every commit is
 also tagged with its full SHA.
 
 A production-style `docker-compose.yml` with Caddy (automatic HTTPS) is included. Point a DNS record at the server,
