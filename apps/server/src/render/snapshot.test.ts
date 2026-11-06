@@ -6,10 +6,14 @@ import {
   inferTable,
   parseDashboard,
   resolveColor,
+  StatusConfigSchema,
+  statusFit,
+  statusModel,
   THEMES,
   type WidgetInput,
   WidgetSchema,
 } from '@patchbay/core';
+import { INFRA_NOW, INFRA_STATUS_CONFIG, infraTable } from '@patchbay/core/status-fixture';
 import { Resvg } from '@resvg/resvg-js';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { buildTemplate, listTemplates } from '../services/templates.ts';
@@ -23,6 +27,7 @@ import {
   renderWidgetPng,
   shareMarks,
 } from './snapshot.ts';
+import { statusSvg } from './status-svg.ts';
 
 // Widget snapshots are 640x360 rendered at 1.5x; boxes below are in SVG coordinates.
 const SCALE = 1.5;
@@ -702,5 +707,195 @@ describe('snapshot budgets', () => {
       expect(inkColumns(img, { x: 26, y: 100, w: 250, h: 14 }, 1).length).toBeGreaterThan(100);
       expect(inkColumns(img, { x: 26, y: 140, w: 250, h: 80 }, 1).length).toBe(0);
     });
+  });
+});
+
+describe('status snapshots', () => {
+  const checks: DatasetResult = {
+    datasetId: 'checks',
+    table: infraTable(),
+    fetchedAt: new Date(INFRA_NOW).toISOString(),
+    hash: 's',
+    truncated: false,
+  };
+  const infra = widget({
+    id: 'infra',
+    type: 'status',
+    title: 'Infra',
+    datasetId: 'checks',
+    config: INFRA_STATUS_CONFIG,
+  });
+  const model = statusModel(infraTable(), StatusConfigSchema.parse(INFRA_STATUS_CONFIG));
+  // The body of the default 640x360 widget card: 612 wide, 310 tall.
+  const body = (m = model, width = 612, height = 310) =>
+    statusSvg(m, statusFit(m, { width, height }), THEMES.light, width, height, INFRA_NOW);
+
+  for (const mode of ['light', 'dark'] as const) {
+    it(`draws the failing tile in the negative colour (${mode})`, () => {
+      const img = decodePng(renderWidgetPng(infra, checks, { theme: mode }));
+      // The cue tile: first in the nas section, under the summary line (28) and the section header (24).
+      const fill = resolveColor('negative', THEMES[mode], 'fill');
+      expect(pixelsOf(img, fill, { x: 24, y: 96, w: 380, h: 90 })).toBeGreaterThan(5000);
+    });
+  }
+
+  it('shows the problem detail in full and folds ok tiles into "+N more ok"', () => {
+    const svg = body();
+    expect(svg).toContain('1 problem · 20 ok · 5 off');
+    expect(svg).toContain('fail · cue-backup · 9 hours ago');
+    expect(svg).toContain('FAILED: cue: Postgres container cue-backup-1 is not');
+    expect(svg).toContain('running, no dump');
+    expect(svg).toContain('+4 more ok');
+    expect(svg).toContain('blog, immich, nas, …');
+    // Calm sections that did not fit are their header line alone.
+    expect(svg).toContain('internet · 5 ok');
+    expect(svg).toContain('nuc · 5 ok · 3 off');
+    expect(svg).not.toContain('home-assistant');
+  });
+
+  it('folds calm header lines into "+N more sections" before hiding a problem', () => {
+    const svg = body(model, 480, 227);
+    expect(svg).toContain('+2 more sections · 10 ok · 3 off');
+    expect(svg).toContain('fail · cue-backup · 9 hours ago');
+    expect(svg).not.toContain('more problem');
+    expect(svg).not.toContain('internet · 5 ok');
+    // Seven machines with one failing check in the default card: the failing tile is drawn, not "+1 more problem".
+    const rows = Array.from({ length: 7 }, (_, m) =>
+      Array.from({ length: 4 }, (_, s) => ({
+        machine: `m${m}`,
+        service: `m${m}-svc${s}`,
+        status: m === 0 && s === 0 ? 'fail' : 'ok',
+        detail: m === 0 && s === 0 ? 'connection refused' : null,
+      })),
+    ).flat();
+    const config = { entity: 'service', status: 'status', group: 'machine', detail: 'detail' };
+    const many = renderWidgetPng(
+      widget({ id: 'many', type: 'status', title: 'Machines', datasetId: 'm', config }),
+      { ...checks, datasetId: 'm', table: inferTable(rows) },
+    );
+    const img = decodePng(many);
+    // Under the summary line (28) and m0's header (24): the failing tile's fill, two columns wide.
+    const fill = resolveColor('negative', THEMES.light, 'fill');
+    expect(pixelsOf(img, fill, { x: 24, y: 96, w: 380, h: 60 })).toBeGreaterThan(5000);
+    const text = body(statusModel(inferTable(rows), StatusConfigSchema.parse(config)));
+    expect(text).toContain('connection refused');
+    expect(text).toContain('+2 more sections · 8 ok');
+  });
+
+  it('counts failing machines in a small body and never draws a tile across the card border', () => {
+    const rows = Array.from({ length: 4 }, (_, m) =>
+      Array.from({ length: 4 }, (_, s) => ({
+        machine: `m${m}`,
+        service: `m${m}-svc${s}`,
+        status: s === 0 ? 'fail' : 'ok',
+        detail: s === 0 ? 'connection refused' : null,
+      })),
+    ).flat();
+    const m = statusModel(
+      inferTable(rows),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', group: 'machine', detail: 'detail' }),
+    );
+    const svg = body(m, 340, 162);
+    expect(svg).toContain('+4 more problems');
+    expect(svg).not.toContain('connection refused');
+    const bottoms = [...svg.matchAll(/<rect x="[^"]*" y="([^"]*)" width="[^"]*" height="([^"]*)"/g)].map(
+      ([, y, h]) => Number(y) + Number(h),
+    );
+    expect(Math.max(...bottoms)).toBeLessThanOrEqual(162);
+    // A box too small for even one cell draws the summary line and no cell at all.
+    expect(body(m, 340, 60)).not.toContain('<rect');
+  });
+
+  it('draws control characters from monitor output as plain text instead of failing the snapshot', () => {
+    // ANSI colour codes, a NUL and a vertical tab: XML forbids them, and one of them made resvg refuse the whole SVG.
+    const output = '\u001b[31mFAILED\u001b[0m: exit 1\u0000\u000b \u001b]0;title\u0007done';
+    const rows = [{ service: 'backup', status: 'fail', detail: output }];
+    const config = { entity: 'service', status: 'status', detail: 'detail' };
+    const svg = body(statusModel(inferTable(rows), StatusConfigSchema.parse(config)));
+    expect(svg).toContain('FAILED: exit 1 done');
+    expect([...svg].filter((ch) => ch < ' ' && !'\t\n\r'.includes(ch))).toEqual([]);
+    const data = { ...checks, datasetId: 'm', table: inferTable(rows) };
+    const status = widget({ id: 'esc', type: 'status', datasetId: 'm', config });
+    expect(decodePng(renderWidgetPng(status, data)).width).toBeGreaterThan(0);
+    const table = widget({ id: 'tab', type: 'table', title: 'Out', datasetId: 'm', config: {} });
+    expect(decodePng(renderWidgetPng(table, data)).width).toBeGreaterThan(0);
+    const chart = widget({
+      id: 'ch',
+      type: 'chart',
+      title: 'Out',
+      datasetId: 'm',
+      config: { kind: 'bar', x: 'service', y: ['n'] },
+    });
+    const labelled = inferTable([{ service: '\u001b[1mbackup\u001b[0m', n: 1 }]);
+    expect(decodePng(renderWidgetPng(chart, { ...data, table: labelled })).width).toBeGreaterThan(0);
+  });
+
+  it('keeps the markup of a chart whose labels end in a cut-off escape sequence', () => {
+    // An escape pass over ECharts' whole SVG would read "\x1b[" plus the next "</t" as one sequence, and an
+    // unterminated "\x1b]" as a title running to the end of the document.
+    const chart = widget({
+      id: 'ch',
+      type: 'chart',
+      title: 'Out',
+      datasetId: 'm',
+      config: { kind: 'bar', x: 'service', y: ['n'] },
+    });
+    const table = inferTable([
+      { service: 'a\u001b[', n: 1 },
+      { service: 'b\u001b]0;title', n: 2 },
+      { service: 'next', n: 3 },
+    ]);
+    const img = decodePng(renderWidgetPng(chart, { ...checks, datasetId: 'm', table }));
+    // All three bars are drawn: the document after the first label survived.
+    const bar = resolveColor('accent-1', THEMES.light, 'mark');
+    expect(pixelsOf(img, bar, { x: 14, y: 36, w: 612, h: 310 })).toBeGreaterThan(1000);
+  });
+
+  it('cuts a long name to its tile instead of drawing past it', () => {
+    const long = 'a-service-name-far-too-long-for-any-tile-in-this-widget';
+    const m = statusModel(
+      inferTable([{ service: long, status: 'ok' }]),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status' }),
+    );
+    const svg = body(m, 300, 200);
+    expect(svg).not.toContain(long);
+    expect(svg).toContain('a-service-name');
+    expect(svg).toContain('…');
+  });
+
+  it('draws an empty dataset as "No checks"', () => {
+    const empty = statusModel({ columns: [], rows: [] }, StatusConfigSchema.parse(INFRA_STATUS_CONFIG));
+    expect(body(empty)).toContain('No checks');
+    // Without the summary line the body says it itself.
+    const bare = statusModel(
+      { columns: [], rows: [] },
+      StatusConfigSchema.parse({ ...INFRA_STATUS_CONFIG, summary: false }),
+    );
+    expect(body(bare)).toContain('No checks');
+    const img = decodePng(renderWidgetPng(infra, { ...checks, table: { columns: [], rows: [] } }));
+    // Only the summary line: a neutral dot, and none of the level fills a tile would bring.
+    expect(
+      pixelsOf(img, resolveColor('neutral', THEMES.light, 'mark'), { x: 14, y: 36, w: 12, h: 20 }),
+    ).toBeGreaterThan(5);
+    const box = { x: 14, y: 36, w: 612, h: 310 };
+    for (const token of ['negative', 'positive', 'warning'] as const) {
+      expect(pixelsOf(img, resolveColor(token, THEMES.light, 'fill'), box)).toBe(0);
+      expect(pixelsOf(img, resolveColor(token, THEMES.light, 'mark'), box)).toBe(0);
+    }
+  });
+
+  it('draws a missing status column as a message', () => {
+    const wrong = widget({
+      id: 'wrong',
+      type: 'status',
+      datasetId: 'checks',
+      config: { ...INFRA_STATUS_CONFIG, status: 'state' },
+    });
+    const img = decodePng(renderWidgetPng(wrong, checks));
+    // Without the message branch every check would become an amber tile; with it the body is one critical-coloured line.
+    expect(
+      pixelsOf(img, resolveColor('warning', THEMES.light, 'fill'), { x: 14, y: 36, w: 612, h: 310 }),
+    ).toBe(0);
+    expect(pixelsOf(img, THEMES.light.status.critical, { x: 14, y: 36, w: 400, h: 24 })).toBeGreaterThan(0);
   });
 });

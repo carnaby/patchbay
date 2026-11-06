@@ -25,6 +25,7 @@ import { useNow, useTheme } from '../lib/hooks.ts';
 import { ClockBody } from './ClockBody.tsx';
 import { EChart } from './EChart.tsx';
 import { SearchBody } from './SearchBody.tsx';
+import { StatusBody } from './StatusBody.tsx';
 
 // Its own chunk: the base map and the map-only ECharts modules are downloaded only when a dashboard has a map.
 const MapBody = lazy(() => import('./MapBody.tsx'));
@@ -76,6 +77,8 @@ export function WidgetBody({
       return <GaugeBody widget={widget} result={result} />;
     case 'table':
       return <TableBody widget={widget} result={result} />;
+    case 'status':
+      return <StatusBody widget={widget} result={result} />;
     case 'map':
       return (
         <Suspense

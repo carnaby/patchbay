@@ -30,6 +30,9 @@ import {
   MAX_SERIES,
   resolveColor,
   searchPlaceholder,
+  statusConfigProblem,
+  statusFit,
+  statusModel,
   THEMES,
   type ThemeMode,
   tableColumns,
@@ -41,11 +44,11 @@ import { buildMapOption, mapTime, WORLD_MAP } from '@patchbay/core/map';
 import { Resvg, type ResvgRenderOptions } from '@resvg/resvg-js';
 import * as echarts from 'echarts';
 import { collectGarbage } from './gc.ts';
+import { statusSvg } from './status-svg.ts';
+import { FONT, text, truncate, xmlChars } from './svg.ts';
 
 // The same Natural Earth countries the browser's map chunk registers: no tiles, so snapshots work offline too.
 echarts.registerMap(WORLD_MAP, world as Parameters<typeof echarts.registerMap>[1]);
-
-const FONT = 'Inter, sans-serif';
 
 /**
  * The renderer brings its own fonts instead of asking the OS. resvg finds system fonts through
@@ -105,16 +108,6 @@ const ECHARTS_TYPES = new Set<Widget['type']>(['chart', 'map', 'gauge']);
 const clamp = (value: number | undefined, fallback: number, min: number, max: number) =>
   value === undefined || !Number.isFinite(value) ? fallback : Math.min(max, Math.max(min, Math.round(value)));
 
-const esc = (s: string) =>
-  s.replace(
-    /[&<>"']/g,
-    (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!,
-  );
-
-function truncate(text: string, maxChars: number) {
-  return text.length > maxChars ? `${text.slice(0, Math.max(1, maxChars - 1))}…` : text;
-}
-
 function echartsSvg(option: Record<string, unknown>, width: number, height: number): string {
   const chart = echarts.init(null, null, { renderer: 'svg', ssr: true, width, height });
   try {
@@ -123,7 +116,9 @@ function echartsSvg(option: Record<string, unknown>, width: number, height: numb
       animation: false,
       textStyle: { ...(option.textStyle as object), fontFamily: FONT },
     });
-    return chart.renderToSVGString();
+    // Labels come from the data; ECharts escapes markup in them but not control characters. Only single characters
+    // are removed here: an escape-sequence pattern over the whole document would eat the markup after a cut-off one.
+    return xmlChars(chart.renderToSVGString());
   } finally {
     chart.dispose();
   }
@@ -140,15 +135,6 @@ function nest(svg: string, x: number, y: number, width: number, height: number, 
   const attrs = svg.slice(start + 4, end).replace(/\s(width|height|x|y|overflow)="[^"]*"/g, '');
   const overflow = clip ? '' : ' overflow="visible"';
   return `<svg x="${x}" y="${y}" width="${width}" height="${height}"${overflow}${attrs}>${svg.slice(end + 1)}`;
-}
-
-function text(
-  x: number,
-  y: number,
-  value: string,
-  opts: { size?: number; color: string; weight?: number; anchor?: string },
-) {
-  return `<text x="${x}" y="${y}" font-family="${FONT}" font-size="${opts.size ?? 12}" font-weight="${opts.weight ?? 400}" fill="${opts.color}" text-anchor="${opts.anchor ?? 'start'}">${esc(value)}</text>`;
 }
 
 function widgetBody(
@@ -332,6 +318,14 @@ function widgetBody(
         });
       });
       return out;
+    }
+    case 'status': {
+      const model = statusModel(table, widget.config);
+      const problem = statusConfigProblem(model, widget.config);
+      if (problem)
+        return text(0, 16, truncate(`⚠ ${problem}`, Math.floor(w / 6.5)), { color: theme.status.critical });
+      // Relative times against the render time, as list-style tables do.
+      return statusSvg(model, statusFit(model, { width: w, height: h }), theme, w, h, Date.now());
     }
   }
 }

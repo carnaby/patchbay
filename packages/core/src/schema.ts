@@ -12,6 +12,7 @@ import { IdSchema } from './ids.ts';
 import { DATASET_DEPTH, DATASET_INPUTS, lineageIssues } from './lineage.ts';
 import { SEARCH_ENGINES } from './search.ts';
 import { SoundRuleSchema } from './sound.ts';
+import { STATUS_LEVELS, STATUS_LIMITS } from './status.ts';
 import { COLOR_TOKENS } from './theme.ts';
 import { ExpressionSchema, TransformSchema, withStepIds } from './transforms.ts';
 
@@ -355,6 +356,24 @@ export const SearchConfigSchema = z.strictObject({
 });
 export type SearchConfig = z.infer<typeof SearchConfigSchema>;
 
+export const StatusConfigSchema = z.strictObject({
+  // Field descriptions live in the MCP reference text: every byte here is paid on each MCP connection.
+  entity: field,
+  status: field,
+  group: field.optional(),
+  label: field.optional(),
+  kind: field.optional(),
+  detail: field.optional(),
+  since: field.optional(),
+  levels: z
+    .record(z.string().min(1).max(40), z.enum(STATUS_LEVELS))
+    .refine((m) => Object.keys(m).length <= STATUS_LIMITS.levels, `At most ${STATUS_LIMITS.levels} levels`)
+    .optional(),
+  summary: z.boolean().default(true),
+});
+export type StatusConfig = z.infer<typeof StatusConfigSchema>;
+export type StatusConfigInput = z.input<typeof StatusConfigSchema>;
+
 const widgetBase = {
   id: IdSchema,
   title: z.string().max(120).optional(),
@@ -369,6 +388,7 @@ export const WidgetSchema = z.discriminatedUnion('type', [
   z.strictObject({ ...dataWidgetBase, type: z.literal('gauge'), config: GaugeConfigSchema }),
   z.strictObject({ ...dataWidgetBase, type: z.literal('table'), config: TableConfigSchema }),
   z.strictObject({ ...dataWidgetBase, type: z.literal('map'), config: MapConfigSchema }),
+  z.strictObject({ ...dataWidgetBase, type: z.literal('status'), config: StatusConfigSchema }),
   z.strictObject({ ...widgetBase, type: z.literal('text'), config: TextConfigSchema }),
   z.strictObject({ ...widgetBase, type: z.literal('clock'), config: ClockConfigSchema }),
   z.strictObject({ ...widgetBase, type: z.literal('search'), config: SearchConfigSchema }),

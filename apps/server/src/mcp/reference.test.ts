@@ -33,3 +33,20 @@ describe('the Addresses line of the reference', () => {
     }
   });
 });
+
+describe('the status widget in the reference', () => {
+  it('documents every field, the vocabulary, the folding rules and an example', () => {
+    const text = referenceText('https://dash.example.com');
+    expect(text).toContain(
+      '- status { entity, status, group?, label?, kind?, detail?, since?, levels?, summary }',
+    );
+    for (const word of ['degraded', 'maintenance', 'crit', 'passed', 'true = ok, false = fail'])
+      expect(text).toContain(word);
+    expect(text).toContain('"+N more ok"');
+    expect(text).toContain('"+N more problems"');
+    expect(text).toContain('"+N more sections · 12 ok"');
+    expect(text).toContain('"type": "status"');
+    expect(text).toContain('status 6x5');
+    expect(text).toContain('## Sound cues (chart, kpi, gauge, table, map, status)');
+  });
+});

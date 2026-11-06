@@ -922,8 +922,9 @@ describe('MCP tools', () => {
     // `style`; -> 39,400: the http source's description mentions http:// and private hosts (ALLOW_PRIVATE_HOSTS); -> 42,200: the join and union steps (proposal 0005),
     // two more branches of the step union, advertised again wherever steps are accepted; -> 42,700: the dataset source (proposal 0005), one more branch of the
     // source union, advertised wherever a source is accepted; -> 42,800: preview_data says which drafts need
-    // dashboardId).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(42_800);
+    // dashboardId; -> 44,000: the status widget joins WidgetSchema, one more branch of the widget union, its field
+    // descriptions in get_reference instead).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(44_000);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(

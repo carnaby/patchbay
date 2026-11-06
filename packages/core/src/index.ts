@@ -1,4 +1,5 @@
 export * from './aggregate.ts';
+export * from './ansi.ts';
 export * from './attribution.ts';
 export * from './cells.ts';
 export * from './chart.ts';
@@ -17,6 +18,7 @@ export * from './search.ts';
 export * from './secrets.ts';
 export * from './sound.ts';
 export * from './stats.ts';
+export * from './status.ts';
 export * from './suggest.ts';
 export * from './table.ts';
 export * from './theme.ts';

@@ -267,6 +267,51 @@ in `render_snapshot`.
 sized by the first measure, or a track with night shading for accumulated positions (`accumulate` or a `fetched_at`
 column).
 
+## Status
+
+A `status` widget turns "many checks, each with a state" (a monitor's JSON, Uptime Kuma, healthchecks, a script)
+into one tile per entity, coloured by its worst check, so "is everything fine, and if not, what is broken and where"
+is answered at a glance on a phone or an unattended wall screen.
+
+```jsonc
+{
+  "op": "addWidget",
+  "widget": {
+    "id": "infra",
+    "type": "status",
+    "title": "Infra",
+    "datasetId": "checks",
+    "config": {
+      "entity": "service",
+      "status": "status",
+      "group": "machine",
+      "label": "name",
+      "kind": "kind",
+      "detail": "detail",
+      "since": "since"
+    }
+  }
+}
+```
+
+- Each row is a check. `entity` names its tile and `group` (optional) splits the tiles into sections; `label`,
+  `kind`, `detail` and `since` are optional columns for the check's name, its kind (ok checks are summarised per kind,
+  "container ×3"), the text shown in full for failing and warning checks, and when its state began ("9 hours ago").
+- States are `fail`, `warn`, `ok` and `off` with common synonyms (`down`, `degraded`, `healthy`, `paused`, …),
+  case-insensitive; `true`/`false` read as ok/fail; anything else counts as `warn`. `levels` maps other values.
+- Nothing scrolls. When the widget is too small, off tiles fold into "+N off", then ok tiles into "+N more ok", then
+  sections without problems into their header line, then the last of those lines into one "+N more sections · 12 ok"
+  line, and that line goes too before any problem tile is hidden. Problem tiles never fold into ok summaries; only when
+  the problem tiles alone do not fit are their details cut to two lines and the rest counted in "+N more problems";
+  a section left without problem tiles folds into it. The summary line always counts everything. `render_snapshot`
+  draws the same tiles and folds as a browser showing a body of that size.
+- A click (or Enter) on a tile, a fold, a section header or the "+N more sections" line lists all its checks; Escape
+  closes the list.
+- `suggest_widgets` proposes it when a column is named `status`, `state` or `health`, or holds mostly status words
+  (a small set of at most 12 distinct values). It comes first only when the rows look like one per check (at most 10
+  rows per entity on average). An event log such as CI runs or payments, where a tile would keep the worst state of
+  every row, and a column only named like a state are offered below the raw data table.
+
 ## Start pages: clocks, feeds and search
 
 Three pieces make a dashboard work as a browser start page. Each is documented in `get_reference`.
