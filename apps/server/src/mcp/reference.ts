@@ -207,7 +207,9 @@ ${tableFns}
 - status { entity, status, group?, label?, kind?, detail?, since?, link?, levels?, summary }   one tile per entity
   For monitors and health checks: each row is a check, entity names its tile (a service, project or host), group its
   section (e.g. the machine a service runs on). A tile takes the colour of its worst check, fail > warn > ok > off;
-  tiles whose checks are all off are grey and last. Values are matched case-insensitively: ${vocabulary};
+  tiles whose checks are all off are grey and last. Sections and tiles go worst first and, within a level, in the
+  order of their first row, so a sort step sets it ("NUC, NAS, Internet"); "Other" (no group or entity) comes last
+  within its level. Values are matched case-insensitively: ${vocabulary};
   true = ok, false = fail; anything else, also empty, is warn. levels { "<value>": "fail|warn|ok|off" } (at most
   ${STATUS_LIMITS.levels}) maps your own values first. label names a check, kind summarises ok checks ("container ×3"), detail is
   shown in full for fail and warn checks, since (a time column) as "9 hours ago"; link (a column of http(s) addresses)
@@ -215,7 +217,8 @@ ${tableFns}
   summary (default true) puts "1 problem · 71 ok · 9 off" on top. Nothing scrolls: when the widget is too small, off tiles fold into "+N off", then
   ok tiles into "+N more ok", then sections without problems into their header line, then the last of those lines
   into one "+N more sections · 12 ok" line, which goes too before any problem is hidden (the summary line keeps every
-  count); problems never fold into ok summaries, and only when the problem tiles alone do not fit are their details
+  count); a fold that would not make the widget shorter is skipped, so tiles stay named where they fit; problems
+  never fold into ok summaries, and only when the problem tiles alone do not fit are their details
   cut to two lines and the rest counted in "+N more problems" (a section left without problem tiles folds into it).
   At most ${STATUS_LIMITS.rows} rows, ${STATUS_LIMITS.sections} sections and ${STATUS_LIMITS.tiles} tiles are read.
   Example: { "id": "infra", "type": "status", "datasetId": "checks", "config": { "entity": "service", "status": "status", "group": "machine", "label": "name", "kind": "kind", "detail": "detail", "since": "since", "link": "url" } }

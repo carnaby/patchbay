@@ -6,6 +6,19 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Changed
+
+- **Status widget**: sections and tiles of the same level now keep the order of the dataset's rows instead of being
+  sorted by name, so a `sort` transform sets the order (for example "NUC, NAS, Internet"). Without one, calm
+  sections follow the order in which the source sends its rows; add a `sort` step for a fixed order. The worst
+  level still comes first and "Other" last within its level.
+
+### Fixed
+
+- **Status widget**: a fold such as "+3 more ok" or "+2 off" is no longer applied when it saves no space (the tiles
+  filled the row the fold would take); those tiles stay visible and the next fold is tried, in the browser and in
+  snapshots alike.
+
 ## [0.2.0] - 2026-11-06
 
 ### Added

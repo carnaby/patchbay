@@ -36,15 +36,15 @@ function shape(layout: StatusLayout): Record<string, string[]> {
 
 const FULL = {
   nas: ['cue', 'blog', 'immich', 'nas', 'watchtower', 'umami'],
-  internet: ['blog.example.com', 'patchbay', 'status'],
-  nuc: ['home-assistant', 'nuc', 'pihole', 'grafana', 'old-wiki'],
+  nuc: ['home-assistant', 'pihole', 'nuc', 'grafana', 'old-wiki'],
+  internet: ['blog.example.com', 'status', 'patchbay'],
 };
 
 describe('statusFit', () => {
   it('draws every tile when there is room, problem tiles two columns wide', () => {
     const layout = statusFit(infra, { width: 480, height: 1000 });
     expect([layout.columns, layout.height, layout.fits, layout.clamped]).toEqual([3, 502, true, false]);
-    expect(layout.sections.map((s) => s.section.label)).toEqual(['nas', 'internet', 'nuc']);
+    expect(layout.sections.map((s) => s.section.label)).toEqual(['nas', 'nuc', 'internet']);
     expect(shape(layout)).toEqual(FULL);
     const [cue, blog, immich] = layout.sections[0]!.items;
     expect([cue!.span, cue!.x, cue!.y, cue!.height]).toEqual([2, 0, 52, 104]);
@@ -55,23 +55,96 @@ describe('statusFit', () => {
     expect([immich!.x, immich!.y, immich!.height]).toEqual([0, 164, 50]);
   });
 
-  it('folds off tiles first, then ok tiles, from the last section upwards', () => {
-    // One pixel short: folding the two off tiles of nuc saves no row, folding its ok tiles does.
-    expect(shape(statusFit(infra, { width: 480, height: 501 }))).toEqual({
-      ...FULL,
-      nuc: ['+3 more ok', '+2 off'],
-    });
+  it('folds off tiles first, then ok tiles, from the last section upwards, only where that saves space', () => {
+    // One pixel short. Folding the two off tiles of nuc saves no row (five cells or four take two rows of three), nor
+    // do the three ok tiles of internet (the last section) as one cell: both stay tiles. Folding nuc's ok tiles does.
+    const short = statusFit(infra, { width: 480, height: 501 });
+    expect(short.height).toBe(444);
+    expect(shape(short)).toEqual({ ...FULL, nuc: ['+3 more ok', 'grafana', 'old-wiki'] });
     const tighter = statusFit(infra, { width: 480, height: 443 });
     expect(tighter.height).toBe(386);
     expect(shape(tighter)).toEqual({
       nas: ['cue', '+4 more ok', 'umami'],
-      internet: ['+3 more ok'],
-      nuc: ['+3 more ok', '+2 off'],
+      nuc: ['+3 more ok', 'grafana', 'old-wiki'],
+      internet: ['blog.example.com', 'status', 'patchbay'],
+    });
+  });
+
+  it('skips a fold that would take the same rows, and folds the next section instead', () => {
+    // Three columns: a takes two rows of ok tiles, b one row of an ok and two off tiles.
+    const rows = [
+      ...[1, 2, 3, 4, 5, 6].map((i) => ({ machine: 'a', service: `a${i}`, status: 'ok' })),
+      { machine: 'b', service: 'b1', status: 'ok' },
+      { machine: 'b', service: 'b2', status: 'off' },
+      { machine: 'b', service: 'b3', status: 'off' },
+    ];
+    const model = statusModel(
+      inferTable(rows),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', group: 'machine' }),
+    );
+    const full = statusFit(model, { width: 480, height: 2000 });
+    expect(shape(full)).toEqual({ a: ['a1', 'a2', 'a3', 'a4', 'a5', 'a6'], b: ['b1', 'b2', 'b3'] });
+    const short = statusFit(model, { width: 480, height: full.height - 1 });
+    expect([short.fits, short.height]).toEqual([true, full.height - 58]);
+    // "+2 off" in b would leave its row as it is: b keeps its tiles and a folds instead.
+    expect(shape(short)).toEqual({ a: ['+6 more ok'], b: ['b1', 'b2', 'b3'] });
+  });
+
+  it('folds ok and off tiles together when only both free their shared row', () => {
+    // Three ok and three off tiles: either fold alone leaves four cells in two rows, both leave one row.
+    const rows = [
+      { machine: 'x', service: 'x1', status: 'fail' },
+      ...[1, 2, 3].map((i) => ({ machine: 'y', service: `ok${i}`, status: 'ok' })),
+      ...[1, 2, 3].map((i) => ({ machine: 'y', service: `off${i}`, status: 'off' })),
+    ];
+    const model = statusModel(
+      inferTable(rows),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', group: 'machine' }),
+    );
+    const full = statusFit(model, { width: 480, height: 2000 });
+    const short = statusFit(model, { width: 480, height: full.height - 1 });
+    expect([short.fits, short.height]).toEqual([true, full.height - 58]);
+    // Not the header line alone: the two folds keep y's counts and names one click away.
+    expect(shape(short)).toEqual({ x: ['x1'], y: ['+3 more ok', '+3 off'] });
+  });
+
+  /** n ok and m off tiles, optionally under one section "a" and after a failing section "x". */
+  const calmTiles = (ok: number, off: number, grouping: 'flat' | 'one' | 'after-fail') => {
+    const machine = grouping === 'flat' ? {} : { machine: 'a' };
+    const rows = [
+      ...(grouping === 'after-fail' ? [{ machine: 'x', service: 'x1', status: 'fail' }] : []),
+      ...Array.from({ length: ok }, (_, i) => ({ ...machine, service: `ok${i}`, status: 'ok' })),
+      ...Array.from({ length: off }, (_, i) => ({ ...machine, service: `off${i}`, status: 'off' })),
+    ];
+    const group = grouping === 'flat' ? {} : { group: 'machine' };
+    return statusModel(
+      inferTable(rows),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', ...group }),
+    );
+  };
+
+  it('folds the off tiles too when the ok fold saved a row but still does not fit', () => {
+    // The off fold alone saves nothing (twelve cells or ten take four rows), so it is skipped at first; after the ok
+    // fold, four cells take two rows and "+3 off" brings them to one.
+    const flat = statusFit(calmTiles(9, 3, 'flat'), { width: 480, height: 135 });
+    expect([flat.fits, flat.height]).toEqual([true, 78]);
+    expect(shape(flat)).toEqual({ '': ['+9 more ok', '+3 off'] });
+    // With sections the same two folds come before the header line.
+    expect(shape(statusFit(calmTiles(6, 3, 'one'), { width: 480, height: 140 }))).toEqual({
+      a: ['+6 more ok', '+3 off'],
+    });
+    expect(shape(statusFit(calmTiles(6, 3, 'after-fail'), { width: 480, height: 200 }))).toEqual({
+      x: ['x1'],
+      a: ['+6 more ok', '+3 off'],
     });
   });
 
   it('folds calm sections to their header line, last first', () => {
-    expect(shape(statusFit(infra, { width: 480, height: 385 }))).toMatchObject({ nuc: ['(header)'] });
+    expect(shape(statusFit(infra, { width: 480, height: 385 }))).toEqual({
+      nas: ['cue', '+4 more ok', 'umami'],
+      nuc: ['+3 more ok', 'grafana', 'old-wiki'],
+      internet: ['(header)'],
+    });
     const both = statusFit(infra, { width: 480, height: 335 });
     expect(both.height).toBe(286);
     expect(shape(both)).toEqual({
@@ -311,9 +384,10 @@ describe('statusFit', () => {
     const layout = statusFit(flat, { width: 480, height: 200 });
     expect(layout.sections).toHaveLength(1);
     expect([layout.sections[0]!.header, layout.sections[0]!.collapsed]).toEqual([false, false]);
-    expect(shape(layout)).toEqual({ '': ['cue', '+10 more ok', '+3 off'] });
+    // The three off tiles fill the row "+3 off" would take alone, so they stay tiles.
+    expect(shape(layout)).toEqual({ '': ['cue', '+10 more ok', 'umami', 'grafana', 'old-wiki'] });
     const ok = layout.sections[0]!.items[1]!.item;
-    expect(ok.kind === 'more' && statusMoreNames(ok.tiles)).toBe('blog, blog.example.com, home-assistant, …');
+    expect(ok.kind === 'more' && statusMoreNames(ok.tiles)).toBe('blog, immich, nas, …');
   });
 
   it('clamps long details to two lines before giving up a problem tile', () => {
