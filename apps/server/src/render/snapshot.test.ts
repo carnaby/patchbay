@@ -13,7 +13,7 @@ import {
   type WidgetInput,
   WidgetSchema,
 } from '@patchbay/core';
-import { INFRA_NOW, INFRA_STATUS_CONFIG, infraTable } from '@patchbay/core/status-fixture';
+import { INFRA_NOW, INFRA_STATUS_CONFIG, infraLinkedChecks, infraTable } from '@patchbay/core/status-fixture';
 import { Resvg } from '@resvg/resvg-js';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { buildTemplate, listTemplates } from '../services/templates.ts';
@@ -861,6 +861,31 @@ describe('status snapshots', () => {
     expect(svg).not.toContain(long);
     expect(svg).toContain('a-service-name');
     expect(svg).toContain('…');
+  });
+
+  it('marks a tile with a link by an arrow after its name, as the screen does', () => {
+    const linked = statusModel(
+      inferTable(infraLinkedChecks()),
+      StatusConfigSchema.parse({ ...INFRA_STATUS_CONFIG, link: 'url' }),
+    );
+    // Tall enough for every tile: cue, blog, blog.example.com, home-assistant, status and patchbay have an address.
+    const svg = body(linked, 480, 1000);
+    expect(svg).toMatch(/>cue<tspan[^>]*> ↗<\/tspan><\/text>/);
+    expect(svg).toMatch(/>patchbay<tspan[^>]*> ↗<\/tspan><\/text>/);
+    expect(svg).toContain('>immich</text>');
+    expect(svg.match(/↗/g)).toHaveLength(6);
+    expect(body()).not.toContain('↗');
+    // The arrow stays inside the tile: the name gives way to it, and user text is escaped as before.
+    const odd = statusModel(
+      inferTable([
+        { service: 'a-service-name-far-too-long-for-any-tile', status: 'ok', url: 'https://a.example.com' },
+        { service: '<b>&"x"', status: 'ok', url: 'https://b.example.com' },
+      ]),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', link: 'url' }),
+    );
+    const small = body(odd, 300, 400);
+    expect(small).toMatch(/>a-service-name[^<]*…<tspan[^>]*> ↗<\/tspan>/);
+    expect(small).toContain('>&lt;b&gt;&amp;&quot;x&quot;<tspan');
   });
 
   it('draws an empty dataset as "No checks"', () => {
