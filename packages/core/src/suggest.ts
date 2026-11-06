@@ -359,6 +359,7 @@ function statusSuggestion(profile: TableProfile): Suggestion | null {
   const fields = statusFields(profile.columns, status.name, {
     entity: (c) => c.role === 'dimension',
     group: (c) => c.role === 'dimension' && c.distinct >= 2 && c.distinct <= 10,
+    link: (c) => c.role === 'url',
   });
   if (!fields) return null;
   const examples = (status.top ?? [])

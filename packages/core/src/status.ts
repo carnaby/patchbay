@@ -4,6 +4,7 @@
  * model here, and both ask `statusFit` which tiles fit, so a screen and the image an agent looks at agree.
  */
 import { stripAnsi } from './ansi.ts';
+import { httpLink } from './cells.ts';
 import { formatRelative } from './format.ts';
 import type { StatusConfig } from './schema.ts';
 import type { Column, DataTable, Scalar } from './table.ts';
@@ -118,6 +119,8 @@ export interface StatusTile {
   off: number;
   /** Every check, worst first, for the panel. */
   checks: StatusCheck[];
+  /** The entity's web address: the first safe http(s) value of the link column, in row order. Folds have none. */
+  href?: string;
 }
 
 export interface StatusSection {
@@ -148,6 +151,7 @@ interface TileDraft {
   entity: string;
   other: boolean;
   checks: StatusCheck[];
+  href: string | null;
 }
 
 interface SectionDraft {
@@ -209,6 +213,7 @@ function buildTile(key: string, draft: TileDraft): StatusTile {
     ok,
     off: counts.off,
     checks,
+    ...(draft.href ? { href: draft.href } : {}),
   };
 }
 
@@ -236,6 +241,7 @@ export function statusModel(table: DataTable, config: StatusConfig): StatusModel
     config.kind,
     config.detail,
     config.since,
+    config.link,
   ];
   const missing = [...new Set(configured.filter((f): f is string => f !== undefined && !names.has(f)))];
   const levelOf = statusLevels(config.levels);
@@ -270,7 +276,7 @@ export function statusModel(table: DataTable, config: StatusConfig): StatusModel
         };
         sections.set(sectionKey, section);
       }
-      tile = { entity: entity ?? OTHER, other: entity === null, checks: [] };
+      tile = { entity: entity ?? OTHER, other: entity === null, checks: [], href: null };
       section.tiles.set(tileKey, tile);
       tileCount++;
     }
@@ -284,6 +290,10 @@ export function statusModel(table: DataTable, config: StatusConfig): StatusModel
       detail: config.detail === undefined ? null : clip(cellText(row[config.detail])),
       since: typeof since === 'number' && Number.isFinite(since) ? since : null,
     };
+    // The monitor sends the address on every row of a service, or on some: the first safe one is the entity's. Rows
+    // without an entity share a tile but not a site, so that tile gets none.
+    if (config.link !== undefined && tile.href === null && !tile.other)
+      tile.href = httpLink(row[config.link]);
     tile.checks.push(check);
     counts[check.level]++;
     checks++;
@@ -376,6 +386,7 @@ export interface StatusFields {
   kind?: string;
   detail?: string;
   since?: string;
+  link?: string;
 }
 
 const NAMES = {
@@ -385,6 +396,7 @@ const NAMES = {
   kind: ['kind', 'type'],
   detail: ['detail', 'details', 'message', 'error', 'output'],
   since: ['since', 'changed_at', 'last_change', 'status_since'],
+  link: ['url', 'link', 'href'],
 } as const;
 
 /**
@@ -394,7 +406,12 @@ const NAMES = {
 export function statusFields<C extends Column>(
   columns: readonly C[],
   status: string,
-  accept: { entity?: (column: C) => boolean; group?: (column: C) => boolean } = {},
+  accept: {
+    entity?: (column: C) => boolean;
+    group?: (column: C) => boolean;
+    /** A column known to hold web addresses (the profile's url role), taken when none is named like one. */
+    link?: (column: C) => boolean;
+  } = {},
 ): StatusFields | null {
   const used = new Set([status]);
   const free = (c: C) => !used.has(c.name);
@@ -411,7 +428,7 @@ export function statusFields<C extends Column>(
   };
   const isText = (c: C) => c.type === 'string';
   const entityOk = (c: C) => isText(c) && (accept.entity?.(c) ?? true);
-  const reserved = new Set<string>([...NAMES.group, ...NAMES.kind, ...NAMES.detail]);
+  const reserved = new Set<string>([...NAMES.group, ...NAMES.kind, ...NAMES.detail, ...NAMES.link]);
   const entity =
     byName(NAMES.entity, entityOk) ??
     take(columns.find((c) => free(c) && entityOk(c) && !reserved.has(c.name.toLowerCase()))) ??
@@ -422,6 +439,10 @@ export function statusFields<C extends Column>(
   const kind = byName(NAMES.kind, isText);
   const detail = byName(NAMES.detail, isText);
   const since = byName(NAMES.since, (c) => c.type === 'time');
+  const knownLink = accept.link;
+  const link =
+    byName(NAMES.link, isText) ??
+    (knownLink ? take(columns.find((c) => free(c) && isText(c) && knownLink(c))) : undefined);
   return {
     entity: entity.name,
     status,
@@ -430,6 +451,7 @@ export function statusFields<C extends Column>(
     ...(kind ? { kind: kind.name } : {}),
     ...(detail ? { detail: detail.name } : {}),
     ...(since ? { since: since.name } : {}),
+    ...(link ? { link: link.name } : {}),
   };
 }
 

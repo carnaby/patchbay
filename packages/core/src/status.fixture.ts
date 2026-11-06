@@ -104,6 +104,21 @@ export function infraTable(now = INFRA_NOW): DataTable {
   return inferTable(infraChecks(now));
 }
 
+/** Web addresses as the monitor's `url` column sends them: the same on every row of a service, none without web. */
+export const INFRA_URLS: Readonly<Record<string, string>> = {
+  cue: 'https://cue.example.com',
+  blog: 'https://blog.example.com',
+  'blog.example.com': 'https://blog.example.com',
+  'home-assistant': 'https://home.example.com',
+  status: 'https://status.example.com',
+  patchbay: 'https://patchbay.example.com',
+};
+
+/** The checks with that `url` column, for the link on each tile. */
+export function infraLinkedChecks(now = INFRA_NOW): Record<string, string | number | null>[] {
+  return infraChecks(now).map((row) => ({ ...row, url: INFRA_URLS[String(row.service)] ?? null }));
+}
+
 /** How an infra status dashboard is meant to show these checks. */
 export const INFRA_STATUS_CONFIG = {
   entity: 'service',

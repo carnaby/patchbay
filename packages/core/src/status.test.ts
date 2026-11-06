@@ -9,10 +9,12 @@ import {
   STATUS_VOCABULARY,
   type StatusConfigInput,
   StatusConfigSchema,
+  type StatusModel,
   statusConfigProblem,
   statusCountsText,
   statusDefaults,
   statusFields,
+  statusFit,
   statusLevels,
   statusModel,
   statusProblemHead,
@@ -22,7 +24,13 @@ import {
   statusTilesByKey,
   WidgetSchema,
 } from './index.ts';
-import { INFRA_NOW, INFRA_STATUS_CONFIG, infraChecks, infraTable } from './status.fixture.ts';
+import {
+  INFRA_NOW,
+  INFRA_STATUS_CONFIG,
+  infraChecks,
+  infraLinkedChecks,
+  infraTable,
+} from './status.fixture.ts';
 
 const HOUR = 3_600_000;
 const config = (input: Partial<StatusConfigInput> = {}) =>
@@ -94,6 +102,13 @@ describe('status schema', () => {
     const levels = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`v${i}`, 'ok']));
     expect(StatusConfigSchema.safeParse({ ...ok, levels: levels(40) }).success).toBe(true);
     expect(StatusConfigSchema.safeParse({ ...ok, levels: levels(41) }).success).toBe(false);
+  });
+
+  it('takes an optional link column and still rejects unknown keys', () => {
+    const ok = { entity: 'a', status: 'b' };
+    expect(StatusConfigSchema.parse({ ...ok, link: 'url' })).toEqual({ ...ok, link: 'url', summary: true });
+    expect(StatusConfigSchema.safeParse({ ...ok, link: '' }).success).toBe(false);
+    expect(StatusConfigSchema.safeParse({ ...ok, link: 'url', href: 'url' }).success).toBe(false);
   });
 
   it('is a data widget with an optional sound and its own size', () => {
@@ -328,8 +343,103 @@ describe('status model', () => {
   });
 });
 
+describe('status links', () => {
+  const linked = (rows = infraLinkedChecks()) => statusModel(inferTable(rows), config({ link: 'url' }));
+  const tileOf = (m: StatusModel, entity: string) =>
+    m.sections.flatMap((s) => s.tiles).find((t) => t.entity === entity)!;
+
+  it('gives a tile the web address of its entity', () => {
+    const m = linked();
+    expect(tileOf(m, 'cue').href).toBe('https://cue.example.com/');
+    expect(tileOf(m, 'patchbay').href).toBe('https://patchbay.example.com/');
+    // A service without web has no link at all, not an empty one.
+    expect('href' in tileOf(m, 'immich')).toBe(false);
+    expect(m.missing).toEqual([]);
+  });
+
+  it('takes the first valid address in row order, skipping nulls and unsafe values', () => {
+    const rows = [
+      { service: 'a', status: 'ok', url: null },
+      { service: 'a', status: 'ok', url: '' },
+      { service: 'a', status: 'fail', url: 'javascript:alert(1)' },
+      { service: 'a', status: 'ok', url: '/relative/path' },
+      { service: 'a', status: 'ok', url: 'https://a.example.com/first' },
+      { service: 'a', status: 'ok', url: 'https://a.example.com/second' },
+      { service: 'b', status: 'ok', url: 'javascript:alert(1)' },
+      { service: 'b', status: 'ok', url: 'ftp://b.example.com' },
+      { service: 'c', status: 'ok', url: 'http://c.example.com' },
+    ];
+    const m = statusModel(inferTable(rows), config({ group: undefined, link: 'url' }));
+    expect(tileOf(m, 'a').href).toBe('https://a.example.com/first');
+    expect('href' in tileOf(m, 'b')).toBe(false);
+    expect(tileOf(m, 'c').href).toBe('http://c.example.com/');
+  });
+
+  it('gives no link to the tile of rows without an entity: their addresses belong to different things', () => {
+    const rows = [
+      { service: null, status: 'ok', url: 'https://one.example.com' },
+      { service: null, status: 'ok', url: 'https://two.example.com' },
+    ];
+    const m = statusModel(inferTable(rows), config({ group: undefined, link: 'url' }));
+    expect(m.sections[0]!.tiles.map((t) => [t.entity, t.other, 'href' in t])).toEqual([
+      ['Other', true, false],
+    ]);
+  });
+
+  it('draws no link without a link column, and names a configured one the data does not have', () => {
+    expect(
+      infra()
+        .sections.flatMap((s) => s.tiles)
+        .some((t) => 'href' in t),
+    ).toBe(false);
+    const gone = statusModel(infraTable(), config({ link: 'url' }));
+    expect(gone.sections.flatMap((s) => s.tiles).some((t) => 'href' in t)).toBe(false);
+    expect(gone.missing).toEqual(['url']);
+    expect(statusConfigProblem(gone, config({ link: 'url' }))).toBeNull();
+  });
+
+  it('never puts a link on a fold', () => {
+    const layout = statusFit(linked(), { width: 480, height: 443 });
+    const folds = layout.sections.flatMap((s) => s.items).filter((p) => p.item.kind === 'more');
+    expect(folds.length).toBeGreaterThan(0);
+    for (const fold of folds) expect('href' in fold.item).toBe(false);
+    // The folded tiles keep theirs, for the panel that lists them.
+    const tiles = folds.flatMap((p) => (p.item.kind === 'more' ? p.item.tiles : []));
+    expect(tiles.some((t) => t.href)).toBe(true);
+  });
+});
+
 describe('status columns by name', () => {
   const cols = (...list: string[]) => list.map((name) => ({ name, type: 'string' as const }));
+
+  it('takes a column named url, link or href as the link, never as the tile', () => {
+    for (const name of ['url', 'link', 'href', 'URL']) {
+      expect(statusFields(cols(name, 'thing', 'state'), 'state')).toEqual({
+        entity: 'thing',
+        status: 'state',
+        link: name,
+      });
+    }
+    expect(statusDefaults(inferTable(infraLinkedChecks()).columns)).toEqual({
+      ...INFRA_STATUS_CONFIG,
+      link: 'url',
+    });
+    // A number column is no address.
+    expect(statusFields([...cols('service', 'state'), { name: 'url', type: 'number' }], 'state')).toEqual({
+      entity: 'service',
+      status: 'state',
+    });
+  });
+
+  it('takes a column the caller knows holds addresses when none is named like one', () => {
+    const columns = cols('service', 'home', 'state');
+    expect(statusFields(columns, 'state', { link: (c) => c.name === 'home' })).toEqual({
+      entity: 'service',
+      status: 'state',
+      link: 'home',
+    });
+    expect(statusFields(columns, 'state')).toEqual({ entity: 'service', status: 'state' });
+  });
 
   it('picks the infra columns', () => {
     expect(statusFields(infraTable().columns, 'status')).toEqual(INFRA_STATUS_CONFIG);

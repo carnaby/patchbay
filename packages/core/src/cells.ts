@@ -131,7 +131,11 @@ export function cellStyle(row: Row, column: ResolvedColumn, rules: TableRules, t
  */
 export function cellLink(row: Row, column: ResolvedColumn): string | null {
   const field = column.link;
-  const value = field ? row[field] : undefined;
+  return field ? httpLink(row[field]) : null;
+}
+
+/** The rule behind `cellLink`, for any value: an absolute http(s) URL, normalised, or null. */
+export function httpLink(value: Scalar | undefined): string | null {
   if (typeof value !== 'string') return null;
   try {
     const url = new URL(value);

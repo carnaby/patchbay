@@ -14,7 +14,7 @@ import {
   WidgetSchema,
 } from './index.ts';
 import type { ColumnProfile } from './profile.ts';
-import { INFRA_NOW, infraTable } from './status.fixture.ts';
+import { INFRA_NOW, infraLinkedChecks, infraTable } from './status.fixture.ts';
 
 const HOUR = 3_600_000;
 const NOW = Date.UTC(2026, 9, 27, 12, 0, 0);
@@ -382,6 +382,16 @@ describe('status suggestions', () => {
     expect(list[0]!.score).toBe(97);
     expect(list[0]!.rationale).toMatch(/one tile per "service"/);
     expect(WidgetSchema.safeParse({ id: 's', datasetId: 'd', ...list[0]!.widget }).success).toBe(true);
+  });
+
+  it('links the tiles to a column of web addresses, by its name or by what it holds', () => {
+    const named = suggestWidgets(profileTable(inferTable(infraLinkedChecks())), { now: INFRA_NOW });
+    expect(named[0]!.widget.config).toMatchObject({ entity: 'service', link: 'url' });
+    const rows = ['api', 'db', 'web'].flatMap((host) => [
+      { host, status: 'ok', home: `https://${host}.example.com` },
+      { host, status: 'up', home: `https://${host}.example.com` },
+    ]);
+    expect(statusOf(rows)!.widget.config).toEqual({ entity: 'host', status: 'status', link: 'home' });
   });
 
   it('finds a status column by its values when it has another name', () => {
