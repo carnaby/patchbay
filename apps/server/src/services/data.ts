@@ -71,9 +71,10 @@ const BUFFER_BYTES = 16 * 1024 * 1024;
 /**
  * Finds the records in a JSON response with the rules JSON uploads use too (`findRecords` in core): the given path,
  * then a list, a column-shaped object's rows, the first array property or the object itself. At most `maxCells` cells
- * of column-shaped data are turned into rows; `cappedTable` then cuts the table and says so.
+ * of column-shaped data are turned into rows; `cappedTable` then cuts the table and says so. `maxCells` is required
+ * because this runs on the main thread: a call without it would turn a dense response into rows without bound.
  */
-export function recordsFrom(json: unknown, path?: string, maxCells?: number): unknown[] {
+export function recordsFrom(json: unknown, path: string | undefined, maxCells: number): unknown[] {
   let target: unknown;
   try {
     target = pickPath(json, path, 'response');
