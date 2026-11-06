@@ -56,6 +56,7 @@ import {
   toast,
 } from '../components/ui.tsx';
 import { api, errorMessage } from '../lib/api.ts';
+import { countLabel } from '../lib/count-label.ts';
 import { useConnectors } from '../lib/hooks.ts';
 import { withRetry } from '../lib/retry.ts';
 import { credentialErrorHint, introducedSecretIds, introducedSecretRefs } from '../lib/secrets.ts';
@@ -370,7 +371,7 @@ function SourceEditor({
     onSuccess: (file) => {
       qc.invalidateQueries({ queryKey: ['files', dashboardId] });
       onChange({ kind: 'upload', fileId: file.id });
-      toast(`Uploaded ${file.name}: ${file.rows.toLocaleString('en')} rows, ${file.columns} columns`);
+      toast(`Uploaded ${file.name}: ${countLabel(file.rows, 'row')}, ${countLabel(file.columns, 'column')}`);
     },
   });
   // Applied when the file is chosen: the server reads a JSON file at this path once and stores the table it finds.
@@ -630,7 +631,7 @@ function SourceEditor({
                 >
                   {files.data.map((f) => (
                     <option key={f.id} value={f.id}>
-                      {f.name} · {f.rows.toLocaleString('en')} rows
+                      {f.name} · {countLabel(f.rows, 'row')}
                     </option>
                   ))}
                 </Select>
