@@ -82,8 +82,9 @@ export function StatusBody({
   const { ref, size } = useBoxSize();
   const model = useMemo(() => statusModel(result.table, widget.config), [result.table, widget.config]);
   // The fit estimates text from one average glyph width; a platform font that runs wider (capitals on a phone) can
-  // wrap a detail onto a line the fit did not count, and the bottom would be cut. The overflow is measured once per
-  // size and data, and the fit runs again with it taken off the height: one extra pass, never a loop.
+  // wrap a detail onto a line the fit did not count, and the bottom would be cut. When the drawing overflows, how much
+  // taller it is than the fit's estimate is measured once per size and data, and the fit runs again with that error
+  // taken off the height (the slack the estimate already left is not counted twice): one extra pass, never a loop.
   const fitKey = useMemo(() => ({ model, size }), [model, size]);
   const [overflow, setOverflow] = useState<{ key: object; px: number } | null>(null);
   const shrink = overflow?.key === fitKey ? overflow.px : 0;
@@ -94,8 +95,8 @@ export function StatusBody({
   useLayoutEffect(() => {
     const node = ref.current;
     if (!node || !layout || shrink) return;
-    const over = node.scrollHeight - node.clientHeight;
-    if (over > 0) setOverflow({ key: fitKey, px: over });
+    const error = node.scrollHeight - layout.height;
+    if (node.scrollHeight > node.clientHeight && error > 0) setOverflow({ key: fitKey, px: error });
   }, [ref, layout, fitKey, shrink]);
   const [panel, setPanel] = useState<PanelTarget | null>(null);
   const presenting = useContext(PresentingContext);
