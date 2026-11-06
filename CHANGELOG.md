@@ -13,7 +13,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   per kind. What does not fit is folded into "+N" tiles instead of scrolling, and calm sections into one
   "+N more sections" line before any problem is hidden, so it stays readable on a phone and an unattended wall
   screen, and snapshots draw the same tiles. Suggested first for monitor checks (a row or a few per check, not an
-  event log), editable in the widget editor; the vocabulary of states is in `get_reference`.
+  event log), editable in the widget editor; the vocabulary of states is in `get_reference`. An optional `link`
+  column (a service's web address) puts an ↗ icon on its tile that opens the site in a new tab.
 - **Combining datasets**: a dataset can take its rows from another dataset of the same dashboard (`source.kind:
   "dataset"`), pipelines can `join` (look up columns) and `union` (append rows, with a column naming the origin)
   other datasets, and expressions get whole-table functions such as `col_sum(x, by?)` for shares of total and
