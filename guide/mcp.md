@@ -288,7 +288,8 @@ is answered at a glance on a phone or an unattended wall screen.
       "label": "name",
       "kind": "kind",
       "detail": "detail",
-      "since": "since"
+      "since": "since",
+      "link": "url"
     }
   }
 }
@@ -297,6 +298,11 @@ is answered at a glance on a phone or an unattended wall screen.
 - Each row is a check. `entity` names its tile and `group` (optional) splits the tiles into sections; `label`,
   `kind`, `detail` and `since` are optional columns for the check's name, its kind (ok checks are summarised per kind,
   "container ×3"), the text shown in full for failing and warning checks, and when its state began ("9 hours ago").
+- `link` (optional) names a column of web addresses, such as `https://status.example.com`. A tile then shows an
+  ↗ icon after its name that opens the first http(s) address in its rows in a new tab, and the name in its list of
+  checks is the same link; a click elsewhere on the tile still lists its checks. Other values (relative paths,
+  `javascript:`) are ignored, and folds such as "+N more ok" carry no link. The editor and `suggest_widgets` take a
+  column named `url`, `link` or `href`; `suggest_widgets` also one that holds addresses.
 - States are `fail`, `warn`, `ok` and `off` with common synonyms (`down`, `degraded`, `healthy`, `paused`, …),
   case-insensitive; `true`/`false` read as ok/fail; anything else counts as `warn`. `levels` maps other values.
 - Nothing scrolls. When the widget is too small, off tiles fold into "+N off", then ok tiles into "+N more ok", then

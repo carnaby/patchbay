@@ -26,6 +26,8 @@ const M = STATUS_METRICS;
 const round = (n: number) => Math.round(n * 10) / 10;
 /** The 13 px name line holds fewer characters than the 12 px lines the estimate counts in. */
 const nameChars = (chars: number) => Math.max(4, Math.floor((chars * M.textSize) / M.nameSize));
+/** Drawn after the name of a tile with a link; Inter has the glyph. Constant markup, never user text. */
+const ARROW = ' ↗';
 
 /** The detail as the browser wraps it; cut to two lines, the second ending in an ellipsis, when the fit clamps. */
 function detailLines(detail: string | null, chars: number, clamp: boolean): string[] {
@@ -53,12 +55,21 @@ function cell(placed: StatusPlaced, theme: ChartTheme, now: number): string {
   ];
   let line = placed.y + M.padY;
   const name = item.kind === 'tile' ? item.tile.entity : statusMoreTitle(item);
+  const linked = item.kind === 'tile' && item.tile.href !== undefined;
+  // The screen's link icon after the name, so an agent sees which tiles open a site. The name gives way to it, as in
+  // the browser, so the line keeps its height and the fit stays true.
+  const label = text(left, round(line + 13), truncate(name, nameChars(chars) - (linked ? ARROW.length : 0)), {
+    size: M.nameSize,
+    weight: 600,
+    color: level === 'off' ? theme.textSecondary : theme.textPrimary,
+  });
   out.push(
-    text(left, round(line + 13), truncate(name, nameChars(chars)), {
-      size: M.nameSize,
-      weight: 600,
-      color: level === 'off' ? theme.textSecondary : theme.textPrimary,
-    }),
+    linked
+      ? label.replace(
+          /<\/text>$/,
+          `<tspan font-weight="400" fill="${theme.textSecondary}">${ARROW}</tspan></text>`,
+        )
+      : label,
   );
   line += M.nameHeight;
   if (item.kind === 'more') {

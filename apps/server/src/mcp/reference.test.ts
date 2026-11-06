@@ -38,7 +38,7 @@ describe('the status widget in the reference', () => {
   it('documents every field, the vocabulary, the folding rules and an example', () => {
     const text = referenceText('https://dash.example.com');
     expect(text).toContain(
-      '- status { entity, status, group?, label?, kind?, detail?, since?, levels?, summary }',
+      '- status { entity, status, group?, label?, kind?, detail?, since?, link?, levels?, summary }',
     );
     for (const word of ['degraded', 'maintenance', 'crit', 'passed', 'true = ok, false = fail'])
       expect(text).toContain(word);
@@ -46,6 +46,7 @@ describe('the status widget in the reference', () => {
     expect(text).toContain('"+N more problems"');
     expect(text).toContain('"+N more sections · 12 ok"');
     expect(text).toContain('"type": "status"');
+    expect(text).toContain('link (a column of http(s) addresses)');
     expect(text).toContain('status 6x5');
     expect(text).toContain('## Sound cues (chart, kpi, gauge, table, map, status)');
   });

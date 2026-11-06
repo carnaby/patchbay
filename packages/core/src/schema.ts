@@ -365,6 +365,7 @@ export const StatusConfigSchema = z.strictObject({
   kind: field.optional(),
   detail: field.optional(),
   since: field.optional(),
+  link: field.optional(),
   levels: z
     .record(z.string().min(1).max(40), z.enum(STATUS_LEVELS))
     .refine((m) => Object.keys(m).length <= STATUS_LIMITS.levels, `At most ${STATUS_LIMITS.levels} levels`)

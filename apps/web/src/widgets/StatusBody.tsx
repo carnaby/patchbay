@@ -30,7 +30,7 @@ import {
   THEMES,
   type Widget,
 } from '@patchbay/core';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, ArrowUpRight } from 'lucide-react';
 import { type CSSProperties, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { cx, Modal } from '../components/ui.tsx';
 import { PresentingContext } from '../editor/presentation.tsx';
@@ -39,12 +39,18 @@ import { useNow, useTheme } from '../lib/hooks.ts';
 const M = STATUS_METRICS;
 const font = (size: number, line: number): CSSProperties => ({ fontSize: size, lineHeight: `${line}px` });
 
-type Open = (title: string, tiles: readonly StatusTile[]) => void;
+/** The link icon is the name's size; its padding widens the click target without making the line taller. */
+const LINK_PAD = 4;
+const LINK_SLOT = M.nameSize + 2 * LINK_PAD;
+
+/** `entity`: the panel is one tile's, titled with its name, so the title can carry the tile's link. */
+type Open = (title: string, tiles: readonly StatusTile[], entity?: boolean) => void;
 
 /** What the panel lists: tiles by key, looked up again in every new model, so live data never shows stale checks. */
 interface PanelTarget {
   title: string;
   keys: string[];
+  entity: boolean;
 }
 
 /** The body's size. The card sizes the box, never its content, so drawing a new layout cannot resize it again. */
@@ -105,7 +111,10 @@ export function StatusBody({
     if (presenting) setPanel(null);
   }, [presenting]);
   const problem = statusConfigProblem(model, widget.config);
-  const open: Open = (title, tiles) => setPanel({ title, keys: tiles.map((t) => t.key) });
+  const open: Open = (title, tiles, entity = false) =>
+    setPanel({ title, keys: tiles.map((t) => t.key), entity });
+  const panelTiles = panel ? statusTilesByKey(model, panel.keys) : [];
+  const titleHref = panel?.entity ? panelTiles[0]?.href : undefined;
 
   return (
     // Always rendered: the size observer attaches to it once, whatever is drawn inside.
@@ -165,8 +174,13 @@ export function StatusBody({
           </div>
         </>
       ) : null}
-      <Modal open={panel !== null} title={panel?.title ?? ''} onClose={() => setPanel(null)} size="lg">
-        {panel ? <Checks tiles={statusTilesByKey(model, panel.keys)} theme={theme} now={now} /> : null}
+      <Modal
+        open={panel !== null}
+        title={titleHref ? <NameLink name={panel?.title ?? ''} href={titleHref} /> : (panel?.title ?? '')}
+        onClose={() => setPanel(null)}
+        size="lg"
+      >
+        {panel ? <Checks tiles={panelTiles} theme={theme} now={now} /> : null}
       </Modal>
     </div>
   );
@@ -218,14 +232,17 @@ function Cell({
   const name = item.kind === 'tile' ? item.tile.entity : statusMoreTitle(item);
   const tiles = item.kind === 'tile' ? [item.tile] : item.tiles;
   const foot = item.kind === 'tile' ? statusTileFoot(item.tile) : statusMoreNames(item.tiles);
-  return (
+  const href = item.kind === 'tile' ? item.tile.href : undefined;
+  const nameClass = cx('truncate font-semibold', level === 'off' ? 'text-ink-2' : 'text-ink');
+  const nameLine: CSSProperties = { height: M.nameHeight, ...font(M.nameSize, M.nameHeight) };
+  const button = (
     <button
       type="button"
       title={name}
-      onClick={() => onOpen(name, tiles)}
+      onClick={() => onOpen(name, tiles, item.kind === 'tile')}
       className="flex min-w-0 flex-col overflow-hidden rounded-md text-left"
       style={{
-        gridColumn: `span ${placed.span}`,
+        ...(href ? { gridArea: '1 / 1' } : { gridColumn: `span ${placed.span}` }),
         // The fit's estimate, so rows line up with the snapshot; content that runs longer still grows the row.
         minHeight: placed.height,
         padding: `${M.padY}px ${M.padX}px`,
@@ -234,8 +251,9 @@ function Cell({
       }}
     >
       <span
-        className={cx('block truncate font-semibold', level === 'off' ? 'text-ink-2' : 'text-ink')}
-        style={{ height: M.nameHeight, ...font(M.nameSize, M.nameHeight) }}
+        className={cx('block', nameClass)}
+        // Room for the link icon drawn over this line, so a long name ends in "…" before it.
+        style={href ? { ...nameLine, paddingRight: LINK_SLOT } : nameLine}
       >
         {name}
         <span className="sr-only">: {STATUS_LEVEL_TEXT[level]}</span>
@@ -252,6 +270,45 @@ function Cell({
         </span>
       ) : null}
     </button>
+  );
+  if (!href) return button;
+  // A link inside a button is invalid HTML, and its click would open the panel too. So the button stays the whole
+  // tile and the link lies over it in the same grid cell, on a copy of the name line: the copy's invisible name puts
+  // the icon right after the drawn one, and only the icon takes clicks. The button comes first, so Tab reaches the
+  // tile, then its link.
+  return (
+    <div
+      className="grid min-w-0"
+      style={{ gridColumn: `span ${placed.span}`, gridTemplateColumns: 'minmax(0, 1fr)' }}
+    >
+      {button}
+      <div
+        className="pointer-events-none relative flex min-w-0 items-center self-start"
+        style={{ gridArea: '1 / 1', margin: `${M.padY}px ${M.padX}px 0 ${M.accent + M.padX}px`, ...nameLine }}
+      >
+        <span aria-hidden="true" className={cx('invisible min-w-0', nameClass)}>
+          {name}
+        </span>
+        <ExternalLink href={href} label={`Open ${name} in a new tab`} />
+      </div>
+    </div>
+  );
+}
+
+/** The ↗ icon that opens an entity's site; its padding is the click target and stays inside the name line. */
+function ExternalLink({ href, label }: { href: string; label: string }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer nofollow"
+      aria-label={label}
+      title={label}
+      className="pointer-events-auto flex shrink-0 items-center rounded-sm text-ink-2 hover:text-ink"
+      style={{ padding: LINK_PAD, margin: `-${LINK_PAD}px 0` }}
+    >
+      <ArrowUpRight aria-hidden="true" style={{ width: M.nameSize, height: M.nameSize }} />
+    </a>
   );
 }
 
@@ -290,6 +347,17 @@ function Problem({
   );
 }
 
+/** An entity's name in the panel, as the same kind of link as the tile's icon. */
+function NameLink({ name, href }: { name: string; href: string }) {
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer nofollow" className="rounded-sm hover:underline">
+      {name}
+      <ArrowUpRight aria-hidden="true" className="ml-1 inline-block size-[1em] align-[-0.125em] text-ink-2" />
+      <span className="sr-only"> (opens in a new tab)</span>
+    </a>
+  );
+}
+
 function Checks({ tiles, theme, now }: { tiles: StatusTile[]; theme: ChartTheme; now: number }) {
   if (!tiles.length) return <p className="text-sm text-muted">These checks are no longer in the data.</p>;
   return (
@@ -297,7 +365,9 @@ function Checks({ tiles, theme, now }: { tiles: StatusTile[]; theme: ChartTheme;
       {tiles.map((tile) => (
         <section key={tile.key}>
           {tiles.length > 1 ? (
-            <h3 className="mb-1 text-[13px] font-semibold text-ink">{tile.entity}</h3>
+            <h3 className="mb-1 text-[13px] font-semibold text-ink">
+              {tile.href ? <NameLink name={tile.entity} href={tile.href} /> : tile.entity}
+            </h3>
           ) : null}
           <ul className="divide-y divide-line">
             {tile.checks.map((check, i) => (
