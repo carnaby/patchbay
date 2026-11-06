@@ -997,8 +997,9 @@ describe('MCP tools', () => {
     // two more branches of the step union, advertised again wherever steps are accepted; -> 42,700: the dataset source (proposal 0005), one more branch of the
     // source union, advertised wherever a source is accepted; -> 42,800: preview_data says which drafts need
     // dashboardId; -> 44,000: the status widget joins WidgetSchema, one more branch of the widget union, its field
-    // descriptions in get_reference instead).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(44_000);
+    // descriptions in get_reference instead; -> 44,200: the http source's method and body (POST queries), the
+    // body advertised as any JSON value, descriptions in get_reference).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(44_200);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(

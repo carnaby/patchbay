@@ -9,6 +9,7 @@
 import { z } from 'zod';
 import { isValidTimeZone } from './clock.ts';
 import { IdSchema } from './ids.ts';
+import { jsonShapeProblem } from './json-shape.ts';
 import { DATASET_DEPTH, DATASET_INPUTS, lineageIssues } from './lineage.ts';
 import { SEARCH_ENGINES } from './search.ts';
 import { SoundRuleSchema } from './sound.ts';
@@ -48,6 +49,13 @@ export const LIMITS = {
    * accepts can still be saved whole from the editor; larger data belongs in uploads, which are stored on their own.
    */
   documentBytes: 1_000_000,
+  /**
+   * Characters of an http source's POST body as JSON (`JSON.stringify`). Checked by this schema, so every write path
+   * (ops, full saves, imports, previews, the editor) enforces it; no stored document predates it.
+   */
+  httpBody: 16_384,
+  /** Nesting of a POST body: room for the document around it within the request guard's 64 levels. */
+  httpBodyDepth: 32,
 } as const;
 
 /** Ids of saved secrets. Not secret themselves: they appear in public documents and grant nothing. */
@@ -65,6 +73,53 @@ export const HTTP_MIN_REFRESH_SEC = 30;
 
 /** Ids of uploaded files. Unique within one dashboard's folder, not across dashboards: copies and imports keep them. */
 export const FileIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/);
+
+/** Methods an http source may use. Absent means GET, so documents saved before POST existed load unchanged. */
+export const HTTP_METHODS = ['GET', 'POST'] as const;
+export type HttpMethod = (typeof HTTP_METHODS)[number];
+
+/**
+ * Why a POST body cannot be sent, or null. Measured on its JSON text, the form it goes out in, with the same shape
+ * scan that guards request bodies and uploads. A string that looks like JSON is refused: it is almost always an object
+ * an agent sent as text, which the API would receive as one quoted string.
+ */
+export function httpBodyIssue(body: unknown): string | null {
+  let text: string | undefined;
+  try {
+    text = JSON.stringify(body);
+  } catch {
+    return 'The body must be a JSON value';
+  }
+  if (text === undefined) return 'The body must be a JSON value';
+  if (text.length > LIMITS.httpBody) {
+    return `The body is ${text.length.toLocaleString('en-US')} characters as JSON; at most ${LIMITS.httpBody.toLocaleString('en-US')}`;
+  }
+  if (jsonShapeProblem(text, { maxDepth: LIMITS.httpBodyDepth, maxValues: Number.POSITIVE_INFINITY })) {
+    return `The body nests deeper than ${LIMITS.httpBodyDepth} levels`;
+  }
+  if (typeof body === 'string') {
+    const trimmed = body.trim();
+    if (/^[[{]/.test(trimmed) && /[\]}]$/.test(trimmed)) {
+      return 'The body is a string that looks like JSON; send the object or array itself, not text';
+    }
+  }
+  return null;
+}
+
+/** The body's rules, which a JSON Schema cannot carry: so they cost nothing in tools/list. */
+const httpBodyRule = (source: { method?: HttpMethod | undefined; body?: unknown }, ctx: z.RefinementCtx) => {
+  if (source.body === undefined) return;
+  if (source.method !== 'POST') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['body'],
+      message: 'A body is sent only with method "POST": add method "POST" or remove the body',
+    });
+    return;
+  }
+  const issue = httpBodyIssue(source.body);
+  if (issue) ctx.addIssue({ code: 'custom', path: ['body'], message: issue });
+};
 
 export const SourceSchema = z.discriminatedUnion('kind', [
   z
@@ -100,7 +155,13 @@ export const SourceSchema = z.discriminatedUnion('kind', [
         .refine((ids) => new Set(ids).size === ids.length, 'Each secret once')
         .optional()
         .describe('Saved secret ids (list_secrets), sent only to the address each is bound to'),
+      // Field descriptions live in the MCP reference text: every byte here is paid on each MCP connection.
+      method: z.enum(HTTP_METHODS).optional(),
+      // Any JSON value, advertised as such ({}); a recursive JSON schema would add $defs to every tool that takes a
+      // source. Its rules are in httpBodyRule.
+      body: z.unknown().optional(),
     })
+    .superRefine(httpBodyRule)
     .describe(
       'A JSON endpoint; http:// and private hosts only if the server allows. Credentials only via "secrets", never in URL',
     ),

@@ -9,6 +9,7 @@ export * from './csv.ts';
 export * from './export.ts';
 export * from './expr.ts';
 export * from './format.ts';
+export * from './json-shape.ts';
 export * from './layout.ts';
 export * from './lineage.ts';
 export * from './ops.ts';
