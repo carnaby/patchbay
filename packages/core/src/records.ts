@@ -34,19 +34,13 @@ const isScalar = (value: unknown): value is Scalar =>
   value === null || typeof value === 'number' || typeof value === 'string' || typeof value === 'boolean';
 
 /**
- * The rows of a column-shaped object, or null when `value` is not one. Metric and time-series APIs answer
+ * The lists of a column-shaped object, or null when `value` is not one. Metric and time-series APIs answer
  * { "timestamps": [1, 2], "values": [5, 6] }: row i takes element i of every list, in the object's key order. The rule
  * is strict so that an object which merely holds some lists keeps the record rules: at least two properties, every one
  * a list of scalars (number, string, boolean, null), all of one length of at least 1. A single list is left to the
  * first-list rule, which already reads it.
- *
- * `maxCells` bounds the rows built to one more than that many cells hold: the caller's cap (`inferTableCapped`) still
- * sees that rows were dropped, and a dense column-shaped body never allocates more rows than its table keeps.
  */
-export function columnsToRecords(
-  value: unknown,
-  maxCells = Number.POSITIVE_INFINITY,
-): Record<string, Scalar>[] | null {
+function columnsOf(value: unknown): { keys: string[]; columns: unknown[][] } | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const keys = Object.keys(value);
   if (keys.length < 2) return null;
@@ -58,6 +52,31 @@ export function columnsToRecords(
     columns.push(column);
   }
   for (const column of columns) if (!column.every(isScalar)) return null;
+  return { keys, columns };
+}
+
+/**
+ * The size of the table a column-shaped object becomes (`columnsToRecords`), or null when it is not one. Measured
+ * without building a row, so an upload over its cell limit is refused before its rows take memory.
+ */
+export function columnShape(value: unknown): { rows: number; columns: number } | null {
+  const shape = columnsOf(value);
+  return shape && { rows: shape.columns[0]!.length, columns: shape.keys.length };
+}
+
+/**
+ * The rows of a column-shaped object (`columnsOf`), or null when `value` is not one.
+ *
+ * `maxCells` bounds the rows built to one more than that many cells hold: the caller's cap (`inferTableCapped`) still
+ * sees that rows were dropped, and a dense column-shaped body never allocates more rows than its table keeps.
+ */
+export function columnsToRecords(
+  value: unknown,
+  maxCells = Number.POSITIVE_INFINITY,
+): Record<string, Scalar>[] | null {
+  const shape = columnsOf(value);
+  if (!shape) return null;
+  const { keys, columns } = shape;
   const length = Math.min(columns[0]!.length, Math.floor(maxCells / keys.length) + 1);
   const rows: Record<string, Scalar>[] = [];
   // fromEntries defines every key as an own property, so a "__proto__" column stays a column.
@@ -74,7 +93,7 @@ export function columnsToRecords(
  */
 export function findRecords(
   target: unknown,
-  options: { viaPath: boolean; maxCells?: number },
+  options: { viaPath: boolean; maxCells: number },
 ): unknown[] | null {
   if (Array.isArray(target)) return target;
   if (target === null || typeof target !== 'object') return null;

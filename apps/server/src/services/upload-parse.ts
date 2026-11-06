@@ -11,6 +11,7 @@
  * small file with very long names becomes a very large response.
  */
 import {
+  columnShape,
   type DataTable,
   ExportFormatError,
   findRecords,
@@ -187,8 +188,13 @@ function parseJson(content: string, maxCells: number, path: string | undefined):
     if (e instanceof PathNotFoundError) throw new UploadError(e.message);
     throw e;
   }
+  // Column-shaped data is measured before it becomes rows: a few lists of small numbers fit the value budget above but
+  // would take far more memory as row objects than a worker has.
+  const shape = columnShape(target);
+  if (shape && shape.rows * shape.columns > maxCells)
+    throw tooLarge(shape.rows, shape.columns, maxCells, false);
   // The rules of an http response (findRecords in core), except that a single value is a record of its own.
-  const records = findRecords(target, { viaPath: Boolean(path) }) ?? [target];
+  const records = findRecords(target, { viaPath: Boolean(path), maxCells }) ?? [target];
   // A quick refusal for files that are plainly too large; `limitedTable` holds the exact limits while it builds.
   if (records.length > maxCells) throw tooLarge(records.length, 1, maxCells, true);
   return limitedTable(records, maxCells);

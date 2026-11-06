@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { columnsToRecords, findRecords, PathNotFoundError, pickPath } from './records.ts';
+import { columnShape, columnsToRecords, findRecords, PathNotFoundError, pickPath } from './records.ts';
 
 /** A metrics API answer in columns: an ISO time, a number with a gap, a status. */
 const METRICS = {
@@ -64,6 +64,17 @@ describe('columnsToRecords', () => {
   });
 });
 
+describe('columnShape', () => {
+  it('measures a column-shaped object, and is null for anything the record rules read', () => {
+    expect(columnShape(METRICS)).toEqual({ rows: 3, columns: 3 });
+    expect(columnShape(SINGLE)).toBeNull();
+    expect(columnShape(UNEQUAL)).toBeNull();
+    expect(columnShape(NESTED)).toBeNull();
+    expect(columnShape([[1], [2]])).toBeNull();
+    expect(columnShape(null)).toBeNull();
+  });
+});
+
 describe('pickPath', () => {
   it('walks a dot path and names where it stopped', () => {
     const doc = { data: { items: [{ x: 1 }] } };
@@ -86,7 +97,7 @@ describe('pickPath', () => {
 
 describe('findRecords', () => {
   const at = (doc: unknown, path?: string) =>
-    findRecords(pickPath(doc, path, 'file'), { viaPath: Boolean(path) });
+    findRecords(pickPath(doc, path, 'file'), { viaPath: Boolean(path), maxCells: Number.POSITIVE_INFINITY });
 
   it('reads lists, column-shaped objects, envelopes and single objects as before', () => {
     expect(at([{ a: 1 }])).toEqual([{ a: 1 }]);

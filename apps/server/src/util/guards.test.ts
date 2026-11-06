@@ -150,6 +150,24 @@ describe('parseUpload', () => {
     expect(json(7).rows).toEqual([{ value: 7 }]);
   });
 
+  it('refuses a column-shaped file over the cell limit, naming its rows and columns', () => {
+    const columns = (count: number, length: number) =>
+      JSON.stringify(
+        Object.fromEntries(
+          Array.from({ length: count }, (_, c) => [`c${c}`, Array.from({ length }, (_, i) => i)]),
+        ),
+      );
+    const json = (content: string) => () => parseUpload({ content, format: 'json', maxCells: 100 });
+    // Few enough values for the check before parsing, too many cells once read as columns.
+    expect(json(columns(5, 50))).toThrow(UploadError);
+    expect(json(columns(5, 50))).toThrow(
+      'The file has 50 rows × 5 columns; this dashboard accepts files of up to 100 cells',
+    );
+    // More positions than the limit has cells: still every column counted, not one.
+    expect(json(columns(2, 140))).toThrow('The file has 140 rows × 2 columns;');
+    expect(json(columns(5, 20))()).toMatchObject({ rows: { length: 20 } });
+  });
+
   it('ignores a path for CSV', () => {
     expect(
       parseUpload({ content: 'a,b\n1,2\n', format: 'csv', maxCells: 100, path: 'data.items' }).rows,
