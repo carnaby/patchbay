@@ -55,29 +55,63 @@ describe('statusFit', () => {
     expect([immich!.x, immich!.y, immich!.height]).toEqual([0, 164, 50]);
   });
 
-  it('folds off tiles first, then ok tiles, from the last section upwards', () => {
-    // One pixel short: folding the two off tiles of nuc saves no row, and neither do the ok tiles of internet (the
-    // last section, so folded first); folding the ok tiles of nuc does.
+  it('folds off tiles first, then ok tiles, from the last section upwards, only where that saves space', () => {
+    // One pixel short. Folding the two off tiles of nuc saves no row (five cells or four take two rows of three), nor
+    // do the three ok tiles of internet (the last section) as one cell: both stay tiles. Folding nuc's ok tiles does.
     const short = statusFit(infra, { width: 480, height: 501 });
     expect(short.height).toBe(444);
-    expect(shape(short)).toEqual({
-      ...FULL,
-      nuc: ['+3 more ok', '+2 off'],
-      internet: ['+3 more ok'],
-    });
+    expect(shape(short)).toEqual({ ...FULL, nuc: ['+3 more ok', 'grafana', 'old-wiki'] });
     const tighter = statusFit(infra, { width: 480, height: 443 });
     expect(tighter.height).toBe(386);
     expect(shape(tighter)).toEqual({
       nas: ['cue', '+4 more ok', 'umami'],
-      internet: ['+3 more ok'],
-      nuc: ['+3 more ok', '+2 off'],
+      nuc: ['+3 more ok', 'grafana', 'old-wiki'],
+      internet: ['blog.example.com', 'status', 'patchbay'],
     });
+  });
+
+  it('skips a fold that would take the same rows, and folds the next section instead', () => {
+    // Three columns: a takes two rows of ok tiles, b one row of an ok and two off tiles.
+    const rows = [
+      ...[1, 2, 3, 4, 5, 6].map((i) => ({ machine: 'a', service: `a${i}`, status: 'ok' })),
+      { machine: 'b', service: 'b1', status: 'ok' },
+      { machine: 'b', service: 'b2', status: 'off' },
+      { machine: 'b', service: 'b3', status: 'off' },
+    ];
+    const model = statusModel(
+      inferTable(rows),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', group: 'machine' }),
+    );
+    const full = statusFit(model, { width: 480, height: 2000 });
+    expect(shape(full)).toEqual({ a: ['a1', 'a2', 'a3', 'a4', 'a5', 'a6'], b: ['b1', 'b2', 'b3'] });
+    const short = statusFit(model, { width: 480, height: full.height - 1 });
+    expect([short.fits, short.height]).toEqual([true, full.height - 58]);
+    // "+2 off" in b would leave its row as it is: b keeps its tiles and a folds instead.
+    expect(shape(short)).toEqual({ a: ['+6 more ok'], b: ['b1', 'b2', 'b3'] });
+  });
+
+  it('folds ok and off tiles together when only both free their shared row', () => {
+    // Three ok and three off tiles: either fold alone leaves four cells in two rows, both leave one row.
+    const rows = [
+      { machine: 'x', service: 'x1', status: 'fail' },
+      ...[1, 2, 3].map((i) => ({ machine: 'y', service: `ok${i}`, status: 'ok' })),
+      ...[1, 2, 3].map((i) => ({ machine: 'y', service: `off${i}`, status: 'off' })),
+    ];
+    const model = statusModel(
+      inferTable(rows),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', group: 'machine' }),
+    );
+    const full = statusFit(model, { width: 480, height: 2000 });
+    const short = statusFit(model, { width: 480, height: full.height - 1 });
+    expect([short.fits, short.height]).toEqual([true, full.height - 58]);
+    // Not the header line alone: the two folds keep y's counts and names one click away.
+    expect(shape(short)).toEqual({ x: ['x1'], y: ['+3 more ok', '+3 off'] });
   });
 
   it('folds calm sections to their header line, last first', () => {
     expect(shape(statusFit(infra, { width: 480, height: 385 }))).toEqual({
       nas: ['cue', '+4 more ok', 'umami'],
-      nuc: ['+3 more ok', '+2 off'],
+      nuc: ['+3 more ok', 'grafana', 'old-wiki'],
       internet: ['(header)'],
     });
     const both = statusFit(infra, { width: 480, height: 335 });
@@ -319,7 +353,8 @@ describe('statusFit', () => {
     const layout = statusFit(flat, { width: 480, height: 200 });
     expect(layout.sections).toHaveLength(1);
     expect([layout.sections[0]!.header, layout.sections[0]!.collapsed]).toEqual([false, false]);
-    expect(shape(layout)).toEqual({ '': ['cue', '+10 more ok', '+3 off'] });
+    // The three off tiles fill the row "+3 off" would take alone, so they stay tiles.
+    expect(shape(layout)).toEqual({ '': ['cue', '+10 more ok', 'umami', 'grafana', 'old-wiki'] });
     const ok = layout.sections[0]!.items[1]!.item;
     expect(ok.kind === 'more' && statusMoreNames(ok.tiles)).toBe('blog, immich, nas, …');
   });

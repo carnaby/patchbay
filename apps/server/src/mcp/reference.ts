@@ -217,7 +217,8 @@ ${tableFns}
   summary (default true) puts "1 problem · 71 ok · 9 off" on top. Nothing scrolls: when the widget is too small, off tiles fold into "+N off", then
   ok tiles into "+N more ok", then sections without problems into their header line, then the last of those lines
   into one "+N more sections · 12 ok" line, which goes too before any problem is hidden (the summary line keeps every
-  count); problems never fold into ok summaries, and only when the problem tiles alone do not fit are their details
+  count); a fold that would not make the widget shorter is skipped, so tiles stay named where they fit; problems
+  never fold into ok summaries, and only when the problem tiles alone do not fit are their details
   cut to two lines and the rest counted in "+N more problems" (a section left without problem tiles folds into it).
   At most ${STATUS_LIMITS.rows} rows, ${STATUS_LIMITS.sections} sections and ${STATUS_LIMITS.tiles} tiles are read.
   Example: { "id": "infra", "type": "status", "datasetId": "checks", "config": { "entity": "service", "status": "status", "group": "machine", "label": "name", "kind": "kind", "detail": "detail", "since": "since", "link": "url" } }

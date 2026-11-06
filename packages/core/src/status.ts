@@ -687,7 +687,8 @@ interface FitState {
  * soon as everything fits: off tiles, then ok tiles, then calm sections to their header line, then the ok and off
  * cells of sections with problems, then the calm header lines at the end into one "+N more sections" line (one more
  * section at a time), then that line too, then details to two lines, then problem tiles into "+N more problems"
- * (a section left without problem tiles folds away with them).
+ * (a section left without problem tiles folds away with them). A fold of calm tiles or header lines that leaves the
+ * layout as tall as before is undone and the next step tried.
  * What is broken outranks the names of calm sections, whose counts stay in the summary line. Nothing scrolls: the
  * widget runs unattended on wall screens, so what does not fit is folded and counted, never cut off.
  */
@@ -809,55 +810,101 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
   };
 
   const reversed = [...states].reverse();
-  // Each step reports whether it changed anything. A single tile is never folded into a "+1" of the same size.
-  const steps: (() => boolean)[] = [
-    ...reversed.map((s) => () => {
-      if (s.offFolded || s.off.length < 2) return false;
-      s.offFolded = true;
-      return true;
-    }),
-    ...reversed.map((s) => () => {
-      if (s.okFolded || s.ok.length < 2) return false;
-      s.okFolded = true;
-      return true;
+  // Each step reports whether it changed anything. A single tile is never folded into a "+1" of the same size. A step
+  // with an undo is a fold of tiles that are fine: it stays only when the layout gets shorter, because folding three
+  // tiles into one cell of the same row hides their names and gains nothing. `widen` folds more of the same section
+  // when the step alone saved nothing: ok and off tiles can share their last row, so only both folds free it.
+  const steps: { apply: () => boolean; widen?: () => boolean; undo?: () => void }[] = [
+    ...reversed.map((s) => ({
+      apply: () => {
+        if (s.offFolded || s.off.length < 2) return false;
+        s.offFolded = true;
+        return true;
+      },
+      undo: () => {
+        s.offFolded = false;
+      },
+    })),
+    ...reversed.map((s) => {
+      let widened = false;
+      return {
+        apply: () => {
+          if (s.okFolded || s.ok.length < 2) return false;
+          s.okFolded = true;
+          return true;
+        },
+        widen: () => {
+          if (s.offFolded || s.off.length < 2) return false;
+          s.offFolded = widened = true;
+          return true;
+        },
+        undo: () => {
+          s.okFolded = false;
+          if (widened) s.offFolded = widened = false;
+        },
+      };
     }),
     ...(model.grouped
-      ? reversed.map((s) => () => {
-          if (s.headerOnly || s.problems.length > 0) return false;
-          s.headerOnly = true;
-          return true;
-        })
+      ? reversed.map((s) => ({
+          apply: () => {
+            if (s.headerOnly || s.problems.length > 0) return false;
+            s.headerOnly = true;
+            return true;
+          },
+          undo: () => {
+            s.headerOnly = false;
+          },
+        }))
       : []),
-    ...reversed.map((s) => () => {
-      if (s.bare || s.problems.length === 0 || s.ok.length + s.off.length === 0) return false;
-      s.bare = true;
-      return true;
-    }),
+    ...reversed.map((s) => ({
+      apply: () => {
+        if (s.bare || s.problems.length === 0 || s.ok.length + s.off.length === 0) return false;
+        s.bare = true;
+        return true;
+      },
+    })),
     // Two header lines into one saves a line; one into "+1 more section" would save nothing.
     ...(model.grouped
-      ? Array.from({ length: Math.max(0, calm - 1) }, (_, i) => () => {
-          const n = i + 2;
-          if (!states.slice(-n).every((s) => s.headerOnly)) return false;
-          folded = n;
-          return true;
+      ? Array.from({ length: Math.max(0, calm - 1) }, (_, i) => {
+          let before = 0;
+          return {
+            apply: () => {
+              const n = i + 2;
+              if (!states.slice(-n).every((s) => s.headerOnly)) return false;
+              before = folded;
+              folded = n;
+              return true;
+            },
+            undo: () => {
+              folded = before;
+            },
+          };
         })
       : []),
-    () => {
-      if (!model.grouped || calm === 0 || !states.slice(-calm).every((s) => s.headerOnly)) return false;
-      folded = calm;
-      dropped = true;
-      return true;
+    {
+      apply: () => {
+        if (!model.grouped || calm === 0 || !states.slice(-calm).every((s) => s.headerOnly)) return false;
+        folded = calm;
+        dropped = true;
+        return true;
+      },
     },
-    () => {
-      if (clamp) return false;
-      clamp = true;
-      return true;
+    {
+      apply: () => {
+        if (clamp) return false;
+        clamp = true;
+        return true;
+      },
     },
   ];
   let layout = measure();
   for (const step of steps) {
     if (layout.fits) break;
-    if (step()) layout = measure();
+    if (!step.apply()) continue;
+    let next = measure();
+    if (step.widen && next.height >= layout.height && step.widen()) next = measure();
+    if (step.undo && next.height >= layout.height) step.undo();
+    else layout = next;
   }
   // Problems are hidden only for the problem tiles themselves to fit, and then until they do: a tile is counted, never
   // cut. Only a box too small for the summary line and one cell stays over.
