@@ -34,6 +34,10 @@ beforeAll(async () => {
     PUBLIC_URL: BASE,
   });
   deps = await createDeps(config);
+  // Every request here comes from one unknown address, so the real per-address write budget (60, then 2 a second)
+  // would make the later tests pass or fail by how fast the earlier ones ran: CI on Linux used it up, Windows did not.
+  // RateLimiter itself is tested in proxy.test.ts; the other limits of this file stay real.
+  deps.limits.writes = new RateLimiter(100_000, 100_000);
   app = createApp(deps);
 });
 
