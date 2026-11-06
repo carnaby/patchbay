@@ -11,6 +11,7 @@
  * viewers on one dashboard costs one parse, not one per viewer.
  */
 import {
+  CACHED_DATA_WARNING,
   type DashboardDoc,
   type Dataset,
   type DatasetResult,
@@ -447,7 +448,7 @@ export class DataService {
           table: r.table,
           fetchedAt: r.fetchedAt,
           credentialKey: '',
-          ...(r.stale ? { warning: `Showing cached data: ${r.stale}` } : {}),
+          ...(r.stale ? { warning: `${CACHED_DATA_WARNING}: ${r.stale}` } : {}),
         };
       }
       case 'inline':

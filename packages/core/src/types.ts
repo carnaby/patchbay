@@ -45,6 +45,12 @@ export interface DashboardEnvelope {
   access: DashboardAccess;
 }
 
+/**
+ * How a cached connector copy served after a failed refresh starts its warning. The widget badge reads "stale" only
+ * for it: the other warnings (a capped source, a cut parent) are current data that is incomplete.
+ */
+export const CACHED_DATA_WARNING = 'Showing cached data';
+
 export interface DatasetResult {
   datasetId: string;
   table: DataTable;
