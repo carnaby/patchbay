@@ -8,6 +8,11 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ### Added
 
+- **POST for `http` sources**: `method: "POST"` with a JSON `body` (at most 16,384 characters) loads read APIs that
+  take their query in a POST body, such as GitHub GraphQL, PostHog or ClickHouse over HTTP. The editor has a GET / POST
+  switch and a JSON body field; agents find the fields and a GitHub example in `get_reference`. The request repeats on
+  every refresh, so use it for read queries; keys stay in secrets, never in the body. A redirect answer to a POST is an
+  error instead of being followed, and a read-only token cannot preview a POST source.
 - **Column-shaped JSON**: an `http` response or a JSON upload whose object holds only equally long lists of plain
   values (`{ "timestamps": [...], "values": [...] }`, at least two) now becomes one row per position with every
   column. Before, only the first list was kept. Any other shape is read exactly as before.

@@ -10,6 +10,7 @@
  * buffers. Loads of the same table are shared while in flight, so a burst of
  * viewers on one dashboard costs one parse, not one per viewer.
  */
+import { createHash } from 'node:crypto';
 import {
   CACHED_DATA_WARNING,
   type DashboardDoc,
@@ -19,6 +20,7 @@ import {
   FEED_MIN_REFRESH_SEC,
   findRecords,
   HTTP_MIN_REFRESH_SEC,
+  type HttpMethod,
   hashTable,
   INFER_MAX_COLUMNS,
   inferTableCapped,
@@ -144,9 +146,10 @@ export interface DataServiceOptions {
   /**
    * Called before every http or feed load: throws when this instance does not fetch the URL for the dashboard,
    * otherwise returns the private hosts (ALLOW_PRIVATE_HOSTS) its sources may reach, or null for public addresses
-   * only. DashboardService decides, by the dashboard's owner.
+   * only. DashboardService decides, by the dashboard's owner. http sources pass their method (a trusted showcase
+   * URL is trusted for GET only); feeds pass none.
    */
-  urlPolicy?: (target: DashboardTarget, url: string) => PrivateHosts | null;
+  urlPolicy?: (target: DashboardTarget, url: string, method?: HttpMethod) => PrivateHosts | null;
   /** OFFLINE=1: feeds return their deterministic sample instead of fetching. */
   offline?: boolean;
   /** Memory for parsed tables (uploads, inline rows, HTTP responses), in bytes. */
@@ -185,13 +188,30 @@ interface HistoryBuffer {
   rowBytes: number;
 }
 
+type HttpSource = Extract<Dataset['source'], { kind: 'http' }>;
+
+/**
+ * The cache and in-flight key of an http source. A GET's key is exactly what it was before POST existed, so a deploy
+ * does not empty the cache. A POST adds its method and a SHA-256 of its JSON body: two queries on one URL never share
+ * a response, and a body cannot be crafted to collide with another. The two kinds never meet: after the credentials a
+ * GET key goes on with its URL ("http…"), a POST key with "POST:".
+ */
+export function httpCacheKey(source: HttpSource, credentialKey: string, lan: boolean): string {
+  const head = `http:${lan ? 'lan|' : ''}${credentialKey}|`;
+  const tail = `${source.url}#${source.path ?? ''}`;
+  if (source.method !== 'POST') return head + tail;
+  const body = source.body === undefined ? '' : JSON.stringify(source.body);
+  return `${head}POST:${createHash('sha256').update(body).digest('base64url')}|${tail}`;
+}
+
 export class DataService {
   private readonly connectors: ConnectorService;
   private readonly store: FolderStore;
   /**
-   * Parsed tables. HTTP entries are keyed by credentials + URL + path: two datasets with the same URL share a
-   * response only when they would send the same credentials, so a public dataset never receives a secret-backed
-   * response, two users never share one, and replacing a value (a new revision) invalidates at once.
+   * Parsed tables. HTTP entries are keyed by credentials + URL + path (+ method and body for a POST): two
+   * datasets with the same URL share a response only when they would send the same credentials, so a public
+   * dataset never receives a secret-backed response, two users never share one, and replacing a value (a new
+   * revision) invalidates at once.
    */
   private readonly tables: ByteLru<CacheEntry>;
   private readonly loading = new Map<string, Promise<CacheEntry>>();
@@ -221,7 +241,11 @@ export class DataService {
 
   private readonly pipeline: PipelineRunner;
   private readonly credentialsFor: CredentialResolver;
-  private readonly urlPolicy: (target: DashboardTarget, url: string) => PrivateHosts | null;
+  private readonly urlPolicy: (
+    target: DashboardTarget,
+    url: string,
+    method?: HttpMethod,
+  ) => PrivateHosts | null;
   private readonly upstreamTest: UpstreamTestSeam | undefined;
   private readonly feeds: FeedService;
   private readonly maxSourceCells: number;
@@ -388,7 +412,7 @@ export class DataService {
       .sort()
       .join(',');
     // A response fetched with the operator's private hosts never answers a dashboard that may not use them.
-    const key = `http:${privateHosts ? 'lan|' : ''}${credentialKey}|${source.url}#${source.path ?? ''}`;
+    const key = httpCacheKey(source, credentialKey, Boolean(privateHosts));
     let entry = this.tables.get(key);
     if (!entry) {
       let pending = this.loading.get(key);
@@ -419,6 +443,10 @@ export class DataService {
       const json = await this.outbound.run(currentClient(), source.url, () =>
         safeFetchJson(source.url, {
           credentials,
+          // Only a POST carries these, so a GET is fetched with exactly the options it always had.
+          ...(source.method === 'POST'
+            ? { method: 'POST' as const, ...(source.body !== undefined ? { body: source.body } : {}) }
+            : {}),
           ...(privateHosts ? { privateHosts } : {}),
           ...(this.upstreamTest ? { test: this.upstreamTest } : {}),
         }),
@@ -457,7 +485,12 @@ export class DataService {
       case 'upload':
         return this.loadUpload(target, source.fileId);
       case 'http':
-        return this.loadHttp(target, dataset, source, this.urlPolicy(target, source.url));
+        return this.loadHttp(
+          target,
+          dataset,
+          source,
+          this.urlPolicy(target, source.url, source.method ?? 'GET'),
+        );
       case 'feed': {
         const feed = await this.feeds.load(source.url, this.urlPolicy(target, source.url));
         const rows = feed.table.rows.slice(0, source.limit);

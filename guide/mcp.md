@@ -376,6 +376,45 @@ Three pieces make a dashboard work as a browser start page. Each is documented i
   `http(s)` links are rendered). A sound cue with `{ kind: "newRows", key: "id" }` plays for every new article.
 - `search` opens the chosen engine's results in the browser; the query never reaches the server.
 
+## POST queries
+
+Some read APIs take their query in a POST body: GraphQL (GitHub), PostHog, ClickHouse over HTTP, Sentry, Notion
+search. An `http` source sends one with `method: "POST"` and a JSON `body`:
+
+```jsonc
+{
+  "op": "addDataset",
+  "dataset": {
+    "id": "me",
+    "name": "GitHub account",
+    "source": {
+      "kind": "http",
+      "url": "https://api.github.com/graphql",
+      "method": "POST",
+      "body": { "query": "{ viewer { login } }" },
+      "secrets": ["sec_…"],
+      "path": "data.viewer"
+    }
+  }
+}
+```
+
+- Without `method` a source is a GET, as before. `body` (any JSON value, at most 16,384 characters as JSON and 32 levels
+  deep) needs `method: "POST"`; a POST without `body` sends an empty one. The body goes out as `application/json`.
+- GraphQL needs the object `{ "query": "…" }`, not the bare query text. A string body is sent as a JSON string, and a
+  string that looks like JSON is refused.
+- **Read queries only.** The request repeats on every refresh, preview and load. An identical body is answered from
+  the 30 s cache; two different bodies on one URL never share a cached response.
+- **No secrets in the body.** It is part of the document, so editors, agents, exports and the viewers of a public
+  dashboard see it. Keys stay in secrets (below), sent as a header or query parameter; GraphQL and analytics APIs
+  read their token from a header.
+- **No redirects.** A redirect answer to a POST is an error: following it would resend the body to another address or
+  silently turn it into a GET. Use the final address.
+- **Previews need write access.** A token without `dashboards:write` cannot preview a POST source (`preview_data`, or
+  the REST preview endpoint with such a token): it is refused before anything is sent, because a POST of the caller's
+  choosing could change data at the API. Saved dashboards with POST sources still load for everyone who may view them.
+- Everything else works as for a GET: the address rules, secret bindings, response limits and `path`.
+
 ## Secrets
 
 Some APIs need a key. When the operator turned the feature on (`SECRETS=admins` or `users`, see
@@ -447,3 +486,5 @@ const { content } = await client.callTool({
 - Secret values are never readable through MCP, and agents cannot store, change or publish them (see "Secrets").
 - Sources reach only public `https://` addresses unless the operator lists hosts of their own network in
   `ALLOW_PRIVATE_HOSTS`; `get_reference` tells each user which, if any, their dashboards may use.
+- An `http` source may send a POST with a JSON body to a read API. A redirect answer to a POST is an error, never
+  followed, keys stay in secrets, never in the body, and a read-only token cannot preview a POST source.

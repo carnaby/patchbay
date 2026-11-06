@@ -35,6 +35,9 @@ interface Received {
   host: string;
   url: string;
   headers: IncomingHttpHeaders;
+  method: string;
+  /** Filled while the request body arrives; complete by the time the answer is sent. */
+  body: string;
 }
 
 class Upstream {
@@ -47,7 +50,18 @@ class Upstream {
     this.server = createServer((req, res) => {
       const host = req.headers.host ?? '';
       const url = new URL(req.url ?? '/', `https://${host}`);
-      this.received.push({ host, url: req.url ?? '', headers: req.headers });
+      const record: Received = {
+        host,
+        url: req.url ?? '',
+        headers: req.headers,
+        method: req.method ?? '',
+        body: '',
+      };
+      this.received.push(record);
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => {
+        record.body += chunk;
+      });
       const auth = req.headers.authorization ?? null;
       const apiKey = (req.headers['x-api-key'] as string | undefined) ?? null;
       const queryKey = url.searchParams.get('api_key');
@@ -130,6 +144,24 @@ class Upstream {
           return;
         case '/admin/orders':
           return json(200, { items: [{ admin: true, account }] });
+        case '/v1/graphql':
+          // Like a GraphQL endpoint: answers once the whole body is in, and only to POST.
+          req.on('end', () => {
+            if (req.method !== 'POST') return json(405, { error: 'POST only' });
+            let query: unknown = null;
+            try {
+              query = (JSON.parse(record.body) as { query?: unknown }).query ?? null;
+            } catch {
+              query = 'invalid JSON';
+            }
+            json(200, {
+              data: { viewer: { login: account, query, contentType: req.headers['content-type'] ?? null } },
+            });
+          });
+          return;
+        case '/v1/graphql-moved':
+          res.writeHead(307, { location: '/v1/graphql' });
+          return res.end();
         default:
           return json(404, { error: 'not found', url: req.url });
       }
@@ -1379,6 +1411,138 @@ function filesUnder(dir: string): { path: string; content: string }[] {
     return [{ path, content: readFileSync(path).toString('latin1') }];
   });
 }
+
+describe('POST sources', () => {
+  const QUERY = '{ viewer { login } }';
+  const postSource = (
+    path: string,
+    body: unknown,
+    secrets?: string[],
+    extra: Record<string, unknown> = {},
+  ) => ({
+    kind: 'http',
+    url: `${API}${path}`,
+    method: 'POST',
+    body,
+    ...(secrets ? { secrets } : {}),
+    ...extra,
+  });
+
+  it('posts the body with the secret header to the bound address and reads the answer', async () => {
+    const cookie = await env.login('post-header@example.com');
+    const v = value('gql');
+    const s = await env.secret(cookie, { placement: 'header', paramName: 'X-API-Key', value: v });
+    const dash = await env.dashboard(cookie);
+    const saved = await env.ops(dash, cookie, [
+      addDataset({
+        id: 'viewer',
+        name: 'Viewer',
+        source: postSource('/v1/graphql', { query: QUERY }, [s.id], { path: 'data.viewer' }),
+      }),
+    ]);
+    expect(saved.status, saved.text).toBe(200);
+    const mark = upstream.received.length;
+    const result = await env.data(dash, 'viewer', cookie);
+    expect(result.error).toBeUndefined();
+    expect(result.table.rows).toEqual([
+      { login: expect.stringMatching(/^acct-/), query: QUERY, contentType: 'application/json' },
+    ]);
+    expect(upstream.since(mark).map((r) => [r.method, r.url, r.headers['x-api-key'], r.body])).toEqual([
+      ['POST', '/v1/graphql', v, JSON.stringify({ query: QUERY })],
+    ]);
+    expect(JSON.stringify(result)).not.toContain(v);
+  });
+
+  it('stops at a redirect without resending the body, and sends nothing outside the binding', async () => {
+    const cookie = await env.login('post-redirect@example.com');
+    const s = await env.secret(cookie);
+    const dash = await env.dashboard(cookie);
+    await env.ops(dash, cookie, [
+      addDataset({
+        id: 'moved',
+        name: 'Moved',
+        source: postSource('/v1/graphql-moved', { query: QUERY }, [s.id]),
+      }),
+    ]);
+    let mark = upstream.received.length;
+    const moved = await env.data(dash, 'moved', cookie);
+    expect(moved.error).toBe(
+      'The API answered the POST with a redirect to another address; Patchbay does not resend the body. Use the final address.',
+    );
+    expect(upstream.since(mark).map((r) => [r.method, r.url])).toEqual([['POST', '/v1/graphql-moved']]);
+    mark = upstream.received.length;
+    const preview = await env.call(`/api/dashboards/${dash}/preview`, {
+      cookie,
+      body: { dataset: { source: postSource('/admin/orders', { q: 1 }, [s.id]) } },
+    });
+    expect(preview.json.result.error).toBe('Credentials for this source are bound to another address.');
+    expect(upstream.since(mark)).toEqual([]);
+  });
+
+  it('refuses a body over the limit, or a body without POST, on every write path before anything is sent', async () => {
+    const cookie = await env.login('post-limits@example.com');
+    const dash = await env.dashboard(cookie);
+    const big = { query: 'x'.repeat(16_384) };
+    const mark = upstream.received.length;
+    const saved = await env.ops(dash, cookie, [
+      addDataset({ id: 'big', name: 'Big', source: postSource('/v1/graphql', big) }),
+    ]);
+    expect(saved.status).toBe(400);
+    expect(saved.json.error).toMatch(/at most 16,384/);
+    const previewed = await env.call(`/api/dashboards/${dash}/preview`, {
+      cookie,
+      body: { dataset: { source: postSource('/v1/graphql', big) } },
+    });
+    expect(previewed.status).toBe(400);
+    expect(previewed.json.error).toMatch(/at most 16,384/);
+    const stray = await env.ops(dash, cookie, [
+      addDataset({
+        id: 'stray',
+        name: 'Stray',
+        source: { kind: 'http', url: `${API}/v1/graphql`, body: { q: 1 } },
+      }),
+    ]);
+    expect(stray.status).toBe(400);
+    expect(stray.json.error).toMatch(/only with method "POST"/);
+    expect(upstream.since(mark)).toEqual([]);
+  });
+
+  it('keeps a read-only token from previewing any POST, with or without a secret, before anything is sent', async () => {
+    const cookie = await env.login('post-readonly@example.com');
+    const s = await env.secret(cookie);
+    const readOnly = await env.mcp(await env.pat(cookie, ['dashboards:read']));
+    const dash = await env.dashboard(cookie);
+    const mark = upstream.received.length;
+    // A read scope must not make the server send a body of the caller's choosing: a POST may change data upstream.
+    for (const source of [
+      postSource('/v1/graphql', { query: QUERY }, [s.id]),
+      postSource('/v1/graphql', { query: QUERY }),
+    ]) {
+      for (const dashboardId of [dash, undefined]) {
+        const refused = await readOnly.callTool({
+          name: 'preview_data',
+          arguments: { ...(dashboardId ? { dashboardId } : {}), source },
+        });
+        expect(refused.isError).toBe(true);
+        expect(text(refused)).toMatch(/dashboards:write/);
+      }
+    }
+    expect(upstream.since(mark)).toEqual([]);
+    // The same public POST previews for a token with write access, without credentials.
+    const writer = await env.mcp(await env.pat(cookie));
+    const plain = await writer.callTool({
+      name: 'preview_data',
+      arguments: {
+        source: postSource('/v1/graphql', { query: `${QUERY} # writer` }, undefined, { path: 'data.viewer' }),
+      },
+    });
+    expect(plain.isError, text(plain)).toBeFalsy();
+    expect(text(plain)).toContain('# writer');
+    expect(upstream.since(mark).map((r) => [r.method, r.headers.authorization ?? null])).toEqual([
+      ['POST', null],
+    ]);
+  });
+});
 
 describe('canary', () => {
   it('never shows a secret value in any response, error, log line, version or dashboard folder', async () => {

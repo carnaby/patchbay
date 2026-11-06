@@ -193,6 +193,17 @@ describe('fetching from a listed address for real', () => {
     );
   });
 
+  it('posts to a listed address and never follows its redirects, wherever they point', async () => {
+    const post = { privateHosts: local, method: 'POST' as const, body: { q: 1 } };
+    expect(await safeFetchJson(`${base}/data`, post)).toEqual([{ a: 1 }]);
+    for (const path of ['/to-data', '/to-other', '/to-metadata']) {
+      await expect(safeFetchJson(`${base}${path}`, post), path).rejects.toThrow(URL_MESSAGES.postRedirect);
+    }
+    await expect(safeFetchJson(`${base}/data`, { method: 'POST', body: { q: 1 } })).rejects.toThrow(
+      URL_MESSAGES.httpOff,
+    );
+  });
+
   it('checks the addresses of a name inside the socket lookup of the lan agent', async () => {
     await expect(
       safeFetchJson(`http://localhost:${port}/data`, { privateHosts: parsePrivateHosts('10.0.0.1')! }),

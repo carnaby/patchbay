@@ -88,6 +88,8 @@ export const URL_MESSAGES = {
   notListed: (host: string) =>
     `${host} is not covered by this server's ALLOW_PRIVATE_HOSTS. Private addresses, plain http:// and ports other than 443 work only for the hosts listed there.`,
   downgrade: 'The address redirected from https:// to http://, so the request was stopped.',
+  postRedirect:
+    'The API answered the POST with a redirect to another address; Patchbay does not resend the body. Use the final address.',
 } as const;
 
 /**
@@ -270,6 +272,12 @@ export interface SafeFetchOptions {
    * Absent or null: public addresses over https:// on port 443 only, whatever the server is configured with.
    */
   privateHosts?: PrivateHosts | null;
+  /**
+   * POST sends `body` as JSON (no body when absent). A POST is never redirected: following would resend the body to
+   * another address (307, 308) or silently turn it into a GET (301 to 303), so a redirect answer is an error.
+   */
+  method?: 'GET' | 'POST';
+  body?: unknown;
   redirects?: number;
   /** A smaller body limit than the default 5 MB, for documents that are small by nature. */
   maxBytes?: number;
@@ -404,7 +412,7 @@ export function redactJson(value: unknown, values: string[]): unknown {
 }
 
 /** The request for one hop: a copy of the URL (plus a query secret) and the headers. The document URL is untouched. */
-function attach(url: URL, credentials: Credential[], accept: string) {
+function attach(url: URL, credentials: Credential[], accept: string, json = false) {
   const headers: Record<string, string> = { accept, 'user-agent': USER_AGENT };
   let search = url.search;
   for (const c of credentials) {
@@ -416,6 +424,8 @@ function attach(url: URL, credentials: Credential[], accept: string) {
       search = search ? `${search}&${pair}` : `?${pair}`;
     }
   }
+  // Last: a secret can never be named Content-Type (secretParamIssue reserves it), and ours must win regardless.
+  if (json) headers['content-type'] = 'application/json';
   const target = new URL(url.href);
   target.search = search;
   return { target, headers };
@@ -513,6 +523,9 @@ async function fetchHops(
 ): Promise<FetchedText> {
   const redirects = options.redirects ?? 3;
   const privateHosts = options.privateHosts ?? null;
+  const post = options.method === 'POST';
+  // Serialised once for every hop; the schema bounded its size and nesting when the source was saved.
+  const payload = post && options.body !== undefined ? JSON.stringify(options.body) : undefined;
   let { url, mode } = checkUrl(raw, privateHosts);
   for (let hop = 0; hop <= redirects; hop++) {
     for (const c of credentials) {
@@ -525,9 +538,11 @@ async function fetchHops(
         `The API redirected to another address. Credentials are only sent to ${bindingLabel(c)}, so the request was stopped.`,
       );
     }
-    const { target, headers } = attach(url, credentials, accept);
+    const { target, headers } = attach(url, credentials, accept, payload !== undefined);
     const res = await undiciFetch(target, {
       redirect: 'manual',
+      // A GET keeps exactly the options it had before POST existed.
+      ...(post ? { method: 'POST', ...(payload !== undefined ? { body: payload } : {}) } : {}),
       dispatcher: options.test?.dispatcher ?? dispatcherFor(mode, privateHosts),
       headers,
       signal: AbortSignal.timeout(options.test?.timeoutMs ?? options.timeoutMs ?? TIMEOUT_MS),
@@ -549,6 +564,7 @@ async function fetchHops(
     });
     if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
       await res.body?.cancel().catch(() => {});
+      if (post) throw new HttpError(502, URL_MESSAGES.postRedirect);
       // Resolved against the document's URL, never against the request URL that carried a query secret.
       const next = redirectTarget(url, res.headers.get('location')!, privateHosts);
       url = withoutOwnQuerySecrets(next.url, credentials);

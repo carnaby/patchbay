@@ -8,6 +8,7 @@ import {
   FEED_MIN_REFRESH_SEC,
   formatValue,
   HTTP_MIN_REFRESH_SEC,
+  type HttpMethod,
   isStaticSource,
   type OpInput,
   type ParamSpec,
@@ -79,6 +80,7 @@ import {
   slug,
   sourceCandidates,
 } from './dataset-lineage.ts';
+import { bodyText, parseBodyText, withBody, withMethod } from './http-body.ts';
 import { askPublicSecrets } from './public-secrets.tsx';
 import { TransformEditor } from './TransformEditor.tsx';
 
@@ -136,7 +138,7 @@ export function sourceSummary(
     case 'inline':
       return `${source.rows.length} inline rows`;
     case 'http':
-      return new URL(source.url).host;
+      return `${source.method === 'POST' ? 'POST · ' : ''}${new URL(source.url).host}`;
     case 'feed':
       return `Feed · ${new URL(source.url).host}`;
     case 'dataset':
@@ -341,6 +343,7 @@ function SourceEditor({
   doc,
   editingId,
   onChange,
+  onBlockingError,
 }: {
   dashboardId: string;
   source: Source;
@@ -348,6 +351,8 @@ function SourceEditor({
   doc: DashboardDoc | null;
   editingId: string | null;
   onChange: (s: Source) => void;
+  /** A problem in the form that must block saving (an invalid body), or null. */
+  onBlockingError: (message: string | null) => void;
 }) {
   const { data: connectors } = useConnectors();
   const qc = useQueryClient();
@@ -382,6 +387,20 @@ function SourceEditor({
       : '[\n {"label": "A", "value": 3},\n {"label": "B", "value": 5}\n]',
   );
   const [inlineError, setInlineError] = useState<string | null>(null);
+  // The body as typed: invalid JSON stays in the field (with its error) and never reaches the draft.
+  const [bodyDraft, setBodyDraft] = useState(() => (source.kind === 'http' ? bodyText(source.body) : ''));
+  const [bodyError, setBodyError] = useState<string | null>(null);
+  const setBodyProblem = (message: string | null) => {
+    setBodyError(message);
+    onBlockingError(message);
+  };
+  const setMethod = (method: HttpMethod) => {
+    if (source.kind !== 'http' || method === (source.method ?? 'GET')) return;
+    // Neither direction carries a body over: a GET has none, and a fresh POST starts empty.
+    setBodyDraft('');
+    setBodyProblem(null);
+    onChange(withMethod(source, method));
+  };
 
   const grouped = useMemo(() => {
     const map = new Map<string, ConnectorInfo[]>();
@@ -395,6 +414,9 @@ function SourceEditor({
 
   const setKind = (kind: Source['kind']) => {
     if (kind === source.kind) return;
+    setBodyDraft('');
+    setUploadPath('');
+    setBodyProblem(null);
     if (kind === 'dataset' && candidates[0]) onChange({ kind, id: candidates[0].id });
     if (kind === 'connector') onChange({ kind, connector: connectors?.[0]?.id ?? 'demo.signal', params: {} });
     if (kind === 'upload') onChange({ kind, fileId: files.data?.[0]?.id ?? 'none' });
@@ -677,17 +699,63 @@ function SourceEditor({
 
       {source.kind === 'http' ? (
         <div className="grid gap-3">
-          <Field label="HTTPS URL" hint={urlHint(credentials)}>
-            {(fid) => (
-              <Input
-                id={fid}
-                value={source.url}
-                spellCheck={false}
-                onChange={(e) => onChange({ ...source, url: e.target.value })}
-                placeholder="https://api.example.com/data.json"
+          <div className="grid gap-3 sm:grid-cols-[auto_1fr] sm:items-start">
+            <fieldset className="m-0 min-w-0 space-y-1.5 border-0 p-0">
+              <legend className="mb-1.5 block p-0 text-[13px] font-medium text-ink-2">Method</legend>
+              <Segmented
+                value={source.method ?? 'GET'}
+                onChange={setMethod}
+                options={[
+                  { value: 'GET', label: 'GET', title: 'Read the address' },
+                  {
+                    value: 'POST',
+                    label: 'POST',
+                    title: 'Send a JSON body, for read APIs that take their query in it',
+                  },
+                ]}
               />
-            )}
-          </Field>
+            </fieldset>
+            <Field label="HTTPS URL" hint={urlHint(credentials)}>
+              {(fid) => (
+                <Input
+                  id={fid}
+                  value={source.url}
+                  spellCheck={false}
+                  onChange={(e) => onChange({ ...source, url: e.target.value })}
+                  placeholder="https://api.example.com/data.json"
+                />
+              )}
+            </Field>
+          </div>
+          {source.method === 'POST' ? (
+            <Field
+              label="Body (JSON)"
+              error={bodyError}
+              hint="Sent as application/json on every refresh. Use it for read queries; do not put secrets here."
+            >
+              {(fid) => (
+                <Textarea
+                  id={fid}
+                  rows={Math.min(16, Math.max(4, bodyDraft.split('\n').length + 1))}
+                  value={bodyDraft}
+                  spellCheck={false}
+                  aria-invalid={bodyError !== null}
+                  placeholder={'{\n  "query": "{ viewer { login } }"\n}'}
+                  onChange={(e) => {
+                    setBodyDraft(e.target.value);
+                    const parsed = parseBodyText(e.target.value);
+                    setBodyProblem(parsed.ok ? null : parsed.error);
+                    if (parsed.ok) onChange(withBody(source, parsed.body));
+                  }}
+                  onBlur={() => {
+                    // Pretty-printed once the user is done typing, never while they type.
+                    const parsed = parseBodyText(bodyDraft);
+                    if (parsed.ok) setBodyDraft(bodyText(parsed.body));
+                  }}
+                />
+              )}
+            </Field>
+          ) : null}
           <UrlKeyWarning source={source} context={credentials} onChange={onChange} />
           <CredentialsField source={source} context={credentials} onChange={onChange} />
           <Field
@@ -770,6 +838,8 @@ function DatasetEditor({
       },
   );
   const [debounced, setDebounced] = useState(draft);
+  // A form problem that a save must not hide by storing the last valid value (an invalid POST body).
+  const [sourceError, setSourceError] = useState<string | null>(null);
   useEffect(() => {
     const t = setTimeout(() => setDebounced(draft), 450);
     return () => clearTimeout(t);
@@ -922,6 +992,7 @@ function DatasetEditor({
         credentials={credentials}
         doc={doc}
         editingId={initial?.id ?? null}
+        onBlockingError={setSourceError}
         onChange={(source) =>
           // A derived dataset has no interval or history of its own (the server would refuse them).
           setDraft((d) => ({
@@ -1115,8 +1186,10 @@ function DatasetEditor({
         </Button>
         <Button
           variant="primary"
-          disabled={!draft.name.trim() || Boolean(preview.error) || blockedByCredentials}
-          title={blockedByCredentials ? 'Fix the credentials first' : undefined}
+          disabled={
+            !draft.name.trim() || Boolean(preview.error) || blockedByCredentials || sourceError !== null
+          }
+          title={sourceError ?? (blockedByCredentials ? 'Fix the credentials first' : undefined)}
           onClick={() =>
             void save(
               suggestions
