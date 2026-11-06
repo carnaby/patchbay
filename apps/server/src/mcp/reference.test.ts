@@ -51,3 +51,12 @@ describe('the status widget in the reference', () => {
     expect(text).toContain('## Sound cues (chart, kpi, gauge, table, map, status)');
   });
 });
+
+describe('JSON sources in the reference', () => {
+  it('documents the upload path and column-shaped data', () => {
+    const text = referenceText('https://dash.example.com');
+    expect(text).toContain('upload_data path: "data.items"');
+    expect(text).toContain('one row per position, columns in key order');
+    expect(text).toContain('Lists of lists ([[t, v], ...]) are not converted');
+  });
+});

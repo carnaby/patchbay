@@ -6,6 +6,15 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Added
+
+- **Column-shaped JSON**: an `http` response or a JSON upload whose object holds only equally long lists of plain
+  values (`{ "timestamps": [...], "values": [...] }`, at least two) now becomes one row per position with every
+  column. Before, only the first list was kept. Any other shape is read exactly as before.
+- **`path` for JSON uploads**: an upload (MCP `upload_data`, the REST upload endpoint and the upload area in the
+  dataset editor) takes an optional `path` such as `"data.items"`, applied to a JSON file before it is stored, so
+  records nested inside a file can be used without editing it. CSV files ignore it.
+
 ## [0.2.1] - 2026-11-06
 
 ### Changed
