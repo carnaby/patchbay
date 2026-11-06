@@ -22,6 +22,7 @@ import {
   emptyDashboard,
   FEED_MIN_REFRESH_SEC,
   HTTP_MIN_REFRESH_SEC,
+  type HttpMethod,
   isStaticSource,
   LIMITS,
   lineageDatasets,
@@ -122,6 +123,8 @@ const PREVIEW_PRIVATE_READ_ONLY =
   "Previewing plain http://, another port or a private host (ALLOW_PRIVATE_HOSTS) needs the dashboards:write scope, because it reaches the server operator's network. Reconnect with write access.";
 const PREVIEW_SECRETS_NEEDS_WRITE =
   'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.';
+const PREVIEW_POST_NEEDS_WRITE =
+  'Previewing a POST source needs the dashboards:write scope, because it sends a request body of your choosing, which may change data at the API. Reconnect with write access.';
 export const DERIVED_NEEDS_DASHBOARD =
   'Derived sources read the saved datasets of a dashboard; pass dashboardId';
 const TOKEN_PUBLIC_EDIT =
@@ -598,18 +601,27 @@ export class DashboardService {
    * With URL_SOURCES=signed-in, a URL is fetched only for a dashboard that a signed-in user owns: a public instance
    * on its operator's connection must not fetch arbitrary addresses for strangers. Checked at use time (DataService
    * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
-   * exception is a URL that appears verbatim in the repository's showcase, so anonymous copies of a use case work;
-   * matching is exact (no normalising), so a variant of a trusted URL is still refused. Returns the private hosts
-   * the dashboard's sources may reach (null: public addresses only), decided by its owner, never by the viewer.
+   * exception is a GET of a URL that appears verbatim in the repository's showcase, so anonymous copies of a use case
+   * work (`isTrustedSource`). Returns the private hosts the dashboard's sources may reach (null: public addresses
+   * only), decided by its owner, never by the viewer.
    */
-  assertMayFetchUrl(target: DashboardTarget, url: string): PrivateHosts | null {
-    if (this.urlSources === 'signed-in' && target.ownerId === null && !this.trustedUrls.has(url))
+  assertMayFetchUrl(target: DashboardTarget, url: string, method: HttpMethod = 'GET'): PrivateHosts | null {
+    if (this.urlSources === 'signed-in' && target.ownerId === null && !this.isTrustedSource(url, method))
       throw forbidden(URL_SOURCES_SIGNED_IN);
     const hosts = target.publicOnly ? null : this.privateHostsFor(target.ownerId);
     // Without this, the dashboard would get the public instance's answer, which tells it to ask the operator.
     if (!hosts && this.privateHosts && needsList(url))
       throw forbidden(target.publicOnly ? PREVIEW_PRIVATE_READ_ONLY : this.privateHostsRefusal());
     return hosts;
+  }
+
+  /**
+   * A source an anonymous dashboard may use under URL_SOURCES=signed-in: a GET of a showcase URL, matched exactly
+   * (no normalising, so a variant is refused). The showcase's sources are all GETs; trusting a POST to the same
+   * address would let a stranger send any body there on the operator's connection.
+   */
+  private isTrustedSource(url: string, method: HttpMethod): boolean {
+    return method === 'GET' && this.trustedUrls.has(url);
   }
 
   /**
@@ -669,13 +681,19 @@ export class DashboardService {
     const changed = after.datasets.flatMap((d) =>
       (d.source.kind === 'http' || d.source.kind === 'feed') &&
       previous.get(d.id) !== JSON.stringify(d.source)
-        ? [{ id: d.id, url: d.source.url }]
+        ? [
+            {
+              id: d.id,
+              url: d.source.url,
+              method: d.source.kind === 'http' ? (d.source.method ?? 'GET') : 'GET',
+            },
+          ]
         : [],
     );
     if (
       this.urlSources === 'signed-in' &&
       ownerId === null &&
-      changed.some((s) => !this.trustedUrls.has(s.url))
+      changed.some((s) => !this.isTrustedSource(s.url, s.method))
     )
       throw badRequest(URL_SOURCES_SIGNED_IN);
     if (!options.restore) for (const s of changed) this.checkPrivateHosts(ownerId, s.id, s.url);
@@ -1390,6 +1408,10 @@ export class DashboardService {
     // anything, so it is a use of the secret, not a read: read-only tokens may not do it. Checked before the
     // dashboard is loaded, so such a token learns nothing about it.
     if (p.readOnly && sourceSecretIds(draft.source).length > 0) throw forbidden(PREVIEW_SECRETS_NEEDS_WRITE);
+    // A read scope reads; a POST of the caller's choosing may write to a third party. Saved POST sources a draft
+    // derives from are not affected: anyone who may view the dashboard already loads them.
+    if (p.readOnly && draft.source.kind === 'http' && draft.source.method === 'POST')
+      throw forbidden(PREVIEW_POST_NEEDS_WRITE);
     if (!dashboardId && upstreamOf(draft).length > 0) throw badRequest(DERIVED_NEEDS_DASHBOARD);
     const viewable = dashboardId ? await this.loadViewable(dashboardId, p) : null;
     const meta = viewable?.meta ?? null;

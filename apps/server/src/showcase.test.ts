@@ -120,6 +120,34 @@ describe('trusted showcase URLs', () => {
     expect(() => svc.assertMayFetchUrl(target, `${FEED}?x=1`)).toThrow();
   });
 
+  it('trusts a showcase URL for GET only: a POST to it is refused when saved and when fetched', async () => {
+    const API_URL = 'https://api.example.com/v1/trusted';
+    const svc = makeService({ urlSources: 'signed-in', trustedUrls: new Set([API_URL]) });
+    const { envelope, editKey } = await svc.create(anonymous(), {});
+    const p = anonymous(editKey);
+    const id = envelope.meta.id;
+    const dataset = {
+      id: 'api',
+      name: 'API',
+      refreshSec: 0,
+      transforms: [],
+      source: { kind: 'http', url: API_URL },
+    };
+    await expect(svc.applyOps(id, p, [{ op: 'addDataset', dataset }])).resolves.toBeDefined();
+    await expect(
+      svc.applyOps(id, p, [
+        {
+          op: 'updateDataset',
+          id: 'api',
+          set: { source: { kind: 'http', url: API_URL, method: 'POST', body: { q: 1 } } },
+        },
+      ]),
+    ).rejects.toThrow(/sign/i);
+    const target = { id: 'abcdef123456', ownerId: null };
+    expect(() => svc.assertMayFetchUrl(target, API_URL)).not.toThrow();
+    expect(() => svc.assertMayFetchUrl(target, API_URL, 'POST')).toThrow(/sign/i);
+  });
+
   it('leaves signed-in owners and URL_SOURCES=everyone unaffected', async () => {
     const strict = makeService({ urlSources: 'signed-in', trustedUrls: new Set([FEED]) });
     const owner = signedIn('owner@example.com');
