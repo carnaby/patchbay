@@ -26,7 +26,7 @@ A dashboard is one JSON document:
 
 - **Datasets** describe where data comes from (`source`) and how it is processed (`transforms`), plus live behaviour
   (`refreshSec`, `accumulate`).
-- **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `map`), or show something that needs no
+- **Widgets** describe how a dataset is shown (`chart`, `kpi`, `gauge`, `table`, `map`, `status`), or show something that needs no
   dataset (`text`, `clock`, `search`). Several widgets can share one dataset.
   `text`, `clock` and `search` show no dataset (`isDataWidgetType`): no `datasetId`, no data query, no sound.
 - **Layout** is a single 12-column grid. Small screens stack widgets in reading order; there is deliberately no second,

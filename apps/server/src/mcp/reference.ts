@@ -17,6 +17,9 @@ import {
   REFERENCE_STATS,
   SEARCH_ENGINES,
   SOUND_IDS,
+  STATUS_LEVELS,
+  STATUS_LIMITS,
+  STATUS_VOCABULARY,
   TABLE_FUNCTION_ARGS,
   TABLE_FUNCTIONS,
   TIME_UNITS,
@@ -65,6 +68,7 @@ export function referenceText(
   const tableFns = Object.entries(TABLE_FUNCTIONS)
     .map(([name, f]) => `- ${name}(${TABLE_FUNCTION_ARGS}): ${f.doc}`)
     .join('\n');
+  const vocabulary = STATUS_LEVELS.map((l) => `${l} = ${STATUS_VOCABULARY[l].join(', ')}`).join('; ');
   const maxRows = PIPELINE_LIMITS.maxRows.toLocaleString('en');
   return `# Patchbay authoring reference
 
@@ -200,6 +204,18 @@ ${tableFns}
   A search box that opens the engine's results; the query never reaches this server. engine custom needs template,
   an https address with {q} where the query goes. autofocus puts the cursor in it on load (start pages only: it
   catches the keyboard shortcuts).
+- status { entity, status, group?, label?, kind?, detail?, since?, levels?, summary }   one tile per entity
+  For monitors and health checks: each row is a check, entity names its tile (a service, project or host), group its
+  section (e.g. the machine a service runs on). A tile takes the colour of its worst check, fail > warn > ok > off;
+  tiles whose checks are all off are grey and last. Values are matched case-insensitively: ${vocabulary};
+  true = ok, false = fail; anything else, also empty, is warn. levels { "<value>": "fail|warn|ok|off" } (at most
+  ${STATUS_LIMITS.levels}) maps your own values first. label names a check, kind summarises ok checks ("container ×3"), detail is
+  shown in full for fail and warn checks, since (a time column) as "9 hours ago"; summary (default true) puts
+  "1 problem · 71 ok · 9 off" on top. Nothing scrolls: when the widget is too small, off tiles fold into "+N off", then
+  ok tiles into "+N more ok", then sections without problems into their header line; problems never fold into ok
+  summaries, and when even they do not fit the rest are counted in "+N more problems". At most ${STATUS_LIMITS.rows} rows,
+  ${STATUS_LIMITS.sections} sections and ${STATUS_LIMITS.tiles} tiles are read.
+  Example: { "id": "infra", "type": "status", "datasetId": "checks", "config": { "entity": "service", "status": "status", "group": "machine", "label": "name", "kind": "kind", "detail": "detail", "since": "since" } }
 format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }
 
 ## Colours
@@ -227,7 +243,7 @@ always adjusted to stay readable; custom hex below 3:1 contrast gets a warning.
   coloured. A column's bands win over rules; among rules the first match wins. colorAs "fill" (default) tints the
   cell and keeps the text readable in both themes; "text" colours the text instead. label names the rule in tooltips.
 
-## Sound cues (chart, kpi, gauge, table, map)
+## Sound cues (chart, kpi, gauge, table, map, status)
 An optional \`sound\` field makes browsers showing the dashboard play a short built-in sound when live data changes:
 { trigger, sound, volume, cooldownSec }
 - trigger { kind: "newRows", key? }: plays when a row with a new \`key\` value appears (e.g. "order_id"); rows that
@@ -252,7 +268,7 @@ reorderWidget { id, before: widgetId | null } (reading order, i.e. the order wid
 addStep { datasetId, step, before? }, updateStep { datasetId, stepId, set } (merged; type cannot change),
 removeStep { datasetId, stepId }, moveStep { datasetId, stepId, before: stepId | null }.
 Prefer step operations over updateDataset { set: { transforms } }: they do not overwrite steps the user changed meanwhile.
-Omit positions to auto-place. Typical sizes: kpi 3x2, gauge 3x3, chart 6x4, table 6x5, map 6x5, text 4x2, clock 3x2,
+Omit positions to auto-place. Typical sizes: kpi 3x2, gauge 3x3, chart 6x4, table 6x5, map 6x5, status 6x5, text 4x2, clock 3x2,
 search 6x1 (w x h, row = 80 px).
 
 ## Design guidance
@@ -260,6 +276,8 @@ search 6x1 (w x h, row = 80 px).
 - Line/area for time, bar for categories (horizontal when labels are long or there are > 6), donut only for <= 6 parts.
 - Never mix measures with different units or scales on one chart.
 - Coordinates belong on a map, not on a scatter chart.
+- Many checks with a state (monitors, health checks, backups) belong in a status widget, not in a table of mostly
+  "ok" rows; KPIs that only count failing, warning and ok checks are then redundant (the summary line has them).
 - Bars start at zero so their lengths can be compared: do not set yMin above 0 on bar charts (apply_operations
   warns). To show a benchmark, add a reference line.
 - Colour follows the entity: map recurring categories to fixed colours (chart colors or setMeta colors); use

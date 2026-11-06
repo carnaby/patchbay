@@ -10,6 +10,7 @@ import { fieldRef } from './expr.ts';
 import { DATASET_DEPTH, DATASET_INPUTS, type LineageDoc, lineageDepth, upstreamClosure } from './lineage.ts';
 import type { ColumnProfile, TableProfile } from './profile.ts';
 import type { DatasetInput, Source, WidgetInput } from './schema.ts';
+import { isStatusWord, STATUS_COLUMN_NAMES, statusFields } from './status.ts';
 import type { TimeUnit, TransformInput } from './transforms.ts';
 
 export interface Suggestion {
@@ -328,6 +329,45 @@ function mapSuggestion(
   };
 }
 
+/** Share of a column's non-null values that are in the status vocabulary, from the profile's most frequent values. */
+function vocabularyShare(column: ColumnProfile, rows: number): number {
+  const present = rows - column.nulls;
+  if (present <= 0) return 0;
+  const known = (column.top ?? []).reduce((n, t) => n + (isStatusWord(t.value) ? t.count : 0), 0);
+  return known / present;
+}
+
+/**
+ * Many checks, each with a state (a monitor's output): one tile per entity says at a glance what is broken and
+ * where, which a long table of mostly "ok" rows does not. A column only named like a state (an issue tracker's
+ * "open"/"closed") is still offered, lower down: its values would all read as warnings. Vocabularies are small, so
+ * a column with more than 12 distinct values is not taken for a status by its values.
+ */
+function statusSuggestion(profile: TableProfile): Suggestion | null {
+  const words = (c: ColumnProfile) =>
+    c.type === 'string' && c.distinct <= 12 && vocabularyShare(c, profile.rows) > 0.5;
+  const status =
+    profile.columns.find((c) => c.type === 'string' && STATUS_COLUMN_NAMES.includes(c.name.toLowerCase())) ??
+    profile.columns.find(words);
+  if (!status) return null;
+  const fields = statusFields(profile.columns, status.name, {
+    entity: (c) => c.role === 'dimension',
+    group: (c) => c.role === 'dimension' && c.distinct >= 2 && c.distinct <= 10,
+  });
+  if (!fields) return null;
+  const examples = (status.top ?? [])
+    .slice(0, 3)
+    .map((t) => `"${t.value}"`)
+    .join(', ');
+  return {
+    title: 'Status',
+    rationale: `"${status.name}" holds a state per row${examples ? ` (${examples})` : ''}: a status widget shows one tile per "${fields.entity}" in the colour of its worst check${fields.group ? `, in sections by "${fields.group}"` : ''}, and spells out what is failing instead of a long table of ok rows.`,
+    widget: { type: 'status', title: 'Status', config: fields },
+    transforms: [],
+    score: words(status) ? 97 : 60,
+  };
+}
+
 export function suggestWidgets(profile: TableProfile, options: SuggestOptions = {}): Suggestion[] {
   const max = options.max ?? 6;
   const existing = options.transforms ?? [];
@@ -374,6 +414,9 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
       score: 98,
     });
   }
+
+  const status = statusSuggestion(profile);
+  if (status) out.push(status);
 
   // A single row is a set of headline numbers, not a chart.
   if (profile.rows === 1) {

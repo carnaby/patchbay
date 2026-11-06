@@ -77,6 +77,9 @@ and runs as a single process you can host anywhere.
 - 🗺️ **Maps without tiles.** Points (earthquakes, stations) and tracks (the ISS) on a bundled world map, sized and
   coloured by value, with optional day/night shading. No tile server and no third-party requests, so maps work
   offline and in agent snapshots.
+- 🚦 **Status at a glance.** Monitor checks (containers, backups, certificates, sites) as one tile per service in
+  the colour of its worst check, in sections per machine, with what is failing spelled out and the rest folded into
+  "+N" so it never scrolls on a wall screen.
 - 📰 **News and start-page widgets.** Clocks (digital or analog, any time zone), headlines from any RSS, Atom or JSON
   feed, and a search box.
 - 📺 **Made for wall screens.** In presentation mode the toolbar and cursor hide and the Screen Wake Lock keeps the

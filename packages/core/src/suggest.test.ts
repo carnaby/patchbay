@@ -11,8 +11,10 @@ import {
   summaryOf,
   type TransformInput,
   TransformSchema,
+  WidgetSchema,
 } from './index.ts';
 import type { ColumnProfile } from './profile.ts';
+import { INFRA_NOW, infraTable } from './status.fixture.ts';
 
 const HOUR = 3_600_000;
 const NOW = Date.UTC(2026, 9, 27, 12, 0, 0);
@@ -353,5 +355,61 @@ describe('suggestionDataset', () => {
     const d = suggestionDataset({ datasets: chain(4) }, 'd4', 'view', 'X', [{ type: 'limit', n: 5 }]);
     expect(d.source).toEqual({ kind: 'dataset', id: 'd3' });
     expect(d.transforms).toEqual([{ type: 'limit', n: 5 }]);
+  });
+});
+
+describe('status suggestions', () => {
+  const statusOf = (rows: Record<string, unknown>[]) =>
+    suggestWidgets(profileTable(inferTable(rows as never)), { max: 20 }).find(
+      (s) => s.widget.type === 'status',
+    );
+
+  it('suggests a status widget first for monitor checks, with sections by machine', () => {
+    const list = suggestWidgets(profileTable(infraTable()), { now: INFRA_NOW });
+    expect(list[0]!.widget).toEqual({
+      type: 'status',
+      title: 'Status',
+      config: {
+        entity: 'service',
+        status: 'status',
+        group: 'machine',
+        label: 'name',
+        kind: 'kind',
+        detail: 'detail',
+        since: 'since',
+      },
+    });
+    expect(list[0]!.score).toBe(97);
+    expect(list[0]!.rationale).toMatch(/one tile per "service"/);
+    expect(WidgetSchema.safeParse({ id: 's', datasetId: 'd', ...list[0]!.widget }).success).toBe(true);
+  });
+
+  it('finds a status column by its values when it has another name', () => {
+    const rows = ['api', 'db', 'cache', 'queue', 'web'].flatMap((host, i) => [
+      { host, result: i === 2 ? 'DOWN' : 'up' },
+      { host, result: 'up' },
+    ]);
+    const s = statusOf(rows)!;
+    expect(s.widget.config).toEqual({ entity: 'host', status: 'result' });
+    expect(s.score).toBe(97);
+  });
+
+  it('offers a column named status with other values lower down', () => {
+    const rows = Array.from({ length: 10 }, (_, i) => ({
+      ticket: `T-${i}`,
+      status: i % 2 ? 'open' : 'closed',
+    }));
+    expect(statusOf(rows)?.score).toBe(60);
+  });
+
+  it('needs something to make tiles of, and a group of 2 to 10 values', () => {
+    const lonely = Array.from({ length: 10 }, (_, i) => ({ status: i % 2 ? 'ok' : 'fail', latency: i }));
+    expect(statusOf(lonely)).toBeUndefined();
+    const wide = Array.from({ length: 24 }, (_, i) => ({
+      service: `svc-${i}`,
+      machine: `m-${i % 12}`,
+      status: 'ok',
+    }));
+    expect(statusOf(wide)!.widget.config).toEqual({ entity: 'service', status: 'status' });
   });
 });
