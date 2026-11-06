@@ -445,3 +445,341 @@ export function statusDefaults(columns: readonly Column[]): StatusFields {
     }
   );
 }
+
+/* ---------- layout: what fits in a box ---------- */
+
+/**
+ * Sizes both renderers draw with, in CSS pixels. The fit estimates text from them, so the glyph width is a little
+ * wider than Inter's average: an estimate that ran short would cut the last tile off on screen.
+ */
+export const STATUS_METRICS = {
+  minTileWidth: 150,
+  gap: 8,
+  sectionGap: 12,
+  summaryHeight: 28,
+  summaryLine: 20,
+  summarySize: 14,
+  headerHeight: 24,
+  headerLine: 18,
+  padX: 10,
+  padY: 8,
+  accent: 3,
+  radius: 6,
+  nameHeight: 18,
+  nameSize: 13,
+  lineHeight: 16,
+  textSize: 12,
+  problemGap: 6,
+  charWidth: 6.6,
+  clampLines: 2,
+  moreNames: 3,
+} as const;
+
+/** A drawn cell: one tile, or a fold that counts tiles ("+6 more ok", "+2 off", "+3 more problems"). */
+export type StatusItem =
+  | { kind: 'tile'; tile: StatusTile; clamp: boolean }
+  | { kind: 'more'; what: 'ok' | 'off' | 'problems'; level: StatusLevel; tiles: StatusTile[] };
+export type StatusMore = Extract<StatusItem, { kind: 'more' }>;
+
+export interface StatusPlaced {
+  item: StatusItem;
+  span: number;
+  /** Relative to the widget body's top-left corner. */
+  x: number;
+  y: number;
+  width: number;
+  /** Already stretched to its grid row, as CSS grid rows stretch their items. */
+  height: number;
+}
+
+export interface StatusSectionLayout {
+  section: StatusSection;
+  header: boolean;
+  /** Folded to its header line (rule 5), or emptied of tiles by the overflow rule. */
+  collapsed: boolean;
+  /** Top of the header, or of the grid when there is no header. */
+  y: number;
+  items: StatusPlaced[];
+  height: number;
+}
+
+export interface StatusLayout {
+  columns: number;
+  /** 0 without the summary line. */
+  summaryHeight: number;
+  sections: StatusSectionLayout[];
+  /** Details are cut to two lines. */
+  clamped: boolean;
+  /** Problem tiles counted in "+N more problems". */
+  hiddenProblems: number;
+  height: number;
+  fits: boolean;
+}
+
+/** The browser's CSS grid derives its column count from the same minimum, so both renderers agree. */
+export function statusColumns(width: number): number {
+  const { minTileWidth, gap } = STATUS_METRICS;
+  return Math.max(1, Math.floor((width + gap) / (minTileWidth + gap)));
+}
+
+/** The wrap width the fit assumes for a detail; the floor keeps a very narrow tile from wrapping per letter. */
+export function statusDetailChars(tileWidth: number): number {
+  const { padX, accent, charWidth } = STATUS_METRICS;
+  return Math.max(8, Math.floor((tileWidth - 2 * padX - accent) / charWidth));
+}
+
+/**
+ * Greedy word wrap at `chars` characters, as the browser wraps a detail (`white-space: pre-line` with
+ * `overflow-wrap: break-word`): a newline starts a line, runs of spaces count once, and a word longer than a line
+ * (a URL, a hash) is cut where the line ends.
+ */
+export function wrapText(text: string, chars: number): string[] {
+  const width = Math.max(1, Math.floor(chars));
+  const lines: string[] = [];
+  for (const paragraph of text.split(/\r?\n/)) {
+    let line = '';
+    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
+      let rest = word;
+      while (rest.length > width) {
+        if (line) {
+          lines.push(line);
+          line = '';
+        }
+        lines.push(rest.slice(0, width));
+        rest = rest.slice(width);
+      }
+      if (!rest) continue;
+      if (!line) line = rest;
+      else if (line.length + 1 + rest.length <= width) line += ` ${rest}`;
+      else {
+        lines.push(line);
+        line = rest;
+      }
+    }
+    if (line) lines.push(line);
+  }
+  return lines.length ? lines : [''];
+}
+
+export function statusMoreTitle(item: StatusMore): string {
+  const n = item.tiles.length;
+  if (item.what === 'problems') return `+${n} more problem${n === 1 ? '' : 's'}`;
+  return item.what === 'ok' ? `+${n} more ok` : `+${n} off`;
+}
+
+/** A few of the folded names, so "+6 more ok" still says which ones. */
+export function statusMoreNames(tiles: readonly StatusTile[]): string {
+  const shown = tiles.slice(0, STATUS_METRICS.moreNames).map((t) => t.entity);
+  return tiles.length > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
+}
+
+function tileHeight(tile: StatusTile, width: number, clamp: boolean): number {
+  const M = STATUS_METRICS;
+  const chars = statusDetailChars(width);
+  let height = M.padY * 2 + M.nameHeight;
+  for (const check of tile.problems) {
+    const lines = check.detail ? wrapText(check.detail, chars).length : 0;
+    height += M.problemGap + M.lineHeight * (1 + (clamp ? Math.min(lines, M.clampLines) : lines));
+  }
+  if (statusTileFoot(tile)) height += M.lineHeight;
+  return height;
+}
+
+interface Cell {
+  item: StatusItem;
+  span: number;
+  height: number;
+}
+
+/** Row-major placement as CSS grid's default (sparse) auto-flow does it: a cell that does not fit starts a row. */
+function place(cells: Cell[], columns: number, columnWidth: number, top: number) {
+  const { gap } = STATUS_METRICS;
+  const items: StatusPlaced[] = [];
+  let col = 0;
+  let rowTop = top;
+  let rowHeight = 0;
+  let rowStart = 0;
+  const closeRow = () => {
+    for (let i = rowStart; i < items.length; i++) items[i]!.height = rowHeight;
+    rowStart = items.length;
+  };
+  for (const cell of cells) {
+    if (col > 0 && col + cell.span > columns) {
+      closeRow();
+      rowTop += rowHeight + gap;
+      col = 0;
+      rowHeight = 0;
+    }
+    items.push({
+      item: cell.item,
+      span: cell.span,
+      x: col * (columnWidth + gap),
+      y: rowTop,
+      width: cell.span * columnWidth + (cell.span - 1) * gap,
+      height: cell.height,
+    });
+    rowHeight = Math.max(rowHeight, cell.height);
+    col += cell.span;
+  }
+  closeRow();
+  return { items, height: items.length ? rowTop + rowHeight - top : 0 };
+}
+
+interface FitState {
+  section: StatusSection;
+  problems: StatusTile[];
+  ok: StatusTile[];
+  off: StatusTile[];
+  /** Problem tiles moved into "+N more problems", last first. */
+  hidden: StatusTile[];
+  okFolded: boolean;
+  offFolded: boolean;
+  headerOnly: boolean;
+  /** Problems only: the ok and off checks are left to the header's counts. */
+  bare: boolean;
+}
+
+/**
+ * Which tiles a box of this size shows. Folds one step at a time, each from the last section upwards, and stops as
+ * soon as everything fits: off tiles, then ok tiles, then calm sections to their header line, then the ok and off
+ * cells of sections with problems, then details to two lines, then problem tiles into "+N more problems". Nothing
+ * scrolls: the widget runs unattended on wall screens, so what does not fit is folded and counted, never cut off.
+ */
+export function statusFit(model: StatusModel, box: { width: number; height: number }): StatusLayout {
+  const M = STATUS_METRICS;
+  const width = Math.max(1, Math.floor(box.width));
+  const columns = statusColumns(width);
+  const columnWidth = (width - M.gap * (columns - 1)) / columns;
+  // Wide enough for a detail to read as a sentence; on a grid of one or two columns that is the whole row.
+  const wide = columns < 3 ? columns : 2;
+  const spanWidth = (span: number) => span * columnWidth + (span - 1) * M.gap;
+  const moreHeight = M.padY * 2 + M.nameHeight + M.lineHeight;
+  const heights = new Map<StatusTile, [number, number]>();
+  const heightOf = (tile: StatusTile, clamp: boolean): number => {
+    let pair = heights.get(tile);
+    if (!pair) {
+      const w = spanWidth(tile.problems.length ? wide : 1);
+      pair = [tileHeight(tile, w, false), tileHeight(tile, w, true)];
+      heights.set(tile, pair);
+    }
+    return clamp ? pair[1] : pair[0];
+  };
+  const states: FitState[] = model.sections.map((section) => ({
+    section,
+    problems: section.tiles.filter((t) => t.problems.length > 0),
+    ok: section.tiles.filter((t) => t.problems.length === 0 && t.level === 'ok'),
+    off: section.tiles.filter((t) => t.level === 'off'),
+    hidden: [],
+    okFolded: false,
+    offFolded: false,
+    headerOnly: false,
+    bare: false,
+  }));
+  const summaryHeight = model.summary ? M.summaryHeight : 0;
+  let clamp = false;
+
+  const tileCell = (tile: StatusTile, span: number): Cell => ({
+    item: { kind: 'tile', tile, clamp },
+    span,
+    height: heightOf(tile, clamp),
+  });
+  const moreCell = (what: StatusMore['what'], level: StatusLevel, tiles: StatusTile[]): Cell => ({
+    item: { kind: 'more', what, level, tiles },
+    span: 1,
+    height: moreHeight,
+  });
+
+  const measure = (): StatusLayout => {
+    // Taken from the end of each section; back in reading order for the panel.
+    const hidden = states.flatMap((s) => [...s.hidden].reverse());
+    let home = 0;
+    for (let i = states.length - 1; i >= 0; i--) {
+      if (states[i]!.problems.length) {
+        home = i;
+        break;
+      }
+    }
+    let y = summaryHeight;
+    const sections = states.map((s, i): StatusSectionLayout => {
+      if (i > 0) y += M.sectionGap;
+      const top = y;
+      if (model.grouped) y += M.headerHeight;
+      const cells: Cell[] = [];
+      if (!s.headerOnly) {
+        for (const tile of s.problems) cells.push(tileCell(tile, wide));
+        if (hidden.length && i === home) {
+          cells.push(moreCell('problems', hidden.some((t) => t.level === 'fail') ? 'fail' : 'warn', hidden));
+        }
+        if (!s.bare) {
+          if (s.okFolded) cells.push(moreCell('ok', 'ok', s.ok));
+          else for (const tile of s.ok) cells.push(tileCell(tile, 1));
+          if (s.offFolded) cells.push(moreCell('off', 'off', s.off));
+          else for (const tile of s.off) cells.push(tileCell(tile, 1));
+        }
+      }
+      const placed = place(cells, columns, columnWidth, y);
+      y += placed.height;
+      return {
+        section: s.section,
+        header: model.grouped,
+        collapsed: model.grouped && placed.items.length === 0,
+        y: top,
+        items: placed.items,
+        height: y - top,
+      };
+    });
+    return {
+      columns,
+      summaryHeight,
+      sections,
+      clamped: clamp,
+      hiddenProblems: hidden.length,
+      height: y,
+      fits: y <= box.height,
+    };
+  };
+
+  const reversed = [...states].reverse();
+  // Each step reports whether it changed anything. A single tile is never folded into a "+1" of the same size.
+  const steps: (() => boolean)[] = [
+    ...reversed.map((s) => () => {
+      if (s.offFolded || s.off.length < 2) return false;
+      s.offFolded = true;
+      return true;
+    }),
+    ...reversed.map((s) => () => {
+      if (s.okFolded || s.ok.length < 2) return false;
+      s.okFolded = true;
+      return true;
+    }),
+    ...(model.grouped
+      ? reversed.map((s) => () => {
+          if (s.headerOnly || s.problems.length > 0) return false;
+          s.headerOnly = true;
+          return true;
+        })
+      : []),
+    ...reversed.map((s) => () => {
+      if (s.bare || s.problems.length === 0 || s.ok.length + s.off.length === 0) return false;
+      s.bare = true;
+      return true;
+    }),
+    () => {
+      if (clamp) return false;
+      clamp = true;
+      return true;
+    },
+  ];
+  let layout = measure();
+  for (const step of steps) {
+    if (layout.fits) break;
+    if (step()) layout = measure();
+  }
+  while (!layout.fits) {
+    const from = reversed.find((s) => s.problems.length > 0);
+    if (!from) break;
+    from.hidden.push(from.problems.pop()!);
+    layout = measure();
+  }
+  return layout;
+}
