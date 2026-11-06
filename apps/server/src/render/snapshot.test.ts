@@ -6,10 +6,14 @@ import {
   inferTable,
   parseDashboard,
   resolveColor,
+  StatusConfigSchema,
+  statusFit,
+  statusModel,
   THEMES,
   type WidgetInput,
   WidgetSchema,
 } from '@patchbay/core';
+import { INFRA_NOW, INFRA_STATUS_CONFIG, infraTable } from '@patchbay/core/status-fixture';
 import { Resvg } from '@resvg/resvg-js';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { buildTemplate, listTemplates } from '../services/templates.ts';
@@ -23,6 +27,7 @@ import {
   renderWidgetPng,
   shareMarks,
 } from './snapshot.ts';
+import { statusSvg } from './status-svg.ts';
 
 // Widget snapshots are 640x360 rendered at 1.5x; boxes below are in SVG coordinates.
 const SCALE = 1.5;
@@ -702,5 +707,97 @@ describe('snapshot budgets', () => {
       expect(inkColumns(img, { x: 26, y: 100, w: 250, h: 14 }, 1).length).toBeGreaterThan(100);
       expect(inkColumns(img, { x: 26, y: 140, w: 250, h: 80 }, 1).length).toBe(0);
     });
+  });
+});
+
+describe('status snapshots', () => {
+  const checks: DatasetResult = {
+    datasetId: 'checks',
+    table: infraTable(),
+    fetchedAt: new Date(INFRA_NOW).toISOString(),
+    hash: 's',
+    truncated: false,
+  };
+  const infra = widget({
+    id: 'infra',
+    type: 'status',
+    title: 'Infra',
+    datasetId: 'checks',
+    config: INFRA_STATUS_CONFIG,
+  });
+  const model = statusModel(infraTable(), StatusConfigSchema.parse(INFRA_STATUS_CONFIG));
+  // The body of the default 640x360 widget card: 612 wide, 310 tall.
+  const body = (m = model, width = 612, height = 310) =>
+    statusSvg(m, statusFit(m, { width, height }), THEMES.light, width, height, INFRA_NOW);
+
+  for (const mode of ['light', 'dark'] as const) {
+    it(`draws the failing tile in the negative colour (${mode})`, () => {
+      const img = decodePng(renderWidgetPng(infra, checks, { theme: mode }));
+      // The cue tile: first in the nas section, under the summary line (28) and the section header (24).
+      const fill = resolveColor('negative', THEMES[mode], 'fill');
+      expect(pixelsOf(img, fill, { x: 24, y: 96, w: 380, h: 90 })).toBeGreaterThan(5000);
+    });
+  }
+
+  it('shows the problem detail in full and folds ok tiles into "+N more ok"', () => {
+    const svg = body();
+    expect(svg).toContain('1 problem · 20 ok · 5 off');
+    expect(svg).toContain('fail · cue-backup · 9 hours ago');
+    expect(svg).toContain('FAILED: cue: Postgres container cue-backup-1 is not');
+    expect(svg).toContain('running, no dump');
+    expect(svg).toContain('+4 more ok');
+    expect(svg).toContain('blog, immich, nas, …');
+    // Calm sections that did not fit are their header line alone.
+    expect(svg).toContain('internet · 5 ok');
+    expect(svg).toContain('nuc · 5 ok · 3 off');
+    expect(svg).not.toContain('home-assistant');
+  });
+
+  it('cuts a long name to its tile instead of drawing past it', () => {
+    const long = 'a-service-name-far-too-long-for-any-tile-in-this-widget';
+    const m = statusModel(
+      inferTable([{ service: long, status: 'ok' }]),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status' }),
+    );
+    const svg = body(m, 300, 200);
+    expect(svg).not.toContain(long);
+    expect(svg).toContain('a-service-name');
+    expect(svg).toContain('…');
+  });
+
+  it('draws an empty dataset as "No checks"', () => {
+    const empty = statusModel({ columns: [], rows: [] }, StatusConfigSchema.parse(INFRA_STATUS_CONFIG));
+    expect(body(empty)).toContain('No checks');
+    // Without the summary line the body says it itself.
+    const bare = statusModel(
+      { columns: [], rows: [] },
+      StatusConfigSchema.parse({ ...INFRA_STATUS_CONFIG, summary: false }),
+    );
+    expect(body(bare)).toContain('No checks');
+    const img = decodePng(renderWidgetPng(infra, { ...checks, table: { columns: [], rows: [] } }));
+    // Only the summary line: a neutral dot, and none of the level fills a tile would bring.
+    expect(
+      pixelsOf(img, resolveColor('neutral', THEMES.light, 'mark'), { x: 14, y: 36, w: 12, h: 20 }),
+    ).toBeGreaterThan(5);
+    const box = { x: 14, y: 36, w: 612, h: 310 };
+    for (const token of ['negative', 'positive', 'warning'] as const) {
+      expect(pixelsOf(img, resolveColor(token, THEMES.light, 'fill'), box)).toBe(0);
+      expect(pixelsOf(img, resolveColor(token, THEMES.light, 'mark'), box)).toBe(0);
+    }
+  });
+
+  it('draws a missing status column as a message', () => {
+    const wrong = widget({
+      id: 'wrong',
+      type: 'status',
+      datasetId: 'checks',
+      config: { ...INFRA_STATUS_CONFIG, status: 'state' },
+    });
+    const img = decodePng(renderWidgetPng(wrong, checks));
+    // Without the message branch every check would become an amber tile; with it the body is one critical-coloured line.
+    expect(
+      pixelsOf(img, resolveColor('warning', THEMES.light, 'fill'), { x: 14, y: 36, w: 612, h: 310 }),
+    ).toBe(0);
+    expect(pixelsOf(img, THEMES.light.status.critical, { x: 14, y: 36, w: 400, h: 24 })).toBeGreaterThan(0);
   });
 });
