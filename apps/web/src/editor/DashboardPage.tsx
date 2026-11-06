@@ -49,7 +49,14 @@ import { ConnectAiPanel } from './ConnectAiPanel.tsx';
 import { DatasetsPanel } from './DatasetsPanel.tsx';
 import { DetailsInput } from './DetailsFields.tsx';
 import { Grid } from './Grid.tsx';
-import { PresentationControls, TvInfo, TvInfoContent, useIdle, usePresentation } from './presentation.tsx';
+import {
+  PresentationControls,
+  PresentingContext,
+  TvInfo,
+  TvInfoContent,
+  useIdle,
+  usePresentation,
+} from './presentation.tsx';
 import { PublicSecretsDialogs, SecretsSaveBanner } from './public-secrets.tsx';
 import { SharePanel } from './SharePanel.tsx';
 import { MuteButton } from './sound-controls.tsx';
@@ -163,8 +170,12 @@ function Editor({ id }: { id: string }) {
       if (target.closest('input, textarea, select, [contenteditable]') || e.metaKey || e.ctrlKey || e.altKey)
         return;
       // An open dialog (a status widget's list of checks) takes Escape for itself: closing it must not also leave
-      // the maximised widget or end a presentation that is not in full screen.
-      if (e.key === 'Escape' && hasOpenOverlay()) return;
+      // the maximised widget or end a presentation that is not in full screen. defaultPrevented is checked too
+      // because this listener is re-registered when presentation changes, after which the dialog's own listener runs
+      // first, closes it and pops the overlay stack before this one looks: the stack alone would then be empty.
+      if (e.key === 'Escape' && (e.defaultPrevented || hasOpenOverlay())) return;
+      // A dialog pins the page state: toggling presentation under it would re-order the listeners above.
+      if (hasOpenOverlay()) return;
       if (e.key === 'Escape' && useEditor.getState().expanded) {
         useEditor.getState().setExpanded(null);
         return;
@@ -204,23 +215,24 @@ function Editor({ id }: { id: string }) {
   const status = saving ? 'Saving…' : dirty ? 'Unsaved' : `Saved ${relativeTime(meta.updatedAt)}`;
 
   return (
-    <div className={cx('min-h-screen', presenting && idle && 'cursor-none')}>
-      {presenting ? (
-        <PresentationControls
-          title={doc.title}
-          idle={idle}
-          onExit={() => void presentation.stop()}
-          onFullscreen={() => void presentation.requestFullscreen()}
-          hasSounds={hasSounds}
-        />
-      ) : null}
-      <header
-        className={cx(
-          'sticky top-0 z-30 border-b border-line bg-page/90 backdrop-blur',
-          presenting && 'hidden',
-        )}
-      >
-        {/*
+    <PresentingContext.Provider value={presenting}>
+      <div className={cx('min-h-screen', presenting && idle && 'cursor-none')}>
+        {presenting ? (
+          <PresentationControls
+            title={doc.title}
+            idle={idle}
+            onExit={() => void presentation.stop()}
+            onFullscreen={() => void presentation.requestFullscreen()}
+            hasSounds={hasSounds}
+          />
+        ) : null}
+        <header
+          className={cx(
+            'sticky top-0 z-30 border-b border-line bg-page/90 backdrop-blur',
+            presenting && 'hidden',
+          )}
+        >
+          {/*
           What stays visible as the screen narrows (nothing may overlap, everything stays reachable):
           - always: logo mark, title + status line, Edit/Done, and below lg the "More" menu;
           - sm and up: the labelled Share button, theme and account;
@@ -228,37 +240,105 @@ function Editor({ id }: { id: string }) {
           Below lg the editing tools get a row of their own; everything else lives in the "More" menu.
           Below sm, controls grow to 40 px touch targets.
         */}
-        <div className="flex h-14 items-center gap-1.5 px-3 sm:gap-2 sm:px-4">
-          <Logo className="shrink-0 [&>span]:hidden sm:[&>span]:inline" />
-          <div className="mx-1 hidden h-6 w-px shrink-0 bg-line sm:block lg:mx-2" />
-          <div className="min-w-0 flex-1">
-            <h1 className="flex min-w-0">
-              <TitleButton
-                title={doc.title}
-                hint={access.canEdit ? 'Rename, describe or share' : doc.description || 'About and sharing'}
-                onClick={() => setPanel('share')}
-              />
-            </h1>
-            <div className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
-              <VisibilityBadge visibility={meta.visibility} onClick={() => setPanel('share')} />
-              <span aria-hidden="true">·</span>
-              {/* Changes every minute: a translator would freeze it (see translator-guard.ts). */}
-              <span translate="no" className="min-w-0 truncate">
-                {access.canEdit ? status : `Updated ${relativeTime(meta.updatedAt)}`}
-              </span>
-              {lastRemote ? (
-                <span translate="no" className="hidden min-w-0 truncate md:inline">
-                  · {lastRemote.actor.label} {relativeTime(new Date(lastRemote.at).toISOString())}
+          <div className="flex h-14 items-center gap-1.5 px-3 sm:gap-2 sm:px-4">
+            <Logo className="shrink-0 [&>span]:hidden sm:[&>span]:inline" />
+            <div className="mx-1 hidden h-6 w-px shrink-0 bg-line sm:block lg:mx-2" />
+            <div className="min-w-0 flex-1">
+              <h1 className="flex min-w-0">
+                <TitleButton
+                  title={doc.title}
+                  hint={access.canEdit ? 'Rename, describe or share' : doc.description || 'About and sharing'}
+                  onClick={() => setPanel('share')}
+                />
+              </h1>
+              <div className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted">
+                <VisibilityBadge visibility={meta.visibility} onClick={() => setPanel('share')} />
+                <span aria-hidden="true">·</span>
+                {/* Changes every minute: a translator would freeze it (see translator-guard.ts). */}
+                <span translate="no" className="min-w-0 truncate">
+                  {access.canEdit ? status : `Updated ${relativeTime(meta.updatedAt)}`}
                 </span>
-              ) : null}
+                {lastRemote ? (
+                  <span translate="no" className="hidden min-w-0 truncate md:inline">
+                    · {lastRemote.actor.label} {relativeTime(new Date(lastRemote.at).toISOString())}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+            {access.canEdit && editing ? (
+              <div className="hidden shrink-0 items-center lg:flex">
+                <IconButton label="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo}>
+                  <Undo2 className="size-4" />
+                </IconButton>
+                <IconButton label="Redo (Ctrl+Shift+Z)" onClick={redo} disabled={!canRedo}>
+                  <Redo2 className="size-4" />
+                </IconButton>
+                <div className="mx-1 h-6 w-px bg-line" />
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<Database className="size-4" />}
+                  onClick={() => setPanel('data')}
+                >
+                  Data
+                </Button>
+                <Button size="sm" variant="ghost" icon={<Plus className="size-4" />} onClick={addWidget}>
+                  Widget
+                </Button>
+                <div className="mx-1 h-6 w-px bg-line" />
+              </div>
+            ) : null}
+            <div className="hidden shrink-0 items-center lg:flex">
+              <IconButton label="Version history" onClick={() => setPanel('versions')}>
+                <History className="size-4" />
+              </IconButton>
+              <IconButton label="Connect an AI agent" onClick={() => setPanel('ai')}>
+                <Bot className="size-4" />
+              </IconButton>
+              {hasSounds ? <MuteButton /> : null}
+              <IconButton label="Present on a screen (F)" onClick={() => void presentation.start()}>
+                <MonitorPlay className="size-4" />
+              </IconButton>
+              <TvInfo dashboardId={id} isPrivate={meta.visibility === 'private'} />
+            </div>
+            <Button
+              size="sm"
+              variant="secondary"
+              icon={<Share2 className="size-4" />}
+              onClick={() => setPanel('share')}
+              className="max-sm:hidden"
+            >
+              Share
+            </Button>
+            {access.canEdit ? (
+              <Button
+                size="sm"
+                variant={editing ? 'primary' : 'secondary'}
+                icon={editing ? <Check className="size-4" /> : <Pencil className="size-4" />}
+                onClick={() => setEditing(!editing)}
+                className="max-sm:h-10"
+              >
+                {editing ? 'Done' : 'Edit'}
+              </Button>
+            ) : null}
+            <ToolbarMenu
+              dashboardId={id}
+              isPrivate={meta.visibility === 'private'}
+              hasSounds={hasSounds}
+              onPanel={setPanel}
+              onPresent={() => void presentation.start()}
+            />
+            <div className="hidden shrink-0 items-center gap-1 sm:flex">
+              <ThemeToggle />
+              <UserMenu />
             </div>
           </div>
           {access.canEdit && editing ? (
-            <div className="hidden shrink-0 items-center lg:flex">
-              <IconButton label="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo}>
+            <div className="flex items-center gap-1 border-t border-line px-3 py-1 sm:px-4 lg:hidden">
+              <IconButton label="Undo" onClick={undo} disabled={!canUndo} className="max-sm:size-10">
                 <Undo2 className="size-4" />
               </IconButton>
-              <IconButton label="Redo (Ctrl+Shift+Z)" onClick={redo} disabled={!canRedo}>
+              <IconButton label="Redo" onClick={redo} disabled={!canRedo} className="max-sm:size-10">
                 <Redo2 className="size-4" />
               </IconButton>
               <div className="mx-1 h-6 w-px bg-line" />
@@ -267,168 +347,102 @@ function Editor({ id }: { id: string }) {
                 variant="ghost"
                 icon={<Database className="size-4" />}
                 onClick={() => setPanel('data')}
+                className="max-sm:h-10"
               >
                 Data
               </Button>
-              <Button size="sm" variant="ghost" icon={<Plus className="size-4" />} onClick={addWidget}>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<Plus className="size-4" />}
+                onClick={addWidget}
+                className="max-sm:h-10"
+              >
                 Widget
               </Button>
-              <div className="mx-1 h-6 w-px bg-line" />
             </div>
           ) : null}
-          <div className="hidden shrink-0 items-center lg:flex">
-            <IconButton label="Version history" onClick={() => setPanel('versions')}>
-              <History className="size-4" />
-            </IconButton>
-            <IconButton label="Connect an AI agent" onClick={() => setPanel('ai')}>
-              <Bot className="size-4" />
-            </IconButton>
-            {hasSounds ? <MuteButton /> : null}
-            <IconButton label="Present on a screen (F)" onClick={() => void presentation.start()}>
-              <MonitorPlay className="size-4" />
-            </IconButton>
-            <TvInfo dashboardId={id} isPrivate={meta.visibility === 'private'} />
-          </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            icon={<Share2 className="size-4" />}
-            onClick={() => setPanel('share')}
-            className="max-sm:hidden"
-          >
-            Share
-          </Button>
-          {access.canEdit ? (
-            <Button
-              size="sm"
-              variant={editing ? 'primary' : 'secondary'}
-              icon={editing ? <Check className="size-4" /> : <Pencil className="size-4" />}
-              onClick={() => setEditing(!editing)}
-              className="max-sm:h-10"
-            >
-              {editing ? 'Done' : 'Edit'}
-            </Button>
+        </header>
+
+        {conflict && !presenting ? <ConflictBanner /> : null}
+        {presenting ? null : <SecretsSaveBanner />}
+
+        <main className={cx('px-3 sm:px-4', presenting ? 'py-3' : 'py-4')}>
+          {doc.description && !editing && !presenting ? (
+            <p className="mb-4 max-w-3xl text-sm text-ink-2">{doc.description}</p>
           ) : null}
-          <ToolbarMenu
-            dashboardId={id}
-            isPrivate={meta.visibility === 'private'}
-            hasSounds={hasSounds}
-            onPanel={setPanel}
-            onPresent={() => void presentation.start()}
-          />
-          <div className="hidden shrink-0 items-center gap-1 sm:flex">
-            <ThemeToggle />
-            <UserMenu />
-          </div>
-        </div>
-        {access.canEdit && editing ? (
-          <div className="flex items-center gap-1 border-t border-line px-3 py-1 sm:px-4 lg:hidden">
-            <IconButton label="Undo" onClick={undo} disabled={!canUndo} className="max-sm:size-10">
-              <Undo2 className="size-4" />
-            </IconButton>
-            <IconButton label="Redo" onClick={redo} disabled={!canRedo} className="max-sm:size-10">
-              <Redo2 className="size-4" />
-            </IconButton>
-            <div className="mx-1 h-6 w-px bg-line" />
-            <Button
-              size="sm"
-              variant="ghost"
-              icon={<Database className="size-4" />}
-              onClick={() => setPanel('data')}
-              className="max-sm:h-10"
-            >
-              Data
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              icon={<Plus className="size-4" />}
-              onClick={addWidget}
-              className="max-sm:h-10"
-            >
-              Widget
-            </Button>
-          </div>
-        ) : null}
-      </header>
+          {editing ? (
+            <DetailsInput
+              field="description"
+              inline
+              label="Dashboard description"
+              placeholder="Add a short description (optional)"
+              className="mb-3 max-w-3xl"
+            />
+          ) : null}
+          {doc.widgets.length === 0 ? (
+            <div className="mx-auto max-w-2xl py-16">
+              <EmptyState
+                icon={<Database className="size-8" />}
+                title="An empty patchbay"
+                action={
+                  access.canEdit ? (
+                    <div className="flex flex-wrap justify-center gap-2">
+                      <Button
+                        variant="primary"
+                        icon={<Database className="size-4" />}
+                        onClick={() => {
+                          setEditing(true);
+                          setPanel('data');
+                        }}
+                      >
+                        Add data
+                      </Button>
+                      <Button
+                        icon={<Plus className="size-4" />}
+                        onClick={() => {
+                          setEditing(true);
+                          addWidget();
+                        }}
+                      >
+                        Add widget
+                      </Button>
+                      <Button icon={<Bot className="size-4" />} onClick={() => setPanel('ai')}>
+                        Let your AI build it
+                      </Button>
+                    </div>
+                  ) : null
+                }
+              >
+                {access.canEdit ? (
+                  <>
+                    Plug in a public API or your own CSV, then pick from suggested charts. Or connect an AI
+                    agent over MCP and ask it to build this dashboard for you; you will see it appear here
+                    live.
+                  </>
+                ) : (
+                  'Nothing here yet.'
+                )}
+              </EmptyState>
+            </div>
+          ) : (
+            <Grid dashboardId={id} live={live} onEditWidget={(wid) => setWidgetId(wid)} />
+          )}
+        </main>
 
-      {conflict && !presenting ? <ConflictBanner /> : null}
-      {presenting ? null : <SecretsSaveBanner />}
-
-      <main className={cx('px-3 sm:px-4', presenting ? 'py-3' : 'py-4')}>
-        {doc.description && !editing && !presenting ? (
-          <p className="mb-4 max-w-3xl text-sm text-ink-2">{doc.description}</p>
-        ) : null}
-        {editing ? (
-          <DetailsInput
-            field="description"
-            inline
-            label="Dashboard description"
-            placeholder="Add a short description (optional)"
-            className="mb-3 max-w-3xl"
-          />
-        ) : null}
-        {doc.widgets.length === 0 ? (
-          <div className="mx-auto max-w-2xl py-16">
-            <EmptyState
-              icon={<Database className="size-8" />}
-              title="An empty patchbay"
-              action={
-                access.canEdit ? (
-                  <div className="flex flex-wrap justify-center gap-2">
-                    <Button
-                      variant="primary"
-                      icon={<Database className="size-4" />}
-                      onClick={() => {
-                        setEditing(true);
-                        setPanel('data');
-                      }}
-                    >
-                      Add data
-                    </Button>
-                    <Button
-                      icon={<Plus className="size-4" />}
-                      onClick={() => {
-                        setEditing(true);
-                        addWidget();
-                      }}
-                    >
-                      Add widget
-                    </Button>
-                    <Button icon={<Bot className="size-4" />} onClick={() => setPanel('ai')}>
-                      Let your AI build it
-                    </Button>
-                  </div>
-                ) : null
-              }
-            >
-              {access.canEdit ? (
-                <>
-                  Plug in a public API or your own CSV, then pick from suggested charts. Or connect an AI
-                  agent over MCP and ask it to build this dashboard for you; you will see it appear here live.
-                </>
-              ) : (
-                'Nothing here yet.'
-              )}
-            </EmptyState>
-          </div>
-        ) : (
-          <Grid dashboardId={id} live={live} onEditWidget={(wid) => setWidgetId(wid)} />
-        )}
-      </main>
-
-      <DatasetsPanel open={panel === 'data'} onClose={() => setPanel(null)} dashboardId={id} />
-      <VersionsPanel open={panel === 'versions'} onClose={() => setPanel(null)} dashboardId={id} />
-      <SharePanel open={panel === 'share'} onClose={() => setPanel(null)} dashboardId={id} />
-      <ConnectAiPanel open={panel === 'ai'} onClose={() => setPanel(null)} dashboardId={id} />
-      <ExpandedWidget dashboardId={id} live={live} />
-      <PublicSecretsDialogs />
-      <WidgetEditor
-        widgetId={widgetId}
-        onClose={() => setWidgetId(null)}
-        onCreated={(wid) => setWidgetId(wid)}
-      />
-    </div>
+        <DatasetsPanel open={panel === 'data'} onClose={() => setPanel(null)} dashboardId={id} />
+        <VersionsPanel open={panel === 'versions'} onClose={() => setPanel(null)} dashboardId={id} />
+        <SharePanel open={panel === 'share'} onClose={() => setPanel(null)} dashboardId={id} />
+        <ConnectAiPanel open={panel === 'ai'} onClose={() => setPanel(null)} dashboardId={id} />
+        <ExpandedWidget dashboardId={id} live={live} />
+        <PublicSecretsDialogs />
+        <WidgetEditor
+          widgetId={widgetId}
+          onClose={() => setWidgetId(null)}
+          onCreated={(wid) => setWidgetId(wid)}
+        />
+      </div>
+    </PresentingContext.Provider>
   );
 }
 

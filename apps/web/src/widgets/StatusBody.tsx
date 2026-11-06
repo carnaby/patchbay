@@ -29,8 +29,9 @@ import {
   type Widget,
 } from '@patchbay/core';
 import { AlertTriangle } from 'lucide-react';
-import { type CSSProperties, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { cx, Modal } from '../components/ui.tsx';
+import { PresentingContext } from '../editor/presentation.tsx';
 import { useNow, useTheme } from '../lib/hooks.ts';
 
 const M = STATUS_METRICS;
@@ -80,6 +81,11 @@ export function StatusBody({
   const model = useMemo(() => statusModel(result.table, widget.config), [result.table, widget.config]);
   const layout = useMemo(() => (size ? statusFit(model, size) : null), [model, size]);
   const [panel, setPanel] = useState<PanelTarget | null>(null);
+  const presenting = useContext(PresentingContext);
+  // Presentations run unattended: a panel opened by a stray click beforehand would cover the board for good.
+  useEffect(() => {
+    if (presenting) setPanel(null);
+  }, [presenting]);
   const problem = statusConfigProblem(model, widget.config);
   const open: Open = (title, tiles) => setPanel({ title, keys: tiles.map((t) => t.key) });
 

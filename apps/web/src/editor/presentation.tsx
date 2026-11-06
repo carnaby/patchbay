@@ -4,11 +4,14 @@
  * kept awake with the Screen Wake Lock API so a live dashboard never dims.
  */
 import { Copy, Info, Minimize2 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, cx, Popover, toast } from '../components/ui.tsx';
 import { EnableSoundButton, MuteButton } from './sound-controls.tsx';
 
 const IDLE_MS = 2500;
+
+/** Lets widgets far below the page know a presentation is running, without threading a prop through every card. */
+export const PresentingContext = createContext(false);
 
 export function usePresentation(initial: boolean) {
   const [presenting, setPresenting] = useState(initial);
