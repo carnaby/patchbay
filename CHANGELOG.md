@@ -6,6 +6,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
 ### Added
 
 - **POST for `http` sources**: `method: "POST"` with a JSON `body` (at most 16,384 characters) loads read APIs that
@@ -139,7 +141,8 @@ The server was reviewed adversarially before release, and every finding has a re
 - Hostile feeds are parsed in linear time off the main thread; snapshot drawing is bounded per render.
 - `URL_SOURCES=signed-in` keeps strangers from making a public instance fetch arbitrary addresses.
 
-[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/carnaby/patchbay/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/carnaby/patchbay/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/carnaby/patchbay/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/carnaby/patchbay/releases/tag/v0.1.0
