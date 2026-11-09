@@ -36,13 +36,12 @@ import type {
   Column,
   DashboardDoc,
   DataTable,
-  Row,
   Scalar,
   UploadedFile,
   VersionInfo,
   Visibility,
 } from '@patchbay/core';
-import { parseDashboard } from '@patchbay/core';
+import { parseDashboard, rowFromValues } from '@patchbay/core';
 
 /**
  * How a file being replaced (temp file + rename) can look for a moment where rename over an existing file is not
@@ -178,11 +177,7 @@ function unpackTable(stored: DataTable | PackedTable): DataTable {
   const names = stored.columns.map((c) => c.name);
   return {
     columns: stored.columns,
-    rows: stored.data.map((values) => {
-      const row: Row = {};
-      for (let i = 0; i < names.length; i++) row[names[i]!] = values[i] ?? null;
-      return row;
-    }),
+    rows: stored.data.map((values) => rowFromValues(names, values)),
   };
 }
 

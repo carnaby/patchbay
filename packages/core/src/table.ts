@@ -22,6 +22,23 @@ export interface DataTable {
 
 export const EMPTY_TABLE: DataTable = { columns: [], rows: [] };
 
+/**
+ * Sets one cell. Assigning to "__proto__" would replace the row's prototype (or do nothing, for a scalar), and a JSON
+ * or CSV source may well name a column so: defining the property keeps it an ordinary column of an ordinary row.
+ */
+export function setCell<T>(row: Record<string, T>, name: string, value: T): void {
+  if (name === '__proto__')
+    Object.defineProperty(row, name, { value, enumerable: true, writable: true, configurable: true });
+  else row[name] = value;
+}
+
+/** A row from its values in column order (the arrays wire format, packed tables); a missing value becomes null. */
+export function rowFromValues(names: readonly string[], values: readonly (Scalar | undefined)[]): Row {
+  const row: Row = {};
+  for (let i = 0; i < names.length; i++) setCell(row, names[i]!, values[i] ?? null);
+  return row;
+}
+
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
 // The fraction is one optional group: `\d+\.?\d*` can split a run of digits in n ways, and a long digit string that
 // fails at its end ("1111…1x" in an upload) then takes quadratic time, seconds for 80,000 digits.
@@ -85,11 +102,14 @@ function coerce(value: unknown, type: ColumnType): Scalar {
  * Flattens one level of nested objects into dotted keys (`a.b`). Arrays are serialised. Stops once it holds more
  * than `limit` keys: the caller refuses such a record anyway, and a record of 400,000 keys copied whole (with an
  * entry pair per key) filled a worker's heap before the column limit could say so.
+ *
+ * The result has no prototype: a "__proto__" key is then stored like any other, and a column this record lacks reads
+ * as missing instead of as an inherited member ("constructor" would otherwise be Object's constructor function).
  */
 function flatten(
   record: Record<string, unknown>,
   limit: number,
-  out: Record<string, unknown> = {},
+  out: Record<string, unknown> = Object.create(null),
   prefix = '',
   depth = 0,
   count = { keys: 0 },
@@ -176,7 +196,7 @@ export function inferTableCapped(
     const obj =
       record && typeof record === 'object' && !Array.isArray(record)
         ? flatten(record as Record<string, unknown>, maxColumns)
-        : { value: record };
+        : Object.assign(Object.create(null) as Record<string, unknown>, { value: record });
     added.length = 0;
     for (const key of Object.keys(obj)) {
       if (names.has(key)) continue;
@@ -197,7 +217,7 @@ export function inferTableCapped(
   }));
   const rows = flat.map((r) => {
     const row: Row = {};
-    for (const col of columns) row[col.name] = coerce(r[col.name], col.type);
+    for (const col of columns) setCell(row, col.name, coerce(r[col.name], col.type));
     return row;
   });
   return { table: { columns, rows }, capped };

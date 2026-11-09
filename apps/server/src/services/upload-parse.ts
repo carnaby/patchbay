@@ -19,6 +19,7 @@ import {
   LIMITS,
   PathNotFoundError,
   pickPath,
+  setCell,
   TableTooWideError,
   tableFromPacked,
 } from '@patchbay/core';
@@ -136,20 +137,34 @@ function limitedTable(records: unknown[], maxCells: number): DataTable {
   return check(table, maxCells);
 }
 
+/**
+ * Papa builds each row by assignment, which drops a "__proto__" column. Its header is renamed to this marker while
+ * parsing and back when the row is kept; a trimmed header never starts with a space, so the marker cannot collide
+ * (Papa's suffix for a repeated header, " __proto___1", keeps the space too).
+ */
+const PROTO_MARKER = ' __proto__';
+const fromMarker = (name: string) => (name.startsWith(' ') ? name.slice(1) : name);
+
 function parseCsv(content: string, maxCells: number): DataTable {
   const records: Record<string, string>[] = [];
   let columns = 0;
   let firstError: string | null = null;
   let stopped = false;
   let refused: UploadError | null = null;
+  let marked = false;
   Papa.parse<Record<string, string>>(content.replace(/^﻿/, ''), {
     header: true,
     skipEmptyLines: 'greedy',
-    transformHeader: (h) => h.trim(),
+    transformHeader: (h) => {
+      const name = h.trim();
+      return name === '__proto__' ? PROTO_MARKER : name;
+    },
     step: (result, parser) => {
       // The header decides the columns, so a bad one is refused before any row is kept.
       if (records.length === 0) {
-        refused = columnsProblem(result.meta.fields ?? []);
+        const fields = result.meta.fields ?? [];
+        marked = fields.some((f) => f.startsWith(' '));
+        refused = columnsProblem(fields.map(fromMarker));
         if (refused) {
           parser.abort();
           return;
@@ -162,7 +177,12 @@ function parseCsv(content: string, maxCells: number): DataTable {
         parser.abort();
         return;
       }
-      records.push(result.data);
+      if (!marked) records.push(result.data);
+      else {
+        const record: Record<string, string> = {};
+        for (const [key, value] of Object.entries(result.data)) setCell(record, fromMarker(key), value);
+        records.push(record);
+      }
     },
   });
   if (refused) throw refused;

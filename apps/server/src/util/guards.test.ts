@@ -168,6 +168,24 @@ describe('parseUpload', () => {
     expect(json(columns(5, 20))()).toMatchObject({ rows: { length: 20 } });
   });
 
+  it('keeps a "__proto__" key as a column in JSON records, column-shaped JSON and CSV', () => {
+    const proto = '__proto__';
+    const upload = (content: string, format: 'json' | 'csv') =>
+      parseUpload({ content, format, maxCells: 100 });
+    for (const table of [
+      upload('[{"__proto__": 1, "b": 2}, {"__proto__": 3, "b": 4}]', 'json'),
+      upload('{"__proto__": [1, 3], "b": [2, 4]}', 'json'),
+      upload('__proto__,b\n1,2\n3,4\n', 'csv'),
+    ]) {
+      expect(table.columns.map((c) => c.name)).toEqual(['__proto__', 'b']);
+      expect(table.rows.map((r) => [Object.hasOwn(r, proto), r[proto], r.b])).toEqual([
+        [true, 1, 2],
+        [true, 3, 4],
+      ]);
+      expect(Object.getPrototypeOf(table.rows[0]!)).toBe(Object.prototype);
+    }
+  });
+
   it('ignores a path for CSV', () => {
     expect(
       parseUpload({ content: 'a,b\n1,2\n', format: 'csv', maxCells: 100, path: 'data.items' }).rows,
