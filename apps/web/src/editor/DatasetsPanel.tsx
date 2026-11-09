@@ -81,6 +81,7 @@ import {
   sourceCandidates,
 } from './dataset-lineage.ts';
 import { bodyText, parseBodyText, switchMethod, withBody } from './http-body.ts';
+import { previewState } from './preview-state.ts';
 import { askPublicSecrets } from './public-secrets.tsx';
 import { TransformEditor } from './TransformEditor.tsx';
 
@@ -983,6 +984,12 @@ function DatasetEditor({
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const suggestions = preview.data?.suggestions ?? [];
   const result = preview.data?.result;
+  const shown = previewState({
+    credentialsBlocked: previewBlocked,
+    formError: sourceError,
+    requestError: preview.error ? errorMessage(preview.error) : null,
+    result,
+  });
 
   return (
     <div className="space-y-6">
@@ -1101,20 +1108,13 @@ function DatasetEditor({
         <div className="flex items-center gap-2">
           <h3 className="text-[13px] font-semibold text-ink-2">Preview</h3>
           {preview.isFetching ? <Spinner className="size-3.5" /> : null}
-          {result ? (
-            <span className="text-xs text-muted">
-              {result.table.rows.length.toLocaleString('en')} rows{result.truncated ? ' (first 500)' : ''} ·{' '}
-              {result.table.columns.length} columns
-            </span>
-          ) : null}
+          {shown.counts ? <span className="text-xs text-muted">{shown.counts}</span> : null}
         </div>
-        {previewBlocked ? (
-          <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">
-            Fix the credentials above to load a preview.
-          </p>
-        ) : preview.error || result?.error ? (
+        {shown.body.kind === 'blocked' ? (
+          <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">{shown.body.message}</p>
+        ) : shown.body.kind === 'error' ? (
           <PreviewError
-            message={preview.error ? errorMessage(preview.error) : (result?.error ?? '')}
+            message={shown.body.message}
             hasSecrets={sourceSecretIds(debounced.source).length > 0}
             canAddSecrets={credentials.canUseSecrets && debounced.source.kind === 'http'}
           />
