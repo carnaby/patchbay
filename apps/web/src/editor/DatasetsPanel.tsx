@@ -80,7 +80,7 @@ import {
   slug,
   sourceCandidates,
 } from './dataset-lineage.ts';
-import { bodyText, parseBodyText, withBody, withMethod } from './http-body.ts';
+import { bodyText, parseBodyText, switchMethod, withBody } from './http-body.ts';
 import { askPublicSecrets } from './public-secrets.tsx';
 import { TransformEditor } from './TransformEditor.tsx';
 
@@ -396,10 +396,10 @@ function SourceEditor({
   };
   const setMethod = (method: HttpMethod) => {
     if (source.kind !== 'http' || method === (source.method ?? 'GET')) return;
-    // Neither direction carries a body over: a GET has none, and a fresh POST starts empty.
-    setBodyDraft('');
-    setBodyProblem(null);
-    onChange(withMethod(source, method));
+    const next = switchMethod(source, method, bodyDraft);
+    setBodyDraft(next.text);
+    setBodyProblem(next.error);
+    onChange(next.source);
   };
 
   const grouped = useMemo(() => {
