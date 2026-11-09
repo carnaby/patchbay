@@ -1,6 +1,6 @@
 import type { DatasetResult } from '@patchbay/core';
 import { describe, expect, it } from 'vitest';
-import { previewState } from './preview-state.ts';
+import { PREVIEW_DELAY_MS, previewDelay, previewState } from './preview-state.ts';
 
 const result = (rows: number, extra: Partial<DatasetResult> = {}): DatasetResult => ({
   datasetId: 'd',
@@ -17,6 +17,37 @@ const result = (rows: number, extra: Partial<DatasetResult> = {}): DatasetResult
   ...extra,
 });
 const ok = { credentialsBlocked: false, formError: null, requestError: null };
+
+describe('when the dataset editor previews', () => {
+  const get = { kind: 'http' as const, url: 'https://api.example.com/graphql' };
+  const post = (body: unknown) => ({ source: { ...get, method: 'POST' as const, body } });
+
+  it('waits longer for a body being typed than for other edits', () => {
+    // Every pause on a valid body would otherwise send a real POST upstream.
+    const typing = previewDelay(post({ query: 'view' }), post({ query: 'viewe' }));
+    expect(typing).toBeGreaterThanOrEqual(3 * PREVIEW_DELAY_MS);
+    expect(previewDelay(post(undefined), post({}))).toBe(typing);
+  });
+
+  it('keeps the usual wait for every other change', () => {
+    const body = { query: 'x' };
+    expect(previewDelay(post(body), { source: { ...post(body).source, url: `${get.url}?a` } })).toBe(
+      PREVIEW_DELAY_MS,
+    );
+    // The body and something else changed: the method switch that brings a kept body back, say.
+    expect(previewDelay({ source: get }, post(body))).toBe(PREVIEW_DELAY_MS);
+    expect(previewDelay({ source: { ...get, url: 'https://b.example.com/x' } }, { source: get })).toBe(
+      PREVIEW_DELAY_MS,
+    );
+    expect(previewDelay(post(body), post(body))).toBe(PREVIEW_DELAY_MS);
+    expect(
+      previewDelay(
+        { source: { kind: 'inline', rows: [{ a: 1 }] } },
+        { source: { kind: 'inline', rows: [{ a: 2 }] } },
+      ),
+    ).toBe(PREVIEW_DELAY_MS);
+  });
+});
 
 describe('the dataset editor preview', () => {
   it('shows the counts of a current table', () => {

@@ -1,8 +1,37 @@
 /**
- * What the dataset editor's preview shows: the counts next to its heading and what fills it. Kept out of the component
- * so the rules are tested without a browser.
+ * What the dataset editor's preview shows (the counts next to its heading and what fills it) and when it asks again.
+ * Kept out of the component so the rules are tested without a browser.
  */
-import type { DatasetResult } from '@patchbay/core';
+import type { DatasetResult, Source } from '@patchbay/core';
+
+/** How long the draft must stay unchanged before the preview asks for it. */
+export const PREVIEW_DELAY_MS = 450;
+
+/**
+ * The wait while only a POST body changes. Each body the preview asks for is a real request upstream, and typing a
+ * query inside valid JSON (a string value, say) leaves valid JSON at every keystroke: with the usual wait, every
+ * pause to think sent one.
+ */
+export const BODY_PREVIEW_DELAY_MS = 1500;
+
+/** A dataset draft as far as the preview reads it. */
+interface PreviewDraft {
+  source: Source;
+}
+
+const withoutBody = (draft: PreviewDraft) =>
+  JSON.stringify({ ...draft, source: { ...draft.source, body: undefined } });
+
+/** The wait before previewing `draft`, given the draft the preview shows now. */
+export function previewDelay(previewed: PreviewDraft, draft: PreviewDraft): number {
+  const before = previewed.source;
+  const after = draft.source;
+  if (before.kind !== 'http' || after.kind !== 'http' || after.method !== 'POST') return PREVIEW_DELAY_MS;
+  const bodyOnly =
+    JSON.stringify(before.body) !== JSON.stringify(after.body) &&
+    withoutBody(previewed) === withoutBody(draft);
+  return bodyOnly ? BODY_PREVIEW_DELAY_MS : PREVIEW_DELAY_MS;
+}
 
 export type PreviewBody =
   | { kind: 'blocked'; message: string }

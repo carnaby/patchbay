@@ -81,7 +81,7 @@ import {
   sourceCandidates,
 } from './dataset-lineage.ts';
 import { bodyText, parseBodyText, switchMethod, withBody } from './http-body.ts';
-import { previewState } from './preview-state.ts';
+import { previewDelay, previewState } from './preview-state.ts';
 import { askPublicSecrets } from './public-secrets.tsx';
 import { TransformEditor } from './TransformEditor.tsx';
 
@@ -842,9 +842,9 @@ function DatasetEditor({
   // A form problem that a save must not hide by storing the last valid value (an invalid POST body).
   const [sourceError, setSourceError] = useState<string | null>(null);
   useEffect(() => {
-    const t = setTimeout(() => setDebounced(draft), 450);
+    const t = setTimeout(() => setDebounced(draft), previewDelay(debounced, draft));
     return () => clearTimeout(t);
-  }, [draft]);
+  }, [draft, debounced]);
 
   const { data: connectors } = useConnectors();
   // Default the name to the connector's name until the user types their own.
