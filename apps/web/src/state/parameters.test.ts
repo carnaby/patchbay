@@ -1,7 +1,11 @@
-import { type Parameter, ParameterSchema } from '@patchbay/core';
+import { type DatasetResult, inferTable, type Parameter, ParameterSchema } from '@patchbay/core';
 import { describe, expect, it } from 'vitest';
 import {
   applyValue,
+  choicesOfResult,
+  dataPickProblem,
+  dataValueReady,
+  heldDataValue,
   normalizeRaw,
   pickRaw,
   rawFromSearch,
@@ -146,5 +150,69 @@ describe('choices from data in the browser', () => {
     expect(staleDataValue(country, { country: 'DE' }, ['AT', 'SK'])).toBe(true);
     expect(staleDataValue(country, {}, ['AT'])).toBe(false);
     expect(staleDataValue(region, { region: 'eu' }, ['AT'])).toBe(false);
+  });
+
+  it('keeps a pinned value when a refresh returns no choices at all', () => {
+    expect(staleDataValue(country, { country: 'AT' }, [])).toBe(false);
+  });
+
+  it('reads the choices of a result, and knows when they can never arrive', () => {
+    const table = inferTable([{ code: 'SK' }, { code: 'AT' }, { code: 'SK' }]);
+    const result: DatasetResult = {
+      datasetId: 'countries',
+      table,
+      fetchedAt: '',
+      hash: '',
+      truncated: false,
+    };
+    expect(choicesOfResult('code', result, false)).toEqual({ options: ['AT', 'SK'], failed: false });
+    // The same result twice gives the same list: a store selector reading it must stay stable.
+    expect(choicesOfResult('code', result, false).options).toBe(
+      choicesOfResult('code', result, false).options,
+    );
+    expect(choicesOfResult('code', undefined, false)).toEqual({ options: null, failed: false });
+    expect(choicesOfResult('code', undefined, true)).toEqual({ options: null, failed: true });
+    expect(choicesOfResult('code', { ...result, error: 'Upstream answered 500' }, false)).toEqual({
+      options: null,
+      failed: true,
+    });
+  });
+
+  it('shows the value a link holds while the choices load, after they failed, or when they lack it', () => {
+    const loading = { options: null, failed: false };
+    const failed = { options: null, failed: true };
+    expect(heldDataValue(country, { country: 'AT' }, loading)).toBe('AT');
+    expect(heldDataValue(country, { country: 'AT' }, failed)).toBe('AT');
+    expect(heldDataValue(country, { country: 'AT' }, { options: [], failed: false })).toBe('AT');
+    expect(heldDataValue(country, { country: 'AT' }, { options: ['AT'], failed: false })).toBeNull();
+    expect(heldDataValue(country, {}, failed)).toBeNull();
+    expect(heldDataValue(region, { region: 'eu' }, failed)).toBeNull();
+  });
+
+  it('refuses a click on a data-driven select whose choices failed or lack the value', () => {
+    const loaded = { options: ['AT', 'SK'], failed: false };
+    expect(dataPickProblem(country, 'AT', { options: null, failed: true })).toBe(
+      'The Country choices could not be loaded',
+    );
+    expect(dataPickProblem(country, 'DE', loaded)).toBe('DE is not one of the Country choices');
+    expect(dataPickProblem(country, 'AT', loaded)).toBeNull();
+    // While loading the server decides; a reset is always allowed; a fixed list is checked by the store.
+    expect(dataPickProblem(country, 'DE', { options: null, failed: false })).toBeNull();
+    expect(dataPickProblem(country, null, { options: null, failed: true })).toBeNull();
+    expect(dataPickProblem(region, 'xx', { options: null, failed: true })).toBeNull();
+    expect(dataPickProblem(undefined, 'xx', loaded)).toBeNull();
+  });
+
+  it('lets a request carry a data-driven value once the choices hold it or failed, never before', () => {
+    const at = { country: 'AT' };
+    expect(dataValueReady(country, at, { options: null, failed: false })).toBe(false);
+    expect(dataValueReady(country, at, { options: ['AT'], failed: false })).toBe(true);
+    // Not a choice: the guard resets it before any request.
+    expect(dataValueReady(country, { country: 'Mars' }, { options: ['AT'], failed: false })).toBe(false);
+    // Failed, or a refresh with no rows that the guard keeps: the server answers.
+    expect(dataValueReady(country, at, { options: null, failed: true })).toBe(true);
+    expect(dataValueReady(country, at, { options: [], failed: false })).toBe(true);
+    expect(dataValueReady(country, {}, { options: null, failed: false })).toBe(true);
+    expect(dataValueReady(region, { region: 'eu' }, { options: null, failed: false })).toBe(true);
   });
 });

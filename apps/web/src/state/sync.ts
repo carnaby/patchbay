@@ -13,11 +13,12 @@ import {
   type LiveEvent,
 } from '@patchbay/core';
 import { keepPreviousData, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from '../components/ui.tsx';
 import { ApiError, api } from '../lib/api.ts';
 import {
+  choiceChecks,
   datasetInSync,
   datasetKey,
   datasetKeyFor,
@@ -30,7 +31,7 @@ import {
 } from './dataset-keys.ts';
 import { useEditor } from './editor.ts';
 import { openLiveChannel } from './live-channel.ts';
-import { useParameters } from './parameters.ts';
+import { choicesOfResult, dataValueReady, type RawValues, useParameters } from './parameters.ts';
 import { performSave } from './save.ts';
 
 const SAVE_DEBOUNCE_MS = 600;
@@ -192,6 +193,33 @@ const fetchResult =
       ),
     );
 
+type ChoiceCheck = [id: string, dataset: string, lineage: string, view: string];
+
+/**
+ * Whether the data-driven values a request would carry may be sent (`dataValueReady`): their choices are loaded and
+ * hold them, or failed. The choices are read from the cache without fetching them: the page's DataOptionsGuard loads
+ * every options dataset, with the same key.
+ */
+function useChoicesChecked(dashboardId: string, checks: string, raw: RawValues): boolean {
+  const entries = useMemo(() => (checks ? (JSON.parse(checks) as ChoiceCheck[]) : []), [checks]);
+  const parameters = useEditor((s) => s.doc?.parameters);
+  return useQueries({
+    queries: entries.map(([, dataset, lineage, view]) => ({
+      queryKey: datasetKeyFor(dashboardId, dataset, lineage, view),
+      queryFn: fetchResult(dashboardId, dataset, view),
+      enabled: false,
+    })),
+    combine: (results) =>
+      entries.every(([id], i) => {
+        const param = parameters?.find((p) => p.id === id);
+        const from = param?.type === 'select' ? param.optionsFrom : undefined;
+        if (!param || !from) return true;
+        const query = results[i];
+        return dataValueReady(param, raw, choicesOfResult(from.field, query?.data, Boolean(query?.isError)));
+      }),
+  });
+}
+
 /**
  * Data for one dataset. It only fetches definitions the server already has, for the dataset and everything it reads
  * (the editor autosaves within a second); until then the previous result stays on screen, so editing never flashes
@@ -208,12 +236,14 @@ export function useDatasetResult(dashboardId: string, dataset: Dataset | undefin
   const calendar = useEditor((s) => (id && s.doc ? followsCalendar(s.doc, id, raw) : false));
   const inSync = useEditor((s) => (id ? datasetInSync(s.saved, s.doc, id) : false));
   const refreshSec = useEditor((s) => (id && s.doc ? effectiveRefreshSec(s.doc, id) : 0));
+  const checks = useEditor((s) => (id && s.doc ? choiceChecks(s.doc, id, raw) : ''));
+  const checked = useChoicesChecked(dashboardId, checks, raw);
   // A dataset that uses filters is never pushed (one result per view): it polls even while the live channel is up.
   const timing = refreshTiming(refreshSec, live && view === '');
   return useQuery({
     queryKey: id ? datasetKeyFor(dashboardId, id, lineage, view) : ['data', dashboardId, 'none'],
     queryFn: fetchResult(dashboardId, id ?? '', view),
-    enabled: Boolean(id) && inSync && ready,
+    enabled: Boolean(id) && inSync && ready && checked,
     placeholderData: keepPreviousData,
     staleTime: timing.staleTime,
     // SSE pushes live updates; poll when it cannot, and after midnight for a relative period.

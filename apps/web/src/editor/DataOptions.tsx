@@ -2,11 +2,11 @@
  * Choices of select filters that take them from a dataset column (proposal 0010, phase 2): loaded with the dataset's
  * own query, so they share its cache and refresh, and checked against the page's value once they arrive.
  */
-import { distinctOptions, type OptionValue, type Parameter } from '@patchbay/core';
+import type { OptionValue, Parameter } from '@patchbay/core';
 import { useEffect, useMemo } from 'react';
 import { toast } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
-import { staleDataValue, useParameters } from '../state/parameters.ts';
+import { choicesOfResult, type DataChoices, staleDataValue, useParameters } from '../state/parameters.ts';
 import { useDatasetResult } from '../state/sync.ts';
 
 /**
@@ -18,26 +18,27 @@ export function useDataChoices(
   dashboardId: string,
   param: Parameter | undefined,
   live: boolean,
-): { options: OptionValue[] | null; failed: boolean } {
+): DataChoices {
   const from = param?.type === 'select' ? param.optionsFrom : undefined;
   const dataset = useEditor((s) => (from ? s.doc?.datasets.find((d) => d.id === from.dataset) : undefined));
   const query = useDatasetResult(dashboardId, dataset, live);
-  const result = query.data;
-  const options = useMemo(
-    () => (from && result && !result.error ? distinctOptions(result.table, from.field) : null),
-    [from, result],
-  );
-  const failed =
-    Boolean(from) && (!dataset || (options === null && (query.isError || Boolean(result?.error))));
+  const { options, failed } = !from
+    ? FIXED
+    : !dataset
+      ? GONE
+      : choicesOfResult(from.field, query.data, query.isError);
   return useMemo(() => ({ options, failed }), [options, failed]);
 }
+
+const FIXED: DataChoices = { options: null, failed: false };
+const GONE: DataChoices = { options: null, failed: true };
 
 /** The loaded choices of a data-driven select; null while loading, for a failed dataset and for a fixed list. */
 export function useDataOptions(
   dashboardId: string,
   param: Parameter | undefined,
   live: boolean,
-): OptionValue[] | null {
+): readonly OptionValue[] | null {
   return useDataChoices(dashboardId, param, live).options;
 }
 

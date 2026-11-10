@@ -80,6 +80,24 @@ export function viewKey(doc: DashboardDoc, datasetId: string, raw: RawValues): s
   );
 }
 
+/**
+ * The data-driven selects whose value a dataset's request would carry, each with the cache key parts of its options
+ * dataset (`[id, datasetId, lineage, view]`), as JSON: '' when there are none. A request waits until those choices
+ * are checked (sync.ts), so a link to a value the data does not hold is reset before it reaches the server. An options
+ * dataset that is gone is left out: its choices can never arrive, and the server answers.
+ */
+export function choiceChecks(doc: DashboardDoc, datasetId: string, raw: RawValues): string {
+  const accepted = acceptedRaw(doc, raw);
+  const checks = datasetParameters(doc, datasetId).flatMap((id) => {
+    const p = doc.parameters?.find((x) => x.id === id);
+    if (p?.type !== 'select' || !p.optionsFrom || !Object.hasOwn(accepted, id)) return [];
+    const from = p.optionsFrom.dataset;
+    if (!doc.datasets.some((d) => d.id === from)) return [];
+    return [[id, from, lineageKey(doc, from), viewKey(doc, from, raw)]];
+  });
+  return checks.length > 0 ? JSON.stringify(checks) : '';
+}
+
 /** The query a view key asks the server for: `&p.region=eu`, or '' at the defaults. Read from the key itself, so a
  * request always carries exactly the values its cache entry is for. */
 export function queryOfView(view: string): string {

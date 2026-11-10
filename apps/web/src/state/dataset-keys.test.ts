@@ -1,6 +1,7 @@
 import { applyOps, type DashboardDoc, emptyDashboard, SoundRuleSchema } from '@patchbay/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  choiceChecks,
   datasetInSync,
   datasetKey,
   datasetKeyFor,
@@ -224,5 +225,37 @@ describe('dataset keys by view', () => {
     ]).doc;
     expect(draftView(declared, declared, city, {}).key).not.toBe(draftView(filtered, filtered, city, {}).key);
     expect(draftView(null, filtered, city, { city: 'x' }).values).toEqual({});
+  });
+
+  it('names the choices a request must wait for: data-driven selects it uses that hold a value', () => {
+    const fromData = applyOps(filtered, [
+      {
+        op: 'addParameter',
+        parameter: {
+          id: 'kind',
+          label: 'Kind',
+          type: 'select',
+          optionsFrom: { dataset: 'other', field: 'a' },
+          all: 'All',
+          default: null,
+        },
+      },
+      {
+        op: 'addDataset',
+        dataset: {
+          id: 'by-kind',
+          name: 'By kind',
+          source: { kind: 'dataset', id: 'eu' },
+          transforms: [{ type: 'filter', expr: '$param.kind == null || kind == $param.kind' }],
+        },
+      },
+    ]).doc;
+    const checks = choiceChecks(fromData, 'by-kind', { kind: 'x', region: 'eu' });
+    expect(JSON.parse(checks)).toEqual([['kind', ...datasetKey('d', fromData, 'other').slice(2)]]);
+    // A primitive, so a store selector returning it stays stable.
+    expect(choiceChecks(fromData, 'by-kind', { kind: 'x' })).toBe(checks);
+    // At All, through a fixed list only, or in a dataset that does not use it: nothing to wait for.
+    expect(choiceChecks(fromData, 'by-kind', { region: 'eu' })).toBe('');
+    expect(choiceChecks(fromData, 'eu', { kind: 'x', region: 'eu' })).toBe('');
   });
 });

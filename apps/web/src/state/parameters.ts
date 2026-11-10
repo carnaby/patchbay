@@ -5,7 +5,10 @@
  * Values are never saved into the document.
  */
 import {
+  type DatasetResult,
+  type DataTable,
   defaultText,
+  distinctOptions,
   type OptionValue,
   type Parameter,
   parameterSummary,
@@ -140,13 +143,90 @@ export const useParameters = create<ParameterState>((set, get) => ({
   },
 }));
 
-/** A data-driven select's value that the loaded choices no longer hold (the data changed, or a hand-edited link). */
+/** The choices of a data-driven select: null while loading; `failed` when they can never arrive. */
+export interface DataChoices {
+  options: readonly OptionValue[] | null;
+  failed: boolean;
+}
+
+const offers = (options: readonly OptionValue[], text: string) => options.some((v) => String(v) === text);
+
+/** The value a data-driven select holds in `raw`, or undefined for a fixed list and at All. */
+function dataValue(param: Parameter | undefined, raw: RawValues): string | undefined {
+  if (param?.type !== 'select' || !param.optionsFrom || !Object.hasOwn(raw, param.id)) return undefined;
+  return raw[param.id];
+}
+
+const choicesMemo = new WeakMap<DataTable, Map<string, OptionValue[]>>();
+
+/**
+ * The choices an options dataset's result gives. Cached per table: every widget whose request waits for them reads
+ * them on each render, and the same result must give the same list.
+ */
+export function choicesOfResult(
+  field: string,
+  result: DatasetResult | undefined,
+  requestFailed: boolean,
+): DataChoices {
+  if (!result || result.error) return { options: null, failed: requestFailed || Boolean(result?.error) };
+  const byField = choicesMemo.get(result.table) ?? new Map<string, OptionValue[]>();
+  choicesMemo.set(result.table, byField);
+  let options = byField.get(field);
+  if (!options) {
+    options = distinctOptions(result.table, field);
+    byField.set(field, options);
+  }
+  return { options, failed: false };
+}
+
+/**
+ * A data-driven select's value that the loaded choices no longer hold (the data changed, or a hand-edited link). An
+ * empty list resets nothing: an upstream refresh that returned no rows must not drop a wall screen's pinned view.
+ */
 export function staleDataValue(
   param: Parameter,
   raw: RawValues,
   options: readonly OptionValue[] | null,
 ): boolean {
-  if (param.type !== 'select' || !param.optionsFrom || options === null || !Object.hasOwn(raw, param.id))
-    return false;
-  return !options.some((v) => String(v) === raw[param.id]);
+  const text = dataValue(param, raw);
+  if (text === undefined || options === null || options.length === 0) return false;
+  return !offers(options, text);
+}
+
+/**
+ * The value the filter bar shows besides the loaded choices: a link's value while they load, after they failed, or
+ * when they do not hold it. Without it the bar would read "All" while the view is filtered.
+ */
+export function heldDataValue(param: Parameter, raw: RawValues, choices: DataChoices): string | null {
+  const text = dataValue(param, raw);
+  if (text === undefined || (choices.options !== null && offers(choices.options, text))) return null;
+  return text;
+}
+
+/**
+ * Why a cross-filter click cannot set a data-driven select, or null. While the choices load the server decides; after
+ * they failed no value can be checked, so none is pushed into a view the server would refuse.
+ */
+export function dataPickProblem(
+  param: Parameter | undefined,
+  text: string | null,
+  choices: DataChoices,
+): string | null {
+  if (param?.type !== 'select' || !param.optionsFrom || text === null) return null;
+  if (choices.failed) return `The ${param.label} choices could not be loaded`;
+  if (choices.options !== null && !offers(choices.options, text))
+    return `${text} is not one of the ${param.label} choices`;
+  return null;
+}
+
+/**
+ * Whether a request may carry a data-driven select's value: once the choices hold it, or once they failed or came
+ * back empty (the server answers then). A value they lack waits for the guard's reset, so a link to a value the data
+ * dropped never reaches the server.
+ */
+export function dataValueReady(param: Parameter, raw: RawValues, choices: DataChoices): boolean {
+  const text = dataValue(param, raw);
+  if (text === undefined || choices.failed) return true;
+  if (choices.options === null) return false;
+  return choices.options.length === 0 || offers(choices.options, text);
 }

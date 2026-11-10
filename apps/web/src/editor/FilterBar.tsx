@@ -8,7 +8,7 @@ import { SlidersHorizontal, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Button, Drawer, IconButton, Input, Select, toast, useNarrowScreen } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
-import { type RawValues, summaryOf, useParameters } from '../state/parameters.ts';
+import { heldDataValue, type RawValues, summaryOf, useParameters } from '../state/parameters.ts';
 import { useDataChoices } from './DataOptions.tsx';
 
 const CUSTOM = 'custom';
@@ -95,7 +95,9 @@ function FilterControl({
     if (problem) toast(problem, 'bad');
   };
   const loading = p.type === 'select' && Boolean(p.optionsFrom) && dataOptions === null && !failed;
-  // A failed options dataset leaves only All: no value can be checked, so none is offered.
+  // A link's value the choices do not list stays visible, so the bar never reads "All" for a filtered view. It is
+  // only selectable while the choices load; after a failure no value can be checked, so All is the only choice.
+  const held = heldDataValue(p, raw, { options: dataOptions, failed });
   const choices: { value: OptionValue; label?: string }[] =
     p.type === 'select'
       ? p.optionsFrom
@@ -118,11 +120,10 @@ function FilterControl({
             className="h-8 w-auto min-w-32 text-[13px]"
           >
             {p.all ? <option value="*">{p.all}</option> : null}
-            {loading ? (
-              // A link's value stays visible until its choices arrive; "*" is the All label, not a raw asterisk.
-              text === '*' ? null : (
-                <option value={text}>{text}</option>
-              )
+            {held !== null ? (
+              <option value={held} disabled={!loading}>
+                {held}
+              </option>
             ) : null}
             {choices.map((o) => (
               <option key={String(o.value)} value={String(o.value)}>
