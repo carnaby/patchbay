@@ -6,6 +6,8 @@
 import { Copy, Info, Minimize2 } from 'lucide-react';
 import { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, cx, Popover, toast } from '../components/ui.tsx';
+import { useEditor } from '../state/editor.ts';
+import { rawQuery, summaryOf, useParameters } from '../state/parameters.ts';
 import { EnableSoundButton, MuteButton } from './sound-controls.tsx';
 
 const IDLE_MS = 2500;
@@ -171,7 +173,12 @@ export function TvInfo({ dashboardId, isPrivate }: { dashboardId: string; isPriv
 
 /** The instructions themselves; narrow screens open them in a dialog from the toolbar's overflow menu. */
 export function TvInfoContent({ dashboardId, isPrivate }: { dashboardId: string; isPrivate: boolean }) {
-  const link = `${window.location.origin}/d/${dashboardId}?present=1`;
+  const parameters = useEditor((s) => s.doc?.parameters);
+  const raw = useParameters((s) => s.raw);
+  // On by default: a wall screen usually exists for one view, and it then keeps showing it unattended.
+  const [keep, setKeep] = useState(true);
+  const view = rawQuery(raw);
+  const link = `${window.location.origin}/d/${dashboardId}?present=1${keep && view ? `&${view}` : ''}`;
   return (
     <>
       <ol className="list-decimal space-y-1.5 pl-4">
@@ -183,6 +190,17 @@ export function TvInfoContent({ dashboardId, isPrivate }: { dashboardId: string;
           on.
         </li>
       </ol>
+      {view ? (
+        <label className="mt-3 flex items-start gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={keep}
+            onChange={(e) => setKeep(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span>Keep the current filters ({summaryOf(parameters, raw, true)})</span>
+        </label>
+      ) : null}
       <div className="mt-3 flex gap-2">
         <input
           readOnly

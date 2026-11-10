@@ -114,6 +114,56 @@ describe('LiveHub', () => {
     hub.close();
   });
 
+  it('leaves datasets that use filters to polling, also inside a chain, and keeps pushing the others', async () => {
+    useFakeTimers();
+    const events: LiveEvent[] = [];
+    const parameters = [
+      {
+        id: 'region',
+        label: 'Region',
+        type: 'select',
+        options: [{ value: 'eu' }, { value: 'us' }],
+        all: 'All',
+        default: null,
+      },
+    ];
+    const hub = new LiveHub(data, async () => ({
+      ownerId: null,
+      doc: {
+        ...doc([
+          { id: 'a', name: 'A', source: { kind: 'connector', connector: 'demo.signal' }, refreshSec: 5 },
+          {
+            id: 'mine',
+            name: 'Mine',
+            source: { kind: 'dataset', id: 'a' },
+            transforms: [{ type: 'filter', expr: '$param.region == null' }],
+          },
+          { id: 'kid', name: 'Kid', source: { kind: 'dataset', id: 'a' } },
+          {
+            id: 'own',
+            name: 'Own',
+            source: { kind: 'connector', connector: 'demo.signal', params: { shape: '$param.region' } },
+            refreshSec: 5,
+          },
+        ]),
+        parameters,
+      } as DashboardDoc,
+    }));
+    const stop = hub.subscribe(
+      'dp',
+      viewer((e) => events.push(e)),
+    );
+    await settle();
+    // Only "a": "own" uses a filter in its own source.
+    expect(hub.activeTimers()).toBe(1);
+    await advance(10_000);
+    await settle();
+    const pushed = new Set(events.flatMap((e) => (e.type === 'data' ? [e.result.datasetId] : [])));
+    expect([...pushed].sort()).toEqual(['a', 'kid']);
+    stop();
+    hub.close();
+  });
+
   it('closes the room and its timers when the last subscriber fails to receive', async () => {
     useFakeTimers();
     const hub = new LiveHub(data, async () => ({

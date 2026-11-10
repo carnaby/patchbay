@@ -10,6 +10,13 @@ import { z } from 'zod';
 import { normalizeLayout, placeItem, reorderLayout } from './layout.ts';
 import { readersOf } from './lineage.ts';
 import {
+  type Parameter,
+  ParameterSchema,
+  ParamIdSchema,
+  PLACE_LABELS,
+  parameterUsage,
+} from './parameters.ts';
+import {
   ColorMapSchema,
   type DashboardDoc,
   DashboardDocSchema,
@@ -113,6 +120,18 @@ export const OpSchema = z.discriminatedUnion('op', [
       before: IdSchema.nullable().describe('null = last'),
     })
     .describe('Move a widget in reading order (how phones stack widgets); sizes are kept'),
+  z.strictObject({
+    op: z.literal('addParameter'),
+    parameter: ParameterSchema,
+    before: ParamIdSchema.optional(),
+  }),
+  z.strictObject({
+    op: z.literal('updateParameter'),
+    id: ParamIdSchema,
+    set: z.record(z.string(), z.unknown()),
+  }),
+  z.strictObject({ op: z.literal('removeParameter'), id: ParamIdSchema }),
+  z.strictObject({ op: z.literal('moveParameter'), id: ParamIdSchema, before: ParamIdSchema.nullable() }),
 ]);
 export type Op = z.infer<typeof OpSchema>;
 export type OpInput = z.input<typeof OpSchema>;
@@ -134,12 +153,21 @@ export interface ApplyResult {
 
 const soundOf = (w: Widget): SoundRule | undefined => ('sound' in w ? w.sound : undefined);
 
+/** An empty list is stored as no field, like `colors`, so a dashboard without filters looks as it always did. */
+function withParameters(doc: DashboardDoc, list: Parameter[]): DashboardDoc {
+  if (list.length > 0) return { ...doc, parameters: list };
+  const { parameters: _gone, ...rest } = doc;
+  return rest;
+}
+
 function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): DashboardDoc {
   const fail = (msg: string): never => {
     throw new OpError(msg, index);
   };
   const widget = (id: string) => doc.widgets.find((w) => w.id === id) ?? fail(`Unknown widget "${id}"`);
   const dataset = (id: string) => doc.datasets.find((d) => d.id === id) ?? fail(`Unknown dataset "${id}"`);
+  const filters = doc.parameters ?? [];
+  const filter = (id: string) => filters.find((p) => p.id === id) ?? fail(`Unknown filter "${id}"`);
 
   switch (op.op) {
     case 'setMeta': {
@@ -342,6 +370,55 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
       );
       // Normalise first: a reorder replayed onto someone else's newer layout must work on a consistent grid.
       return { ...doc, layout: reorderLayout(normalizeLayout(doc.layout, doc.widgets), op.id, op.before) };
+    }
+    case 'addParameter': {
+      if (filters.some((p) => p.id === op.parameter.id)) fail(`Filter "${op.parameter.id}" already exists`);
+      const at = op.before === undefined ? filters.length : filters.findIndex((p) => p.id === op.before);
+      if (at < 0) fail(`There is no filter "${op.before}" to insert before`);
+      changes.push(`Added filter "${op.parameter.label}"`);
+      return withParameters(doc, [...filters.slice(0, at), op.parameter, ...filters.slice(at)]);
+    }
+    case 'updateParameter': {
+      const current = filter(op.id);
+      // A new id would orphan every reference silently: renaming is add, re-point, remove, in one batch.
+      for (const key of ['id', 'type'] as const)
+        if (Object.hasOwn(op.set, key) && op.set[key] !== current[key])
+          fail(
+            `A filter's ${key} cannot change; add a new filter, re-point its references and remove this one in one batch`,
+          );
+      const merged: Record<string, unknown> = { ...current, ...op.set };
+      // null removes an optional field; for default, null is a value ("All").
+      for (const [key, value] of Object.entries(op.set))
+        if (value === undefined || (value === null && key !== 'default')) delete merged[key];
+      const next = ParameterSchema.safeParse(merged);
+      if (!next.success) fail(formatZodIssues(next.error).join('; '));
+      changes.push(`Updated filter "${next.data!.label}" (${Object.keys(op.set).join(', ')})`);
+      return withParameters(
+        doc,
+        filters.map((p) => (p.id === op.id ? next.data! : p)),
+      );
+    }
+    case 'removeParameter': {
+      const current = filter(op.id);
+      const uses = parameterUsage(doc, op.id);
+      if (uses.length)
+        fail(
+          `Filter "${op.id}" is used by ${uses.map((u) => `"${u.name}" (${PLACE_LABELS[u.place]})`).join(', ')}; remove those references first (earlier in the same batch)`,
+        );
+      changes.push(`Removed filter "${current.label}"`);
+      return withParameters(
+        doc,
+        filters.filter((p) => p.id !== op.id),
+      );
+    }
+    case 'moveParameter': {
+      const current = filter(op.id);
+      if (op.before === op.id) fail('A filter cannot be placed before itself');
+      const rest = filters.filter((p) => p.id !== op.id);
+      const at = op.before === null ? rest.length : rest.findIndex((p) => p.id === op.before);
+      if (at < 0) fail(`There is no filter "${op.before}"`);
+      changes.push(`Moved filter "${current.label}"`);
+      return withParameters(doc, [...rest.slice(0, at), current, ...rest.slice(at)]);
     }
   }
 }

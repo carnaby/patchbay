@@ -1544,6 +1544,89 @@ describe('POST sources', () => {
   });
 });
 
+describe('filters on secret-backed sources', () => {
+  it('sends each bound query with the secret, refuses a path reference, and asks before new choices go public', async () => {
+    const cookie = await env.login('filters-secrets@example.com');
+    const s = await env.secret(cookie, { name: 'Orders key' });
+    const dash = await env.dashboard(cookie);
+    const region = {
+      id: 'region',
+      label: 'Region',
+      type: 'select',
+      options: [{ value: 'eu' }, { value: 'us' }],
+      all: 'All',
+      default: null,
+    };
+    const city = { id: 'city', label: 'City', type: 'select', options: [{ value: 'ba' }], default: 'ba' };
+    const setup = await env.ops(dash, cookie, [
+      { op: 'addParameter', parameter: region },
+      { op: 'addParameter', parameter: city },
+      addDataset(http('who', '/v1/whoami?region=$param.region', [s.id])),
+    ]);
+    expect(setup.status, setup.text).toBe(200);
+
+    // The path of a secret-backed source never takes a value: the binding was checked on the template.
+    const path = await env.ops(dash, cookie, [addDataset(http('bad', '/v1/$param.city/orders', [s.id]))]);
+    expect(path.status).toBe(400);
+    expect(path.json.error).toContain(
+      'a source with secrets takes filters only in query values and the body, never in the path',
+    );
+
+    const mark = upstream.received.length;
+    const eu = (await env.call(`/api/dashboards/${dash}/data/who?p.region=eu`, { cookie })).json;
+    const all = (await env.call(`/api/dashboards/${dash}/data/who`, { cookie })).json;
+    expect(eu.table.rows[0].echoUrl).toBe('/v1/whoami?region=eu');
+    expect(all.table.rows[0].echoUrl).toBe('/v1/whoami');
+    expect(upstream.since(mark).map((r) => [r.url, Boolean(r.headers.authorization)])).toEqual([
+      ['/v1/whoami?region=eu', true],
+      ['/v1/whoami', true],
+    ]);
+
+    const published = await env.call(`/api/dashboards/${dash}/settings`, {
+      method: 'PATCH',
+      body: { visibility: 'public', confirmPublicSecrets: true },
+      cookie,
+    });
+    expect(published.status).toBe(200);
+    // New choices for a filter the request sends are new queries with the owner's key: confirmed like a new secret.
+    const widen = [
+      { op: 'updateParameter', id: 'region', set: { options: [...region.options, { value: 'apac' }] } },
+    ];
+    const ask = await env.ops(dash, cookie, widen);
+    expect(ask.status).toBe(428);
+    expect(ask.json.secrets).toEqual([{ id: s.id, name: 'Orders key' }]);
+    expect((await env.ops(dash, cookie, widen, { confirmPublicSecrets: true })).status).toBe(200);
+    // Words on screen send no new query, even for a filter the request sends.
+    const relabel = [
+      {
+        op: 'updateParameter',
+        id: 'region',
+        set: {
+          label: 'Area',
+          all: 'Everywhere',
+          options: [{ value: 'eu', label: 'Europe' }, { value: 'us' }, { value: 'apac' }],
+        },
+      },
+    ];
+    const relabelled = await env.ops(dash, cookie, relabel);
+    expect(relabelled.status, relabelled.text).toBe(200);
+    // A filter the request does not send changes nothing about it.
+    expect(
+      (await env.ops(dash, cookie, [{ op: 'updateParameter', id: 'city', set: { label: 'Town' } }])).status,
+    ).toBe(200);
+    // Tokens never change such a public dashboard, declarations included.
+    const pat = await env.pat(cookie);
+    const viaToken = await env.call(`/api/dashboards/${dash}/ops`, {
+      body: {
+        ops: [{ op: 'updateParameter', id: 'city', set: { label: 'City' } }],
+        confirmPublicSecrets: true,
+      },
+      headers: { authorization: `Bearer ${pat}` },
+    });
+    expect(viaToken.status).toBe(403);
+  });
+});
+
 describe('canary', () => {
   it('never shows a secret value in any response, error, log line, version or dashboard folder', async () => {
     const canaries = {

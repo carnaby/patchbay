@@ -171,6 +171,10 @@ describe('Umami analytics', () => {
       referrer: 'https://news.ycombinator.com/item',
       title: 'Authorize access · Patchbay',
     });
+    // A link to a view carries its filter values in the query, which is dropped like any other.
+    expect(hook('event', { url: `${PUBLIC_URL}/d/abc123?p.region=eu&present=1` }).url).toBe(
+      `${PUBLIC_URL}/d/:id`,
+    );
     // Another site's /d/ path is not ours to rewrite.
     expect(hook('event', { url: `${PUBLIC_URL}/`, referrer: 'https://other.example/d/x' }).referrer).toBe(
       'https://other.example/d/x',

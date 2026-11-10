@@ -40,10 +40,10 @@ Scopes:
 | `list_connectors`  | read  | Built-in public data sources and their parameters.                                                                                                                                                                                                                                                                                             |
 | `list_dashboards`  | read  | The user's dashboards with URLs.                                                                                                                                                                                                                                                                                                               |
 | `get_dashboard`    | read  | One dashboard's document and metadata.                                                                                                                                                                                                                                                                                                         |
-| `preview_data`     | read  | Run a source + transforms **without saving**: columns, sample rows, row count per step, column profile, suggested widgets as operations. Pass `dashboardId` for uploads, `dataset` sources and join/union steps.                                                                                                                               |
-| `get_data`         | read  | The processed rows of a saved dataset, with `rowCount` and a profile. `limit` (default 50) keeps the first rows; `from: "end"` keeps the last ones instead, i.e. the newest of an ascending time series.                                                                                                                                       |
-| `suggest_widgets`  | read  | Rules-based visualisation suggestions for a saved dataset, as ready-to-apply operations with rationales. Suggestions with extra steps derive a dataset from the saved one (source kind `dataset`) instead of copying it.                                                                                                                       |
-| `render_snapshot`  | read  | PNG of the dashboard or a single widget (light or dark), plus any data errors and warnings.                                                                                                                                                                                                                                                    |
+| `preview_data`     | read  | Run a source + transforms **without saving**: columns, sample rows, row count per step, column profile, suggested widgets as operations. Pass `dashboardId` for uploads, `dataset` sources and join/union steps. `parameters` picks a view of the dashboard's filters (see "Filters").                                                         |
+| `get_data`         | read  | The processed rows of a saved dataset, with `rowCount` and a profile. `limit` (default 50) keeps the first rows; `from: "end"` keeps the last ones instead, i.e. the newest of an ascending time series. `parameters` picks a view of the dashboard's filters (see "Filters").                                                                 |
+| `suggest_widgets`  | read  | Rules-based visualisation suggestions for a saved dataset, as ready-to-apply operations with rationales. Suggestions with extra steps derive a dataset from the saved one (source kind `dataset`) instead of copying it. `parameters` picks a view of the dashboard's filters (see "Filters").                                                 |
+| `render_snapshot`  | read  | PNG of the dashboard or a single widget (light or dark), plus any data errors and warnings. `parameters` picks a view of the dashboard's filters (see "Filters").                                                                                                                                                                              |
 | `list_versions`    | read  | Version history with actor and change log.                                                                                                                                                                                                                                                                                                     |
 | `list_secrets`     | read  | The user's saved secrets for HTTP sources: id, name, origin, path prefix, how each is sent, timestamps. Never values. See "Secrets" below.                                                                                                                                                                                                     |
 | `create_dashboard` | write | New dashboard (private by default), optionally from a template.                                                                                                                                                                                                                                                                                |
@@ -271,6 +271,36 @@ everything built on it stays in sync.
   for anyone else a lineage with a secret or an uploaded file is refused, and the saved roots of a viewer's derived
   preview load with the viewer's own rights.
 
+## Filters
+
+One dashboard can serve several regions, periods or cities. Declare filters with `addParameter` and reference them as
+`$param.<id>` instead of copying datasets and widgets per value. Viewers set them in the dashboard header; the values
+live in the page URL (`?p.region=eu&p.period=last7d`) and are never saved.
+
+```jsonc
+{ "op": "addParameter", "parameter": { "id": "region", "label": "Region", "type": "select", "options": [{ "value": "eu", "label": "EU" }, { "value": "us", "label": "US" }], "all": "All regions", "default": null } }
+{ "op": "addStep", "datasetId": "sales", "step": { "type": "filter", "expr": "$param.region == null || region == $param.region" } }
+```
+
+- Types: `select` (options, optionally "All" whose value is `null`), `text` (for search, steps only) and `dateRange`
+  (presets such as `last30d`, optionally custom ranges). A date range is used through its parts: `.from`/`.to`
+  (`YYYY-MM-DD`, inclusive) and `.start`/`.end` (epoch ms, UTC, end exclusive).
+- Where: anywhere a value goes in filter and derive steps; a whole query value or path segment of an `http` or `feed`
+  URL; a whole value of a POST body or of connector parameters. A query pair at "All" is left out. Never inside a
+  host, a longer text or a query language: use the API's own parameters or GraphQL variables.
+- Clicks: `crossFilter: { "parameter": "region", "field": "region" }` in a chart (bar, line, area, pie, donut,
+  funnel; `field` is its `x` or `series`, and an `x` must be categories, not a time column), table or map config makes
+  a click set the filter, and a second click on the same item resets it. The other items are dimmed in the browser
+  and in snapshots. The clicked widget should read a dataset without that filter, or it shows only the clicked item.
+- Choices from data: a select may take `optionsFrom: { "dataset": "countries", "field": "code" }` instead of
+  `options`: the distinct values of that column, at most 200, sorted. The dataset must not use a filter itself, the
+  select offers "All" and starts at it, and such a filter never reaches a source with secrets.
+- `get_data`, `render_snapshot`, `suggest_widgets` and `preview_data` take `parameters`, in the text form of a link
+  (`"*"` is "All", a range is `2026-01-01..2026-03-31`); answers echo the values and the view's link. Without them
+  the defaults apply, also for `apply_operations`' data checks.
+- A link to a view (`/d/<id>?p.region=eu`, with `&present=1` for a wall screen) opens it; a value a filter no longer
+  offers falls back to its default.
+
 ## Maps
 
 A `map` widget draws rows with a latitude and a longitude column on a built-in world map (Natural Earth 1:110m,
@@ -488,3 +518,6 @@ const { content } = await client.callTool({
   `ALLOW_PRIVATE_HOSTS`; `get_reference` tells each user which, if any, their dashboards may use.
 - An `http` source may send a POST with a JSON body to a read API. A redirect answer to a POST is an error, never
   followed, keys stay in secrets, never in the body, and a read-only token cannot preview a POST source.
+- Filter values choose only among what an editor declared and fill only whole values in fixed places: never a host,
+  never free text in a request, never the path of a source with secrets. They are bound before every other check, so
+  the SSRF guard and secret bindings judge the real request, and they are never stored.

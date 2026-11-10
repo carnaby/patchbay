@@ -18,6 +18,7 @@ import {
   Plus,
   Redo2,
   Share2,
+  SlidersHorizontal,
   Sun,
   Undo2,
   Volume2,
@@ -43,12 +44,16 @@ import { api } from '../lib/api.ts';
 import { relativeTime, setTheme, useDocumentTitle, useMe, useTheme } from '../lib/hooks.ts';
 import { setMuted, useSoundSettings } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
+import { useParameterUrl } from '../state/parameter-url.ts';
 import { soundWidgets, useSoundCues } from '../state/sound-cues.ts';
 import { useAutosave, useLiveEvents } from '../state/sync.ts';
 import { ConnectAiPanel } from './ConnectAiPanel.tsx';
+import { DataOptionsGuard } from './DataOptions.tsx';
 import { DatasetsPanel } from './DatasetsPanel.tsx';
 import { DetailsInput } from './DetailsFields.tsx';
+import { FilterBar, ParameterSummary } from './FilterBar.tsx';
 import { Grid } from './Grid.tsx';
+import { ParametersPanel } from './ParametersPanel.tsx';
 import {
   PresentationControls,
   PresentingContext,
@@ -64,7 +69,7 @@ import { VersionsPanel } from './VersionsPanel.tsx';
 import { WidgetEditor } from './WidgetEditor.tsx';
 import { WidgetFrame } from './WidgetFrame.tsx';
 
-type Panel = 'data' | 'versions' | 'share' | 'ai' | null;
+type Panel = 'data' | 'filters' | 'versions' | 'share' | 'ai' | null;
 
 export default function DashboardPage() {
   const { id = '' } = useParams();
@@ -160,6 +165,8 @@ function Editor({ id }: { id: string }) {
   // Presentation mode for wall screens; /d/:id?present=1 opens straight into it (kiosk links).
   const presentation = usePresentation(search.get('present') === '1');
   const { presenting } = presentation;
+  // Filter values live in the URL (p.<id>), next to present=1: a link opens a view, a wall screen is pinned to one.
+  useParameterUrl(id, presenting);
   const idle = useIdle(presenting);
   useEffect(() => {
     if (presenting) setEditing(false);
@@ -282,6 +289,14 @@ function Editor({ id }: { id: string }) {
                 >
                   Data
                 </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<SlidersHorizontal className="size-4" />}
+                  onClick={() => setPanel('filters')}
+                >
+                  Filters
+                </Button>
                 <Button size="sm" variant="ghost" icon={<Plus className="size-4" />} onClick={addWidget}>
                   Widget
                 </Button>
@@ -354,6 +369,15 @@ function Editor({ id }: { id: string }) {
               <Button
                 size="sm"
                 variant="ghost"
+                icon={<SlidersHorizontal className="size-4" />}
+                onClick={() => setPanel('filters')}
+                className="max-sm:h-10"
+              >
+                Filters
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
                 icon={<Plus className="size-4" />}
                 onClick={addWidget}
                 className="max-sm:h-10"
@@ -368,6 +392,7 @@ function Editor({ id }: { id: string }) {
         {presenting ? null : <SecretsSaveBanner />}
 
         <main className={cx('px-3 sm:px-4', presenting ? 'py-3' : 'py-4')}>
+          {presenting ? <ParameterSummary /> : <FilterBar dashboardId={id} live={live} />}
           {doc.description && !editing && !presenting ? (
             <p className="mb-4 max-w-3xl text-sm text-ink-2">{doc.description}</p>
           ) : null}
@@ -431,11 +456,13 @@ function Editor({ id }: { id: string }) {
         </main>
 
         <DatasetsPanel open={panel === 'data'} onClose={() => setPanel(null)} dashboardId={id} />
+        <ParametersPanel open={panel === 'filters'} onClose={() => setPanel(null)} dashboardId={id} />
         <VersionsPanel open={panel === 'versions'} onClose={() => setPanel(null)} dashboardId={id} />
         <SharePanel open={panel === 'share'} onClose={() => setPanel(null)} dashboardId={id} />
         <ConnectAiPanel open={panel === 'ai'} onClose={() => setPanel(null)} dashboardId={id} />
         <ExpandedWidget dashboardId={id} live={live} />
         <PublicSecretsDialogs />
+        <DataOptionsGuard dashboardId={id} live={live} presenting={presenting} />
         <WidgetEditor
           widgetId={widgetId}
           onClose={() => setWidgetId(null)}

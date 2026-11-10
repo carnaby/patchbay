@@ -27,18 +27,32 @@ import { useEffect, useRef } from 'react';
 
 echarts.use([CanvasRenderer]);
 
+/** What ECharts reports for a click on an item; only what cross-filter reads. */
+export interface EChartItem {
+  name?: string;
+  seriesName?: string;
+  data?: unknown;
+}
+
 export function EChart({
   option,
   className,
   label,
+  onItemClick,
 }: {
   option: Record<string, unknown>;
   className?: string;
   label?: string;
+  onItemClick?: ((item: EChartItem) => void) | undefined;
 }) {
   const el = useRef<HTMLDivElement>(null);
   const chart = useRef<echarts.ECharts | null>(null);
   const lastShape = useRef<string>('');
+  // The latest handler, read at click time: the instance is made once and its listeners stay.
+  const click = useRef(onItemClick);
+  useEffect(() => {
+    click.current = onItemClick;
+  }, [onItemClick]);
 
   useEffect(() => {
     if (!el.current) return;
@@ -64,6 +78,7 @@ export function EChart({
     instance.on('hideTip', () => {
       tip = false;
     });
+    instance.on('click', (params) => click.current?.(params as EChartItem));
     const node = el.current;
     node.addEventListener('pointerdown', onPointerDown, { passive: true });
     window.addEventListener('scroll', onScroll, { capture: true, passive: true });
@@ -82,10 +97,13 @@ export function EChart({
     // When the structure changes (other series, other chart kind) replace the
     // option; when only data changes, merge so ECharts animates the update.
     const series =
-      (option.series as { type?: string; name?: string; markLine?: unknown }[] | undefined) ?? [];
-    // A merge never drops a markLine, so reference lines coming or going count as a new shape.
+      (option.series as
+        | { type?: string; name?: string; markLine?: unknown; triggerEvent?: boolean }[]
+        | undefined) ?? [];
+    // A merge never drops a markLine, so reference lines coming or going count as a new shape. Nor a clickable line
+    // (`triggerEvent`, written only while a cross-filter picks by series), which would stay clickable after it is gone.
     const shape = JSON.stringify([
-      series.map((s) => `${s.type}:${s.name}${s.markLine ? ':ref' : ''}`),
+      series.map((s) => `${s.type}:${s.name}${s.markLine ? ':ref' : ''}${s.triggerEvent ? ':click' : ''}`),
       (option.xAxis as { type?: string } | undefined)?.type,
       Boolean(option.title),
     ]);

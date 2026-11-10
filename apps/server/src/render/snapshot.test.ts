@@ -924,3 +924,70 @@ describe('status snapshots', () => {
     expect(pixelsOf(img, THEMES.light.status.critical, { x: 14, y: 36, w: 400, h: 24 })).toBeGreaterThan(0);
   });
 });
+
+describe('the filter line of a dashboard snapshot', () => {
+  const region = {
+    id: 'region',
+    label: 'Region',
+    type: 'select',
+    options: [
+      { value: 'eu', label: 'EU' },
+      { value: 'us', label: 'US' },
+    ],
+    all: 'All regions',
+    default: null,
+  };
+  const withFilters = parseDashboard({ ...emptyDashboard('Sales'), parameters: [region] });
+  /** Dark pixels between the title and where the cards start without a line (y 48-61): the summary line's ink. */
+  const band = (img: Image) => {
+    let n = 0;
+    for (let y = 48; y < 62; y++)
+      for (let x = 0; x < img.width; x++) if (img.rgba[(y * img.width + x) * 4]! < 200) n++;
+    return n;
+  };
+  const rowsOf = (img: Image) => img.rgba.slice(48 * img.width * 4, 62 * img.width * 4);
+
+  it('prints the view under the title with every filter, defaults included, and nothing without filters', () => {
+    const plain = decodePng(renderDashboardPng(emptyDashboard('Sales'), new Map()));
+    const atDefaults = decodePng(renderDashboardPng(withFilters, new Map()));
+    const eu = decodePng(renderDashboardPng(withFilters, new Map(), { parameters: { region: 'eu' } }));
+    expect(band(plain)).toBe(0);
+    // "Region: All regions" with no parameters given: the defaults are a view too.
+    expect(band(atDefaults)).toBeGreaterThan(20);
+    // "Region: EU": the bound value, not the default.
+    expect(Buffer.from(rowsOf(eu)).equals(Buffer.from(rowsOf(atDefaults)))).toBe(false);
+    // The line takes its own room; the cards move down by it.
+    expect(atDefaults.height).toBe(plain.height + 20);
+  });
+});
+
+describe('cross-filter in snapshots', () => {
+  const bars = widget({
+    id: 'c',
+    type: 'chart',
+    datasetId: 'sales',
+    config: { kind: 'bar', x: 'month', y: ['revenue'], crossFilter: { parameter: 'month', field: 'month' } },
+  });
+  const ink = (png: Buffer) => pixelsOf(decodePng(png), THEMES.light.categorical[0]!);
+
+  it('dims the bars that are not selected, and draws all at full strength at "All"', () => {
+    const full = ink(renderWidgetPng(bars, result));
+    expect(ink(renderWidgetPng(bars, result, { parameters: { month: null } }))).toBe(full);
+    const one = ink(renderWidgetPng(bars, result, { parameters: { month: 'Feb' } }));
+    expect(one).toBeLessThan(full * 0.6);
+    expect(one).toBeGreaterThan(full * 0.2);
+  });
+
+  it('dims the table rows that are not selected', () => {
+    const table = widget({
+      id: 't',
+      type: 'table',
+      datasetId: 'sales',
+      config: { crossFilter: { parameter: 'month', field: 'month' } },
+    });
+    const text = THEMES.light.textPrimary;
+    const full = pixelsOf(decodePng(renderWidgetPng(table, result)), text);
+    const one = pixelsOf(decodePng(renderWidgetPng(table, result, { parameters: { month: 'Jan' } })), text);
+    expect(one).toBeLessThan(full * 0.7);
+  });
+});

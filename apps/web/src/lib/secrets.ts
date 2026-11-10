@@ -9,12 +9,14 @@ import {
   CONFIRM_PUBLIC_SECRETS,
   CREDENTIAL_ERRORS,
   type DashboardDoc,
+  parameterRequestShape,
   placementConflict,
   type SecretBinding,
   type SecretInfo,
   type SecretMode,
   type Source,
   secretRefChanges,
+  sourceParameterIds,
   sourceSecretIds,
 } from '@patchbay/core';
 
@@ -55,14 +57,24 @@ export function publicSecretsRequest(error: unknown): PublicSecretRef[] | null {
 
 /**
  * Fingerprints of the secret references `next` introduces or retargets compared with `prev` (the server's rule,
- * `secretRefChanges`): one per dataset, made of its id, URL and secret ids. A confirmation covers exactly these, so
- * pointing a confirmed secret at another URL later asks again, as the server does.
+ * `secretRefChanges`): one per dataset, made of its id, URL and secret ids, and the request shapes of the filters
+ * it sends. A confirmation covers exactly these, so pointing a confirmed secret at another URL later asks again, as
+ * the server does.
  */
 export function introducedSecretRefs(prev: DashboardDoc, next: DashboardDoc): string[] {
   const changed = new Set(secretRefChanges(prev, next));
   return next.datasets
     .filter((d) => changed.has(d.id) && d.source.kind === 'http')
-    .map((d) => `${d.id} ${(d.source as { url: string }).url} ${sourceSecretIds(d.source).join(',')}`);
+    .map((d) => {
+      // The filters the request sends, with their choices: new choices are new queries with the owner's key, while
+      // labels are not (the server's projection, so both sides agree). A source that sends none keeps the
+      // fingerprint it had before filters existed.
+      const filters = sourceParameterIds(d.source).map((id) => {
+        const parameter = next.parameters?.find((p) => p.id === id);
+        return parameter ? parameterRequestShape(parameter) : null;
+      });
+      return `${d.id} ${(d.source as { url: string }).url} ${sourceSecretIds(d.source).join(',')}${filters.length ? ` ${JSON.stringify(filters)}` : ''}`;
+    });
 }
 
 /** The secret ids behind `introducedSecretRefs`, once each, to name them in the confirmation. */

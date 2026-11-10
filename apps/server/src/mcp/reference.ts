@@ -4,6 +4,7 @@ import {
   AGGREGATE_OPS,
   CHART_KINDS,
   COLOR_TOKENS,
+  DATE_PRESETS,
   FEED_MIN_REFRESH_SEC,
   FUNCTIONS,
   GRID_COLUMNS,
@@ -42,7 +43,7 @@ Workflow that works well:
 Rules: every write creates a new version the user can roll back (list_versions / restore_version), and the user
 sees your changes live in the browser. Prefer few, meaningful widgets over many. Never put two measures of
 different scale on one chart; make two charts instead. Read get_reference for the full schema. Private APIs: see
-list_secrets. Show one source several ways by deriving datasets (source kind "dataset"), not by copying it.`;
+list_secrets. Show one source several ways by deriving datasets (source kind "dataset"), not by copying it. One dashboard for several regions or periods: declare a filter (addParameter) and use $param.<id>, instead of copying datasets and widgets.`;
 
 /** http:// only works where the caller may use the operator's list, so no one else is shown it as an option. */
 function urlExample(network: NetworkAccess): string {
@@ -191,6 +192,42 @@ as JSON; a larger one comes back as an error with its columns and no rows: add l
 - A dataset that others read cannot be removed: remove or re-point them first, earlier in the same batch.
   preview_data needs dashboardId for a "dataset" source or join/union steps: it reads the saved datasets.
 
+## Filters (dashboard parameters)
+One dashboard for several regions, periods or cities: declare filters and use $param.<id>, instead of copying datasets
+and widgets per value. Viewers set filters in the dashboard header; values are never saved and create no version.
+- parameters (at most ${LIMITS.parameters}; ids are a-z, 0-9 and "_", starting with a letter):
+  { id, label, type: "select", options: [{ value, label? }], all?: "All regions", default } (default null is "all" and needs all)
+  | { id, label, type: "text", placeholder?, default: "" }
+  | { id, label, type: "dateRange", presets: [${DATE_PRESETS.join('|')}],
+      custom?: false, min?, max?, maxDays?: 366, default: "last30d" | { from: "YYYY-MM-DD", to: "YYYY-MM-DD" } }
+- Choices from data: a select may take optionsFrom: { dataset, field } instead of options: the distinct values of that
+  column, at most 200, sorted. The dataset must use no filter itself; the select needs all and default null; such a
+  filter never reaches a source with secrets (give that one fixed options).
+- In filter and derive steps, wherever a value goes:
+  filter { expr: "$param.region == null || region == $param.region" }  (null is the "all" choice)
+  filter { expr: '$param.q == "" || contains(title, $param.q)' }
+  filter { expr: "time >= $param.period.start && time < $param.period.end" }  (epoch ms, UTC, end exclusive)
+- In http and feed URLs as a whole query value or a whole path segment; in a POST body and connector params as a whole value:
+  https://api.example.com/v1/sales?region=$param.region&from=$param.period.from&to=$param.period.to
+  (.from/.to are YYYY-MM-DD, inclusive). A query pair whose filter is at "all" is left out; in a body the value is null,
+  in connector params the parameter is left out. Body: { "variables": { "region": "$param.region" } }. Never inside a
+  longer text, a host or query text: use GraphQL variables or the API's own query parameters.
+- Only select and dateRange filters reach URLs, bodies and connectors; text filters work in steps only. A path segment
+  takes a select without all, and only on a source without secrets. Not in table rules, sound conditions or titles.
+- A dataset with accumulate cannot use filters in its source: accumulate one without filters and filter a dataset derived from it.
+- Clicks: crossFilter { parameter, field } on a chart (bar, line, area, pie, donut and funnel; field: its x, which
+  must be categories, not a time column, or its series), a table or a map: clicking a bar, point, slice, row or dot sets that filter to the item's value of field;
+  clicking the selected item again resets it. Only select and text filters; for a select the value must be one of its
+  choices. The other items are dimmed, also in render_snapshot. If the clicked widget's own dataset uses the filter, it
+  shows only the clicked item: give the clicked widget a dataset without that filter.
+- Ops: addParameter { parameter, before? }, updateParameter { id, set } (merged; id and type cannot change; null removes
+  all, placeholder, min or max), removeParameter { id } (refused while anything uses it), moveParameter { id, before: id | null }.
+  Renaming is addParameter, re-pointing the references and removeParameter, in one batch.
+- get_data, render_snapshot, suggest_widgets and preview_data take parameters: { "region": "eu", "period": "last7d" }
+  (the text of a link: "*" is all, a range is "2026-01-01..2026-03-31"). Without them the defaults apply, also for the
+  data checks of apply_operations. Answers echo the values used and the link to that view.
+- Link to a view: ${publicUrl}/d/<id>?p.region=eu&p.period=last7d (add &present=1 for a wall screen).
+
 ## Expressions
 Operators: + - * / % ^, == != < <= > >=, && || ! (or: and, or, not), cond ? a : b. Strings in "double" or 'single'
 quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Trigonometry works in radians (convert
@@ -202,7 +239,7 @@ Whole-table functions (filter and derive steps, table rules, sound conditions; s
 ${tableFns}
 
 ## Widgets
-- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels?, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors?, referenceLines? }
+- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels?, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors?, referenceLines?, crossFilter? }
   kinds: ${CHART_KINDS.join(', ')}. "series" splits long-format data (one row per time+category) into lines/bars.
   xMin/xMax fix the x axis of a scatter with a numeric x.
   showLabels puts the value on each mark. Unset, the browser shows none and snapshots label single-series bar charts
@@ -212,12 +249,12 @@ ${tableFns}
 - gauge { field?, agg, min, max, bands?: [{ upTo, color }], format? }
   field is required except for agg "count": without a field count counts rows, with one it counts the rows where
   that field is not null.
-- table { columns?, pageSize, format?, rules?, style? }   columns: names or { field, label?, link?, format?, bands?, colorAs? }
+- table { columns?, pageSize, format?, rules?, style?, crossFilter? }   columns: names or { field, label?, link?, format?, bands?, colorAs? }
   style "list" shows headlines: the first column as the title, the others on a line under it, times as "12 min ago".
   link names the column holding the URL a cell opens (http/https only).
 - text { markdown }   (no raw HTML)
 - map { lat, lon, mode: points|track, series?, size?, color?, label?, view: fit|world, basemap: countries|land|none,
-  terminator, maxPoints, format?, colors? }
+  terminator, maxPoints, format?, colors?, crossFilter? }
   Use it whenever the data has latitude/longitude (see the profile's roles). track connects rows in order: sort by time
   first; accumulate a "current position" source (iss.position) to get a track. size = dot area (e.g. magnitude),
   color = numeric value on a sequential ramp, series = one colour per entity (not both color and series).
@@ -300,6 +337,7 @@ removeWidget { id }, moveWidget { id, x?, y?, w?, h? }, setLayout { layout },
 reorderWidget { id, before: widgetId | null } (reading order, i.e. the order widgets stack in on phones; sizes kept),
 addStep { datasetId, step, before? }, updateStep { datasetId, stepId, set } (merged; type cannot change),
 removeStep { datasetId, stepId }, moveStep { datasetId, stepId, before: stepId | null }.
+addParameter, updateParameter, removeParameter, moveParameter: see Filters.
 Prefer step operations over updateDataset { set: { transforms } }: they do not overwrite steps the user changed meanwhile.
 Omit positions to auto-place. Typical sizes: kpi 3x2, gauge 3x3, chart 6x4, table 6x5, map 6x5, status 6x5, text 4x2, clock 3x2,
 search 6x1 (w x h, row = 80 px).

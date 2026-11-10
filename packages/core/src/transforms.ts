@@ -7,7 +7,15 @@
  */
 import { z } from 'zod';
 import { AGGREGATE_OPS, aggregate, numeric } from './aggregate.ts';
-import { compileFor, ExprError, fieldRef, isTruthy, parse, referencedFields } from './expr.ts';
+import {
+  compileFor,
+  ExprError,
+  fieldRef,
+  isTruthy,
+  MAX_BOUND_EXPRESSION,
+  parse,
+  referencedFields,
+} from './expr.ts';
 import { IdSchema } from './ids.ts';
 import { type ColumnType, cellOf, type DataTable, type Row, retype, type Scalar, setCell } from './table.ts';
 
@@ -408,6 +416,9 @@ function requireFieldsIn(table: DataTable, fields: readonly string[], datasetId:
 
 const rowCap = () => PIPELINE_LIMITS.maxRows.toLocaleString('en');
 
+/** Filter and derive steps run with filter values bound in, which may make them longer than an authored expression. */
+const BOUND = { maxLength: MAX_BOUND_EXPRESSION };
+
 function applyStep(
   table: DataTable,
   t: Transform,
@@ -419,8 +430,8 @@ function applyStep(
   const order = table.columns.map((c) => c.name);
   switch (t.type) {
     case 'filter': {
-      requireFields(table, [...referencedFields(parse(t.expr))], step);
-      const fn = compileFor(t.expr, table, () => budget.tick());
+      requireFields(table, [...referencedFields(parse(t.expr, BOUND))], step);
+      const fn = compileFor(t.expr, table, () => budget.tick(), BOUND);
       return budget.measure({
         columns: table.columns,
         rows: table.rows.filter((r) => {
@@ -455,8 +466,8 @@ function applyStep(
       });
     }
     case 'derive': {
-      requireFields(table, [...referencedFields(parse(t.expr))], step);
-      const fn = compileFor(t.expr, table, () => budget.tick());
+      requireFields(table, [...referencedFields(parse(t.expr, BOUND))], step);
+      const fn = compileFor(t.expr, table, () => budget.tick(), BOUND);
       const replaces = order.includes(t.as);
       // Charged row by row: text built by an expression is new memory, and 40 derive steps of long text over a
       // few thousand rows would otherwise pass the cell limit and still reach gigabytes.

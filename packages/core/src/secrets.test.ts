@@ -16,6 +16,7 @@ import {
   secretParamIssue,
   secretRefChanges,
   secretValueIssue,
+  sourceParameterIds,
 } from './index.ts';
 
 const A = 'sec_AAAAAAAAAAAAAAAA';
@@ -333,5 +334,79 @@ describe('credentialLikeParams', () => {
     ).toEqual(['api_key', 'Access-Token', 'apiKey', 'signature', 'token']);
     expect(credentialLikeParams('https://x.example/a?keyword=x&monkey=1')).toEqual([]);
     expect(credentialLikeParams('nope')).toEqual([]);
+  });
+});
+
+describe('filters on secret-backed sources (proposal 0010, decision 1)', () => {
+  const SECRET = 'sec_AAAAAAAAAAAAAAAA';
+  const URL_PLAIN = 'https://api.example.com/v1/orders';
+  const URL_REGION = 'https://api.example.com/v1/orders?region=$param.region';
+  const region = {
+    id: 'region',
+    label: 'Region',
+    type: 'select',
+    options: [{ value: 'eu' }, { value: 'us' }],
+    all: 'All',
+    default: null,
+  };
+  const q = { id: 'q', label: 'Q', type: 'text' };
+  const docWith = (url: string, parameters: unknown[] = [region, q], body?: unknown) =>
+    parseDashboard({
+      ...emptyDashboard('t'),
+      parameters,
+      datasets: [
+        {
+          id: 'o',
+          name: 'O',
+          source: {
+            kind: 'http',
+            url,
+            secrets: [SECRET],
+            ...(body === undefined ? {} : { method: 'POST', body }),
+          },
+        },
+      ],
+    });
+
+  it('counts a new reference and a changed declaration of a filter the request sends', () => {
+    const query = docWith(URL_REGION);
+    expect(secretRefChanges(docWith(URL_PLAIN), query)).toEqual(['o']);
+    expect(secretRefChanges(query, query)).toEqual([]);
+    const wider = docWith(URL_REGION, [{ ...region, options: [...region.options, { value: 'apac' }] }, q]);
+    expect(secretRefChanges(query, wider)).toEqual(['o']);
+    // A filter the request does not send changes nothing about it.
+    expect(secretRefChanges(query, docWith(URL_REGION, [region, { ...q, label: 'Search' }]))).toEqual([]);
+  });
+
+  it('counts a body that starts sending a filter, and leaves other body edits as they were', () => {
+    const fixed = docWith(URL_PLAIN, [region], { variables: { r: 'eu' } });
+    const sends = docWith(URL_PLAIN, [region], { variables: { r: '$param.region' } });
+    expect(secretRefChanges(fixed, sends)).toEqual(['o']);
+    expect(secretRefChanges(fixed, docWith(URL_PLAIN, [region], { variables: { r: 'us' } }))).toEqual([]);
+    expect(sourceParameterIds(sends.datasets[0]!.source)).toEqual(['region']);
+    expect(sourceParameterIds(docWith(URL_REGION).datasets[0]!.source)).toEqual(['region']);
+  });
+
+  it('counts only what changes the queries a sent filter allows, never its labels or its place', () => {
+    const query = docWith(URL_REGION);
+    const counted = (parameters: unknown[]) => secretRefChanges(query, docWith(URL_REGION, parameters));
+    // Words on screen send nothing new.
+    expect(counted([{ ...region, label: 'Area' }, q])).toEqual([]);
+    expect(counted([{ ...region, options: [{ value: 'eu', label: 'Europe' }, { value: 'us' }] }, q])).toEqual(
+      [],
+    );
+    expect(counted([{ ...region, all: 'Everywhere' }, q])).toEqual([]);
+    expect(counted([q, region])).toEqual([]);
+    // What a viewer may ask for, or gets without asking, does.
+    expect(counted([{ ...region, options: [{ value: 'eu' }, { value: 'uk' }] }, q])).toEqual(['o']);
+    expect(counted([{ ...region, options: [...region.options, { value: 'apac' }] }, q])).toEqual(['o']);
+    expect(counted([{ ...region, default: 'eu' }, q])).toEqual(['o']);
+    const { all: _all, ...withoutAll } = { ...region, default: 'eu' };
+    const fixed = docWith(URL_REGION, [withoutAll, q]);
+    expect(secretRefChanges(fixed, docWith(URL_REGION, [{ ...withoutAll, all: 'All' }, q]))).toEqual(['o']);
+    // A move goes through the same check as any other op.
+    const moved = applyOps(query, [{ op: 'moveParameter', id: 'q', before: 'region' }]);
+    expect(moved.doc.parameters?.map((p) => p.id)).toEqual(['q', 'region']);
+    expect(secretRefChanges(query, moved.doc)).toEqual([]);
   });
 });
