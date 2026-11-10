@@ -7,11 +7,14 @@
  * and the AST size is capped, so evaluation time is bounded.
  */
 import { type AggregateOp, aggregate } from './aggregate.ts';
+import { PARAM_PREFIX, type ParamPart, readRef } from './param-ref.ts';
 import type { DataTable, Row, Scalar } from './table.ts';
 
 export type Node =
   | { k: 'lit'; v: Scalar }
   | { k: 'field'; name: string }
+  // A filter reference (proposal 0010). Always bound to a literal before a pipeline runs (core bind.ts).
+  | { k: 'param'; id: string; part: ParamPart | null }
   | { k: 'unary'; op: '-' | '!'; arg: Node }
   | { k: 'binary'; op: string; left: Node; right: Node }
   | { k: 'cond'; test: Node; then: Node; else: Node }
@@ -27,6 +30,11 @@ export class ExprError extends Error {
 }
 
 const MAX_LENGTH = 2000;
+/**
+ * Bound expressions (filter values in place of `$param` references) may be longer than authored ones: one filter can
+ * appear many times. Filter and derive steps parse with this limit; the binder refuses anything longer.
+ */
+export const MAX_BOUND_EXPRESSION = 20_000;
 const MAX_NODES = 400;
 /**
  * Strings produced by expressions are capped so repeated derive steps cannot grow memory exponentially. 2,000 is as
@@ -151,8 +159,9 @@ const INFIX: Record<string, number> = {
   '^': 8,
 };
 
-export function parse(src: string): Node {
-  if (src.length > MAX_LENGTH) throw new ExprError(`Expression longer than ${MAX_LENGTH} characters`);
+export function parse(src: string, options: { maxLength?: number } = {}): Node {
+  const maxLength = options.maxLength ?? MAX_LENGTH;
+  if (src.length > maxLength) throw new ExprError(`Expression longer than ${maxLength} characters`);
   const tokens = tokenize(src).map((tok) =>
     tok.t === 'id' && Object.hasOwn(KEYWORD_OPS, tok.v)
       ? ({ t: 'op', v: KEYWORD_OPS[tok.v]!, p: tok.p } as Token)
@@ -181,6 +190,12 @@ export function parse(src: string): Node {
       case 'field':
         return node({ k: 'field', name: tok.v });
       case 'id': {
+        // Read before keywords and calls: `$param.x` is never a field or a function of that name.
+        if (tok.v.startsWith(PARAM_PREFIX)) {
+          const ref = readRef(tok.v)!;
+          if ('problem' in ref) throw new ExprError(ref.problem, tok.p);
+          return node({ k: 'param', id: ref.id, part: ref.part });
+        }
         if (tok.v === 'true' || tok.v === 'false') return node({ k: 'lit', v: tok.v === 'true' });
         if (tok.v === 'null') return node({ k: 'lit', v: null });
         const after = peek();
@@ -269,6 +284,45 @@ export function referencedFields(ast: Node, out = new Set<string>()): Set<string
       break;
   }
   return out;
+}
+
+/** The filter references of a parsed expression, in reading order (validation and the editor). */
+export function paramNodes(
+  ast: Node,
+  out: Extract<Node, { k: 'param' }>[] = [],
+): Extract<Node, { k: 'param' }>[] {
+  switch (ast.k) {
+    case 'param':
+      out.push(ast);
+      break;
+    case 'unary':
+      paramNodes(ast.arg, out);
+      break;
+    case 'binary':
+      paramNodes(ast.left, out);
+      paramNodes(ast.right, out);
+      break;
+    case 'cond':
+      paramNodes(ast.test, out);
+      paramNodes(ast.then, out);
+      paramNodes(ast.else, out);
+      break;
+    case 'call':
+      for (const a of ast.args) paramNodes(a, out);
+      break;
+  }
+  return out;
+}
+
+/**
+ * Where the references stand in the text, from the tokenizer, so strings and backticked names never count. Binding
+ * replaces exactly these spans and nothing else, which is what keeps a value from changing the expression's shape.
+ * Throws an ExprError for text that does not tokenize.
+ */
+export function paramSpans(src: string): { start: number; end: number; text: string }[] {
+  return tokenize(src).flatMap((t) =>
+    t.t === 'id' && t.v.startsWith(PARAM_PREFIX) ? [{ start: t.p, end: t.p + t.v.length, text: t.v }] : [],
+  );
 }
 
 const num = (v: Scalar): number | null => {
@@ -445,6 +499,10 @@ export function evaluate(ast: Node, row: Row, values?: Map<Node, (row: Row) => S
       return ast.v;
     case 'field':
       return Object.hasOwn(row, ast.name) ? (row[ast.name] ?? null) : null;
+    case 'param':
+      throw new ExprError(
+        `Filter "${ast.id}" has no value here: filters are replaced by their values before a step runs`,
+      );
     case 'unary': {
       const v = evaluate(ast.arg, row, values);
       if (ast.op === '!') return !truthy(v);
@@ -552,8 +610,13 @@ const TICK_ROWS = 1024;
  * the pipeline's clock: up to a few hundred passes over the table happen here, before any row is evaluated, and
  * have to stop at the run's time limit like the rows do.
  */
-export function compileFor(src: string, table: DataTable, tick: () => void = () => {}): (row: Row) => Scalar {
-  const ast = parse(src);
+export function compileFor(
+  src: string,
+  table: DataTable,
+  tick: () => void = () => {},
+  options: { maxLength?: number } = {},
+): (row: Row) => Scalar {
+  const ast = parse(src, options);
   const values = new Map<Node, (row: Row) => Scalar>();
   // An expression often repeats a call (`x / col_sum(x) * 100 - col_sum(x)`), and calls grouped by the same column
   // share one grouping pass.
@@ -610,5 +673,7 @@ const IDENT = /^[A-Za-z_$][A-Za-z0-9_$.]*$/;
 const RESERVED = new Set(['true', 'false', 'null', 'and', 'or', 'not']);
 /** A column as an expression writes it: bare when it reads as an identifier, otherwise in backticks. */
 export function fieldRef(name: string): string {
-  return IDENT.test(name) && !RESERVED.has(name) ? name : `\`${name.replace(/[\\`]/g, '\\$&')}\``;
+  return IDENT.test(name) && !RESERVED.has(name) && !name.startsWith(PARAM_PREFIX)
+    ? name
+    : `\`${name.replace(/[\\`]/g, '\\$&')}\``;
 }
