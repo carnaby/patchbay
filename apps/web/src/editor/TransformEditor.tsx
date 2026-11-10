@@ -3,6 +3,7 @@ import {
   ExprError,
   FUNCTIONS,
   joinKeys,
+  type Parameter,
   parse,
   TABLE_FUNCTION_ARGS,
   TABLE_FUNCTIONS,
@@ -11,9 +12,11 @@ import {
   WINDOW_OPS,
 } from '@patchbay/core';
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, cx, IconButton, Input, Select } from '../components/ui.tsx';
 import { columnsAfter, defaultOtherDataset, repickJoinKeys, switchJoinDataset } from './columns.ts';
+import { FilterChips } from './InsertFilter.tsx';
+import { filterPreset, insertAt, refChoices } from './parameter-refs.ts';
 import {
   defaultPresetColumn,
   PRESETS,
@@ -48,6 +51,7 @@ interface StepContext {
   self: { id: string; name: string } | undefined;
   /** Types of the source's own columns, by name; empty while unknown. */
   types: Record<string, string>;
+  parameters: readonly Parameter[];
 }
 
 const DEFAULTS: Record<Step['type'], (cols: string[], ctx: StepContext) => Step> = {
@@ -163,11 +167,25 @@ function ExpressionInput({
   value,
   onChange,
   columns,
+  parameters = [],
 }: {
   value: string;
   onChange: (v: string) => void;
   columns: string[];
+  parameters?: readonly Parameter[];
 }) {
+  const input = useRef<HTMLInputElement>(null);
+  // Every kind of filter works in an expression; a date range through its parts.
+  const choices = refChoices(parameters, 'filter', { secrets: false });
+  const insert = (text: string) => {
+    const el = input.current;
+    const next = insertAt(value, el?.selectionStart ?? value.length, el?.selectionEnd ?? value.length, text);
+    onChange(next.value);
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(next.caret, next.caret);
+    });
+  };
   const [showHelp, setShowHelp] = useState(false);
   const error = useMemo(() => {
     try {
@@ -180,6 +198,7 @@ function ExpressionInput({
   return (
     <div className="space-y-1">
       <Input
+        ref={input}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         spellCheck={false}
@@ -197,6 +216,7 @@ function ExpressionInput({
           {showHelp ? 'hide' : 'functions'}
         </button>
       </div>
+      <FilterChips choices={choices} onInsert={insert} />
       {showHelp ? (
         <div className="max-h-40 overflow-y-auto rounded-md bg-surface-2 p-2 font-mono text-[11px] text-ink-2">
           <div className="mb-1 font-sans text-muted">
@@ -321,6 +341,58 @@ function DerivePresets({
   );
 }
 
+/** "Match a filter": the usual Filter rows expression for a filter and a column, still editable afterwards. */
+function MatchFilter({
+  parameters,
+  columns,
+  onApply,
+}: {
+  parameters: readonly Parameter[];
+  columns: string[];
+  onApply: (expr: string) => void;
+}) {
+  const [id, setId] = useState(parameters[0]?.id ?? '');
+  const [column, setColumn] = useState(columns[0] ?? '');
+  const param = parameters.find((p) => p.id === id);
+  if (parameters.length === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-xs">
+      <span className="text-muted">Match a filter:</span>
+      <Select
+        value={id}
+        onChange={(e) => setId(e.target.value)}
+        className="h-7 w-auto text-xs"
+        aria-label="Filter"
+      >
+        {parameters.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.label}
+          </option>
+        ))}
+      </Select>
+      <Select
+        value={column}
+        onChange={(e) => setColumn(e.target.value)}
+        className="h-7 w-auto text-xs"
+        aria-label="Column"
+      >
+        {columns.map((c) => (
+          <option key={c} value={c}>
+            {c}
+          </option>
+        ))}
+      </Select>
+      <Button
+        size="sm"
+        disabled={!param || !column}
+        onClick={() => param && onApply(filterPreset(param, column))}
+      >
+        Use
+      </Button>
+    </div>
+  );
+}
+
 function StepFields({
   step,
   columns,
@@ -336,11 +408,19 @@ function StepFields({
   switch (step.type) {
     case 'filter':
       return (
-        <ExpressionInput
-          value={step.expr}
-          columns={columns}
-          onChange={(expr) => onChange({ ...step, expr })}
-        />
+        <div className="space-y-2">
+          <MatchFilter
+            parameters={ctx.parameters}
+            columns={columns}
+            onApply={(expr) => onChange({ ...step, expr })}
+          />
+          <ExpressionInput
+            value={step.expr}
+            columns={columns}
+            parameters={ctx.parameters}
+            onChange={(expr) => onChange({ ...step, expr })}
+          />
+        </div>
       );
     case 'derive':
       return (
@@ -359,6 +439,7 @@ function StepFields({
           <ExpressionInput
             value={step.expr}
             columns={columns}
+            parameters={ctx.parameters}
             onChange={(expr) => onChange({ ...step, expr })}
           />
         </div>
@@ -835,6 +916,7 @@ export function TransformEditor({
   columnsOf = () => [],
   self,
   baseTypes = {},
+  parameters = [],
   onChange,
 }: {
   steps: Step[];
@@ -844,9 +926,10 @@ export function TransformEditor({
   columnsOf?: (id: string) => string[];
   self?: { id: string; name: string } | undefined;
   baseTypes?: Record<string, string>;
+  parameters?: readonly Parameter[];
   onChange: (steps: Step[]) => void;
 }) {
-  const ctx: StepContext = { datasets, columnsOf, self, types: baseTypes };
+  const ctx: StepContext = { datasets, columnsOf, self, types: baseTypes, parameters };
   const [adding, setAdding] = useState(false);
   const update = (i: number, s: Step) => onChange(steps.map((x, j) => (j === i ? s : x)));
   const move = (i: number, d: -1 | 1) => {

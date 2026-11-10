@@ -11,6 +11,7 @@ import {
   type HttpMethod,
   isStaticSource,
   type OpInput,
+  type Parameter,
   type ParamSpec,
   type Source,
   type Suggestion,
@@ -36,9 +37,11 @@ import {
   Plus,
   Radio,
   Rss,
+  SlidersHorizontal,
   Sparkles,
   Table2,
   Trash2,
+  X,
 } from 'lucide-react';
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -83,6 +86,8 @@ import {
   sourceCandidates,
 } from './dataset-lineage.ts';
 import { bodyText, parseBodyText, switchMethod, withBody } from './http-body.ts';
+import { InsertFilterMenu } from './InsertFilter.tsx';
+import { filtersTooltip, insertAt, refChoices, urlPlaceAt, wholeRef } from './parameter-refs.ts';
 import { previewDelay, previewState } from './preview-state.ts';
 import { askPublicSecrets } from './public-secrets.tsx';
 import { TransformEditor } from './TransformEditor.tsx';
@@ -222,6 +227,7 @@ export function DatasetsPanel({
             const users = widgets.filter((w) => 'datasetId' in w && w.datasetId === d.id).length;
             const blocker = doc ? deleteBlocker(doc, d.id) : null;
             const lock = doc ? secretsTooltip(doc, d.id) : null;
+            const filters = doc ? filtersTooltip(doc, d.id) : null;
             return (
               <Card key={d.id} className="flex items-center gap-3 p-3">
                 <Database className="size-4 shrink-0 text-muted" />
@@ -231,6 +237,11 @@ export function DatasetsPanel({
                     {lock ? (
                       <span title={lock} className="inline-flex">
                         <KeyRound className="size-3 shrink-0" aria-label={lock} />
+                      </span>
+                    ) : null}
+                    {filters ? (
+                      <span title={filters} className="inline-flex">
+                        <SlidersHorizontal className="size-3 shrink-0" aria-label={filters} />
                       </span>
                     ) : null}
                     {sourceSummary(d.source, connectors, datasets)} · {d.transforms.length} step
@@ -293,52 +304,75 @@ export function DatasetsPanel({
 function ParamInput({
   spec,
   value,
+  parameters,
   onChange,
 }: {
   spec: ParamSpec;
   value: unknown;
+  parameters?: readonly Parameter[] | undefined;
   onChange: (v: unknown) => void;
 }) {
+  const ref = wholeRef(value);
+  // Exact id match: "$param.region2" must not read as "region".
+  const filter = ref
+    ? parameters?.find((p) => ref === `$param.${p.id}` || ref.startsWith(`$param.${p.id}.`))
+    : undefined;
+  const choices = refChoices(parameters, 'connector', { secrets: false });
   return (
     <Field label={`${spec.label}${spec.required ? '' : ' (optional)'}`} hint={spec.description}>
       {(fid) =>
-        spec.type === 'enum' ? (
-          <Select
-            id={fid}
-            value={String(value ?? spec.default ?? '')}
-            onChange={(e) => onChange(e.target.value)}
-          >
-            {spec.options!.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </Select>
-        ) : spec.type === 'boolean' ? (
-          <Select
-            id={fid}
-            value={String(value ?? spec.default ?? false)}
-            onChange={(e) => onChange(e.target.value === 'true')}
-          >
-            <option value="true">Yes</option>
-            <option value="false">No</option>
-          </Select>
+        ref ? (
+          <div className="flex h-9 items-center gap-2 rounded-lg border border-line bg-surface-2 px-2 text-sm">
+            <SlidersHorizontal className="size-3.5 shrink-0 text-muted" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Filter: {filter?.label ?? ref}</span>
+            <IconButton label="Stop using the filter" onClick={() => onChange(undefined)}>
+              <X className="size-3.5" />
+            </IconButton>
+          </div>
         ) : (
-          <Input
-            id={fid}
-            type={spec.type === 'number' ? 'number' : 'text'}
-            value={value === undefined || value === null ? '' : String(value)}
-            placeholder={spec.default !== undefined ? String(spec.default) : ''}
-            onChange={(e) =>
-              onChange(
-                e.target.value === ''
-                  ? undefined
-                  : spec.type === 'number'
-                    ? Number(e.target.value)
-                    : e.target.value,
-              )
-            }
-          />
+          <div className="flex gap-2">
+            {spec.type === 'enum' ? (
+              <Select
+                id={fid}
+                value={String(value ?? spec.default ?? '')}
+                onChange={(e) => onChange(e.target.value)}
+              >
+                {spec.options!.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </Select>
+            ) : spec.type === 'boolean' ? (
+              <Select
+                id={fid}
+                value={String(value ?? spec.default ?? false)}
+                onChange={(e) => onChange(e.target.value === 'true')}
+              >
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </Select>
+            ) : (
+              <Input
+                id={fid}
+                type={spec.type === 'number' ? 'number' : 'text'}
+                value={value === undefined || value === null ? '' : String(value)}
+                placeholder={spec.default !== undefined ? String(spec.default) : ''}
+                onChange={(e) =>
+                  onChange(
+                    e.target.value === ''
+                      ? undefined
+                      : spec.type === 'number'
+                        ? Number(e.target.value)
+                        : e.target.value,
+                  )
+                }
+              />
+            )}
+            {choices.length ? (
+              <InsertFilterMenu choices={choices} onInsert={(text) => onChange(text)} emptyHint="" />
+            ) : null}
+          </div>
         )
       }
     </Field>
@@ -399,6 +433,21 @@ function SourceEditor({
   // The body as typed: invalid JSON stays in the field (with its error) and never reaches the draft.
   const [bodyDraft, setBodyDraft] = useState(() => (source.kind === 'http' ? bodyText(source.body) : ''));
   const [bodyError, setBodyError] = useState<string | null>(null);
+  const parameters = doc?.parameters;
+  // Where the caret was last in the URL and the body: the Insert filter menu takes the focus away.
+  const [urlCaret, setUrlCaret] = useState<number | null>(null);
+  const [bodyCaret, setBodyCaret] = useState<number | null>(null);
+  const urlChoices = (url: string, secrets: boolean) => {
+    const place = urlPlaceAt(url, urlCaret ?? url.length);
+    return place ? refChoices(parameters, place, { secrets }) : [];
+  };
+  const URL_HINT = 'Put the cursor right after a "/" of the path or the "=" of a query parameter.';
+  const insertInUrl = (s: Extract<Source, { kind: 'http' | 'feed' }>, text: string) => {
+    const at = urlCaret ?? s.url.length;
+    const next = insertAt(s.url, at, at, text);
+    setUrlCaret(next.caret);
+    onChange({ ...s, url: next.value });
+  };
   const setBodyProblem = (message: string | null) => {
     setBodyError(message);
     onBlockingError(message);
@@ -532,13 +581,23 @@ function SourceEditor({
             hint="RSS, Atom or JSON Feed. A site's home page works when it announces a feed. Checked at most every 5 minutes."
           >
             {(fid) => (
-              <Input
-                id={fid}
-                value={source.url}
-                spellCheck={false}
-                onChange={(e) => onChange({ ...source, url: e.target.value })}
-                placeholder="https://www.bbc.com/news"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id={fid}
+                  value={source.url}
+                  spellCheck={false}
+                  onSelect={(e) => setUrlCaret(e.currentTarget.selectionStart)}
+                  onChange={(e) => onChange({ ...source, url: e.target.value })}
+                  placeholder="https://www.bbc.com/news"
+                />
+                {parameters?.length ? (
+                  <InsertFilterMenu
+                    choices={urlChoices(source.url, false)}
+                    onInsert={(text) => insertInUrl(source, text)}
+                    emptyHint={URL_HINT}
+                  />
+                ) : null}
+              </div>
             )}
           </Field>
           <Field label="Newest items">
@@ -590,6 +649,7 @@ function SourceEditor({
                 <ParamInput
                   key={p.name}
                   spec={p}
+                  parameters={parameters}
                   value={source.params[p.name]}
                   onChange={(v) => {
                     const params = { ...source.params };
@@ -726,44 +786,75 @@ function SourceEditor({
             </fieldset>
             <Field label="HTTPS URL" hint={urlHint(credentials)}>
               {(fid) => (
-                <Input
-                  id={fid}
-                  value={source.url}
-                  spellCheck={false}
-                  onChange={(e) => onChange({ ...source, url: e.target.value })}
-                  placeholder="https://api.example.com/data.json"
-                />
+                <div className="flex gap-2">
+                  <Input
+                    id={fid}
+                    value={source.url}
+                    spellCheck={false}
+                    onSelect={(e) => setUrlCaret(e.currentTarget.selectionStart)}
+                    onChange={(e) => onChange({ ...source, url: e.target.value })}
+                    placeholder="https://api.example.com/data.json"
+                  />
+                  {parameters?.length ? (
+                    <InsertFilterMenu
+                      choices={urlChoices(source.url, (source.secrets?.length ?? 0) > 0)}
+                      onInsert={(text) => insertInUrl(source, text)}
+                      emptyHint={URL_HINT}
+                    />
+                  ) : null}
+                </div>
               )}
             </Field>
           </div>
           {source.method === 'POST' ? (
-            <Field
-              label="Body (JSON)"
-              error={bodyError}
-              hint="Sent as application/json on every refresh. Use it for read queries; do not put secrets here."
-            >
-              {(fid) => (
-                <Textarea
-                  id={fid}
-                  rows={Math.min(16, Math.max(4, bodyDraft.split('\n').length + 1))}
-                  value={bodyDraft}
-                  spellCheck={false}
-                  aria-invalid={bodyError !== null}
-                  placeholder={'{\n  "query": "{ viewer { login } }"\n}'}
-                  onChange={(e) => {
-                    setBodyDraft(e.target.value);
-                    const parsed = parseBodyText(e.target.value);
-                    setBodyProblem(parsed.ok ? null : parsed.error);
-                    if (parsed.ok) onChange(withBody(source, parsed.body));
-                  }}
-                  onBlur={() => {
-                    // Pretty-printed once the user is done typing, never while they type.
-                    const parsed = parseBodyText(bodyDraft);
-                    if (parsed.ok) setBodyDraft(bodyText(parsed.body));
-                  }}
-                />
-              )}
-            </Field>
+            <>
+              <Field
+                label="Body (JSON)"
+                error={bodyError}
+                hint="Sent as application/json on every refresh. Use it for read queries; do not put secrets here."
+              >
+                {(fid) => (
+                  <Textarea
+                    id={fid}
+                    rows={Math.min(16, Math.max(4, bodyDraft.split('\n').length + 1))}
+                    value={bodyDraft}
+                    spellCheck={false}
+                    aria-invalid={bodyError !== null}
+                    placeholder={'{\n  "query": "{ viewer { login } }"\n}'}
+                    onSelect={(e) => setBodyCaret(e.currentTarget.selectionStart)}
+                    onChange={(e) => {
+                      setBodyDraft(e.target.value);
+                      const parsed = parseBodyText(e.target.value);
+                      setBodyProblem(parsed.ok ? null : parsed.error);
+                      if (parsed.ok) onChange(withBody(source, parsed.body));
+                    }}
+                    onBlur={() => {
+                      // Pretty-printed once the user is done typing, never while they type.
+                      const parsed = parseBodyText(bodyDraft);
+                      if (parsed.ok) setBodyDraft(bodyText(parsed.body));
+                    }}
+                  />
+                )}
+              </Field>
+              {parameters?.length ? (
+                <div className="flex justify-end">
+                  <InsertFilterMenu
+                    choices={refChoices(parameters, 'body', { secrets: (source.secrets?.length ?? 0) > 0 })}
+                    emptyHint="Only choice and period filters can go into a body."
+                    onInsert={(text) => {
+                      // A whole JSON string value: "region": "$param.region".
+                      const at = bodyCaret ?? bodyDraft.length;
+                      const next = insertAt(bodyDraft, at, at, `"${text}"`);
+                      setBodyDraft(next.value);
+                      setBodyCaret(next.caret);
+                      const parsed = parseBodyText(next.value);
+                      setBodyProblem(parsed.ok ? null : parsed.error);
+                      if (parsed.ok) onChange(withBody(source, parsed.body));
+                    }}
+                  />
+                </div>
+              ) : null}
+            </>
           ) : null}
           <UrlKeyWarning source={source} context={credentials} onChange={onChange} />
           <CredentialsField source={source} context={credentials} onChange={onChange} />
@@ -1058,6 +1149,7 @@ function DatasetEditor({
           datasets={candidates.map((c) => ({ id: c.id, name: c.name }))}
           columnsOf={columnsOf}
           self={self}
+          parameters={doc?.parameters}
           onChange={(transforms) => setDraft((d) => ({ ...d, transforms }))}
         />
       </section>
