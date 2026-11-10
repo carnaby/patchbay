@@ -139,11 +139,28 @@ function limitedTable(records: unknown[], maxCells: number): DataTable {
 
 /**
  * Papa builds each row by assignment, which drops a "__proto__" column. Its header is renamed to this marker while
- * parsing and back when the row is kept; a trimmed header never starts with a space, so the marker cannot collide
- * (Papa's suffix for a repeated header, " __proto___1", keeps the space too).
+ * parsing and back when the row is kept; a trimmed header never starts with a space, so the marker cannot collide.
  */
 const PROTO_MARKER = ' __proto__';
-const fromMarker = (name: string) => (name.startsWith(' ') ? name.slice(1) : name);
+
+/**
+ * The column names of marked headers, or null when there are none. Papa renames a repeated marker with a suffix
+ * (" __proto___1"), and the name without the space may be a header of the file already: such a header gets the next
+ * name the file does not use.
+ */
+function unmarkedNames(fields: readonly string[]): Map<string, string> | null {
+  if (!fields.some((f) => f.startsWith(' '))) return null;
+  const taken = new Set(fields.filter((f) => !f.startsWith(' ')));
+  const names = new Map<string, string>();
+  for (const field of fields) {
+    if (!field.startsWith(' ')) continue;
+    let name = field === PROTO_MARKER ? '__proto__' : null;
+    for (let n = 1; name === null || taken.has(name); n++) name = `__proto___${n}`;
+    taken.add(name);
+    names.set(field, name);
+  }
+  return names;
+}
 
 function parseCsv(content: string, maxCells: number): DataTable {
   const records: Record<string, string>[] = [];
@@ -151,7 +168,7 @@ function parseCsv(content: string, maxCells: number): DataTable {
   let firstError: string | null = null;
   let stopped = false;
   let refused: UploadError | null = null;
-  let marked = false;
+  let marked: Map<string, string> | null = null;
   Papa.parse<Record<string, string>>(content.replace(/^﻿/, ''), {
     header: true,
     skipEmptyLines: 'greedy',
@@ -163,8 +180,8 @@ function parseCsv(content: string, maxCells: number): DataTable {
       // The header decides the columns, so a bad one is refused before any row is kept.
       if (records.length === 0) {
         const fields = result.meta.fields ?? [];
-        marked = fields.some((f) => f.startsWith(' '));
-        refused = columnsProblem(fields.map(fromMarker));
+        marked = unmarkedNames(fields);
+        refused = columnsProblem(fields.map((f) => marked?.get(f) ?? f));
         if (refused) {
           parser.abort();
           return;
@@ -180,7 +197,8 @@ function parseCsv(content: string, maxCells: number): DataTable {
       if (!marked) records.push(result.data);
       else {
         const record: Record<string, string> = {};
-        for (const [key, value] of Object.entries(result.data)) setCell(record, fromMarker(key), value);
+        for (const [key, value] of Object.entries(result.data))
+          setCell(record, marked.get(key) ?? key, value);
         records.push(record);
       }
     },

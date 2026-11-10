@@ -186,6 +186,23 @@ describe('parseUpload', () => {
     }
   });
 
+  it('gives a repeated "__proto__" CSV header a free name, never one the file already uses', () => {
+    const csv = (content: string) => {
+      const table = parseUpload({ content, format: 'csv', maxCells: 100 });
+      return table.columns.map((c) => [c.name, table.rows[0]![c.name]]);
+    };
+    expect(csv('__proto___1,__proto__,__proto__\n1,2,3\n')).toEqual([
+      ['__proto___1', 1],
+      ['__proto__', 2],
+      ['__proto___2', 3],
+    ]);
+    // Headers are trimmed, so a spaced one is the same name.
+    expect(csv(' __proto__ ,b\n1,2\n')).toEqual([
+      ['__proto__', 1],
+      ['b', 2],
+    ]);
+  });
+
   it('ignores a path for CSV', () => {
     expect(
       parseUpload({ content: 'a,b\n1,2\n', format: 'csv', maxCells: 100, path: 'data.items' }).rows,
