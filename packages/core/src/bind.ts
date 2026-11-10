@@ -83,6 +83,20 @@ export function bindExpression(src: string, values: ParameterValues): string {
 }
 
 /**
+ * A value as one percent-encoded segment or query value. A lone surrogate (a select option may hold one) makes
+ * encodeURIComponent throw a URIError; as a BindError it fails only its own dataset, not the whole document.
+ */
+function encode(text: string, ref: RefName): string {
+  try {
+    return encodeURIComponent(text);
+  } catch (e) {
+    if (e instanceof URIError)
+      throw new BindError(`Filter "${ref.id}" has a value that cannot be part of an address`);
+    throw e;
+  }
+}
+
+/**
  * Fills whole path segments and whole query values, percent-encoded; every other byte stays as saved. The address's
  * scheme, host and port never hold a reference (validation), and the bound URL must keep the template's origin.
  */
@@ -101,7 +115,7 @@ export function bindUrl(url: string, values: ParameterValues): string {
     // Encoded, a value can add no "/" or "?"; these three would still empty the segment or climb out of it.
     if (text === '' || text === '.' || text === '..')
       throw new BindError(`Filter "${ref.id}" cannot be used as a path segment with the value "${text}"`);
-    return encodeURIComponent(text);
+    return encode(text, ref);
   });
   let bound = authority + segments.join('/');
   if (query !== null) {
@@ -114,7 +128,7 @@ export function bindUrl(url: string, values: ParameterValues): string {
       if (!ref) return [pair];
       const value = valueFor(values, ref);
       // "All" means no filter, which to most APIs is the parameter left out.
-      return value === null ? [] : [`${pair.slice(0, eq + 1)}${encodeURIComponent(String(value))}`];
+      return value === null ? [] : [`${pair.slice(0, eq + 1)}${encode(String(value), ref)}`];
     });
     if (pairs.length > 0) bound += `?${pairs.join('&')}`;
   }

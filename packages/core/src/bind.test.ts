@@ -267,4 +267,32 @@ describe('binding datasets and documents', () => {
       ['path', 'Filter "city" cannot be used as a path segment with the value ".."'],
     ]);
   });
+
+  it('names a dataset whose address cannot hold a value (a lone surrogate) and still binds the others', () => {
+    const query = DatasetSchema.parse({
+      id: 'q',
+      name: 'Q',
+      source: { kind: 'http', url: 'https://a.example/x?c=$param.city' },
+    });
+    const segment = DatasetSchema.parse({
+      id: 's',
+      name: 'S',
+      source: { kind: 'http', url: 'https://a.example/$param.city/x' },
+    });
+    const local = DatasetSchema.parse({
+      id: 'l',
+      name: 'L',
+      source: { kind: 'inline', rows: [{ c: 'a' }] },
+      transforms: [{ type: 'filter', expr: 'c == $param.city' }],
+    });
+    const doc: DashboardDoc = { ...emptyDashboard('t'), datasets: [query, segment, local] };
+    const { doc: bound, errors } = bindDoc(doc, { city: '\ud800' });
+    expect(bound.datasets[0]).toBe(query);
+    expect(bound.datasets[1]).toBe(segment);
+    expect(bound.datasets[2]!.transforms[0]).toMatchObject({ expr: 'c == "\ud800"' });
+    expect([...errors]).toEqual([
+      ['q', 'Filter "city" has a value that cannot be part of an address'],
+      ['s', 'Filter "city" has a value that cannot be part of an address'],
+    ]);
+  });
 });
