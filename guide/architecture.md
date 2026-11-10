@@ -241,8 +241,10 @@ a room keeps at most 8, drops them all when memory runs short, and loads any oth
 Live datasets that share a dataset refresh together, one round at a time, so a viewer never sees a child built from an
 older reading than its parent: a slow member paces the chains of its own group, while unrelated live chains refresh
 independently. Results are hashed and pushed only when the hash changed. N viewers share one refresh
-loop and an unwatched dashboard costs nothing. SSE was chosen over WebSockets because traffic is one-directional
-(writes go through normal HTTP requests), it works through every proxy, and reconnection is built into `EventSource`.
+loop and an unwatched dashboard costs nothing.
+Datasets that use filters (proposal 0010) have one result per view, so the hub leaves them out of its loops and
+chains; browsers poll them at the dataset's interval, with their filter values in the query.
+SSE was chosen over WebSockets because traffic is one-directional (writes go through normal HTTP requests), it works through every proxy, and reconnection is built into `EventSource`.
 
 ## 5. The editor: undo/redo and live collaboration with agents
 

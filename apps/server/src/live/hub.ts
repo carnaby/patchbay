@@ -19,6 +19,7 @@ import {
   LIMITS,
   type LiveEvent,
   lineageDepth,
+  lineageParameters,
   upstreamOf,
 } from '@patchbay/core';
 import type { Principal } from '../services/dashboards.ts';
@@ -220,11 +221,17 @@ export class LiveHub {
     const target: DashboardTarget = { id: dashboardId, ownerId: loaded.ownerId };
     // A derived dataset refreshes when its parent does (lineageIssues refuses refreshSec on it): a second loop on the
     // chain would fetch the same thing twice, even for a document that reached the store some other way.
-    const live = doc.datasets.filter((d) => d.source.kind !== 'dataset');
+    // A dataset that uses filters (proposal 0010) has one result per view, and a room pushes one result to all its
+    // subscribers: viewers poll such datasets with their own values (the web app's refreshTiming), so they get no
+    // loop here and are no member of a chain. Their parameter-free parents keep being pushed.
+    const perView = new Set(
+      doc.datasets.filter((d) => lineageParameters(doc, d.id).length > 0).map((d) => d.id),
+    );
+    const live = doc.datasets.filter((d) => d.source.kind !== 'dataset' && !perView.has(d.id));
     const byChain = new Map<string, readonly string[]>();
     for (const d of live)
       if (this.data.refreshIntervalSec(d) !== null && hasLineage(doc, d.id))
-        byChain.set(d.id, [d.id, ...dependentsOf(doc, d.id)]);
+        byChain.set(d.id, [d.id, ...dependentsOf(doc, d.id).filter((x) => !perView.has(x))]);
     const inputs = new Set<string>();
     const touches = new Map<string, Set<string>>();
     for (const [root, chain] of byChain) {
