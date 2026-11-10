@@ -263,6 +263,17 @@ describe('declaration checks', () => {
     expect(issues([{ ...region, default: 'xx' }])).toEqual([
       'Filter "region": the default "xx" is not one of its options',
     ]);
+    // A lone surrogate is not text: it cannot be part of an address, and a link could not carry it.
+    expect(issues([{ ...region, options: [{ value: 'eu' }, { value: 'a\uD800b' }] }])).toEqual([
+      'Filter "region": an option value holds a broken character (a lone UTF-16 surrogate)',
+    ]);
+    expect(issues([{ ...region, default: '\uDC00' }])).toEqual([
+      'Filter "region": the default holds a broken character (a lone UTF-16 surrogate)',
+    ]);
+    expect(issues([{ ...q, default: 'x\uD83D' }])).toEqual([
+      'Filter "q": the default holds a broken character (a lone UTF-16 surrogate)',
+    ]);
+    expect(issues([{ ...region, options: [{ value: 'eu' }, { value: '🇪🇺' }] }])).toEqual([]);
     const { all: _all, ...withoutAll } = region as Extract<Parameter, { type: 'select' }>;
     expect(issues([withoutAll])).toEqual([
       'Filter "region": the default is "All" (null), but the filter offers no "All"; set all to its label',

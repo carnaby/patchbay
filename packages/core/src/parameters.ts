@@ -537,6 +537,13 @@ function expressionUsesFilters(src: string): boolean {
   }
 }
 
+/**
+ * A lone UTF-16 surrogate is not text: it cannot be percent-encoded into an address and a link cannot carry it, so
+ * the binder would refuse the value on every view. It is refused where it is declared instead.
+ */
+const brokenText = (text: string) => /\p{Cs}/u.test(text);
+const BROKEN = 'holds a broken character (a lone UTF-16 surrogate)';
+
 /** What the schema cannot say about declarations: duplicates, reserved values, defaults that are not choices. */
 export function declarationIssues(parameters: readonly Parameter[]): string[] {
   const issues: string[] = [];
@@ -556,14 +563,19 @@ export function declarationIssues(parameters: readonly Parameter[]): string[] {
         // A bound body or connector value equal to "$param.x" would read as a reference again.
         if (text.startsWith(PARAM_PREFIX))
           issues.push(`${name}: an option value cannot start with "${PARAM_PREFIX}"`);
+        if (brokenText(text)) issues.push(`${name}: an option value ${BROKEN}`);
       }
-      if (p.default === null) {
+      if (typeof p.default === 'string' && brokenText(p.default))
+        issues.push(`${name}: the default ${BROKEN}`);
+      else if (p.default === null) {
         if (!p.all)
           issues.push(
             `${name}: the default is "All" (null), but the filter offers no "All"; set all to its label`,
           );
       } else if (!texts.has(String(p.default)))
         issues.push(`${name}: the default "${p.default}" is not one of its options`);
+    } else if (p.type === 'text') {
+      if (brokenText(p.default)) issues.push(`${name}: the default ${BROKEN}`);
     } else if (p.type === 'dateRange') {
       if (p.min !== undefined && p.max !== undefined && p.min > p.max)
         issues.push(`${name}: min is after max`);
