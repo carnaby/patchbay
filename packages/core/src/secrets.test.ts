@@ -386,4 +386,27 @@ describe('filters on secret-backed sources (proposal 0010, decision 1)', () => {
     expect(sourceParameterIds(sends.datasets[0]!.source)).toEqual(['region']);
     expect(sourceParameterIds(docWith(URL_REGION).datasets[0]!.source)).toEqual(['region']);
   });
+
+  it('counts only what changes the queries a sent filter allows, never its labels or its place', () => {
+    const query = docWith(URL_REGION);
+    const counted = (parameters: unknown[]) => secretRefChanges(query, docWith(URL_REGION, parameters));
+    // Words on screen send nothing new.
+    expect(counted([{ ...region, label: 'Area' }, q])).toEqual([]);
+    expect(counted([{ ...region, options: [{ value: 'eu', label: 'Europe' }, { value: 'us' }] }, q])).toEqual(
+      [],
+    );
+    expect(counted([{ ...region, all: 'Everywhere' }, q])).toEqual([]);
+    expect(counted([q, region])).toEqual([]);
+    // What a viewer may ask for, or gets without asking, does.
+    expect(counted([{ ...region, options: [{ value: 'eu' }, { value: 'uk' }] }, q])).toEqual(['o']);
+    expect(counted([{ ...region, options: [...region.options, { value: 'apac' }] }, q])).toEqual(['o']);
+    expect(counted([{ ...region, default: 'eu' }, q])).toEqual(['o']);
+    const { all: _all, ...withoutAll } = { ...region, default: 'eu' };
+    const fixed = docWith(URL_REGION, [withoutAll, q]);
+    expect(secretRefChanges(fixed, docWith(URL_REGION, [{ ...withoutAll, all: 'All' }, q]))).toEqual(['o']);
+    // A move goes through the same check as any other op.
+    const moved = applyOps(query, [{ op: 'moveParameter', id: 'q', before: 'region' }]);
+    expect(moved.doc.parameters?.map((p) => p.id)).toEqual(['q', 'region']);
+    expect(secretRefChanges(query, moved.doc)).toEqual([]);
+  });
 });

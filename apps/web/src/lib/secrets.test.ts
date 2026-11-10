@@ -4,6 +4,7 @@ import {
   CREDENTIAL_ERRORS,
   type DashboardDoc,
   emptyDashboard,
+  parameterRequestShape,
   type Source,
 } from '@patchbay/core';
 import { describe, expect, it } from 'vitest';
@@ -265,5 +266,44 @@ describe('confirming filters on a public secret-backed source', () => {
     expect(confirmedForSave(prev, once, confirmed)).toBe(true);
     const twice = widen(once, 'latam');
     expect(confirmedForSave(once, twice, confirmed)).toBe(false);
+  });
+
+  it('fingerprints what a body-only source may send, and not the words around it', () => {
+    const body = applyOps(emptyDashboard('t'), [
+      { op: 'addParameter', parameter: region },
+      {
+        op: 'addDataset',
+        dataset: {
+          id: 'o',
+          name: 'O',
+          source: {
+            kind: 'http',
+            url: 'https://api.example.com/v1/orders',
+            method: 'POST',
+            body: { variables: { r: '$param.region' } },
+            secrets: ['sec_AAAAAAAAAAAAAAAA'],
+          },
+        },
+      },
+    ]).doc;
+    const [fingerprint] = introducedSecretRefs(emptyDashboard('t'), body);
+    expect(fingerprint).toBe(
+      `o https://api.example.com/v1/orders sec_AAAAAAAAAAAAAAAA ${JSON.stringify([parameterRequestShape(body.parameters![0]!)])}`,
+    );
+    expect(fingerprint).toContain('"us"');
+    expect(fingerprint).not.toContain('Region');
+    const relabelled = applyOps(body, [
+      {
+        op: 'updateParameter',
+        id: 'region',
+        set: {
+          label: 'Area',
+          all: 'Everywhere',
+          options: [{ value: 'eu', label: 'Europe' }, { value: 'us' }],
+        },
+      },
+    ]).doc;
+    expect(introducedSecretRefs(body, relabelled)).toEqual([]);
+    expect(introducedSecretRefs(emptyDashboard('t'), relabelled)).toEqual([fingerprint]);
   });
 });

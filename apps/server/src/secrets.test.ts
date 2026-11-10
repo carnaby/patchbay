@@ -1596,6 +1596,20 @@ describe('filters on secret-backed sources', () => {
     expect(ask.status).toBe(428);
     expect(ask.json.secrets).toEqual([{ id: s.id, name: 'Orders key' }]);
     expect((await env.ops(dash, cookie, widen, { confirmPublicSecrets: true })).status).toBe(200);
+    // Words on screen send no new query, even for a filter the request sends.
+    const relabel = [
+      {
+        op: 'updateParameter',
+        id: 'region',
+        set: {
+          label: 'Area',
+          all: 'Everywhere',
+          options: [{ value: 'eu', label: 'Europe' }, { value: 'us' }, { value: 'apac' }],
+        },
+      },
+    ];
+    const relabelled = await env.ops(dash, cookie, relabel);
+    expect(relabelled.status, relabelled.text).toBe(200);
     // A filter the request does not send changes nothing about it.
     expect(
       (await env.ops(dash, cookie, [{ op: 'updateParameter', id: 'city', set: { label: 'Town' } }])).status,

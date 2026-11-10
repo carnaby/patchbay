@@ -7,7 +7,7 @@
  * validates a value the user is typing and never repeats it in its messages.
  */
 
-import { parameterRefs } from './parameters.ts';
+import { type Parameter, parameterRefs } from './parameters.ts';
 import type { DashboardDoc, Source } from './schema.ts';
 
 export const SECRET_PLACEMENTS = ['bearer', 'header', 'query'] as const;
@@ -299,15 +299,57 @@ export function sourceSecretIds(source: Source): string[] {
   return source.kind === 'http' ? (source.secrets ?? []) : [];
 }
 
-/** The filters a source sends with its request (URL and body), sorted: what a secret-backed request varies by. */
+/**
+ * The filters a source's request sends, sorted and once each: references in the URL and body of an http source, in
+ * the parameters of a connector and in the URL of a feed (never in the steps, which run after the fetch). For a
+ * secret-backed request, these are what it varies by.
+ */
 export function sourceParameterIds(source: Source): string[] {
   const ids = parameterRefs({ source, transforms: [] }).map((r) => r.id);
   return [...new Set(ids.filter(Boolean))].sort();
 }
 
-/** The declarations of these filters in a document, as one string to compare. */
+const sortedJson = <T>(items: readonly T[]) =>
+  [...items].sort((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1));
+
+/**
+ * The part of a filter's declaration that decides which requests it can make: its type, the option values, whether
+ * "All" exists, the default, and the date bounds. Labels, option labels, the "All" text and placeholders are words on
+ * screen and send nothing new, and the order of options or presets changes no request. Server (`secretRefChanges`)
+ * and editor (`introducedSecretRefs`) compare this, so a relabel never asks for the public confirmation.
+ */
+export function parameterRequestShape(parameter: Parameter): unknown {
+  switch (parameter.type) {
+    case 'select':
+      return {
+        type: parameter.type,
+        values: sortedJson(parameter.options.map((o) => o.value)),
+        all: parameter.all !== undefined,
+        default: parameter.default,
+      };
+    case 'text':
+      return { type: parameter.type, default: parameter.default };
+    case 'dateRange':
+      return {
+        type: parameter.type,
+        presets: sortedJson(parameter.presets),
+        custom: parameter.custom,
+        min: parameter.min ?? null,
+        max: parameter.max ?? null,
+        maxDays: parameter.maxDays,
+        default: parameter.default,
+      };
+  }
+}
+
+/** The request shapes of these filters in a document, as one string to compare (null for a missing one). */
 const declarationsOf = (doc: DashboardDoc, ids: string[]) =>
-  JSON.stringify(ids.map((id) => doc.parameters?.find((p) => p.id === id) ?? null));
+  JSON.stringify(
+    ids.map((id) => {
+      const parameter = doc.parameters?.find((p) => p.id === id);
+      return parameter ? parameterRequestShape(parameter) : null;
+    }),
+  );
 
 /** Every secret id a document references, once. */
 export function docSecretIds(doc: DashboardDoc): string[] {
@@ -318,8 +360,8 @@ export function docSecretIds(doc: DashboardDoc): string[] {
  * Ids of datasets in `next` that introduce or retarget a secret reference: new datasets with secrets, datasets that
  * gained a secret, and datasets with secrets whose URL changed. Removing a secret, or leaving references alone, is
  * not a change: those are never re-checked, so deleting a secret never blocks unrelated edits. A dataset whose
- * request sends a filter (URL or body) also counts when it starts or stops sending one, or when the declaration of
- * one it sends changes (proposal 0010).
+ * request sends a filter (URL or body) also counts when it starts or stops sending one, or when the request shape
+ * (`parameterRequestShape`) of one it sends changes (proposal 0010).
  */
 export function secretRefChanges(prev: DashboardDoc, next: DashboardDoc): string[] {
   const before = new Map(prev.datasets.map((d) => [d.id, d.source]));
