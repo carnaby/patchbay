@@ -244,7 +244,8 @@ independently. Results are hashed and pushed only when the hash changed. N viewe
 loop and an unwatched dashboard costs nothing.
 Datasets that use filters (proposal 0010) have one result per view, so the hub leaves them out of its loops and
 chains; browsers poll them at the dataset's interval, with their filter values in the query.
-SSE was chosen over WebSockets because traffic is one-directional (writes go through normal HTTP requests), it works through every proxy, and reconnection is built into `EventSource`.
+SSE was chosen over WebSockets because traffic is one-directional
+(writes go through normal HTTP requests), it works through every proxy, and reconnection is built into `EventSource`.
 
 ## 5. The editor: undo/redo and live collaboration with agents
 
