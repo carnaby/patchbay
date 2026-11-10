@@ -48,6 +48,7 @@ import { useParameterUrl } from '../state/parameter-url.ts';
 import { soundWidgets, useSoundCues } from '../state/sound-cues.ts';
 import { useAutosave, useLiveEvents } from '../state/sync.ts';
 import { ConnectAiPanel } from './ConnectAiPanel.tsx';
+import { DataOptionsGuard } from './DataOptions.tsx';
 import { DatasetsPanel } from './DatasetsPanel.tsx';
 import { DetailsInput } from './DetailsFields.tsx';
 import { FilterBar, ParameterSummary } from './FilterBar.tsx';
@@ -391,7 +392,7 @@ function Editor({ id }: { id: string }) {
         {presenting ? null : <SecretsSaveBanner />}
 
         <main className={cx('px-3 sm:px-4', presenting ? 'py-3' : 'py-4')}>
-          {presenting ? <ParameterSummary /> : <FilterBar />}
+          {presenting ? <ParameterSummary /> : <FilterBar dashboardId={id} live={live} />}
           {doc.description && !editing && !presenting ? (
             <p className="mb-4 max-w-3xl text-sm text-ink-2">{doc.description}</p>
           ) : null}
@@ -455,12 +456,13 @@ function Editor({ id }: { id: string }) {
         </main>
 
         <DatasetsPanel open={panel === 'data'} onClose={() => setPanel(null)} dashboardId={id} />
-        <ParametersPanel open={panel === 'filters'} onClose={() => setPanel(null)} />
+        <ParametersPanel open={panel === 'filters'} onClose={() => setPanel(null)} dashboardId={id} />
         <VersionsPanel open={panel === 'versions'} onClose={() => setPanel(null)} dashboardId={id} />
         <SharePanel open={panel === 'share'} onClose={() => setPanel(null)} dashboardId={id} />
         <ConnectAiPanel open={panel === 'ai'} onClose={() => setPanel(null)} dashboardId={id} />
         <ExpandedWidget dashboardId={id} live={live} />
         <PublicSecretsDialogs />
+        <DataOptionsGuard dashboardId={id} live={live} presenting={presenting} />
         <WidgetEditor
           widgetId={widgetId}
           onClose={() => setWidgetId(null)}

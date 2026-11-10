@@ -42,6 +42,7 @@ import { rawQuery, useParameters } from '../state/parameters.ts';
 import { MOVE_LABELS, type MoveDirection, reorderOp } from '../state/reorder.ts';
 import { useDatasetResult } from '../state/sync.ts';
 import { WidgetBody } from '../widgets/WidgetBody.tsx';
+import { useDataOptions } from './DataOptions.tsx';
 import { PresentingContext } from './presentation.tsx';
 
 function uniqueId(base: string, taken: Set<string>) {
@@ -100,11 +101,25 @@ export const WidgetFrame = memo(function WidgetFrame({
     );
     return crossFilterSelection(widget, values);
   }, [widget, parameters, raw]);
+  const crossParam = parameters?.find((p) => p.id === crossFilterOf(widget)?.parameter);
+  // Loaded choices of a select fed by data (null while loading): a click is checked against them, not left to the
+  // server's 400 and a reset that would follow a pushed history entry.
+  const dataOptions = useDataOptions(dashboardId, crossParam, live);
   const onPick = useMemo(() => {
     if (!crossFilterOf(widget) || presenting) return undefined;
     return (value: Scalar | undefined) => {
       const result = crossFilterClick(widget, parameters, useParameters.getState().raw, value, presenting);
       if (!result) return;
+      if (
+        'text' in result &&
+        result.text !== null &&
+        crossParam &&
+        dataOptions &&
+        !dataOptions.some((v) => String(v) === result.text)
+      ) {
+        toast(`${result.text} is not one of the ${crossParam.label} choices`, 'bad');
+        return;
+      }
       // Pushed, not replaced: Back undoes a click (decision 7 of proposal 0010).
       const problem =
         'problem' in result
@@ -112,7 +127,7 @@ export const WidgetFrame = memo(function WidgetFrame({
           : useParameters.getState().set(result.id, result.text, parameters, 'push');
       if (problem) toast(problem, 'bad');
     };
-  }, [widget, parameters, presenting]);
+  }, [widget, parameters, presenting, crossParam, dataOptions]);
   const { data: secretsStatus } = useSecretsStatus();
   const apply = useEditor((s) => s.apply);
   const query = useDatasetResult(dashboardId, dataset, live);

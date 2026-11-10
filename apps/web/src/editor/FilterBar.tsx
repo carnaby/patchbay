@@ -3,18 +3,19 @@
  * URL (state/parameters.ts), never in the document, so a change creates no version and other viewers do not see it.
  * Read-only viewers use it like editors. Below `sm` it folds into a "Filters (n)" button that opens a sheet.
  */
-import { DATE_PRESET_LABELS, defaultText, type Parameter } from '@patchbay/core';
+import { DATE_PRESET_LABELS, defaultText, type OptionValue, type Parameter } from '@patchbay/core';
 import { SlidersHorizontal, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Button, Drawer, IconButton, Input, Select, toast, useNarrowScreen } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
 import { type RawValues, summaryOf, useParameters } from '../state/parameters.ts';
+import { useDataChoices } from './DataOptions.tsx';
 
 const CUSTOM = 'custom';
 /** Typing in a search filter applies after this pause, or at once on Enter. */
 const TEXT_DELAY_MS = 400;
 
-export function FilterBar() {
+export function FilterBar({ dashboardId, live }: { dashboardId: string; live: boolean }) {
   const parameters = useEditor((s) => s.doc?.parameters);
   const raw = useParameters((s) => s.raw);
   const narrow = useNarrowScreen();
@@ -23,7 +24,14 @@ export function FilterBar() {
   const changed = parameters.filter((p) => Object.hasOwn(raw, p.id)).length;
   const reset = () => useParameters.getState().reset();
   const controls = parameters.map((p) => (
-    <FilterControl key={p.id} parameter={p} parameters={parameters} raw={raw} />
+    <FilterControl
+      key={p.id}
+      dashboardId={dashboardId}
+      live={live}
+      parameter={p}
+      parameters={parameters}
+      raw={raw}
+    />
   ));
   if (narrow) {
     return (
@@ -67,20 +75,33 @@ export function ParameterSummary() {
 }
 
 function FilterControl({
+  dashboardId,
+  live,
   parameter: p,
   parameters,
   raw,
 }: {
+  dashboardId: string;
+  live: boolean;
   parameter: Parameter;
   parameters: readonly Parameter[];
   raw: RawValues;
 }) {
+  const { options: dataOptions, failed } = useDataChoices(dashboardId, p, live);
   const changed = Object.hasOwn(raw, p.id);
   const text = changed ? raw[p.id]! : defaultText(p);
   const apply = (next: string | null) => {
     const problem = useParameters.getState().set(p.id, next, parameters);
     if (problem) toast(problem, 'bad');
   };
+  const loading = p.type === 'select' && Boolean(p.optionsFrom) && dataOptions === null && !failed;
+  // A failed options dataset leaves only All: no value can be checked, so none is offered.
+  const choices: { value: OptionValue; label?: string }[] =
+    p.type === 'select'
+      ? p.optionsFrom
+        ? (dataOptions ?? []).map((value) => ({ value }))
+        : (p.options ?? [])
+      : [];
   const id = `filter-${p.id}`;
   return (
     <div className="flex flex-col gap-1">
@@ -92,11 +113,18 @@ function FilterControl({
           <Select
             id={id}
             value={text}
+            disabled={loading}
             onChange={(e) => apply(e.target.value)}
             className="h-8 w-auto min-w-32 text-[13px]"
           >
             {p.all ? <option value="*">{p.all}</option> : null}
-            {(p.options ?? []).map((o) => (
+            {loading ? (
+              // A link's value stays visible until its choices arrive; "*" is the All label, not a raw asterisk.
+              text === '*' ? null : (
+                <option value={text}>{text}</option>
+              )
+            ) : null}
+            {choices.map((o) => (
               <option key={String(o.value)} value={String(o.value)}>
                 {o.label ?? String(o.value)}
               </option>

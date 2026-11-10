@@ -292,6 +292,9 @@ live in the page URL (`?p.region=eu&p.period=last7d`) and are never saved.
   funnel; `field` is its `x` or `series`), table or map config makes a click set the filter, and a second click on the
   same item reset it. The other items are dimmed in the browser and in snapshots. The clicked widget should read a
   dataset without that filter, or it shows only the clicked item.
+- Choices from data: a select may take `optionsFrom: { "dataset": "countries", "field": "code" }` instead of
+  `options`: the distinct values of that column, at most 200, sorted. The dataset must not use a filter itself, the
+  select offers "All" and starts at it, and such a filter never reaches a source with secrets.
 - `get_data`, `render_snapshot`, `suggest_widgets` and `preview_data` take `parameters`, in the text form of a link
   (`"*"` is "All", a range is `2026-01-01..2026-03-31`); answers echo the values and the view's link. Without them
   the defaults apply, also for `apply_operations`' data checks.

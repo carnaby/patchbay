@@ -7,6 +7,7 @@ import {
   rawFromSearch,
   rawQuery,
   searchWith,
+  staleDataValue,
   summaryOf,
   useParameters,
 } from './parameters.ts';
@@ -125,5 +126,25 @@ describe('describing a view', () => {
     expect(summaryOf(parameters, { region: 'eu', q: 'shoes' }, true)).toBe('Region: EU · Search: "shoes"');
     expect(summaryOf(parameters, {}, true)).toBe('');
     expect(summaryOf(undefined, {})).toBe('');
+  });
+});
+
+describe('choices from data in the browser', () => {
+  const country = ParameterSchema.parse({
+    id: 'country',
+    label: 'Country',
+    type: 'select',
+    optionsFrom: { dataset: 'countries', field: 'code' },
+    all: 'All',
+    default: null,
+  });
+
+  it('keeps a value until the choices are loaded, then knows whether it went stale', () => {
+    expect(normalizeRaw([country], { country: 'AT' }, NOW).raw).toEqual({ country: 'AT' });
+    expect(staleDataValue(country, { country: 'AT' }, null)).toBe(false);
+    expect(staleDataValue(country, { country: 'AT' }, ['AT', 'SK'])).toBe(false);
+    expect(staleDataValue(country, { country: 'DE' }, ['AT', 'SK'])).toBe(true);
+    expect(staleDataValue(country, {}, ['AT'])).toBe(false);
+    expect(staleDataValue(region, { region: 'eu' }, ['AT'])).toBe(false);
   });
 });

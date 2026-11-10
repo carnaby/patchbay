@@ -6,6 +6,7 @@
  */
 import {
   defaultText,
+  type OptionValue,
   type Parameter,
   parameterSummary,
   parameterText,
@@ -138,3 +139,14 @@ export const useParameters = create<ParameterState>((set, get) => ({
     else set({ history: 'replace' });
   },
 }));
+
+/** A data-driven select's value that the loaded choices no longer hold (the data changed, or a hand-edited link). */
+export function staleDataValue(
+  param: Parameter,
+  raw: RawValues,
+  options: readonly OptionValue[] | null,
+): boolean {
+  if (param.type !== 'select' || !param.optionsFrom || options === null || !Object.hasOwn(raw, param.id))
+    return false;
+  return !options.some((v) => String(v) === raw[param.id]);
+}

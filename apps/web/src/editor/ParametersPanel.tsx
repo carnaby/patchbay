@@ -6,6 +6,7 @@ import {
   DATE_PRESET_LABELS,
   DATE_PRESETS,
   type DatePreset,
+  lineageParameters,
   type OpInput,
   type Parameter,
 } from '@patchbay/core';
@@ -21,6 +22,7 @@ import {
   Input,
   Menu,
   MenuItem,
+  Segmented,
   Select,
   Textarea,
   Toggle,
@@ -28,6 +30,7 @@ import {
 } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
 import { summaryOf, useParameters } from '../state/parameters.ts';
+import { useDatasetColumns } from '../state/sync.ts';
 import {
   checkParameter,
   defaultOps,
@@ -44,7 +47,15 @@ import {
 
 type Editing = { parameter: Parameter; isNew: boolean } | null;
 
-export function ParametersPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function ParametersPanel({
+  open,
+  onClose,
+  dashboardId,
+}: {
+  open: boolean;
+  onClose: () => void;
+  dashboardId: string;
+}) {
   const doc = useEditor((s) => s.doc);
   const apply = useEditor((s) => s.apply);
   const raw = useParameters((s) => s.raw);
@@ -73,6 +84,7 @@ export function ParametersPanel({ open, onClose }: { open: boolean; onClose: () 
           key={editing.parameter.id}
           initial={editing.parameter}
           isNew={editing.isNew}
+          dashboardId={dashboardId}
           others={parameters.filter((p) => editing.isNew || p.id !== editing.parameter.id)}
           onCancel={() => setEditing(null)}
           onSave={(parameter) => {
@@ -169,12 +181,14 @@ export function ParametersPanel({ open, onClose }: { open: boolean; onClose: () 
 }
 
 function ParameterForm({
+  dashboardId,
   initial,
   isNew,
   others,
   onSave,
   onCancel,
 }: {
+  dashboardId: string;
   initial: Parameter;
   isNew: boolean;
   others: readonly Parameter[];
@@ -234,7 +248,13 @@ function ParameterForm({
         )}
       </Field>
       {initial.type === 'select' ? (
-        <SelectFields draft={draft} set={set} optionsDraft={optionsDraft} setOptionsDraft={setOptionsDraft} />
+        <SelectFields
+          dashboardId={dashboardId}
+          draft={draft}
+          set={set}
+          optionsDraft={optionsDraft}
+          setOptionsDraft={setOptionsDraft}
+        />
       ) : initial.type === 'text' ? (
         <>
           <Field label="Placeholder (optional)">
@@ -281,11 +301,13 @@ function ParameterForm({
 }
 
 function SelectFields({
+  dashboardId,
   draft,
   set,
   optionsDraft,
   setOptionsDraft,
 }: {
+  dashboardId: string;
   draft: Record<string, unknown>;
   set: (patch: Record<string, unknown>) => void;
   optionsDraft: string;
@@ -293,32 +315,110 @@ function SelectFields({
 }) {
   const options = (draft.options as OptionInput[] | undefined) ?? [];
   const all = typeof draft.all === 'string' ? draft.all : undefined;
+  const fromData = draft.optionsFrom as { dataset: string; field: string } | undefined;
+  const doc = useEditor((s) => s.doc);
+  // Only datasets that use no filter: choices that change with a filter would make a value valid in one view only.
+  const sources = (doc?.datasets ?? []).filter((d) => lineageParameters(doc!, d.id).length === 0);
+  const columnsOf = useDatasetColumns(dashboardId, fromData ? [fromData.dataset] : []);
+  const columns = fromData ? columnsOf(fromData.dataset) : [];
+  // An agent may have declared a source this list would not offer; keep it visible rather than silently swapping it.
+  const datasetIds = [...new Set([...(fromData ? [fromData.dataset] : []), ...sources.map((d) => d.id)])];
+  const fields =
+    fromData?.field && !columns.includes(fromData.field) ? [fromData.field, ...columns] : columns;
   return (
     <>
-      <Field label="Options" hint='One per line: a value, or "value | Label". Values appear in links.'>
-        {(fid) => (
-          <Textarea
-            id={fid}
-            rows={Math.min(10, Math.max(3, optionsDraft.split('\n').length + 1))}
-            value={optionsDraft}
-            spellCheck={false}
-            onChange={(e) => {
-              setOptionsDraft(e.target.value);
-              set({ options: parseOptions(e.target.value, options) });
-            }}
-          />
-        )}
-      </Field>
-      <Toggle
-        checked={all !== undefined}
-        label='Offer "All"'
-        onChange={(on) =>
-          set({
-            all: on ? 'All' : undefined,
-            ...(on || draft.default !== null ? {} : { default: options[0]?.value ?? null }),
-          })
-        }
+      <Segmented
+        value={fromData ? 'data' : 'list'}
+        onChange={(mode) => {
+          if (mode === (fromData ? 'data' : 'list')) return;
+          if (mode === 'data')
+            set({
+              options: undefined,
+              optionsFrom: { dataset: sources[0]?.id ?? '', field: '' },
+              all: all ?? 'All',
+              default: null,
+            });
+          else {
+            setOptionsDraft(optionsDraft || 'a');
+            // Never both: the schema refuses options together with optionsFrom.
+            set({ optionsFrom: undefined, options: parseOptions(optionsDraft || 'a', []) });
+          }
+        }}
+        options={[
+          { value: 'list', label: 'Fixed list' },
+          {
+            value: 'data',
+            label: 'From a dataset column',
+            title: 'The distinct values of a column, at most 200',
+          },
+        ]}
       />
+      {fromData ? (
+        <>
+          <Field
+            label="Dataset"
+            hint="Its distinct values become the choices. It must not use a filter itself."
+          >
+            {(fid) => (
+              <Select
+                id={fid}
+                value={fromData.dataset}
+                onChange={(e) => set({ optionsFrom: { dataset: e.target.value, field: '' } })}
+              >
+                {fromData.dataset === '' ? <option value="">Choose a dataset</option> : null}
+                {datasetIds.map((id) => (
+                  <option key={id} value={id}>
+                    {doc?.datasets.find((d) => d.id === id)?.name ?? id}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          <Field label="Column">
+            {(fid) => (
+              <Select
+                id={fid}
+                value={fromData.field}
+                onChange={(e) => set({ optionsFrom: { ...fromData, field: e.target.value } })}
+              >
+                {fromData.field === '' ? <option value="">Choose a column</option> : null}
+                {fields.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+        </>
+      ) : (
+        <Field label="Options" hint='One per line: a value, or "value | Label". Values appear in links.'>
+          {(fid) => (
+            <Textarea
+              id={fid}
+              rows={Math.min(10, Math.max(3, optionsDraft.split('\n').length + 1))}
+              value={optionsDraft}
+              spellCheck={false}
+              onChange={(e) => {
+                setOptionsDraft(e.target.value);
+                set({ options: parseOptions(e.target.value, options) });
+              }}
+            />
+          )}
+        </Field>
+      )}
+      {fromData ? null : (
+        <Toggle
+          checked={all !== undefined}
+          label='Offer "All"'
+          onChange={(on) =>
+            set({
+              all: on ? 'All' : undefined,
+              ...(on || draft.default !== null ? {} : { default: options[0]?.value ?? null }),
+            })
+          }
+        />
+      )}
       {all !== undefined ? (
         <Field label='Label of "All"'>
           {(fid) => (
@@ -326,10 +426,11 @@ function SelectFields({
           )}
         </Field>
       ) : null}
-      <Field label="Default">
+      <Field label="Default" hint={fromData ? 'A filter fed by data always starts at All.' : undefined}>
         {(fid) => (
           <Select
             id={fid}
+            disabled={Boolean(fromData)}
             value={draft.default === null ? '*' : String(draft.default)}
             onChange={(e) => {
               const v = e.target.value;
