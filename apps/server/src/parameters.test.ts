@@ -101,6 +101,45 @@ const BARS = {
   config: { kind: 'bar', x: 'region', y: ['v'] },
 };
 
+/** A select fed by the "country" column of "orders", a dataset filtered by it, and a table of that dataset. */
+const COUNTRY_OPS = [
+  {
+    op: 'addDataset',
+    dataset: {
+      id: 'orders',
+      name: 'Orders',
+      source: {
+        kind: 'inline',
+        rows: [
+          { country: 'SK', n: 1 },
+          { country: 'AT', n: 2 },
+        ],
+      },
+    },
+  },
+  {
+    op: 'addParameter',
+    parameter: {
+      id: 'country',
+      label: 'Country',
+      type: 'select',
+      optionsFrom: { dataset: 'orders', field: 'country' },
+      all: 'All',
+      default: null,
+    },
+  },
+  {
+    op: 'addDataset',
+    dataset: {
+      id: 'mine',
+      name: 'Mine',
+      source: { kind: 'dataset', id: 'orders' },
+      transforms: [{ type: 'filter', expr: '$param.country == null || country == $param.country' }],
+    },
+  },
+  { op: 'addWidget', widget: { id: 'table', type: 'table', datasetId: 'mine', config: {} } },
+];
+
 /** An anonymous public dashboard with the given filters and datasets (by default two filters, a dataset, a chart). */
 async function filtered(
   ops: unknown[] = [
@@ -211,46 +250,7 @@ describe('views over REST', () => {
   });
 
   it('reads a filter whose choices come from a dataset column, also in a preview', async () => {
-    const created = await call('/api/dashboards', { body: {} });
-    const id = created.json.envelope.meta.id as string;
-    const headers = { 'x-edit-key': created.json.editKey as string };
-    const ops = [
-      {
-        op: 'addDataset',
-        dataset: {
-          id: 'orders',
-          name: 'Orders',
-          source: {
-            kind: 'inline',
-            rows: [
-              { country: 'SK', n: 1 },
-              { country: 'AT', n: 2 },
-            ],
-          },
-        },
-      },
-      {
-        op: 'addParameter',
-        parameter: {
-          id: 'country',
-          label: 'Country',
-          type: 'select',
-          optionsFrom: { dataset: 'orders', field: 'country' },
-          all: 'All',
-          default: null,
-        },
-      },
-      {
-        op: 'addDataset',
-        dataset: {
-          id: 'mine',
-          name: 'Mine',
-          source: { kind: 'dataset', id: 'orders' },
-          transforms: [{ type: 'filter', expr: '$param.country == null || country == $param.country' }],
-        },
-      },
-    ];
-    expect((await call(`/api/dashboards/${id}/ops`, { body: { ops }, headers })).status).toBe(200);
+    const { id, headers } = await filtered(COUNTRY_OPS);
     expect((await call(`/api/dashboards/${id}/data/mine?p.country=AT`)).json.table.rows).toEqual([
       { country: 'AT', n: 2 },
     ]);
@@ -268,6 +268,18 @@ describe('views over REST', () => {
       headers,
     });
     expect(preview.json.result.table.rows).toEqual([{ country: 'SK', n: 1 }]);
+  });
+
+  it('draws a snapshot of a view whose filter takes its choices from data, and refuses a value it lacks', async () => {
+    const { id } = await filtered(COUNTRY_OPS);
+    const shot = await call(`/api/dashboards/${id}/snapshot.png?p.country=AT`);
+    expect(shot.status, JSON.stringify(shot.json)).toBe(200);
+    expect(shot.headers.get('content-type')).toBe('image/png');
+    const widget = await call(`/api/dashboards/${id}/snapshot.png?widget=table&p.country=SK`);
+    expect(widget.status, JSON.stringify(widget.json)).toBe(200);
+    const bad = await call(`/api/dashboards/${id}/snapshot.png?p.country=DE`);
+    expect(bad.status).toBe(400);
+    expect(bad.json.error).toBe('Filter "country" has no value "DE"; choose one of AT, SK, or * for all');
   });
 
   it('sends no referrer, so a view link opened from a dashboard does not carry its values', async () => {
@@ -353,6 +365,30 @@ describe('filters over MCP', () => {
       arguments: { dashboardId, parameters: { region: 'eu' } },
     });
     expect(text(shot)).toContain('Filters: Region: EU');
+  });
+
+  it('reads and draws a view whose filter takes its choices from data, and refuses a value it lacks', async () => {
+    const c = await agent('filters-data-agent@example.com');
+    const { dashboardId } = await tool(c, 'create_dashboard', { title: 'Choices from data' });
+    await tool(c, 'apply_operations', { dashboardId, operations: COUNTRY_OPS });
+    const at = await tool(c, 'get_data', { dashboardId, datasetId: 'mine', parameters: { country: 'AT' } });
+    expect(at.rowCount).toBe(1);
+    expect(at.parameters).toEqual({ country: 'AT' });
+    const shot = await c.callTool({
+      name: 'render_snapshot',
+      arguments: { dashboardId, parameters: { country: 'SK' } },
+    });
+    expect(shot.isError, text(shot)).toBeFalsy();
+    expect(text(shot)).toContain('Filters: Country: SK');
+    const refused = 'Filter "country" has no value "DE"; choose one of AT, SK, or * for all';
+    for (const [name, args] of [
+      ['get_data', { dashboardId, datasetId: 'mine' }],
+      ['render_snapshot', { dashboardId }],
+    ] as const) {
+      const bad = await c.callTool({ name, arguments: { ...args, parameters: { country: 'DE' } } });
+      expect(bad.isError, name).toBe(true);
+      expect(text(bad), name).toBe(refused);
+    }
   });
 
   it('keeps a read-only token from previewing a POST, with filter values or without', async () => {
