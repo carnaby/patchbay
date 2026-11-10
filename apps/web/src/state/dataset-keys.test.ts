@@ -70,7 +70,7 @@ describe('dataset keys by view', () => {
     id: 'region',
     label: 'Region',
     type: 'select' as const,
-    options: [{ value: 'eu' }, { value: 'us' }],
+    options: [{ value: 'eu' }, { value: 'us' }, { value: 'a&b' }],
     all: 'All',
     default: null,
   };
@@ -120,6 +120,24 @@ describe('dataset keys by view', () => {
     expect(queryOfView(viewKey(filtered, 'eu', { region: 'a&b' }))).toBe('&p.region=a%26b');
     expect(queryOfView(viewKey(filtered, 'eu', {}))).toBe('');
     expect(queryOfView('')).toBe('');
+  });
+
+  it('keys and queries only values the current declarations accept, before the URL is normalised', () => {
+    // Another tab removed the option this link holds: the new document arrives before the URL effect resets the store.
+    const withoutUs = applyOps(filtered, [
+      { op: 'updateParameter', id: 'region', set: { options: [{ value: 'eu' }] } },
+    ]).doc;
+    const stale = { region: 'us', period: 'last30d' };
+    expect(queryOfView(viewKey(withoutUs, 'eu', stale))).toBe('');
+    expect(viewKey(withoutUs, 'eu', stale)).toBe(viewKey(withoutUs, 'eu', {}));
+    expect(datasetKey('d', withoutUs, 'eu', stale)).toEqual(datasetKey('d', withoutUs, 'eu', {}));
+    // Hand-edited values, a value equal to the default, and a prototype name are never sent either.
+    expect(queryOfView(viewKey(filtered, 'recent', { period: '2026-02-30..2026-03-01' }))).toBe('');
+    expect(queryOfView(viewKey(filtered, 'recent', { period: 'last7d' }))).toBe('');
+    expect(queryOfView(viewKey(filtered, 'recent', { period: 'last30d' }))).toBe('&p.period=last30d');
+    expect(followsCalendar(filtered, 'recent', { period: '2026-02-30..2026-03-01' })).toBe(true);
+    const proto = JSON.parse('{"__proto__":"x","region":"eu"}') as Record<string, string>;
+    expect(queryOfView(viewKey(filtered, 'eu', proto))).toBe('&p.region=eu');
   });
 
   it('waits for the save of a changed declaration that a dataset uses', () => {

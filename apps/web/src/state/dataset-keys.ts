@@ -12,7 +12,7 @@ import {
   type SoundRule,
   upstreamOf,
 } from '@patchbay/core';
-import type { RawValues } from './parameters.ts';
+import { normalizeRaw, type RawValues } from './parameters.ts';
 
 const memo = new WeakMap<DashboardDoc, Map<string, string>>();
 
@@ -44,6 +44,24 @@ export function datasetParameters(doc: DashboardDoc, datasetId: string): string[
   return ids;
 }
 
+const acceptedMemo = new WeakMap<DashboardDoc, WeakMap<RawValues, RawValues>>();
+
+/**
+ * The values `doc`'s declarations accept, as `useParameterUrl` will normalise them. A new document (an option removed
+ * in another tab) reaches the keys in the render that receives it, before that effect resets the store: reading the
+ * values here means no request ever carries a value the declarations refuse. Validity does not depend on the clock.
+ */
+function acceptedRaw(doc: DashboardDoc, raw: RawValues): RawValues {
+  const byRaw = acceptedMemo.get(doc) ?? new WeakMap<RawValues, RawValues>();
+  acceptedMemo.set(doc, byRaw);
+  let accepted = byRaw.get(raw);
+  if (!accepted) {
+    accepted = normalizeRaw(doc.parameters, raw, Date.now()).raw;
+    byRaw.set(raw, accepted);
+  }
+  return accepted;
+}
+
 /**
  * The view part of a dataset's key: each filter it depends on with its declaration and current value, '' for a
  * dataset that uses none. A change of a filter changes the keys of exactly the datasets that use it, and the
@@ -52,11 +70,12 @@ export function datasetParameters(doc: DashboardDoc, datasetId: string): string[
 export function viewKey(doc: DashboardDoc, datasetId: string, raw: RawValues): string {
   const ids = datasetParameters(doc, datasetId);
   if (ids.length === 0) return '';
+  const accepted = acceptedRaw(doc, raw);
   return JSON.stringify(
     ids.map((id) => [
       id,
       doc.parameters?.find((p) => p.id === id) ?? null,
-      Object.hasOwn(raw, id) ? raw[id] : null,
+      Object.hasOwn(accepted, id) ? accepted[id] : null,
     ]),
   );
 }
@@ -116,10 +135,11 @@ export function soundIdentity(
 
 /** Whether the data moves with the calendar: a date range filter it uses is at a relative preset ("last7d"). */
 export function followsCalendar(doc: DashboardDoc, datasetId: string, raw: RawValues): boolean {
+  const accepted = acceptedRaw(doc, raw);
   return datasetParameters(doc, datasetId).some((id) => {
     const p = doc.parameters?.find((x) => x.id === id);
     if (p?.type !== 'dateRange') return false;
-    const text = Object.hasOwn(raw, id) ? raw[id]! : defaultText(p);
+    const text = Object.hasOwn(accepted, id) ? accepted[id]! : defaultText(p);
     return !text.includes('..');
   });
 }
