@@ -163,16 +163,36 @@ export function followsCalendar(doc: DashboardDoc, datasetId: string, raw: RawVa
 }
 
 const DAY_MS = 86_400_000;
+/** A minute after midnight UTC: by then the server resolves a relative period to the new day. */
+const ROLLOVER_MS = 60_000;
+const CATCH_UP_MS = 60_000;
 
 /**
- * The next refetch: the live fallback interval, and for a relative period also a minute after midnight UTC, when
- * the server resolves it to the new day. Without it a wall screen pinned to "last 7 days" on a dataset that never
- * refreshes would show the old week forever.
+ * Whether a relative period may still show yesterday's window: its last refetch failed, or its last good result is
+ * older than the latest 00:01 UTC. Before that minute yesterday's result is still the current one.
  */
-export function nextRefetch(interval: number | false, calendar: boolean, now: number): number | false {
+export function behindCalendar(now: number, last: { updatedAt: number; failed: boolean }): boolean {
+  return last.failed || last.updatedAt < now - ((now - ROLLOVER_MS) % DAY_MS);
+}
+
+/**
+ * The next refetch: the live fallback interval, and for a relative period also the coming 00:01 UTC. Without it a
+ * wall screen pinned to "last 7 days" on a dataset that never refreshes would show the old week forever.
+ * Query-core asks again on every render and update and restarts its timer, so the delay must aim at the coming
+ * boundary (inside the first minute that is today's 00:01, not tomorrow's), and a refetch that failed or has not
+ * happened since that boundary is retried every minute instead of a day later.
+ */
+export function nextRefetch(
+  interval: number | false,
+  calendar: boolean,
+  now: number,
+  last?: { updatedAt: number; failed: boolean },
+): number | false {
   if (!calendar) return interval;
-  const rollover = DAY_MS - (now % DAY_MS) + 60_000;
-  return interval === false ? rollover : Math.min(interval, rollover);
+  const rollover = DAY_MS - ((now - ROLLOVER_MS) % DAY_MS);
+  // A regular refresh comes back on its own; only a dataset that never refreshes needs catching up.
+  if (interval !== false) return Math.min(interval, rollover);
+  return last && behindCalendar(now, last) ? Math.min(CATCH_UP_MS, rollover) : rollover;
 }
 
 /** The filters an unsaved draft depends on: its own references and those of the saved datasets it reads. */

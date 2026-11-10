@@ -1,6 +1,7 @@
 import { applyOps, type DashboardDoc, emptyDashboard, SoundRuleSchema } from '@patchbay/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  behindCalendar,
   choiceChecks,
   datasetInSync,
   datasetKey,
@@ -186,6 +187,40 @@ describe('dataset keys by view', () => {
     expect(nextRefetch(30_000, true, late)).toBe(30_000);
     expect(nextRefetch(5_000, false, late)).toBe(5_000);
     expect(nextRefetch(false, false, late)).toBe(false);
+  });
+
+  it('aims at the coming 00:01 UTC, never at the one a day later', () => {
+    const at = (iso: string) => Date.parse(iso);
+    expect(nextRefetch(false, true, at('2026-11-10T23:59:00Z'))).toBe(120_000);
+    // Inside the first minute the 00:01 still ahead is today's, not tomorrow's.
+    expect(nextRefetch(false, true, at('2026-11-11T00:00:00Z'))).toBe(60_000);
+    expect(nextRefetch(false, true, at('2026-11-11T00:00:30Z'))).toBe(30_000);
+    expect(nextRefetch(false, true, at('2026-11-11T00:01:00Z'))).toBe(86_400_000);
+    expect(nextRefetch(false, true, at('2026-11-11T00:01:00.001Z'))).toBe(86_399_999);
+    expect(nextRefetch(false, true, at('2026-11-11T12:00:00Z'))).toBe(12 * 3_600_000 + 60_000);
+    expect(nextRefetch(45_000, true, at('2026-11-11T00:00:30Z'))).toBe(30_000);
+  });
+
+  it('retries a relative period every minute until it has today’s window', () => {
+    const at = (iso: string) => Date.parse(iso);
+    const yesterday = at('2026-11-10T10:00:00Z');
+    // Before 00:01 yesterday's result is still current; after it, it is behind until a refetch succeeds.
+    expect(behindCalendar(at('2026-11-11T00:00:30Z'), { updatedAt: yesterday, failed: false })).toBe(false);
+    expect(behindCalendar(at('2026-11-11T00:01:00Z'), { updatedAt: yesterday, failed: false })).toBe(true);
+    expect(behindCalendar(at('2026-11-11T00:01:30Z'), { updatedAt: yesterday, failed: false })).toBe(true);
+    const fetched = at('2026-11-11T00:01:00Z');
+    expect(behindCalendar(at('2026-11-11T00:01:30Z'), { updatedAt: fetched, failed: false })).toBe(false);
+    expect(behindCalendar(at('2026-11-11T09:00:00Z'), { updatedAt: fetched, failed: true })).toBe(true);
+    expect(behindCalendar(at('2026-11-11T00:05:00Z'), { updatedAt: 0, failed: false })).toBe(true);
+
+    // A failed 00:01 refetch is retried in a minute, not a day later; a good one waits for the next 00:01.
+    const after = at('2026-11-11T00:01:03Z');
+    expect(nextRefetch(false, true, after, { updatedAt: yesterday, failed: true })).toBe(60_000);
+    expect(nextRefetch(false, true, after, { updatedAt: yesterday, failed: false })).toBe(60_000);
+    expect(nextRefetch(false, true, after, { updatedAt: fetched, failed: false })).toBe(86_397_000);
+    // A regular refresh already comes back on its own, and nothing else moves with the calendar.
+    expect(nextRefetch(300_000, true, after, { updatedAt: yesterday, failed: true })).toBe(300_000);
+    expect(nextRefetch(false, false, after, { updatedAt: yesterday, failed: true })).toBe(false);
   });
 
   it('lists the filters a draft reads, its own and through its source', () => {

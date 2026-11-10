@@ -11,6 +11,9 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 - Filters that take their choices from data no longer slow the server down: the choices of a column with thousands of
   distinct values are sorted much faster and worked out once per loaded result instead of on every request, so links
   carrying such a filter value (valid or not) can no longer keep the server busy for other viewers.
+- A dashboard left open on a relative period such as "Last 7 days" no longer keeps yesterday's window for a whole
+  day when it re-rendered in the first minute after midnight UTC or its refetch then failed: it now refetches at the
+  coming 00:01 UTC and retries every minute until it has the new day's data.
 
 ## [0.3.0] - 2026-11-10
 

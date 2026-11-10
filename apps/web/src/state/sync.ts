@@ -247,7 +247,11 @@ export function useDatasetResult(dashboardId: string, dataset: Dataset | undefin
     placeholderData: keepPreviousData,
     staleTime: timing.staleTime,
     // SSE pushes live updates; poll when it cannot, and after midnight for a relative period.
-    refetchInterval: () => nextRefetch(timing.refetchInterval, calendar, Date.now()),
+    refetchInterval: (query) =>
+      nextRefetch(timing.refetchInterval, calendar, Date.now(), {
+        updatedAt: query.state.dataUpdatedAt,
+        failed: query.state.status === 'error',
+      }),
   });
 }
 
