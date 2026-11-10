@@ -176,6 +176,42 @@ describe('binding URLs', () => {
     }
   });
 
+  it('refuses again every reference validation refuses, should one reach it unchecked', () => {
+    const where = 'Filters cannot be part of the scheme, host, port, user name or fragment of an address';
+    const city = { city: 'vienna' };
+    const urls: [string, string][] = [
+      // "$" cannot start a scheme, so the text has none: it reads as a segment with more than the reference.
+      ['$param.city://a.example/x', '"$param.city:" puts a filter inside a longer text'],
+      ['https://$param.city/x', where],
+      ['https://a.example:$param.city/x', where],
+      ['https://$param.city@a.example/x', where],
+      ['https://u:$param.city@a.example/x', where],
+      ['https://a.example/x#$param.city', where],
+      ['https://a.example/x?$param.city=1', 'A query parameter name cannot be a filter'],
+      [
+        'https://a.example/sales-$param.city.json',
+        '"sales-$param.city.json" puts a filter inside a longer text',
+      ],
+      ['https://a.example/x?q=in:$param.city', '"in:$param.city" puts a filter inside a longer text'],
+    ];
+    for (const [url, message] of urls) {
+      expect(() => bindUrl(url, city), url).toThrow(BindError);
+      expect(() => bindUrl(url, city), url).toThrow(message);
+    }
+    const posted = (body: unknown) =>
+      DatasetSchema.parse({
+        id: 'b',
+        name: 'B',
+        source: { kind: 'http', url: 'https://a.example/q', method: 'POST', body },
+      });
+    expect(() => bindDataset(posted({ q: 'where c = $param.city' }), city)).toThrow(
+      '"where c = $param.city" puts a filter inside a longer text',
+    );
+    expect(() => bindDataset(posted({ vars: { '$param.city': 1 } }), city)).toThrow(
+      'A key cannot be a filter',
+    );
+  });
+
   it('refuses a path value that would empty or leave its segment', () => {
     for (const city of ['', '.', '..'])
       expect(() => bindUrl('https://a.example/v1/$param.city/x', { city }), city).toThrow(
