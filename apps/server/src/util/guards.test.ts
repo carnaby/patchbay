@@ -168,6 +168,50 @@ describe('parseUpload', () => {
     expect(json(columns(5, 20))()).toMatchObject({ rows: { length: 20 } });
   });
 
+  it('keeps a "__proto__" key as a column in JSON records, column-shaped JSON and CSV', () => {
+    const proto = '__proto__';
+    const upload = (content: string, format: 'json' | 'csv') =>
+      parseUpload({ content, format, maxCells: 100 });
+    for (const table of [
+      upload('[{"__proto__": 1, "b": 2}, {"__proto__": 3, "b": 4}]', 'json'),
+      upload('{"__proto__": [1, 3], "b": [2, 4]}', 'json'),
+      upload('__proto__,b\n1,2\n3,4\n', 'csv'),
+    ]) {
+      expect(table.columns.map((c) => c.name)).toEqual(['__proto__', 'b']);
+      expect(table.rows.map((r) => [Object.hasOwn(r, proto), r[proto], r.b])).toEqual([
+        [true, 1, 2],
+        [true, 3, 4],
+      ]);
+      expect(Object.getPrototypeOf(table.rows[0]!)).toBe(Object.prototype);
+    }
+  });
+
+  it('gives a repeated "__proto__" CSV header a free name, never one the file already uses', () => {
+    const csv = (content: string) => {
+      const table = parseUpload({ content, format: 'csv', maxCells: 100 });
+      return table.columns.map((c) => [c.name, table.rows[0]![c.name]]);
+    };
+    expect(csv('__proto___1,__proto__,__proto__\n1,2,3\n')).toEqual([
+      ['__proto___1', 1],
+      ['__proto__', 2],
+      ['__proto___2', 3],
+    ]);
+    // Headers are trimmed, so a spaced one is the same name.
+    expect(csv(' __proto__ ,b\n1,2\n')).toEqual([
+      ['__proto__', 1],
+      ['b', 2],
+    ]);
+  });
+
+  it('refuses a header repeating "__proto__" past the column limit like any other name', () => {
+    const header = (name: string) => `${Array.from({ length: 20_000 }, () => name).join(',')}\n1\n`;
+    const upload = (name: string) => () =>
+      parseUpload({ content: header(name), format: 'csv', maxCells: 100_000 });
+    // Naming 20,000 repeated markers one by one took 47 s; the count is known from the header alone.
+    expect(upload('a')).toThrow('The file has 20,000 columns; uploads are limited to 500');
+    expect(upload('__proto__')).toThrow('The file has 20,000 columns; uploads are limited to 500');
+  });
+
   it('ignores a path for CSV', () => {
     expect(
       parseUpload({ content: 'a,b\n1,2\n', format: 'csv', maxCells: 100, path: 'data.items' }).rows,

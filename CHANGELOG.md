@@ -22,6 +22,13 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   dataset editor) takes an optional `path` such as `"data.items"`, applied to a JSON file before it is stored, so
   records nested inside a file can be used without editing it. CSV files ignore it.
 
+### Fixed
+
+- A column named `__proto__` (a JSON key or a CSV header) is now kept like any other column, in `http` responses,
+  uploads, stored files and every processing step; it used to vanish without a message. A record without a column
+  that another record has reads that cell as empty even when the column is called `constructor` or `toString`, and
+  `rename` no longer renames such a column to a member of JavaScript's `Object`.
+
 ## [0.2.1] - 2026-11-06
 
 ### Changed

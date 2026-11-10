@@ -34,6 +34,27 @@ export function withMethod(source: HttpSource, method: HttpMethod): HttpSource {
   return source.method === 'POST' ? source : { ...rest, method: 'POST' };
 }
 
+/** The form after a method switch: the source to keep in the draft, the body field's text and its error. */
+export interface MethodSwitch {
+  source: HttpSource;
+  text: string;
+  error: string | null;
+}
+
+/**
+ * Switches the form's method. The typed text survives GET, so one stray click within an edit does not lose a query:
+ * the GET source holds no body (it is saved exactly as before POST existed) and the text, which it never sends, cannot
+ * block a save. Back on POST the text becomes the body again, or shows its error as it did before.
+ */
+export function switchMethod(source: HttpSource, method: HttpMethod, text: string): MethodSwitch {
+  if (method === 'GET') return { source: withMethod(source, 'GET'), text, error: null };
+  const post = withMethod(source, 'POST');
+  const parsed = parseBodyText(text);
+  return parsed.ok
+    ? { source: withBody(post, parsed.body), text, error: null }
+    : { source: post, text, error: parsed.error };
+}
+
 /** The source with this body; undefined removes it. */
 export function withBody(source: HttpSource, body: unknown): HttpSource {
   const { body: _body, ...rest } = source;

@@ -174,6 +174,20 @@ describe('FolderStore', () => {
     expect(readdirSync(join(dir, 'dashboards', 'files01', 'files'))).toEqual(['f_new.json']);
   });
 
+  it('reads a stored "__proto__" column back as a column', async () => {
+    await store.create(meta('proto01'), emptyDashboard(), actor, ['Created']);
+    const table = inferTable(JSON.parse('[{"__proto__": 1, "b": "x"}, {"__proto__": 2, "b": "y"}]'));
+    expect(table.columns.map((c) => c.name)).toEqual(['__proto__', 'b']);
+    const file = { id: 'f_proto', name: 'p.json', rows: 2, columns: 2, size: 50, uploadedAt: 'u', table };
+    await store.saveFile('proto01', file);
+    const read = (await store.readFileTable('proto01', 'f_proto'))!;
+    const proto = '__proto__';
+    expect(read.rows.map((r) => [Object.hasOwn(r, proto), r[proto], r.b])).toEqual([
+      [true, 1, 'x'],
+      [true, 2, 'y'],
+    ]);
+  });
+
   it('shares uploads between dashboards without copying bytes', async () => {
     await store.create(meta('share01'), emptyDashboard(), actor, ['Created']);
     await store.create(meta('share02'), emptyDashboard(), actor, ['Created']);
