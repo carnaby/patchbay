@@ -28,6 +28,10 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   uploads, stored files and every processing step; it used to vanish without a message. A record without a column
   that another record has reads that cell as empty even when the column is called `constructor` or `toString`, and
   `rename` no longer renames such a column to a member of JavaScript's `Object`.
+- Dataset editor: a typed POST body survives switching the method to GET and back; the preview shows its row and
+  column counts only beside the table they describe (a stale table stays dimmed while the body is invalid); and
+  typing a POST body waits for a longer pause before previewing, so it no longer sends a request upstream at every
+  short pause.
 
 ## [0.2.1] - 2026-11-06
 
