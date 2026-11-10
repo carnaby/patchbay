@@ -146,6 +146,17 @@ describe('filter references', () => {
     expect(urlProblems('https://api.example.com/x/$param.Region')).toEqual([
       expect.stringMatching(/not a filter reference/),
     ]);
+    // User info is part of the authority: a value there would change who the request goes to.
+    expect(urlProblems('https://$param.city@a.example/x')).toEqual([
+      'Filters cannot be part of the scheme, host, port or user name of an address',
+    ]);
+    expect(urlProblems('https://u:$param.city@a.example/x')).toEqual([
+      'Filters cannot be part of the scheme, host, port or user name of an address',
+    ]);
+    // WHATWG reads a backslash as a slash in a special URL; split as saved, "\" and the reference are one segment.
+    expect(urlProblems('https://a.example\\$param.city/x')).toEqual([
+      '"\\$param.city" puts a filter inside a longer path segment; a filter must be a whole path segment, as in /regions/$param.region/sales',
+    ]);
     const body = parameterRefs({
       source: {
         kind: 'http',
@@ -200,6 +211,23 @@ describe('reference checks on every write', () => {
             {
               transforms: [{ type: 'filter', expr: 'contains(title, $param.q) && time < $param.period.end' }],
             },
+          ),
+        ),
+      ),
+    ).toEqual([]);
+  });
+
+  it('accepts filters in the query and the body of a source with secrets', () => {
+    expect(
+      issues(
+        docOf(
+          ds(
+            'secret',
+            http('https://api.example.com/v1/sales?r=$param.city', {
+              secrets: ['sec_AAAAAAAAAAAAAAAA'],
+              method: 'POST',
+              body: { c: '$param.city' },
+            }),
           ),
         ),
       ),
