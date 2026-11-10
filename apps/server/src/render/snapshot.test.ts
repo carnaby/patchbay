@@ -960,3 +960,34 @@ describe('the filter line of a dashboard snapshot', () => {
     expect(atDefaults.height).toBe(plain.height + 20);
   });
 });
+
+describe('cross-filter in snapshots', () => {
+  const bars = widget({
+    id: 'c',
+    type: 'chart',
+    datasetId: 'sales',
+    config: { kind: 'bar', x: 'month', y: ['revenue'], crossFilter: { parameter: 'month', field: 'month' } },
+  });
+  const ink = (png: Buffer) => pixelsOf(decodePng(png), THEMES.light.categorical[0]!);
+
+  it('dims the bars that are not selected, and draws all at full strength at "All"', () => {
+    const full = ink(renderWidgetPng(bars, result));
+    expect(ink(renderWidgetPng(bars, result, { parameters: { month: null } }))).toBe(full);
+    const one = ink(renderWidgetPng(bars, result, { parameters: { month: 'Feb' } }));
+    expect(one).toBeLessThan(full * 0.6);
+    expect(one).toBeGreaterThan(full * 0.2);
+  });
+
+  it('dims the table rows that are not selected', () => {
+    const table = widget({
+      id: 't',
+      type: 'table',
+      datasetId: 'sales',
+      config: { crossFilter: { parameter: 'month', field: 'month' } },
+    });
+    const text = THEMES.light.textPrimary;
+    const full = pixelsOf(decodePng(renderWidgetPng(table, result)), text);
+    const one = pixelsOf(decodePng(renderWidgetPng(table, result, { parameters: { month: 'Jan' } })), text);
+    expect(one).toBeLessThan(full * 0.7);
+  });
+});

@@ -564,7 +564,12 @@ export function apiRoutes(deps: Deps) {
           const dataset =
             'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
           const result = dataset ? await scope.resolve(dataset) : undefined;
-          return draw({ kind: 'widget', widget, result, options: { theme, entityColors: doc.colors } });
+          return draw({
+            kind: 'widget',
+            widget,
+            result,
+            options: { theme, entityColors: doc.colors, parameters },
+          });
         }
         const results = new Map<string, DatasetResult>();
         await Promise.all(doc.datasets.map(async (d) => results.set(d.id, await scope.resolve(d))));

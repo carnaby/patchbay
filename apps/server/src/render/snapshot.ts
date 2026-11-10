@@ -21,8 +21,10 @@ import {
   computeGauge,
   computeKpi,
   creditLine,
+  crossFilterSelection,
   type DashboardDoc,
   type DatasetResult,
+  DIMMED_OPACITY,
   formatNumber,
   formatRelative,
   GRID_COLUMNS,
@@ -32,6 +34,8 @@ import {
   parameterSummary,
   readParameterValues,
   resolveColor,
+  rowSelected,
+  type Selection,
   searchPlaceholder,
   statusConfigProblem,
   statusFit,
@@ -149,6 +153,7 @@ function widgetBody(
   w: number,
   h: number,
   entityColors?: ColorMap,
+  selection: Selection | null = null,
 ): string {
   if (widget.type === 'text') {
     const plain = widget.config.markdown
@@ -199,7 +204,16 @@ function widgetBody(
     case 'chart':
       return nest(
         echartsSvg(
-          buildChartOption(widget.config, table, theme, { animation: false, static: true, entityColors }),
+          buildChartOption(widget.config, table, theme, {
+            animation: false,
+            static: true,
+            entityColors,
+            selection,
+            // What the browser passes, so a line chart shows the same symbols and dimming here.
+            ...(widget.config.crossFilter
+              ? { clickable: widget.config.crossFilter.field === widget.config.x ? 'x' : 'series' }
+              : {}),
+          }),
           w,
           h,
         ),
@@ -216,6 +230,7 @@ function widgetBody(
             static: true,
             at: mapTime(table, result.fetchedAt),
             entityColors,
+            selection,
           }),
           w,
           h,
@@ -280,6 +295,8 @@ function widgetBody(
         let out = '';
         table.rows.slice(0, Math.max(0, Math.floor(h / 42))).forEach((row, r) => {
           const y = r * 42;
+          const dimmed = rowSelected(row, selection) === false;
+          if (dimmed) out += `<g opacity="${DIMMED_OPACITY}">`;
           out += text(0, y + 15, truncate(cellStyle(row, first, rules, theme).text, perLine), {
             size: 13,
             weight: 600,
@@ -298,6 +315,7 @@ function widgetBody(
           if (meta)
             out += text(0, y + 31, truncate(meta, Math.floor(w / 6)), { size: 11, color: theme.muted });
           if (r > 0) out += `<line x1="0" y1="${y - 4}" x2="${w}" y2="${y - 4}" stroke="${theme.grid}"/>`;
+          if (dimmed) out += '</g>';
         });
         return out;
       }
@@ -311,6 +329,8 @@ function widgetBody(
       out += `<line x1="0" y1="20" x2="${w}" y2="20" stroke="${theme.grid}"/>`;
       const rows = table.rows.slice(0, Math.max(0, Math.floor((h - 26) / 20)));
       rows.forEach((row, r) => {
+        const dimmed = rowSelected(row, selection) === false;
+        if (dimmed) out += `<g opacity="${DIMMED_OPACITY}">`;
         cols.forEach((c, i) => {
           const cell = cellStyle(row, c, rules, theme);
           // The same tint the browser draws: a wash behind the cell, the text keeps the normal ink.
@@ -321,6 +341,7 @@ function widgetBody(
             color: cell.color ?? theme.textPrimary,
           });
         });
+        if (dimmed) out += '</g>';
       });
       return out;
     }
@@ -344,6 +365,7 @@ function card(
   entityColors?: ColorMap,
   /** Drawn in place of the body, for a widget the snapshot had no budget left for. */
   note?: string,
+  selection: Selection | null = null,
 ): string {
   const pad = 14;
   const title = widget.title ?? (isDataWidgetType(widget.type) ? widget.id : '');
@@ -363,7 +385,7 @@ function card(
     `<g transform="translate(${pad}, ${top})">${
       note
         ? text(0, 16, truncate(note, Math.floor(bodyW / 6.5)), { color: theme.muted })
-        : widgetBody(widget, result, theme, bodyW, bodyH, entityColors)
+        : widgetBody(widget, result, theme, bodyW, bodyH, entityColors, selection)
     }</g>`,
     '</svg>',
   ].join('');
@@ -474,7 +496,13 @@ const trimmed = (widget: Widget, limit: number | undefined): Widget =>
 export function renderWidgetPng(
   widget: Widget,
   result: DatasetResult | undefined,
-  options: { theme?: ThemeMode; width?: number; height?: number; entityColors?: ColorMap | undefined } = {},
+  options: {
+    theme?: ThemeMode;
+    width?: number;
+    height?: number;
+    entityColors?: ColorMap | undefined;
+    parameters?: ParameterValues | undefined;
+  } = {},
 ): Buffer {
   const theme = THEMES[options.theme ?? 'light'];
   const { min, max } = WIDGET_SIZE;
@@ -483,7 +511,21 @@ export function renderWidgetPng(
   // Large cards trade sharpness for pixels instead of growing past the budget.
   const scale = Math.min(WIDGET_SIZE.scale, Math.sqrt(MAX_PIXELS / (width * height)));
   const drawn = trimmed(widget, drawLimits([{ widget, result }]).get(widget.id));
-  return toPng(card(drawn, result, theme, width, height, options.entityColors), width, height, scale);
+  return toPng(
+    card(
+      drawn,
+      result,
+      theme,
+      width,
+      height,
+      options.entityColors,
+      undefined,
+      crossFilterSelection(widget, options.parameters),
+    ),
+    width,
+    height,
+    scale,
+  );
 }
 
 export interface DashboardRenderOptions {
@@ -497,7 +539,8 @@ export interface DashboardRenderOptions {
   attributions?: Record<string, string>;
   /**
    * The view's filter values. A dashboard with filters prints them under its title, as presentation mode does, so a
-   * snapshot of a filtered view says which; the declared defaults when absent.
+   * snapshot of a filtered view says which; the declared defaults when absent. Widgets with a cross-filter also dim
+   * what their filter does not select.
    */
   parameters?: ParameterValues;
 }
@@ -514,7 +557,7 @@ export function renderDashboardPng(
   const theme = THEMES[options.theme ?? 'light'];
   const width = clamp(options.width, DASHBOARD_WIDTH.default, DASHBOARD_WIDTH.min, DASHBOARD_WIDTH.max);
   const col = (width - GAP * (GRID_COLUMNS + 1)) / GRID_COLUMNS;
-  // The view this picture shows; phase 2 dims cross-filtered items with the same values.
+  // The view this picture shows: the line under the title and the dimming always use the same values.
   const values =
     options.parameters ?? readParameterValues(doc.parameters, () => undefined, Date.now()).values;
   // The same text as presentation mode's summary (core parameterSummary): every filter, defaults included.
@@ -572,7 +615,14 @@ export function renderDashboardPng(
     const note = late ? 'Not drawn: this snapshot had too much to draw' : undefined;
     const drawn = trimmed(widget, limits.get(widget.id));
     // A map card is bounded by construction (title, then the map, which clips itself), so it may stay unclipped.
-    const svg = nest(card(drawn, result, theme, w, h, doc.colors, note), x, y, w, h, widget.type !== 'map');
+    const svg = nest(
+      card(drawn, result, theme, w, h, doc.colors, note, crossFilterSelection(widget, values)),
+      x,
+      y,
+      w,
+      h,
+      widget.type !== 'map',
+    );
     parts.push(svg);
     size += svg.length;
     // ECharts leaves megabytes of short-lived objects per chart; without this a dashboard of many maps peaked at the

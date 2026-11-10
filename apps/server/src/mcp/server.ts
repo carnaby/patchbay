@@ -731,7 +731,7 @@ export function createMcp(deps: Deps) {
                     kind: 'widget',
                     widget,
                     result: 'datasetId' in widget ? results.get(widget.datasetId) : undefined,
-                    options: { theme: args.theme, entityColors: doc.colors },
+                    options: { theme: args.theme, entityColors: doc.colors, parameters: values },
                   }
                 : {
                     kind: 'dashboard',
