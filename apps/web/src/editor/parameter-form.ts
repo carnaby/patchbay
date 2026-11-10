@@ -138,7 +138,7 @@ export function defaultOps(
 }
 
 /** "Used by Sales (filter step), Orders (URL query)", or null when nothing uses the filter. */
-export function usageText(doc: Pick<DashboardDoc, 'datasets'>, id: string): string | null {
+export function usageText(doc: Pick<DashboardDoc, 'datasets' | 'widgets'>, id: string): string | null {
   const uses = parameterUsage(doc, id);
   return uses.length ? `Used by ${uses.map((u) => `${u.name} (${PLACE_LABELS[u.place]})`).join(', ')}` : null;
 }

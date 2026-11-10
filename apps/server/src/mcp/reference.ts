@@ -212,6 +212,11 @@ and widgets per value. Viewers set filters in the dashboard header; values are n
 - Only select and dateRange filters reach URLs, bodies and connectors; text filters work in steps only. A path segment
   takes a select without all, and only on a source without secrets. Not in table rules, sound conditions or titles.
 - A dataset with accumulate cannot use filters in its source: accumulate one without filters and filter a dataset derived from it.
+- Clicks: crossFilter { parameter, field } on a chart (bar, line, area, pie, donut and funnel; field: its x, or its
+  series), a table or a map: clicking a bar, point, slice, row or dot sets that filter to the item's value of field;
+  clicking the selected item again resets it. Only select and text filters; for a select the value must be one of its
+  choices. The other items are dimmed, also in render_snapshot. If the clicked widget's own dataset uses the filter, it
+  shows only the clicked item: give the clicked widget a dataset without that filter.
 - Ops: addParameter { parameter, before? }, updateParameter { id, set } (merged; id and type cannot change; null removes
   all, placeholder, min or max), removeParameter { id } (refused while anything uses it), moveParameter { id, before: id | null }.
   Renaming is addParameter, re-pointing the references and removeParameter, in one batch.
@@ -231,7 +236,7 @@ Whole-table functions (filter and derive steps, table rules, sound conditions; s
 ${tableFns}
 
 ## Widgets
-- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels?, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors?, referenceLines? }
+- chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels?, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors?, referenceLines?, crossFilter? }
   kinds: ${CHART_KINDS.join(', ')}. "series" splits long-format data (one row per time+category) into lines/bars.
   xMin/xMax fix the x axis of a scatter with a numeric x.
   showLabels puts the value on each mark. Unset, the browser shows none and snapshots label single-series bar charts
@@ -241,12 +246,12 @@ ${tableFns}
 - gauge { field?, agg, min, max, bands?: [{ upTo, color }], format? }
   field is required except for agg "count": without a field count counts rows, with one it counts the rows where
   that field is not null.
-- table { columns?, pageSize, format?, rules?, style? }   columns: names or { field, label?, link?, format?, bands?, colorAs? }
+- table { columns?, pageSize, format?, rules?, style?, crossFilter? }   columns: names or { field, label?, link?, format?, bands?, colorAs? }
   style "list" shows headlines: the first column as the title, the others on a line under it, times as "12 min ago".
   link names the column holding the URL a cell opens (http/https only).
 - text { markdown }   (no raw HTML)
 - map { lat, lon, mode: points|track, series?, size?, color?, label?, view: fit|world, basemap: countries|land|none,
-  terminator, maxPoints, format?, colors? }
+  terminator, maxPoints, format?, colors?, crossFilter? }
   Use it whenever the data has latitude/longitude (see the profile's roles). track connects rows in order: sort by time
   first; accumulate a "current position" source (iss.position) to get a track. size = dot area (e.g. magnitude),
   color = numeric value on a sequential ramp, series = one colour per entity (not both color and series).

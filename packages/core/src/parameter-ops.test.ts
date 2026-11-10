@@ -135,4 +135,28 @@ describe('filter operations', () => {
       'A filter cannot be placed before itself',
     );
   });
+
+  it('refuses to remove a filter a widget sets with a click', () => {
+    const doc = applyOps(base, [
+      { op: 'addParameter', parameter: region },
+      {
+        op: 'addWidget',
+        widget: {
+          id: 'bars',
+          type: 'chart',
+          title: 'By region',
+          datasetId: 'sales',
+          config: {
+            kind: 'bar',
+            x: 'region',
+            y: ['n'],
+            crossFilter: { parameter: 'region', field: 'region' },
+          },
+        },
+      },
+    ]).doc;
+    expect(() => applyOps(doc, [{ op: 'removeParameter', id: 'region' }])).toThrow(
+      'Operation 1: Filter "region" is used by "By region" (click); remove those references first (earlier in the same batch)',
+    );
+  });
 });

@@ -326,3 +326,117 @@ describe('reference checks on every write', () => {
     ]);
   });
 });
+
+describe('cross-filter rules', () => {
+  const widgetDoc = (widgets: unknown[]) => ({
+    ...docOf(ds('s', { kind: 'inline', rows: [{ region: 'eu', v: 1 }] })),
+    widgets,
+    layout: (widgets as { id: string }[]).map((w, i) => ({ i: w.id, x: 0, y: i * 4, w: 6, h: 4 })),
+  });
+  const chart = (id: string, config: Record<string, unknown>) => ({
+    id,
+    type: 'chart',
+    datasetId: 's',
+    config,
+  });
+
+  it('accepts clicks on a chart x or series, a table and a map', () => {
+    expect(
+      issues(
+        widgetDoc([
+          chart('bars', {
+            kind: 'bar',
+            x: 'region',
+            y: ['v'],
+            crossFilter: { parameter: 'region', field: 'region' },
+          }),
+          chart('lines', {
+            kind: 'line',
+            x: 'time',
+            y: ['v'],
+            series: 'region',
+            crossFilter: { parameter: 'q', field: 'region' },
+          }),
+          {
+            id: 't',
+            type: 'table',
+            datasetId: 's',
+            config: { crossFilter: { parameter: 'city', field: 'city' } },
+          },
+          {
+            id: 'm',
+            type: 'map',
+            datasetId: 's',
+            config: { lat: 'lat', lon: 'lon', crossFilter: { parameter: 'city', field: 'name' } },
+          },
+        ]),
+      ),
+    ).toEqual([]);
+  });
+
+  it('refuses clicks a filter cannot take', () => {
+    const one = (w: unknown) => issues(widgetDoc([w]));
+    expect(
+      one(
+        chart('a', {
+          kind: 'bar',
+          x: 'region',
+          y: ['v'],
+          crossFilter: { parameter: 'nope', field: 'region' },
+        }),
+      ),
+    ).toEqual(['Widget "a": a click sets unknown filter "nope"; declared filters: region, city, q, period']);
+    expect(
+      one(
+        chart('b', {
+          kind: 'bar',
+          x: 'region',
+          y: ['v'],
+          crossFilter: { parameter: 'period', field: 'region' },
+        }),
+      ),
+    ).toEqual(['Widget "b": a click can set a choice or a text filter, not the date range "period"']);
+    expect(
+      one(
+        chart('c', { kind: 'bar', x: 'region', y: ['v'], crossFilter: { parameter: 'region', field: 'v' } }),
+      ),
+    ).toEqual(['Widget "c": a click on this chart gives its x or series column (region), not "v"']);
+    expect(
+      one(
+        chart('d', {
+          kind: 'pie',
+          x: 'region',
+          y: ['v'],
+          series: 'k',
+          crossFilter: { parameter: 'region', field: 'k' },
+        }),
+      ),
+    ).toEqual(['Widget "d": a click on this chart gives its x column (region), not "k"']);
+    expect(
+      one(
+        chart('e', {
+          kind: 'heatmap',
+          x: 'region',
+          y: ['v'],
+          crossFilter: { parameter: 'region', field: 'region' },
+        }),
+      ),
+    ).toEqual([
+      'Widget "e": clicks set filters on bar, line, area, pie, donut and funnel charts, not heatmap',
+    ]);
+  });
+
+  it('names a widget among what uses a filter', () => {
+    const doc = DashboardDocSchema.parse(
+      widgetDoc([
+        chart('bars', {
+          kind: 'bar',
+          x: 'region',
+          y: ['v'],
+          crossFilter: { parameter: 'region', field: 'region' },
+        }),
+      ]),
+    );
+    expect(parameterUsage(doc, 'region')).toEqual([{ id: 'bars', name: 'bars', place: 'click' }]);
+  });
+});

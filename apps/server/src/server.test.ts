@@ -1056,8 +1056,9 @@ describe('MCP tools', () => {
     // advertised as any JSON value, and upload_data's optional `path` for JSON files; -> 47,400: the filter
     // operations (proposal 0010), addParameter with the parameter union and three small branches, descriptions in
     // get_reference; -> 47,800: parameters on get_data, render_snapshot, suggest_widgets and preview_data (filter
-    // values of a view), descriptions in get_reference).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(47_800);
+    // values of a view), descriptions in get_reference; -> 48,500: crossFilter on chart, table and map configs
+    // (proposal 0010, phase 2), descriptions in get_reference).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(48_500);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(

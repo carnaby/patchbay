@@ -288,6 +288,10 @@ live in the page URL (`?p.region=eu&p.period=last7d`) and are never saved.
 - Where: anywhere a value goes in filter and derive steps; a whole query value or path segment of an `http` or `feed`
   URL; a whole value of a POST body or of connector parameters. A query pair at "All" is left out. Never inside a
   host, a longer text or a query language: use the API's own parameters or GraphQL variables.
+- Clicks: `crossFilter: { "parameter": "region", "field": "region" }` in a chart (bar, line, area, pie, donut,
+  funnel; `field` is its `x` or `series`), table or map config makes a click set the filter, and a second click on the
+  same item reset it. The other items are dimmed in the browser and in snapshots. The clicked widget should read a
+  dataset without that filter, or it shows only the clicked item.
 - `get_data`, `render_snapshot`, `suggest_widgets` and `preview_data` take `parameters`, in the text form of a link
   (`"*"` is "All", a range is `2026-01-01..2026-03-31`); answers echo the values and the view's link. Without them
   the defaults apply, also for `apply_operations`' data checks.

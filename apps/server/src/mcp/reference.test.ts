@@ -103,4 +103,15 @@ describe('filters in the reference', () => {
       expect(text, words).toContain(words);
     expect(SERVER_INSTRUCTIONS).toContain('declare a filter (addParameter) and use $param.<id>');
   });
+
+  it('documents clicks that set a filter', () => {
+    const text = referenceText('https://dash.example.com');
+    for (const words of [
+      'crossFilter { parameter, field }',
+      'bar, line, area, pie, donut and funnel',
+      'clicking the selected item again resets it',
+      'give the clicked widget a dataset without that filter',
+    ])
+      expect(text, words).toContain(words);
+  });
 });

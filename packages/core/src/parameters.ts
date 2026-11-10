@@ -322,7 +322,7 @@ export function parameterSummary(
 }
 
 /** Where a reference stands. `url` is a misplaced one: in an address's authority or fragment, or a query name. */
-export type RefPlace = 'filter' | 'derive' | 'url' | 'urlPath' | 'urlQuery' | 'body' | 'connector';
+export type RefPlace = 'filter' | 'derive' | 'url' | 'urlPath' | 'urlQuery' | 'body' | 'connector' | 'click';
 
 export const PLACE_LABELS: Record<RefPlace, string> = {
   filter: 'filter step',
@@ -332,7 +332,13 @@ export const PLACE_LABELS: Record<RefPlace, string> = {
   urlQuery: 'URL query',
   body: 'body',
   connector: 'connector parameters',
+  click: 'click',
 };
+
+/** Chart kinds whose items stand for one value of a column: a bar, a point of a line or area, a slice. */
+export const CROSS_FILTER_KINDS = ['bar', 'line', 'area', 'pie', 'donut', 'funnel'] as const;
+/** Of those, the ones without series: their items are the values of x. */
+export const PROPORTION_KINDS = ['pie', 'donut', 'funnel'] as const;
 
 export interface ParameterRef extends RefName {
   place: RefPlace;
@@ -481,9 +487,12 @@ export interface ParameterUse {
   place: RefPlace;
 }
 
-/** What uses a filter, once per place: "Used by Sales (filter step), Orders (URL query)". */
-export function parameterUsage(doc: Pick<DashboardDoc, 'datasets'>, paramId: string): ParameterUse[] {
-  return doc.datasets.flatMap((d) =>
+/** What uses a filter, once per place: "Used by Sales (filter step), Orders (URL query), By region (click)". */
+export function parameterUsage(
+  doc: Pick<DashboardDoc, 'datasets' | 'widgets'>,
+  paramId: string,
+): ParameterUse[] {
+  const datasets = doc.datasets.flatMap((d) =>
     [
       ...new Set(
         parameterRefs(d)
@@ -496,6 +505,13 @@ export function parameterUsage(doc: Pick<DashboardDoc, 'datasets'>, paramId: str
       place,
     })),
   );
+  const widgets = doc.widgets.flatMap((w) =>
+    (w.type === 'chart' || w.type === 'table' || w.type === 'map') &&
+    w.config.crossFilter?.parameter === paramId
+      ? [{ id: w.id, name: w.title ?? w.id, place: 'click' as const }]
+      : [],
+  );
+  return [...datasets, ...widgets];
 }
 
 export interface RefContext {
@@ -621,6 +637,30 @@ export function parameterIssues(doc: Pick<DashboardDoc, 'parameters' | 'datasets
       issues.push(`Widget "${w.id}": filters ($param) work in datasets only, not in table rules`);
     if ('sound' in w && w.sound?.trigger.kind === 'condition' && expressionUsesFilters(w.sound.trigger.expr))
       issues.push(`Widget "${w.id}": filters ($param) work in datasets only, not in sound conditions`);
+    const cross =
+      w.type === 'chart' || w.type === 'table' || w.type === 'map' ? w.config.crossFilter : undefined;
+    if (cross) {
+      const name = `Widget "${w.id}"`;
+      const param = byId.get(cross.parameter);
+      if (!param) issues.push(`${name}: a click sets unknown filter "${cross.parameter}"; ${declared}`);
+      else if (param.type === 'dateRange')
+        issues.push(`${name}: a click can set a choice or a text filter, not the date range "${param.id}"`);
+      if (w.type === 'chart') {
+        const kind = w.config.kind;
+        const proportion = (PROPORTION_KINDS as readonly string[]).includes(kind);
+        if (!(CROSS_FILTER_KINDS as readonly string[]).includes(kind))
+          issues.push(
+            `${name}: clicks set filters on ${CROSS_FILTER_KINDS.slice(0, -1).join(', ')} and funnel charts, not ${kind}`,
+          );
+        else if (cross.field !== w.config.x && (proportion || cross.field !== w.config.series))
+          issues.push(
+            `${name}: a click on this chart gives its ${proportion ? 'x column' : 'x or series column'} (${[
+              w.config.x,
+              ...(!proportion && w.config.series ? [w.config.series] : []),
+            ].join(', ')}), not "${cross.field}"`,
+          );
+      }
+    }
   }
   return issues;
 }
