@@ -10,6 +10,7 @@
 
 import { type ChartBuildOptions, OTHER, seriesKeys } from './chart.ts';
 import { mappedColor, seriesColors } from './colors.ts';
+import { DIMMED_OPACITY, rowSelected } from './cross-filter.ts';
 import { formatNumber, formatTime } from './format.ts';
 import type { MapConfig } from './schema.ts';
 import { nightPolygon } from './solar.ts';
@@ -222,7 +223,7 @@ export function buildMapOption(
   config: MapConfig,
   table: DataTable,
   theme: ChartTheme,
-  opts: ChartBuildOptions & { at?: number } = {},
+  opts: ChartBuildOptions & { at?: number; pickField?: string } = {},
 ): Option {
   const wanted = [config.lat, config.lon, config.series, config.size, config.color, config.label].filter(
     (f): f is string => Boolean(f),
@@ -332,7 +333,16 @@ export function buildMapOption(
         data: ordered.map((r) => {
           const c = config.color ? r[config.color] : null;
           const value = [r[config.lon], r[config.lat], typeof c === 'number' ? c : '-'];
-          return sizeRange ? { value, symbolSize: dotSize(r[config.size!], sizeRange) } : value;
+          const selected = rowSelected(r, opts.selection ?? null);
+          // The clicked dot's value of the cross-filter column: ECharts reports the index in this sorted series, not the
+          // table's row, so the value travels with the dot.
+          const extra = {
+            ...(opts.pickField ? { pick: r[opts.pickField] ?? null } : {}),
+            ...(selected === false ? { itemStyle: { opacity: DIMMED_OPACITY } } : {}),
+          };
+          return sizeRange || Object.keys(extra).length > 0
+            ? { value, ...(sizeRange ? { symbolSize: dotSize(r[config.size!], sizeRange) } : {}), ...extra }
+            : value;
         }),
       });
     }

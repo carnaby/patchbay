@@ -6,6 +6,7 @@ export * from './cells.ts';
 export * from './chart.ts';
 export * from './clock.ts';
 export * from './colors.ts';
+export * from './cross-filter.ts';
 export * from './csv.ts';
 export * from './export.ts';
 export * from './expr.ts';

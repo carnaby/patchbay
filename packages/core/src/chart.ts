@@ -6,6 +6,7 @@
  * SSR SVG renderer to produce PNG snapshots an agent can look at.
  */
 import { type ColorMap, mappedColor, seriesColors } from './colors.ts';
+import { DIMMED_OPACITY, type Selection } from './cross-filter.ts';
 import { formatNumber, formatTime } from './format.ts';
 import { type ChartConfig, type GaugeConfig, REFERENCE_LINE_KINDS } from './schema.ts';
 import { referenceLineValue } from './stats.ts';
@@ -20,6 +21,14 @@ export interface ChartBuildOptions {
   static?: boolean;
   /** Dashboard-wide entity colours (`doc.colors`). */
   entityColors?: ColorMap | undefined;
+  /** The item a cross-filter selects (proposal 0010): the others are dimmed, never recoloured. */
+  selection?: Selection | null;
+  /**
+   * What a click on this chart picks, when it has a cross-filter. A line only receives clicks on its symbols, and
+   * hides them above 40 rows: by 'series' the line itself is made clickable, by 'x' the symbols stay (they carry the
+   * click and the dimming of a category).
+   */
+  clickable?: 'x' | 'series';
 }
 
 /** The key that collects folded series; maps fold entities the same way. */
@@ -142,6 +151,11 @@ function cartesianOption(
   const markType = config.kind === 'area' ? 'line' : config.kind;
   const categories =
     axisKind === 'category' ? [...new Set(table.rows.map((r) => String(r[config.x] ?? '')))] : null;
+  const selection = opts.selection ?? null;
+  const bySeries = selection !== null && config.series !== undefined && selection.field === config.series;
+  const byX = selection !== null && axisKind === 'category' && selection.field === config.x;
+  const dimmedPoint = (category: string, v: Scalar) =>
+    byX && category !== selection!.value ? { value: v, itemStyle: { opacity: DIMMED_OPACITY } } : v;
 
   type Series = { name: string; points: [Scalar, Scalar][] };
   const groups: Series[] = [];
@@ -178,6 +192,7 @@ function cartesianOption(
   const labelled =
     config.showLabels ?? Boolean(opts.static && !multi && table.rows.length <= 12 && markType === 'bar');
   const series = groups.map((g, idx) => {
+    const faded = bySeries && g.name !== selection!.value;
     const data =
       axisKind === 'category'
         ? // Align to the shared category list so split series line up.
@@ -188,24 +203,31 @@ function cartesianOption(
               const prev = map.get(k);
               map.set(k, typeof prev === 'number' && typeof y === 'number' ? prev + y : y);
             }
-            return categories!.map((c) => map.get(c) ?? null);
+            return categories!.map((c) => dimmedPoint(c, map.get(c) ?? null));
           })()
         : g.points;
     const s: Option = {
       name: g.name,
       type: markType,
       data,
-      showSymbol: markType === 'scatter' || (markType === 'line' && table.rows.length <= 40),
+      showSymbol:
+        markType === 'scatter' ||
+        (markType === 'line' && (table.rows.length <= 40 || opts.clickable === 'x')),
       symbolSize: markType === 'scatter' ? 8 : 6,
       emphasis: { focus: 'series' },
     };
     if (markType === 'line') {
       s.smooth = config.smooth;
-      s.lineStyle = { width: 2 };
+      s.lineStyle = { width: 2, opacity: faded ? DIMMED_OPACITY : 1 };
+      // Off by default in ECharts: without it only the symbols, which a long line hides, would take clicks.
+      if (opts.clickable === 'series') s.triggerEvent = true;
       s.sampling = 'lttb';
       s.connectNulls = false;
       // Line and area share the series type, so switching an area to a line merges into it; null drops the fill.
-      s.areaStyle = config.kind === 'area' ? { opacity: multi && !config.stacked ? 0.12 : 0.2 } : null;
+      s.areaStyle =
+        config.kind === 'area'
+          ? { opacity: (multi && !config.stacked ? 0.12 : 0.2) * (faded ? DIMMED_OPACITY : 1) }
+          : null;
     }
     if (markType === 'bar') {
       s.barMaxWidth = 36;
@@ -216,7 +238,7 @@ function cartesianOption(
         borderWidth: 1,
       };
     }
-    if (markType === 'scatter') s.itemStyle = { borderColor: theme.surface, borderWidth: 1, opacity: 0.85 };
+    if (markType === 'scatter') s.itemStyle = { borderColor: theme.surface, borderWidth: 1 };
     // Off values are explicit: the web app merges an update of the same series into the old option, which would
     // keep a stack or value labels the author has since turned off.
     s.stack = config.stacked && markType !== 'scatter' ? 'total' : null;
@@ -234,7 +256,14 @@ function cartesianOption(
       s.label = { show: false };
     }
     // Set per series rather than through `option.color`, so the colour belongs to the entity, not the rank.
-    s.itemStyle = { ...(s.itemStyle as object), color: colors[idx] };
+    // Opacity is always explicit: the web app merges updates into the previous option, which would keep a dimming
+    // after the selection is gone.
+    const opacity = markType === 'scatter' ? 0.85 : 1;
+    s.itemStyle = {
+      ...(s.itemStyle as object),
+      color: colors[idx],
+      opacity: faded ? opacity * DIMMED_OPACITY : opacity,
+    };
     return s;
   });
 
@@ -424,9 +453,8 @@ function proportionOption(
     const v = row[y];
     if (typeof v === 'number') totals.set(k, (totals.get(k) ?? 0) + v);
   }
-  let items: { name: string; value: number; itemStyle?: { color: string | undefined } }[] = [
-    ...totals.entries(),
-  ].map(([name, value]) => ({ name, value }));
+  let items: { name: string; value: number; itemStyle?: { color?: string | undefined; opacity?: number } }[] =
+    [...totals.entries()].map(([name, value]) => ({ name, value }));
   if (config.kind !== 'funnel') {
     items.sort((a, b) => b.value - a.value);
     const limit = config.kind === 'pie' || config.kind === 'donut' ? 6 : MAX_SERIES;
@@ -447,6 +475,12 @@ function proportionOption(
     const colorOf = new Map(names.map((n, i) => [n, colors[i]!]));
     items = items.map((i) => ({ ...i, itemStyle: { color: colorOf.get(i.name) } }));
   }
+  const selection = opts.selection && opts.selection.field === config.x ? opts.selection : null;
+  // Explicit for every item, so a merged update clears a former dimming.
+  items = items.map((i) => ({
+    ...i,
+    itemStyle: { ...i.itemStyle, opacity: selection && i.name !== selection.value ? DIMMED_OPACITY : 1 },
+  }));
   const label = {
     show: true,
     color: theme.textSecondary,
