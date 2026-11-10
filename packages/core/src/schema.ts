@@ -9,7 +9,15 @@
 import { z } from 'zod';
 import { isValidTimeZone } from './clock.ts';
 import { IdSchema } from './ids.ts';
+import { jsonShapeProblem } from './json-shape.ts';
 import { DATASET_DEPTH, DATASET_INPUTS, lineageIssues } from './lineage.ts';
+import {
+  MAX_PARAMETERS,
+  optionsFromIssues,
+  ParameterSchema,
+  ParamIdSchema,
+  parameterIssues,
+} from './parameters.ts';
 import { SEARCH_ENGINES } from './search.ts';
 import { SoundRuleSchema } from './sound.ts';
 import { STATUS_LEVELS, STATUS_LIMITS } from './status.ts';
@@ -40,6 +48,8 @@ export const LIMITS = {
   datasetDepth: DATASET_DEPTH,
   /** Datasets one dataset reads, directly or through others. */
   datasetInputs: DATASET_INPUTS,
+  /** Filters a dashboard declares (proposal 0010). */
+  parameters: MAX_PARAMETERS,
   markdown: 20_000,
   title: 120,
   description: 1000,
@@ -48,6 +58,13 @@ export const LIMITS = {
    * accepts can still be saved whole from the editor; larger data belongs in uploads, which are stored on their own.
    */
   documentBytes: 1_000_000,
+  /**
+   * Characters of an http source's POST body as JSON (`JSON.stringify`). Checked by this schema, so every write path
+   * (ops, full saves, imports, previews, the editor) enforces it; no stored document predates it.
+   */
+  httpBody: 16_384,
+  /** Nesting of a POST body: room for the document around it within the request guard's 64 levels. */
+  httpBodyDepth: 32,
 } as const;
 
 /** Ids of saved secrets. Not secret themselves: they appear in public documents and grant nothing. */
@@ -58,6 +75,13 @@ export const SecretIdSchema = z
 const scalar = z.union([z.number(), z.string(), z.boolean(), z.null()]);
 const field = z.string().min(1).max(200);
 
+/**
+ * A click on an item of a chart, table or map sets a dashboard filter (proposal 0010, phase 2): the filter, and the
+ * column whose value the clicked item gives. Its rules are in parameterIssues; descriptions in the MCP reference text.
+ */
+export const CrossFilterSchema = z.strictObject({ parameter: ParamIdSchema, field });
+export type CrossFilter = z.infer<typeof CrossFilterSchema>;
+
 /** Feeds are fetched at most this often per address, whatever a dataset's refreshSec says. */
 export const FEED_MIN_REFRESH_SEC = 300;
 /** HTTP sources are cached this long per address, so a faster refresh would only re-read the cache. */
@@ -65,6 +89,53 @@ export const HTTP_MIN_REFRESH_SEC = 30;
 
 /** Ids of uploaded files. Unique within one dashboard's folder, not across dashboards: copies and imports keep them. */
 export const FileIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,64}$/);
+
+/** Methods an http source may use. Absent means GET, so documents saved before POST existed load unchanged. */
+export const HTTP_METHODS = ['GET', 'POST'] as const;
+export type HttpMethod = (typeof HTTP_METHODS)[number];
+
+/**
+ * Why a POST body cannot be sent, or null. Measured on its JSON text, the form it goes out in, with the same shape
+ * scan that guards request bodies and uploads. A string that looks like JSON is refused: it is almost always an object
+ * an agent sent as text, which the API would receive as one quoted string.
+ */
+export function httpBodyIssue(body: unknown): string | null {
+  let text: string | undefined;
+  try {
+    text = JSON.stringify(body);
+  } catch {
+    return 'The body must be a JSON value';
+  }
+  if (text === undefined) return 'The body must be a JSON value';
+  if (text.length > LIMITS.httpBody) {
+    return `The body is ${text.length.toLocaleString('en-US')} characters as JSON; at most ${LIMITS.httpBody.toLocaleString('en-US')}`;
+  }
+  if (jsonShapeProblem(text, { maxDepth: LIMITS.httpBodyDepth, maxValues: Number.POSITIVE_INFINITY })) {
+    return `The body nests deeper than ${LIMITS.httpBodyDepth} levels`;
+  }
+  if (typeof body === 'string') {
+    const trimmed = body.trim();
+    if (/^[[{]/.test(trimmed) && /[\]}]$/.test(trimmed)) {
+      return 'The body is a string that looks like JSON; send the object or array itself, not text';
+    }
+  }
+  return null;
+}
+
+/** The body's rules, which a JSON Schema cannot carry: so they cost nothing in tools/list. */
+const httpBodyRule = (source: { method?: HttpMethod | undefined; body?: unknown }, ctx: z.RefinementCtx) => {
+  if (source.body === undefined) return;
+  if (source.method !== 'POST') {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['body'],
+      message: 'A body is sent only with method "POST": add method "POST" or remove the body',
+    });
+    return;
+  }
+  const issue = httpBodyIssue(source.body);
+  if (issue) ctx.addIssue({ code: 'custom', path: ['body'], message: issue });
+};
 
 export const SourceSchema = z.discriminatedUnion('kind', [
   z
@@ -100,7 +171,13 @@ export const SourceSchema = z.discriminatedUnion('kind', [
         .refine((ids) => new Set(ids).size === ids.length, 'Each secret once')
         .optional()
         .describe('Saved secret ids (list_secrets), sent only to the address each is bound to'),
+      // Field descriptions live in the MCP reference text: every byte here is paid on each MCP connection.
+      method: z.enum(HTTP_METHODS).optional(),
+      // Any JSON value, advertised as such ({}); a recursive JSON schema would add $defs to every tool that takes a
+      // source. Its rules are in httpBodyRule.
+      body: z.unknown().optional(),
     })
+    .superRefine(httpBodyRule)
     .describe(
       'A JSON endpoint; http:// and private hosts only if the server allows. Credentials only via "secrets", never in URL',
     ),
@@ -226,6 +303,7 @@ export const ChartConfigSchema = z.strictObject({
   colors: z.union([z.array(ColorSchema).max(12), ColorMapSchema]).optional(),
   maxPoints: z.number().int().min(10).max(20_000).default(5000),
   referenceLines: z.array(ReferenceLineSchema).max(3).optional(),
+  crossFilter: CrossFilterSchema.optional(),
 });
 export type ChartConfig = z.infer<typeof ChartConfigSchema>;
 
@@ -302,6 +380,7 @@ export const TableConfigSchema = z.strictObject({
   rules: z.array(TableRuleSchema).max(6).optional(),
   // Optional, not defaulted: tables saved before it existed must round-trip unchanged. Absent means "table".
   style: z.enum(['table', 'list']).optional(),
+  crossFilter: CrossFilterSchema.optional(),
 });
 export type TableConfig = z.infer<typeof TableConfigSchema>;
 
@@ -320,6 +399,7 @@ export const MapConfigSchema = z.strictObject({
   format: FormatSchema.optional(),
   // Map form only: the array form of chart colors exists for documents older than colour maps.
   colors: ColorMapSchema.optional(),
+  crossFilter: CrossFilterSchema.optional(),
 });
 export type MapConfig = z.infer<typeof MapConfigSchema>;
 
@@ -429,6 +509,8 @@ export const DashboardDocSchema = z.strictObject({
   colors: ColorMapSchema.optional().describe(
     "Dashboard-wide colour per entity (series value, y column or slice label); a widget's own map wins",
   ),
+  // Optional, not defaulted, like colors: documents without filters must round-trip unchanged.
+  parameters: z.array(ParameterSchema).max(LIMITS.parameters).optional(),
 });
 export type DashboardDoc = z.infer<typeof DashboardDocSchema>;
 export type DashboardDocInput = z.input<typeof DashboardDocSchema>;
@@ -480,6 +562,8 @@ export function integrityIssues(doc: DashboardDoc): string[] {
     }
   }
   issues.push(...lineageIssues(doc));
+  issues.push(...parameterIssues(doc));
+  issues.push(...optionsFromIssues(doc));
   const widgetIds = new Set<string>();
   for (const w of doc.widgets) {
     if (widgetIds.has(w.id)) issues.push(`Duplicate widget id "${w.id}"`);

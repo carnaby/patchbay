@@ -1,4 +1,4 @@
-import { DocumentError, ExprError, OpError, TransformError } from '@patchbay/core';
+import { BindError, DocumentError, ExprError, OpError, TransformError } from '@patchbay/core';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { ZodError } from 'zod';
 
@@ -33,7 +33,12 @@ export const badRequest = (why: string, details?: unknown) => new HttpError(400,
 export function toHttpError(err: unknown): HttpError {
   if (err instanceof HttpError) return err;
   if (err instanceof DocumentError) return new HttpError(400, err.message, { issues: err.issues });
-  if (err instanceof OpError || err instanceof TransformError || err instanceof ExprError) {
+  if (
+    err instanceof OpError ||
+    err instanceof TransformError ||
+    err instanceof ExprError ||
+    err instanceof BindError
+  ) {
     return new HttpError(400, err.message);
   }
   if (err instanceof ZodError) {

@@ -10,6 +10,7 @@
  * buffers. Loads of the same table are shared while in flight, so a burst of
  * viewers on one dashboard costs one parse, not one per viewer.
  */
+import { createHash } from 'node:crypto';
 import {
   CACHED_DATA_WARNING,
   type DashboardDoc,
@@ -17,14 +18,19 @@ import {
   type DatasetResult,
   type DataTable,
   FEED_MIN_REFRESH_SEC,
+  findRecords,
   HTTP_MIN_REFRESH_SEC,
+  type HttpMethod,
   hashTable,
   INFER_MAX_COLUMNS,
   inferTableCapped,
   isStaticSource,
+  PathNotFoundError,
   PIPELINE_LIMITS,
   type PipelineInputs,
   type PipelineResult,
+  parameterRefs,
+  pickPath,
   sourceSecretIds,
   TableTooWideError,
   type Transform,
@@ -53,6 +59,8 @@ export const MAX_ROWS_OUT = 10_000;
 /** The message for a dataset resolved without its document: it reads other datasets, which only a scope can load. */
 export const readsOtherDatasets = (id: string) =>
   `Dataset "${id}" reads other datasets and can only be loaded with its dashboard`;
+/** The message for a dataset with filter references resolved without its document: only a scope binds values. */
+export const usesFilters = (id: string) => `Dataset "${id}" uses filters; resolve it through its dashboard.`;
 /** Default cap on the table an HTTP source may produce; a 5 MB body of short values is far more. */
 export const DEFAULT_MAX_SOURCE_CELLS = 500_000;
 const HTTP_TTL_MS = HTTP_MIN_REFRESH_SEC * 1000;
@@ -65,28 +73,23 @@ export const DEFAULT_CACHE_BYTES = 32 * 1024 * 1024;
 const RESULT_CACHE_BYTES = 8 * 1024 * 1024;
 const BUFFER_BYTES = 16 * 1024 * 1024;
 
-function pick(json: unknown, path: string | undefined): unknown {
-  if (!path) return json;
-  let cur: unknown = json;
-  for (const part of path.split('.').filter(Boolean)) {
-    if (cur === null || typeof cur !== 'object' || !Object.hasOwn(cur, part)) {
-      throw new HttpError(400, `Path "${path}" not found in the response (stopped at "${part}")`);
-    }
-    cur = (cur as Record<string, unknown>)[part];
+/**
+ * Finds the records in a JSON response with the rules JSON uploads use too (`findRecords` in core): the given path,
+ * then a list, a column-shaped object's rows, the first array property or the object itself. At most `maxCells` cells
+ * of column-shaped data are turned into rows; `cappedTable` then cuts the table and says so. `maxCells` is required
+ * because this runs on the main thread: a call without it would turn a dense response into rows without bound.
+ */
+export function recordsFrom(json: unknown, path: string | undefined, maxCells: number): unknown[] {
+  let target: unknown;
+  try {
+    target = pickPath(json, path, 'response');
+  } catch (e) {
+    if (e instanceof PathNotFoundError) throw new HttpError(400, e.message);
+    throw e;
   }
-  return cur;
-}
-
-/** Finds the array of records in a JSON response: the given path, the root, or the first array property. */
-export function recordsFrom(json: unknown, path?: string): unknown[] {
-  const target = pick(json, path);
-  if (Array.isArray(target)) return target;
-  if (target && typeof target === 'object') {
-    const firstArray = Object.values(target).find(Array.isArray);
-    if (firstArray && !path) return firstArray;
-    return [target];
-  }
-  throw new HttpError(400, 'The response does not contain a list of records');
+  const records = findRecords(target, { viaPath: Boolean(path), maxCells });
+  if (!records) throw new HttpError(400, 'The response does not contain a list of records');
+  return records;
 }
 
 /**
@@ -146,9 +149,10 @@ export interface DataServiceOptions {
   /**
    * Called before every http or feed load: throws when this instance does not fetch the URL for the dashboard,
    * otherwise returns the private hosts (ALLOW_PRIVATE_HOSTS) its sources may reach, or null for public addresses
-   * only. DashboardService decides, by the dashboard's owner.
+   * only. DashboardService decides, by the dashboard's owner. http sources pass their method (a trusted showcase
+   * URL is trusted for GET only); feeds pass none.
    */
-  urlPolicy?: (target: DashboardTarget, url: string) => PrivateHosts | null;
+  urlPolicy?: (target: DashboardTarget, url: string, method?: HttpMethod) => PrivateHosts | null;
   /** OFFLINE=1: feeds return their deterministic sample instead of fetching. */
   offline?: boolean;
   /** Memory for parsed tables (uploads, inline rows, HTTP responses), in bytes. */
@@ -187,13 +191,30 @@ interface HistoryBuffer {
   rowBytes: number;
 }
 
+type HttpSource = Extract<Dataset['source'], { kind: 'http' }>;
+
+/**
+ * The cache and in-flight key of an http source. A GET's key is exactly what it was before POST existed, so a deploy
+ * does not empty the cache. A POST adds its method and a SHA-256 of its JSON body: two queries on one URL never share
+ * a response, and a body cannot be crafted to collide with another. The two kinds never meet: after the credentials a
+ * GET key goes on with its URL ("http…"), a POST key with "POST:".
+ */
+export function httpCacheKey(source: HttpSource, credentialKey: string, lan: boolean): string {
+  const head = `http:${lan ? 'lan|' : ''}${credentialKey}|`;
+  const tail = `${source.url}#${source.path ?? ''}`;
+  if (source.method !== 'POST') return head + tail;
+  const body = source.body === undefined ? '' : JSON.stringify(source.body);
+  return `${head}POST:${createHash('sha256').update(body).digest('base64url')}|${tail}`;
+}
+
 export class DataService {
   private readonly connectors: ConnectorService;
   private readonly store: FolderStore;
   /**
-   * Parsed tables. HTTP entries are keyed by credentials + URL + path: two datasets with the same URL share a
-   * response only when they would send the same credentials, so a public dataset never receives a secret-backed
-   * response, two users never share one, and replacing a value (a new revision) invalidates at once.
+   * Parsed tables. HTTP entries are keyed by credentials + URL + path (+ method and body for a POST): two
+   * datasets with the same URL share a response only when they would send the same credentials, so a public
+   * dataset never receives a secret-backed response, two users never share one, and replacing a value (a new
+   * revision) invalidates at once.
    */
   private readonly tables: ByteLru<CacheEntry>;
   private readonly loading = new Map<string, Promise<CacheEntry>>();
@@ -223,7 +244,11 @@ export class DataService {
 
   private readonly pipeline: PipelineRunner;
   private readonly credentialsFor: CredentialResolver;
-  private readonly urlPolicy: (target: DashboardTarget, url: string) => PrivateHosts | null;
+  private readonly urlPolicy: (
+    target: DashboardTarget,
+    url: string,
+    method?: HttpMethod,
+  ) => PrivateHosts | null;
   private readonly upstreamTest: UpstreamTestSeam | undefined;
   private readonly feeds: FeedService;
   private readonly maxSourceCells: number;
@@ -390,7 +415,7 @@ export class DataService {
       .sort()
       .join(',');
     // A response fetched with the operator's private hosts never answers a dashboard that may not use them.
-    const key = `http:${privateHosts ? 'lan|' : ''}${credentialKey}|${source.url}#${source.path ?? ''}`;
+    const key = httpCacheKey(source, credentialKey, Boolean(privateHosts));
     let entry = this.tables.get(key);
     if (!entry) {
       let pending = this.loading.get(key);
@@ -421,11 +446,18 @@ export class DataService {
       const json = await this.outbound.run(currentClient(), source.url, () =>
         safeFetchJson(source.url, {
           credentials,
+          // Only a POST carries these, so a GET is fetched with exactly the options it always had.
+          ...(source.method === 'POST'
+            ? { method: 'POST' as const, ...(source.body !== undefined ? { body: source.body } : {}) }
+            : {}),
           ...(privateHosts ? { privateHosts } : {}),
           ...(this.upstreamTest ? { test: this.upstreamTest } : {}),
         }),
       );
-      const { table, capped } = cappedTable(recordsFrom(json, source.path), this.maxSourceCells);
+      const { table, capped } = cappedTable(
+        recordsFrom(json, source.path, this.maxSourceCells),
+        this.maxSourceCells,
+      );
       const entry: CacheEntry = { table, at: Date.now(), stamp: '', ...(capped ? { capped } : {}) };
       this.tables.set(key, entry, approxTableBytes(table), HTTP_TTL_MS);
       return entry;
@@ -441,6 +473,9 @@ export class DataService {
 
   async loadSource(target: DashboardTarget, dataset: Dataset): Promise<Loaded> {
     const source = dataset.source;
+    // Every upstream load passes here: a reference left unbound (a binding that failed upstream of the caller) would
+    // otherwise be sent as text, with the owner's credentials when the source is secret-backed.
+    if (parameterRefs({ source, transforms: [] }).length) throw new HttpError(400, usesFilters(dataset.id));
     switch (source.kind) {
       case 'connector': {
         const r = await this.connectors.load(source.connector, source.params);
@@ -456,7 +491,12 @@ export class DataService {
       case 'upload':
         return this.loadUpload(target, source.fileId);
       case 'http':
-        return this.loadHttp(target, dataset, source, this.urlPolicy(target, source.url));
+        return this.loadHttp(
+          target,
+          dataset,
+          source,
+          this.urlPolicy(target, source.url, source.method ?? 'GET'),
+        );
       case 'feed': {
         const feed = await this.feeds.load(source.url, this.urlPolicy(target, source.url));
         const rows = feed.table.rows.slice(0, source.limit);
@@ -673,6 +713,8 @@ export class DataService {
     const base = { datasetId: dataset.id };
     try {
       if (upstreamOf(dataset).length) throw new HttpError(400, readsOtherDatasets(dataset.id));
+      // An unbound reference would reach a fetch or a step as text: refused, never guessed.
+      if (parameterRefs(dataset).length) throw new HttpError(400, usesFilters(dataset.id));
       const loaded = await this.loadSource(target, dataset);
       const max = options.maxRows ?? MAX_ROWS_OUT;
       const computed =

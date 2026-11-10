@@ -24,6 +24,26 @@ let hits = 0;
 
 beforeAll(async () => {
   upstream = createServer((req, res) => {
+    if (req.url?.startsWith('/api/template')) {
+      hits++;
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', (chunk: string) => {
+        body += chunk;
+      });
+      req.on('end', () => {
+        // Home Assistant renders a template sent in a POST body; it allows no GET there.
+        if (req.method !== 'POST') {
+          res.writeHead(405);
+          res.end();
+          return;
+        }
+        const { template } = JSON.parse(body) as { template: string };
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify([{ rendered: template.toUpperCase() }]));
+      });
+      return;
+    }
     if (req.url?.startsWith('/api/states')) {
       hits++;
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -339,6 +359,30 @@ describe('a self-hosted instance with ALLOW_PRIVATE_HOSTS=127.0.0.1', () => {
     });
     expect(ok.isError, ok.text).toBe(false);
     expect(ok.text).toContain('light.kitchen');
+    expect(hits).toBe(before + 1);
+  });
+
+  it('posts to a listed host for its administrator and keeps a read-only token from doing so', async () => {
+    const source = {
+      kind: 'http',
+      url: `http://127.0.0.1:${port}/api/template`,
+      method: 'POST',
+      body: { template: 'lights on' },
+    };
+    const auth = await lan.login(ADMIN);
+    const { envelope } = (await lan.call('/api/dashboards', { body: {}, headers: auth })).json;
+    const readOnly = await lan.mcp(ADMIN, false);
+    const before = hits;
+    for (const dashboardId of [envelope.meta.id as string, undefined]) {
+      const res = await readOnly({ ...(dashboardId ? { dashboardId } : {}), source });
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain('dashboards:write');
+    }
+    expect(hits).toBe(before);
+    const writer = await lan.mcp(ADMIN, true);
+    const ok = await writer({ dashboardId: envelope.meta.id, source });
+    expect(ok.isError, ok.text).toBe(false);
+    expect(ok.text).toContain('LIGHTS ON');
     expect(hits).toBe(before + 1);
   });
 

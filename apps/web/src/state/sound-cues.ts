@@ -16,14 +16,15 @@ import {
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { armAutoUnlock, playCue } from '../lib/sounds.ts';
-import { datasetKey, lineageKey, soundIdentity } from './dataset-keys.ts';
+import { datasetKey, lineageKey, soundIdentity, viewKey } from './dataset-keys.ts';
 import { useEditor } from './editor.ts';
+import { useParameters } from './parameters.ts';
 import { liveReconnects } from './sync.ts';
 
 type SoundWidget = Extract<Widget, { datasetId: string }> & { sound: SoundRule };
 
 interface Tracked {
-  /** Rule + lineage of its dataset; a change means a new baseline. */
+  /** Rule, lineage and view of its dataset; a change means a new baseline. */
   identity: string;
   epoch: number;
   hash: string | null;
@@ -44,7 +45,8 @@ export function useSoundCues(dashboardId: string) {
     if (!hasSounds) return;
     const tracked = new Map<string, Tracked>();
 
-    const identityOf = (w: SoundWidget) => soundIdentity(useEditor.getState().doc, w.sound, w.datasetId);
+    const identityOf = (w: SoundWidget) =>
+      soundIdentity(useEditor.getState().doc, w.sound, w.datasetId, useParameters.getState().raw);
 
     const consider = (w: SoundWidget, result: DatasetResult, now: number): boolean => {
       const identity = identityOf(w);
@@ -82,6 +84,9 @@ export function useSoundCues(dashboardId: string) {
     const seed = () => {
       const doc = useEditor.getState().doc;
       for (const w of soundWidgets(doc?.widgets)) {
+        // A dataset that uses filters may hold a cached result of this view from an earlier visit; as a baseline, the
+        // next refresh would ring for everything since. Its next result is the baseline instead.
+        if (!doc || viewKey(doc, w.datasetId, {}) !== '') continue;
         const cached = doc
           ? qc.getQueryData<DatasetResult>(datasetKey(dashboardId, doc, w.datasetId))
           : undefined;
@@ -93,11 +98,16 @@ export function useSoundCues(dashboardId: string) {
 
     const unsubscribeCache = qc.getQueryCache().subscribe((event) => {
       if (event.type !== 'updated' || event.action.type !== 'success') return;
-      const [kind, id, datasetId, definition] = event.query.queryKey as unknown[];
+      const [kind, id, datasetId, definition, view] = event.query.queryKey as unknown[];
       if (kind !== 'data' || id !== dashboardId || typeof datasetId !== 'string') return;
-      // Results for a definition that is no longer current (an edit of the dataset or of anything it reads) are skipped.
+      // Results for a definition or a view that is no longer current (an edit, another filter value) are skipped.
       const doc = useEditor.getState().doc;
-      if (!doc?.datasets.some((d) => d.id === datasetId) || lineageKey(doc, datasetId) !== definition) return;
+      if (
+        !doc?.datasets.some((d) => d.id === datasetId) ||
+        lineageKey(doc, datasetId) !== definition ||
+        viewKey(doc, datasetId, useParameters.getState().raw) !== view
+      )
+        return;
       const result = event.query.state.data as DatasetResult | undefined;
       if (result) decide(datasetId, result);
     });

@@ -4,7 +4,7 @@
  * `columns`, and each row lists its values in that order. The web app asks for arrays and turns them back into rows
  * with `decodeTable`, so everything after the fetch sees ordinary rows.
  */
-import type { Column, DataTable, Row, Scalar } from './table.ts';
+import { type Column, type DataTable, type Row, rowFromValues, type Scalar } from './table.ts';
 
 export type RowsFormat = 'objects' | 'arrays';
 
@@ -56,10 +56,6 @@ export function decodeTable(table: WireTable): DataTable {
   const names = table.columns.map((c) => c.name);
   return {
     columns: table.columns,
-    rows: (rows as Scalar[][]).map((values) => {
-      const row: Row = {};
-      for (let i = 0; i < names.length; i++) row[names[i]!] = values[i] ?? null;
-      return row;
-    }),
+    rows: (rows as Scalar[][]).map((values) => rowFromValues(names, values)),
   };
 }

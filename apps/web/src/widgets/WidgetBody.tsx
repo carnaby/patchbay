@@ -8,11 +8,17 @@ import {
   computeGauge,
   computeKpi,
   type DatasetResult,
+  DIMMED_OPACITY,
   formatNumber,
   formatRelative,
   formatValue,
+  OTHER,
   type ResolvedColumn,
+  type Row,
   resolveColor,
+  rowSelected,
+  type Scalar,
+  type Selection,
   THEMES,
   tableColumns,
   type Widget,
@@ -23,7 +29,7 @@ import Markdown from 'react-markdown';
 import { cx, Spinner } from '../components/ui.tsx';
 import { useNow, useTheme } from '../lib/hooks.ts';
 import { ClockBody } from './ClockBody.tsx';
-import { EChart } from './EChart.tsx';
+import { EChart, type EChartItem } from './EChart.tsx';
 import { SearchBody } from './SearchBody.tsx';
 import { StatusBody } from './StatusBody.tsx';
 
@@ -38,6 +44,8 @@ export function WidgetBody({
   errorHint,
   asTable = false,
   entityColors,
+  selection,
+  onPick,
 }: {
   widget: Widget;
   result: DatasetResult | undefined;
@@ -48,6 +56,10 @@ export function WidgetBody({
   asTable?: boolean;
   /** The dashboard's entity colours (`doc.colors`). */
   entityColors?: ColorMap | undefined;
+  /** The item the widget's cross-filter selects: the others are dimmed (proposal 0010). */
+  selection?: Selection | null;
+  /** A click on an item, with its value of the cross-filter column; absent when clicks set nothing. */
+  onPick?: ((value: Scalar | undefined) => void) | undefined;
 }) {
   if (widget.type === 'text') return <TextBody markdown={widget.config.markdown} />;
   if (widget.type === 'clock') return <ClockBody config={widget.config} />;
@@ -70,13 +82,21 @@ export function WidgetBody({
   }
   switch (widget.type) {
     case 'chart':
-      return <ChartBody widget={widget} result={result} entityColors={entityColors} />;
+      return (
+        <ChartBody
+          widget={widget}
+          result={result}
+          entityColors={entityColors}
+          selection={selection ?? null}
+          onPick={onPick}
+        />
+      );
     case 'kpi':
       return <KpiBody widget={widget} result={result} />;
     case 'gauge':
       return <GaugeBody widget={widget} result={result} />;
     case 'table':
-      return <TableBody widget={widget} result={result} />;
+      return <TableBody widget={widget} result={result} selection={selection ?? null} onPick={onPick} />;
     case 'status':
       return <StatusBody widget={widget} result={result} />;
     case 'map':
@@ -88,7 +108,14 @@ export function WidgetBody({
             </div>
           }
         >
-          <MapBody widget={widget} result={result} asTable={asTable} entityColors={entityColors} />
+          <MapBody
+            widget={widget}
+            result={result}
+            asTable={asTable}
+            entityColors={entityColors}
+            selection={selection ?? null}
+            onPick={onPick}
+          />
         </Suspense>
       );
   }
@@ -98,17 +125,47 @@ function ChartBody({
   widget,
   result,
   entityColors,
+  selection,
+  onPick,
 }: {
   widget: Extract<Widget, { type: 'chart' }>;
   result: DatasetResult;
   entityColors?: ColorMap | undefined;
+  selection: Selection | null;
+  onPick: ((value: Scalar | undefined) => void) | undefined;
 }) {
   const mode = useTheme();
+  const cross = widget.config.crossFilter;
+  const byX = cross !== undefined && cross.field === widget.config.x;
+  // By x the line keeps its symbols, which carry the dimming too, so also while presenting (as in snapshots). By
+  // series only the clicks need it, so not while presenting. The pointer cursor over chart items is ECharts' default
+  // either way: this does not remove it.
+  const clickable = byX ? 'x' : cross && onPick ? 'series' : undefined;
   const option = useMemo(
-    () => buildChartOption(widget.config, result.table, THEMES[mode], { entityColors }),
-    [widget.config, result.table, mode, entityColors],
+    () =>
+      buildChartOption(widget.config, result.table, THEMES[mode], {
+        entityColors,
+        selection,
+        ...(clickable ? { clickable } : {}),
+      }),
+    [widget.config, result.table, mode, entityColors, selection, clickable],
   );
-  return <EChart option={option} label={widget.title ?? 'Chart'} />;
+  // A category (or slice) gives the x column's value, a series its own name.
+  const onItemClick =
+    onPick && cross
+      ? (item: EChartItem) => {
+          const label = byX ? item.name : item.seriesName;
+          // Nothing under the pointer names a category (a line between its symbols): not a click on an item.
+          if (byX && label === undefined) return;
+          // "Other" (the folded tail) and "(empty)" are what the chart draws for no single value, unless the data holds
+          // that text: they set nothing, rather than a search for the word.
+          const placeholder =
+            (label === OTHER || label === '(empty)') &&
+            !result.table.rows.some((r) => r[cross.field] != null && String(r[cross.field]) === label);
+          onPick(placeholder ? undefined : label);
+        }
+      : undefined;
+  return <EChart option={option} label={widget.title ?? 'Chart'} onItemClick={onItemClick} />;
 }
 
 function GaugeBody({
@@ -206,9 +263,13 @@ const URL_RE = /^https?:\/\//;
 export function TableBody({
   widget,
   result,
+  selection,
+  onPick,
 }: {
   widget: Extract<Widget, { type: 'table' }>;
   result: DatasetResult;
+  selection?: Selection | null;
+  onPick?: ((value: Scalar | undefined) => void) | undefined;
 }) {
   const [page, setPage] = useState(0);
   const [sort, setSort] = useState<{ field: string; dir: 1 | -1 } | null>(null);
@@ -236,11 +297,20 @@ export function TableBody({
   const current = Math.min(page, pages - 1);
   const visible = rows.slice(current * size, current * size + size);
   const list = widget.config.style === 'list';
+  const cross = widget.config.crossFilter;
+  const pick = onPick && cross ? (row: Row) => onPick(row[cross.field]) : undefined;
   return (
     <div className="flex h-full flex-col">
       <div className="min-h-0 flex-1 overflow-auto">
         {list ? (
-          <ListRows rows={visible} columns={columns} rules={rules} mode={mode} />
+          <ListRows
+            rows={visible}
+            columns={columns}
+            rules={rules}
+            mode={mode}
+            selection={selection ?? null}
+            pick={pick}
+          />
         ) : (
           <table className="w-full text-left text-[13px]">
             <thead className="sticky top-0 bg-surface">
@@ -273,8 +343,18 @@ export function TableBody({
             </thead>
             <tbody>
               {visible.map((row, i) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity
-                <tr key={i} className="border-b border-line/60 last:border-0 hover:bg-surface-2/60">
+                <tr
+                  // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity
+                  key={i}
+                  className={cx(
+                    'border-b border-line/60 last:border-0 hover:bg-surface-2/60',
+                    pick && 'cursor-pointer',
+                  )}
+                  style={
+                    rowSelected(row, selection ?? null) === false ? { opacity: DIMMED_OPACITY } : undefined
+                  }
+                  onClick={pick ? () => pick(row) : undefined}
+                >
                   {columns.map((c, ci) => {
                     const v = row[c.field] ?? null;
                     const cell = cellStyle(row, c, rules, THEMES[mode]);
@@ -300,6 +380,7 @@ export function TableBody({
                             target="_blank"
                             rel="noopener noreferrer nofollow"
                             className="hover:underline"
+                            onClick={(e) => e.stopPropagation()}
                           >
                             {text}
                           </a>
@@ -309,6 +390,7 @@ export function TableBody({
                             target="_blank"
                             rel="noopener noreferrer nofollow"
                             className="text-data hover:underline"
+                            onClick={(e) => e.stopPropagation()}
                           >
                             {v.replace(URL_RE, '').slice(0, 40)}
                           </a>
@@ -362,11 +444,15 @@ function ListRows({
   columns,
   rules,
   mode,
+  selection,
+  pick,
 }: {
   rows: DatasetResult['table']['rows'];
   columns: ResolvedColumn[];
   rules: ReturnType<typeof compileTableRules>;
   mode: 'light' | 'dark';
+  selection: Selection | null;
+  pick: ((row: Row) => void) | undefined;
 }) {
   const now = useNow(60_000);
   const locale = typeof navigator === 'undefined' ? 'en' : navigator.language;
@@ -378,15 +464,27 @@ function ListRows({
         const title = cellStyle(row, first, rules, THEMES[mode]);
         const href = cellLink(row, first);
         return (
-          // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity
-          <li key={i} className="py-2 first:pt-0.5">
+          // biome-ignore lint/a11y/useKeyWithClickEvents: the filter bar sets the same filter from the keyboard
+          <li
+            // biome-ignore lint/suspicious/noArrayIndexKey: rows have no identity
+            key={i}
+            className={cx('py-2 first:pt-0.5', pick && 'cursor-pointer')}
+            style={rowSelected(row, selection) === false ? { opacity: DIMMED_OPACITY } : undefined}
+            onClick={pick ? () => pick(row) : undefined}
+          >
             <div
               className="line-clamp-2 text-[13.5px] leading-snug font-medium text-ink"
               style={title.color ? { color: title.color } : undefined}
               title={title.reason}
             >
               {href ? (
-                <a href={href} target="_blank" rel="noopener noreferrer nofollow" className="hover:underline">
+                <a
+                  href={href}
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                  className="hover:underline"
+                  onClick={(e) => e.stopPropagation()}
+                >
                   {title.text}
                 </a>
               ) : (

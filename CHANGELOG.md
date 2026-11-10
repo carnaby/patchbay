@@ -6,6 +6,45 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-10
+
+### Added
+
+- **Dashboard filters**: a dashboard can declare filters (a choice such as a region, a search text, a period with
+  presets like "Last 30 days") that every viewer sets in a filter bar under the header. Datasets use them as
+  `$param.<id>` in filter and derive steps, as a whole query value or path segment of an `http` or `feed` URL, and as
+  a whole value of a POST body or connector parameters, so one dashboard serves every region or period instead of a
+  copy per value. Values live only in the page link (`?p.region=eu`): a link opens a view, presentation mode can be
+  pinned to one and shows which, and nothing is saved or seen by other viewers. Editors declare filters in the
+  Filters panel; agents use the new operations and pass `parameters` to `get_data`, `render_snapshot`,
+  `suggest_widgets` and `preview_data`. Datasets that use filters refresh by polling rather than the live push.
+- **Click to filter**: a chart (bar, line, area, pie, donut, funnel), table or map can set a dashboard filter when an
+  item is clicked; clicking it again resets it, Back undoes it, and the other items are dimmed in the browser and in
+  snapshots. Clicks do nothing in presentation mode. A choice filter can also take its choices from a column of a
+  dataset (`optionsFrom`), up to 200 distinct values.
+- **POST for `http` sources**: `method: "POST"` with a JSON `body` (at most 16,384 characters) loads read APIs that
+  take their query in a POST body, such as GitHub GraphQL, PostHog or ClickHouse over HTTP. The editor has a GET / POST
+  switch and a JSON body field; agents find the fields and a GitHub example in `get_reference`. The request repeats on
+  every refresh, so use it for read queries; keys stay in secrets, never in the body. A redirect answer to a POST is an
+  error instead of being followed, and a read-only token cannot preview a POST source.
+- **Column-shaped JSON**: an `http` response or a JSON upload whose object holds only equally long lists of plain
+  values (`{ "timestamps": [...], "values": [...] }`, at least two) now becomes one row per position with every
+  column. Before, only the first list was kept. Any other shape is read exactly as before.
+- **`path` for JSON uploads**: an upload (MCP `upload_data`, the REST upload endpoint and the upload area in the
+  dataset editor) takes an optional `path` such as `"data.items"`, applied to a JSON file before it is stored, so
+  records nested inside a file can be used without editing it. CSV files ignore it.
+
+### Fixed
+
+- A column named `__proto__` (a JSON key or a CSV header) is now kept like any other column, in `http` responses,
+  uploads, stored files and every processing step; it used to vanish without a message. A record without a column
+  that another record has reads that cell as empty even when the column is called `constructor` or `toString`, and
+  `rename` no longer renames such a column to a member of JavaScript's `Object`.
+- Dataset editor: a typed POST body survives switching the method to GET and back; the preview shows its row and
+  column counts only beside the table they describe (a stale table stays dimmed while the body is invalid); and
+  typing a POST body waits for a longer pause before previewing, so it no longer sends a request upstream at every
+  short pause.
+
 ## [0.2.1] - 2026-11-06
 
 ### Changed
@@ -125,7 +164,8 @@ The server was reviewed adversarially before release, and every finding has a re
 - Hostile feeds are parsed in linear time off the main thread; snapshot drawing is bounded per render.
 - `URL_SOURCES=signed-in` keeps strangers from making a public instance fetch arbitrary addresses.
 
-[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/carnaby/patchbay/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/carnaby/patchbay/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/carnaby/patchbay/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/carnaby/patchbay/releases/tag/v0.1.0

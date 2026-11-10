@@ -13,13 +13,25 @@ import {
   type LiveEvent,
 } from '@patchbay/core';
 import { keepPreviousData, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from '../components/ui.tsx';
 import { ApiError, api } from '../lib/api.ts';
-import { datasetInSync, datasetKey, datasetKeyFor, lineageKey, refreshTiming } from './dataset-keys.ts';
+import {
+  choiceChecks,
+  datasetInSync,
+  datasetKey,
+  datasetKeyFor,
+  followsCalendar,
+  lineageKey,
+  nextRefetch,
+  queryOfView,
+  refreshTiming,
+  viewKey,
+} from './dataset-keys.ts';
 import { useEditor } from './editor.ts';
 import { openLiveChannel } from './live-channel.ts';
+import { choicesOfResult, dataValueReady, type RawValues, useParameters } from './parameters.ts';
 import { performSave } from './save.ts';
 
 const SAVE_DEBOUNCE_MS = 600;
@@ -117,9 +129,11 @@ export function useLiveEvents(id: string | undefined) {
       const event = JSON.parse(msg.data) as LiveEvent;
       if (event.type === 'data') {
         const saved = useEditor.getState().saved;
-        // Pushed results are computed from the saved document: keyed by its lineage.
-        if (saved?.datasets.some((d) => d.id === event.result.datasetId))
-          qc.setQueryData(datasetKey(id, saved, event.result.datasetId), fromWire(event.result));
+        const datasetId = event.result.datasetId;
+        // Pushed results are computed from the saved document, at no view: the hub pushes only datasets that use no
+        // filter, and a push for one that does (an older server) is not this viewer's view.
+        if (saved?.datasets.some((d) => d.id === datasetId) && viewKey(saved, datasetId, {}) === '')
+          qc.setQueryData(datasetKey(id, saved, datasetId), fromWire(event.result));
       } else if (event.type === 'doc') {
         void pullRemote(event);
       } else if (event.type === 'hello') {
@@ -169,10 +183,42 @@ export function useLiveEvents(id: string | undefined) {
   return connected;
 }
 
-const fetchResult = (dashboardId: string, datasetId: string) => async () =>
-  fromWire(
-    await api<DatasetResult>(`/api/dashboards/${dashboardId}/data/${datasetId}?rows=arrays`, { dashboardId }),
-  );
+const fetchResult =
+  (dashboardId: string, datasetId: string, view = '') =>
+  async () =>
+    fromWire(
+      await api<DatasetResult>(
+        `/api/dashboards/${dashboardId}/data/${datasetId}?rows=arrays${queryOfView(view)}`,
+        { dashboardId },
+      ),
+    );
+
+type ChoiceCheck = [id: string, dataset: string, lineage: string, view: string];
+
+/**
+ * Whether the data-driven values a request would carry may be sent (`dataValueReady`): their choices are loaded and
+ * hold them, or failed. The choices are read from the cache without fetching them: the page's DataOptionsGuard loads
+ * every options dataset, with the same key.
+ */
+function useChoicesChecked(dashboardId: string, checks: string, raw: RawValues): boolean {
+  const entries = useMemo(() => (checks ? (JSON.parse(checks) as ChoiceCheck[]) : []), [checks]);
+  const parameters = useEditor((s) => s.doc?.parameters);
+  return useQueries({
+    queries: entries.map(([, dataset, lineage, view]) => ({
+      queryKey: datasetKeyFor(dashboardId, dataset, lineage, view),
+      queryFn: fetchResult(dashboardId, dataset, view),
+      enabled: false,
+    })),
+    combine: (results) =>
+      entries.every(([id], i) => {
+        const param = parameters?.find((p) => p.id === id);
+        const from = param?.type === 'select' ? param.optionsFrom : undefined;
+        if (!param || !from) return true;
+        const query = results[i];
+        return dataValueReady(param, raw, choicesOfResult(from.field, query?.data, Boolean(query?.isError)));
+      }),
+  });
+}
 
 /**
  * Data for one dataset. It only fetches definitions the server already has, for the dataset and everything it reads
@@ -181,19 +227,27 @@ const fetchResult = (dashboardId: string, datasetId: string) => async () =>
  */
 export function useDatasetResult(dashboardId: string, dataset: Dataset | undefined, live: boolean) {
   const id = dataset?.id;
+  const raw = useParameters((s) => s.raw);
+  // No request before this dashboard's URL was read: a value of another dashboard or an invalid link value waits.
+  const ready = useParameters((s) => s.dashboardId === dashboardId);
   // Primitives only: a selector returning a new object would re-render on every store change.
   const lineage = useEditor((s) => (id && s.doc ? lineageKey(s.doc, id) : ''));
+  const view = useEditor((s) => (id && s.doc ? viewKey(s.doc, id, raw) : ''));
+  const calendar = useEditor((s) => (id && s.doc ? followsCalendar(s.doc, id, raw) : false));
   const inSync = useEditor((s) => (id ? datasetInSync(s.saved, s.doc, id) : false));
   const refreshSec = useEditor((s) => (id && s.doc ? effectiveRefreshSec(s.doc, id) : 0));
-  const timing = refreshTiming(refreshSec, live);
+  const checks = useEditor((s) => (id && s.doc ? choiceChecks(s.doc, id, raw) : ''));
+  const checked = useChoicesChecked(dashboardId, checks, raw);
+  // A dataset that uses filters is never pushed (one result per view): it polls even while the live channel is up.
+  const timing = refreshTiming(refreshSec, live && view === '');
   return useQuery({
-    queryKey: id ? datasetKeyFor(dashboardId, id, lineage) : ['data', dashboardId, 'none'],
-    queryFn: fetchResult(dashboardId, id ?? ''),
-    enabled: Boolean(id) && inSync,
+    queryKey: id ? datasetKeyFor(dashboardId, id, lineage, view) : ['data', dashboardId, 'none'],
+    queryFn: fetchResult(dashboardId, id ?? '', view),
+    enabled: Boolean(id) && inSync && ready && checked,
     placeholderData: keepPreviousData,
     staleTime: timing.staleTime,
-    // SSE pushes live updates; poll only if the live channel is down.
-    refetchInterval: timing.refetchInterval,
+    // SSE pushes live updates; poll when it cannot, and after midnight for a relative period.
+    refetchInterval: () => nextRefetch(timing.refetchInterval, calendar, Date.now()),
   });
 }
 
@@ -201,13 +255,18 @@ export function useDatasetResult(dashboardId: string, dataset: Dataset | undefin
 export function useDatasetColumns(dashboardId: string, ids: readonly string[]): (id: string) => string[] {
   const doc = useEditor((s) => s.doc);
   const saved = useEditor((s) => s.saved);
+  const raw = useParameters((s) => s.raw);
+  const ready = useParameters((s) => s.dashboardId === dashboardId);
   const results = useQueries({
-    queries: ids.map((id) => ({
-      queryKey: datasetKeyFor(dashboardId, id, doc ? lineageKey(doc, id) : ''),
-      queryFn: fetchResult(dashboardId, id),
-      enabled: datasetInSync(saved, doc, id),
-      staleTime: 5 * 60_000,
-    })),
+    queries: ids.map((id) => {
+      const view = doc ? viewKey(doc, id, raw) : '';
+      return {
+        queryKey: datasetKeyFor(dashboardId, id, doc ? lineageKey(doc, id) : '', view),
+        queryFn: fetchResult(dashboardId, id, view),
+        enabled: datasetInSync(saved, doc, id) && ready,
+        staleTime: 5 * 60_000,
+      };
+    }),
   });
   return (id) => results[ids.indexOf(id)]?.data?.table.columns.map((c) => c.name) ?? [];
 }

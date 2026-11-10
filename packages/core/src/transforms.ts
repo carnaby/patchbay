@@ -7,9 +7,17 @@
  */
 import { z } from 'zod';
 import { AGGREGATE_OPS, aggregate, numeric } from './aggregate.ts';
-import { compileFor, ExprError, fieldRef, isTruthy, parse, referencedFields } from './expr.ts';
+import {
+  compileFor,
+  ExprError,
+  fieldRef,
+  isTruthy,
+  MAX_BOUND_EXPRESSION,
+  parse,
+  referencedFields,
+} from './expr.ts';
 import { IdSchema } from './ids.ts';
-import { type ColumnType, type DataTable, type Row, retype, type Scalar } from './table.ts';
+import { type ColumnType, cellOf, type DataTable, type Row, retype, type Scalar, setCell } from './table.ts';
 
 const field = z.string().min(1).max(200);
 /** An expression that parses; shared with table rules so they validate exactly like pipeline steps. */
@@ -408,6 +416,9 @@ function requireFieldsIn(table: DataTable, fields: readonly string[], datasetId:
 
 const rowCap = () => PIPELINE_LIMITS.maxRows.toLocaleString('en');
 
+/** Filter and derive steps run with filter values bound in, which may make them longer than an authored expression. */
+const BOUND = { maxLength: MAX_BOUND_EXPRESSION };
+
 function applyStep(
   table: DataTable,
   t: Transform,
@@ -419,8 +430,8 @@ function applyStep(
   const order = table.columns.map((c) => c.name);
   switch (t.type) {
     case 'filter': {
-      requireFields(table, [...referencedFields(parse(t.expr))], step);
-      const fn = compileFor(t.expr, table, () => budget.tick());
+      requireFields(table, [...referencedFields(parse(t.expr, BOUND))], step);
+      const fn = compileFor(t.expr, table, () => budget.tick(), BOUND);
       return budget.measure({
         columns: table.columns,
         rows: table.rows.filter((r) => {
@@ -446,7 +457,8 @@ function applyStep(
     }
     case 'rename': {
       requireFields(table, Object.keys(t.map), step);
-      const to = (n: string) => t.map[n] ?? n;
+      // Own entries only: a plain lookup turns a "__proto__" or "constructor" column into Object's members.
+      const to = (n: string) => (Object.hasOwn(t.map, n) ? t.map[n]! : n);
       // Longer names lengthen every row of the JSON, but the rows themselves share the same values.
       return budget.measure({
         columns: table.columns.map((c) => ({ ...c, name: to(c.name) })),
@@ -454,8 +466,8 @@ function applyStep(
       });
     }
     case 'derive': {
-      requireFields(table, [...referencedFields(parse(t.expr))], step);
-      const fn = compileFor(t.expr, table, () => budget.tick());
+      requireFields(table, [...referencedFields(parse(t.expr, BOUND))], step);
+      const fn = compileFor(t.expr, table, () => budget.tick(), BOUND);
       const replaces = order.includes(t.as);
       // Charged row by row: text built by an expression is new memory, and 40 derive steps of long text over a
       // few thousand rows would otherwise pass the cell limit and still reach gigabytes.
@@ -511,27 +523,33 @@ function applyStep(
       // The output is groups x metrics cells, and the number of metrics has no fixed cap: charge each one.
       budget.size = 0;
       const rows: Row[] = [...groups.values()].map((bucket) => {
+        // Cells and types are written with setCell: a column may be called "__proto__".
         const out: Row = {};
         for (const g of t.groupBy) {
-          out[g] = bucket[0]?.[g] ?? null;
-          budget.add(cellSize(g, out[g]));
+          const value = bucket[0]?.[g] ?? null;
+          setCell(out, g, value);
+          budget.add(cellSize(g, value));
         }
         for (const m of t.metrics) {
           const name = metricName(m);
-          out[name] = aggregate(m.op, m.field ? bucket.map((r) => r[m.field!] ?? null) : bucket.map(() => 1));
-          budget.add(cellSize(name, out[name]));
+          const value = aggregate(
+            m.op,
+            m.field ? bucket.map((r) => r[m.field!] ?? null) : bucket.map(() => 1),
+          );
+          setCell(out, name, value);
+          budget.add(cellSize(name, value));
         }
         return out;
       });
       const keepTypes: Record<string, ColumnType> = {};
-      for (const g of t.groupBy) if (known[g]) keepTypes[g] = known[g];
+      for (const g of t.groupBy) if (known[g]) setCell(keepTypes, g, known[g]);
       for (const m of t.metrics) {
         if (
           m.field &&
           known[m.field] === 'time' &&
           ['min', 'max', 'first', 'last', 'median'].includes(m.op)
         ) {
-          keepTypes[metricName(m)] = 'time';
+          setCell(keepTypes, metricName(m), 'time');
         }
       }
       return retype(rows, [...t.groupBy, ...t.metrics.map(metricName)], keepTypes);
@@ -631,7 +649,7 @@ function applyStep(
         let filled = 0;
         for (const f of t.fields) {
           if (out[f] === null || out[f] === undefined) {
-            out[f] = t.value;
+            setCell(out, f, t.value);
             filled++;
           }
         }
@@ -699,8 +717,9 @@ function applyStep(
         const out: Row = { ...row };
         for (const c of order) budget.add(cellSize(c, out[c]));
         for (const b of brought) {
-          out[b.name] = match ? (match[b.from] ?? null) : null;
-          budget.add(cellSize(b.name, out[b.name]));
+          const value = match ? (match[b.from] ?? null) : null;
+          setCell(out, b.name, value);
+          budget.add(cellSize(b.name, value));
         }
         rows.push(out);
       };
@@ -711,7 +730,7 @@ function applyStep(
         else if (t.how === 'left') emit(row, null);
       }
       const types: Record<string, ColumnType> = { ...known };
-      for (const b of brought) types[b.name] = theirs[b.from]!;
+      for (const b of brought) setCell(types, b.name, theirs[b.from]!);
       return retype(rows, [...order, ...brought.map((b) => b.name)], types);
     }
     case 'union': {
@@ -753,7 +772,7 @@ function applyStep(
       // with date().
       const timeAsText = new Set<string>();
       for (const [name, set] of seen) {
-        if (set.size === 1) unionTypes[name] = [...set][0]!;
+        if (set.size === 1) setCell(unionTypes, name, [...set][0]!);
         else if (set.has('time') && set.has('string')) timeAsText.add(name);
       }
       budget.size = 0;
@@ -768,21 +787,23 @@ function applyStep(
         for (const r of s.table.rows) {
           const out: Row = {};
           for (const n of names) {
-            const v = r[n] ?? null;
-            out[n] =
+            // A source without this column reads it as empty, also when it is called "constructor".
+            const v = cellOf(r, n) ?? null;
+            const value =
               timeAsText.has(n) && types[n] === 'time' && typeof v === 'number'
                 ? new Date(v).toISOString()
                 : v;
-            budget.add(cellSize(n, out[n]));
+            setCell(out, n, value);
+            budget.add(cellSize(n, value));
           }
           if (t.origin) {
-            out[t.origin] = label;
+            setCell<Scalar>(out, t.origin, label);
             budget.add(cellSize(t.origin, label));
           }
           rows.push(out);
         }
       }
-      if (t.origin) unionTypes[t.origin] = 'string';
+      if (t.origin) setCell(unionTypes, t.origin, 'string');
       return retype(rows, t.origin ? [...names, t.origin] : names, unionTypes);
     }
   }

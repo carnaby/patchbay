@@ -14,7 +14,14 @@
  * One render at a time: `snapshotGate` (render/gate.ts) queues and admits them.
  */
 import { Worker } from 'node:worker_threads';
-import type { ColorMap, DashboardDoc, DatasetResult, ThemeMode, Widget } from '@patchbay/core';
+import type {
+  ColorMap,
+  DashboardDoc,
+  DatasetResult,
+  ParameterValues,
+  ThemeMode,
+  Widget,
+} from '@patchbay/core';
 import { BusyError } from '../util/gate.ts';
 import { checkHeapLimit, retire, workerResourceLimits } from '../util/workers.ts';
 import type { DashboardRenderOptions } from './snapshot.ts';
@@ -24,7 +31,11 @@ export type RenderTask =
       kind: 'widget';
       widget: Widget;
       result: DatasetResult | undefined;
-      options: { theme?: ThemeMode; entityColors?: ColorMap | undefined };
+      options: {
+        theme?: ThemeMode;
+        entityColors?: ColorMap | undefined;
+        parameters?: ParameterValues | undefined;
+      };
     }
   | {
       kind: 'dashboard';

@@ -8,8 +8,10 @@ import {
   FEED_MIN_REFRESH_SEC,
   formatValue,
   HTTP_MIN_REFRESH_SEC,
+  type HttpMethod,
   isStaticSource,
   type OpInput,
+  type Parameter,
   type ParamSpec,
   type Source,
   type Suggestion,
@@ -35,9 +37,11 @@ import {
   Plus,
   Radio,
   Rss,
+  SlidersHorizontal,
   Sparkles,
   Table2,
   Trash2,
+  X,
 } from 'lucide-react';
 import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -56,10 +60,13 @@ import {
   toast,
 } from '../components/ui.tsx';
 import { api, errorMessage } from '../lib/api.ts';
+import { countLabel } from '../lib/count-label.ts';
 import { useConnectors } from '../lib/hooks.ts';
 import { withRetry } from '../lib/retry.ts';
 import { credentialErrorHint, introducedSecretIds, introducedSecretRefs } from '../lib/secrets.ts';
+import { draftView } from '../state/dataset-keys.ts';
 import { useEditor } from '../state/editor.ts';
+import { type RawValues, useParameters } from '../state/parameters.ts';
 import { fromWire, useDatasetColumns } from '../state/sync.ts';
 import {
   type CredentialContext,
@@ -78,6 +85,17 @@ import {
   slug,
   sourceCandidates,
 } from './dataset-lineage.ts';
+import { bodyText, parseBodyText, switchMethod, withBody } from './http-body.ts';
+import { InsertFilterMenu } from './InsertFilter.tsx';
+import {
+  connectorChoices,
+  filtersTooltip,
+  insertAt,
+  refChoices,
+  urlPlaceAt,
+  wholeRef,
+} from './parameter-refs.ts';
+import { previewDelay, previewState } from './preview-state.ts';
 import { askPublicSecrets } from './public-secrets.tsx';
 import { TransformEditor } from './TransformEditor.tsx';
 
@@ -111,9 +129,15 @@ async function previewRequest(
   dashboardId: string,
   dataset: unknown,
   editing?: string,
+  parameters: RawValues = {},
 ): Promise<PreviewResponse> {
   const res = await api<PreviewResponse>(`/api/dashboards/${dashboardId}/preview?rows=arrays`, {
-    body: { dataset, ...(editing ? { editing } : {}) },
+    body: {
+      dataset,
+      ...(editing ? { editing } : {}),
+      // The current view's values of the filters the draft uses: the preview shows what this view would show.
+      ...(Object.keys(parameters).length > 0 ? { parameters } : {}),
+    },
     dashboardId,
   });
   return { ...res, result: fromWire(res.result) };
@@ -135,7 +159,7 @@ export function sourceSummary(
     case 'inline':
       return `${source.rows.length} inline rows`;
     case 'http':
-      return new URL(source.url).host;
+      return `${source.method === 'POST' ? 'POST · ' : ''}${new URL(source.url).host}`;
     case 'feed':
       return `Feed · ${new URL(source.url).host}`;
     case 'dataset':
@@ -210,6 +234,7 @@ export function DatasetsPanel({
             const users = widgets.filter((w) => 'datasetId' in w && w.datasetId === d.id).length;
             const blocker = doc ? deleteBlocker(doc, d.id) : null;
             const lock = doc ? secretsTooltip(doc, d.id) : null;
+            const filters = doc ? filtersTooltip(doc, d.id) : null;
             return (
               <Card key={d.id} className="flex items-center gap-3 p-3">
                 <Database className="size-4 shrink-0 text-muted" />
@@ -219,6 +244,11 @@ export function DatasetsPanel({
                     {lock ? (
                       <span title={lock} className="inline-flex">
                         <KeyRound className="size-3 shrink-0" aria-label={lock} />
+                      </span>
+                    ) : null}
+                    {filters ? (
+                      <span title={filters} className="inline-flex">
+                        <SlidersHorizontal className="size-3 shrink-0" aria-label={filters} />
                       </span>
                     ) : null}
                     {sourceSummary(d.source, connectors, datasets)} · {d.transforms.length} step
@@ -281,52 +311,75 @@ export function DatasetsPanel({
 function ParamInput({
   spec,
   value,
+  parameters,
   onChange,
 }: {
   spec: ParamSpec;
   value: unknown;
+  parameters?: readonly Parameter[] | undefined;
   onChange: (v: unknown) => void;
 }) {
+  const ref = wholeRef(value);
+  // Exact id match: "$param.region2" must not read as "region".
+  const filter = ref
+    ? parameters?.find((p) => ref === `$param.${p.id}` || ref.startsWith(`$param.${p.id}.`))
+    : undefined;
+  const choices = connectorChoices(parameters, spec);
   return (
     <Field label={`${spec.label}${spec.required ? '' : ' (optional)'}`} hint={spec.description}>
       {(fid) =>
-        spec.type === 'enum' ? (
-          <Select
-            id={fid}
-            value={String(value ?? spec.default ?? '')}
-            onChange={(e) => onChange(e.target.value)}
-          >
-            {spec.options!.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </Select>
-        ) : spec.type === 'boolean' ? (
-          <Select
-            id={fid}
-            value={String(value ?? spec.default ?? false)}
-            onChange={(e) => onChange(e.target.value === 'true')}
-          >
-            <option value="true">Yes</option>
-            <option value="false">No</option>
-          </Select>
+        ref ? (
+          <div className="flex h-9 items-center gap-2 rounded-lg border border-line bg-surface-2 px-2 text-sm">
+            <SlidersHorizontal className="size-3.5 shrink-0 text-muted" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Filter: {filter?.label ?? ref}</span>
+            <IconButton label="Stop using the filter" onClick={() => onChange(undefined)}>
+              <X className="size-3.5" />
+            </IconButton>
+          </div>
         ) : (
-          <Input
-            id={fid}
-            type={spec.type === 'number' ? 'number' : 'text'}
-            value={value === undefined || value === null ? '' : String(value)}
-            placeholder={spec.default !== undefined ? String(spec.default) : ''}
-            onChange={(e) =>
-              onChange(
-                e.target.value === ''
-                  ? undefined
-                  : spec.type === 'number'
-                    ? Number(e.target.value)
-                    : e.target.value,
-              )
-            }
-          />
+          <div className="flex gap-2">
+            {spec.type === 'enum' ? (
+              <Select
+                id={fid}
+                value={String(value ?? spec.default ?? '')}
+                onChange={(e) => onChange(e.target.value)}
+              >
+                {spec.options!.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </Select>
+            ) : spec.type === 'boolean' ? (
+              <Select
+                id={fid}
+                value={String(value ?? spec.default ?? false)}
+                onChange={(e) => onChange(e.target.value === 'true')}
+              >
+                <option value="true">Yes</option>
+                <option value="false">No</option>
+              </Select>
+            ) : (
+              <Input
+                id={fid}
+                type={spec.type === 'number' ? 'number' : 'text'}
+                value={value === undefined || value === null ? '' : String(value)}
+                placeholder={spec.default !== undefined ? String(spec.default) : ''}
+                onChange={(e) =>
+                  onChange(
+                    e.target.value === ''
+                      ? undefined
+                      : spec.type === 'number'
+                        ? Number(e.target.value)
+                        : e.target.value,
+                  )
+                }
+              />
+            )}
+            {choices.length ? (
+              <InsertFilterMenu choices={choices} onInsert={(text) => onChange(text)} emptyHint="" />
+            ) : null}
+          </div>
         )
       }
     </Field>
@@ -340,6 +393,7 @@ function SourceEditor({
   doc,
   editingId,
   onChange,
+  onBlockingError,
 }: {
   dashboardId: string;
   source: Source;
@@ -347,6 +401,8 @@ function SourceEditor({
   doc: DashboardDoc | null;
   editingId: string | null;
   onChange: (s: Source) => void;
+  /** A problem in the form that must block saving (an invalid body), or null. */
+  onBlockingError: (message: string | null) => void;
 }) {
   const { data: connectors } = useConnectors();
   const qc = useQueryClient();
@@ -356,13 +412,13 @@ function SourceEditor({
   });
   const fileInput = useRef<HTMLInputElement>(null);
   const upload = useMutation({
-    mutationFn: async (file: File) => {
+    mutationFn: async ({ file, path }: { file: File; path: string }) => {
       if (file.size > 5 * 1024 * 1024) throw new Error('Files are limited to 5 MB');
       const content = await file.text();
       // Uploads take turns on the server: a busy answer means "later", not "no".
       return withRetry(() =>
         api<UploadedFile>(`/api/dashboards/${dashboardId}/files`, {
-          body: { name: file.name, content },
+          body: { name: file.name, content, ...(path ? { path } : {}) },
           dashboardId,
         }),
       );
@@ -370,15 +426,50 @@ function SourceEditor({
     onSuccess: (file) => {
       qc.invalidateQueries({ queryKey: ['files', dashboardId] });
       onChange({ kind: 'upload', fileId: file.id });
-      toast(`Uploaded ${file.name}: ${file.rows.toLocaleString('en')} rows, ${file.columns} columns`);
+      toast(`Uploaded ${file.name}: ${countLabel(file.rows, 'row')}, ${countLabel(file.columns, 'column')}`);
     },
   });
+  // Applied when the file is chosen: the server reads a JSON file at this path once and stores the table it finds.
+  const [uploadPath, setUploadPath] = useState('');
   const [inlineText, setInlineText] = useState(() =>
     source.kind === 'inline'
       ? JSON.stringify(source.rows, null, 1)
       : '[\n {"label": "A", "value": 3},\n {"label": "B", "value": 5}\n]',
   );
   const [inlineError, setInlineError] = useState<string | null>(null);
+  // The body as typed: invalid JSON stays in the field (with its error) and never reaches the draft.
+  const [bodyDraft, setBodyDraft] = useState(() => (source.kind === 'http' ? bodyText(source.body) : ''));
+  const [bodyError, setBodyError] = useState<string | null>(null);
+  const parameters = doc?.parameters;
+  // Where the caret was last in the URL and the body: the Insert filter menu takes the focus away.
+  const [urlCaret, setUrlCaret] = useState<number | null>(null);
+  const [bodyCaret, setBodyCaret] = useState<number | null>(null);
+  // The body is pretty-printed on blur, except when the blur goes to its Insert filter menu: the caret would no longer
+  // point where the user put it, and the growing field would move the menu away from the pointer.
+  const bodyInsert = useRef<HTMLSpanElement>(null);
+  const toBodyInsert = useRef(false);
+  const urlChoices = (url: string, secrets: boolean) => {
+    const place = urlPlaceAt(url, urlCaret ?? url.length);
+    return place ? refChoices(parameters, place, { secrets }) : [];
+  };
+  const URL_HINT = 'Put the cursor right after a "/" of the path or the "=" of a query parameter.';
+  const insertInUrl = (s: Extract<Source, { kind: 'http' | 'feed' }>, text: string) => {
+    const at = urlCaret ?? s.url.length;
+    const next = insertAt(s.url, at, at, text);
+    setUrlCaret(next.caret);
+    onChange({ ...s, url: next.value });
+  };
+  const setBodyProblem = (message: string | null) => {
+    setBodyError(message);
+    onBlockingError(message);
+  };
+  const setMethod = (method: HttpMethod) => {
+    if (source.kind !== 'http' || method === (source.method ?? 'GET')) return;
+    const next = switchMethod(source, method, bodyDraft);
+    setBodyDraft(next.text);
+    setBodyProblem(next.error);
+    onChange(next.source);
+  };
 
   const grouped = useMemo(() => {
     const map = new Map<string, ConnectorInfo[]>();
@@ -392,6 +483,9 @@ function SourceEditor({
 
   const setKind = (kind: Source['kind']) => {
     if (kind === source.kind) return;
+    setBodyDraft('');
+    setUploadPath('');
+    setBodyProblem(null);
     if (kind === 'dataset' && candidates[0]) onChange({ kind, id: candidates[0].id });
     if (kind === 'connector') onChange({ kind, connector: connectors?.[0]?.id ?? 'demo.signal', params: {} });
     if (kind === 'upload') onChange({ kind, fileId: files.data?.[0]?.id ?? 'none' });
@@ -498,13 +592,23 @@ function SourceEditor({
             hint="RSS, Atom or JSON Feed. A site's home page works when it announces a feed. Checked at most every 5 minutes."
           >
             {(fid) => (
-              <Input
-                id={fid}
-                value={source.url}
-                spellCheck={false}
-                onChange={(e) => onChange({ ...source, url: e.target.value })}
-                placeholder="https://www.bbc.com/news"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id={fid}
+                  value={source.url}
+                  spellCheck={false}
+                  onSelect={(e) => setUrlCaret(e.currentTarget.selectionStart)}
+                  onChange={(e) => onChange({ ...source, url: e.target.value })}
+                  placeholder="https://www.bbc.com/news"
+                />
+                {parameters?.length ? (
+                  <InsertFilterMenu
+                    choices={urlChoices(source.url, false)}
+                    onInsert={(text) => insertInUrl(source, text)}
+                    emptyHint={URL_HINT}
+                  />
+                ) : null}
+              </div>
             )}
           </Field>
           <Field label="Newest items">
@@ -556,6 +660,7 @@ function SourceEditor({
                 <ParamInput
                   key={p.name}
                   spec={p}
+                  parameters={parameters}
                   value={source.params[p.name]}
                   onChange={(v) => {
                     const params = { ...source.params };
@@ -579,7 +684,7 @@ function SourceEditor({
             className="hidden"
             onChange={(e) => {
               const file = e.target.files?.[0];
-              if (file) upload.mutate(file);
+              if (file) upload.mutate({ file, path: uploadPath.trim() });
               e.target.value = '';
             }}
           />
@@ -590,7 +695,7 @@ function SourceEditor({
             onDrop={(e) => {
               e.preventDefault();
               const file = e.dataTransfer.files[0];
-              if (file) upload.mutate(file);
+              if (file) upload.mutate({ file, path: uploadPath.trim() });
             }}
             className="flex w-full flex-col items-center gap-2 rounded-xl border border-dashed border-line-strong px-4 py-8 text-sm text-ink-2 transition hover:border-ink-2 hover:bg-surface"
           >
@@ -603,6 +708,21 @@ function SourceEditor({
               Stored inside this dashboard's folder. Columns and types are detected automatically.
             </span>
           </button>
+          <Field
+            label="Path to the list (JSON files, optional)"
+            hint='Dot path inside the JSON file, e.g. "data.items". Set it before choosing the file; leave empty to auto-detect. CSV files ignore it.'
+          >
+            {(fid) => (
+              <Input
+                id={fid}
+                value={uploadPath}
+                spellCheck={false}
+                maxLength={200}
+                placeholder="data.items"
+                onChange={(e) => setUploadPath(e.target.value)}
+              />
+            )}
+          </Field>
           {files.data?.length ? (
             <Field label="Use file">
               {(fid) => (
@@ -613,7 +733,7 @@ function SourceEditor({
                 >
                   {files.data.map((f) => (
                     <option key={f.id} value={f.id}>
-                      {f.name} · {f.rows.toLocaleString('en')} rows
+                      {f.name} · {countLabel(f.rows, 'row')}
                     </option>
                   ))}
                 </Select>
@@ -659,17 +779,114 @@ function SourceEditor({
 
       {source.kind === 'http' ? (
         <div className="grid gap-3">
-          <Field label="HTTPS URL" hint={urlHint(credentials)}>
-            {(fid) => (
-              <Input
-                id={fid}
-                value={source.url}
-                spellCheck={false}
-                onChange={(e) => onChange({ ...source, url: e.target.value })}
-                placeholder="https://api.example.com/data.json"
+          <div className="grid gap-3 sm:grid-cols-[auto_1fr] sm:items-start">
+            <fieldset className="m-0 min-w-0 space-y-1.5 border-0 p-0">
+              <legend className="mb-1.5 block p-0 text-[13px] font-medium text-ink-2">Method</legend>
+              <Segmented
+                value={source.method ?? 'GET'}
+                onChange={setMethod}
+                options={[
+                  { value: 'GET', label: 'GET', title: 'Read the address' },
+                  {
+                    value: 'POST',
+                    label: 'POST',
+                    title: 'Send a JSON body, for read APIs that take their query in it',
+                  },
+                ]}
               />
-            )}
-          </Field>
+            </fieldset>
+            <Field label="HTTPS URL" hint={urlHint(credentials)}>
+              {(fid) => (
+                <div className="flex gap-2">
+                  <Input
+                    id={fid}
+                    value={source.url}
+                    spellCheck={false}
+                    onSelect={(e) => setUrlCaret(e.currentTarget.selectionStart)}
+                    onChange={(e) => onChange({ ...source, url: e.target.value })}
+                    placeholder="https://api.example.com/data.json"
+                  />
+                  {parameters?.length ? (
+                    <InsertFilterMenu
+                      choices={urlChoices(source.url, (source.secrets?.length ?? 0) > 0)}
+                      onInsert={(text) => insertInUrl(source, text)}
+                      emptyHint={URL_HINT}
+                    />
+                  ) : null}
+                </div>
+              )}
+            </Field>
+          </div>
+          {source.method === 'POST' ? (
+            <>
+              <Field
+                label="Body (JSON)"
+                error={bodyError}
+                hint="Sent as application/json on every refresh. Use it for read queries; do not put secrets here."
+              >
+                {(fid) => (
+                  <Textarea
+                    id={fid}
+                    rows={Math.min(16, Math.max(4, bodyDraft.split('\n').length + 1))}
+                    value={bodyDraft}
+                    spellCheck={false}
+                    aria-invalid={bodyError !== null}
+                    placeholder={'{\n  "query": "{ viewer { login } }"\n}'}
+                    onSelect={(e) => setBodyCaret(e.currentTarget.selectionStart)}
+                    onChange={(e) => {
+                      setBodyDraft(e.target.value);
+                      const parsed = parseBodyText(e.target.value);
+                      setBodyProblem(parsed.ok ? null : parsed.error);
+                      if (parsed.ok) onChange(withBody(source, parsed.body));
+                    }}
+                    onFocus={() => {
+                      toBodyInsert.current = false;
+                    }}
+                    onBlur={(e) => {
+                      const target = e.relatedTarget;
+                      if (toBodyInsert.current || (target && bodyInsert.current?.contains(target))) return;
+                      // Pretty-printed once the user is done typing, never while they type.
+                      const parsed = parseBodyText(bodyDraft);
+                      if (!parsed.ok) return;
+                      const pretty = bodyText(parsed.body);
+                      if (pretty === bodyDraft) return;
+                      setBodyDraft(pretty);
+                      // A caret in the old text points elsewhere in the new one: inserts go to the end until the
+                      // user puts it back.
+                      setBodyCaret(null);
+                    }}
+                  />
+                )}
+              </Field>
+              {parameters?.length ? (
+                <div className="flex justify-end">
+                  <span
+                    ref={bodyInsert}
+                    className="contents"
+                    onPointerDown={() => {
+                      // Before the body's blur, which in some browsers names no related target for a button.
+                      toBodyInsert.current = true;
+                    }}
+                  >
+                    <InsertFilterMenu
+                      choices={refChoices(parameters, 'body', { secrets: (source.secrets?.length ?? 0) > 0 })}
+                      emptyHint="Only choice and period filters can go into a body."
+                      onInsert={(text) => {
+                        // A whole JSON string value: "region": "$param.region".
+                        const at = bodyCaret ?? bodyDraft.length;
+                        const next = insertAt(bodyDraft, at, at, `"${text}"`);
+                        setBodyDraft(next.value);
+                        setBodyCaret(next.caret);
+                        const parsed = parseBodyText(next.value);
+                        setBodyProblem(parsed.ok ? null : parsed.error);
+                        if (parsed.ok) onChange(withBody(source, parsed.body));
+                      }}
+                    />
+                  </span>
+                </div>
+              ) : null}
+            </>
+          ) : null}
           <UrlKeyWarning source={source} context={credentials} onChange={onChange} />
           <CredentialsField source={source} context={credentials} onChange={onChange} />
           <Field
@@ -752,10 +969,12 @@ function DatasetEditor({
       },
   );
   const [debounced, setDebounced] = useState(draft);
+  // A form problem that a save must not hide by storing the last valid value (an invalid POST body).
+  const [sourceError, setSourceError] = useState<string | null>(null);
   useEffect(() => {
-    const t = setTimeout(() => setDebounced(draft), 450);
+    const t = setTimeout(() => setDebounced(draft), previewDelay(debounced, draft));
     return () => clearTimeout(t);
-  }, [draft]);
+  }, [draft, debounced]);
 
   const { data: connectors } = useConnectors();
   // Default the name to the connector's name until the user types their own.
@@ -809,9 +1028,16 @@ function DatasetEditor({
   // The name travels too: the server needs the draft as it will be saved. `editing` is the saved dataset it replaces.
   const editingId = initial?.id;
   const previewBody = { name: debounced.name, source: debounced.source, transforms: debounced.transforms };
+  const viewRaw = useParameters((s) => s.raw);
+  const saved = useEditor((s) => s.saved);
+  const view = useMemo(() => draftView(saved, doc, debounced, viewRaw), [saved, doc, debounced, viewRaw]);
+  const sourceView = useMemo(
+    () => draftView(saved, doc, { source: debounced.source, transforms: [] }, viewRaw),
+    [saved, doc, debounced.source, viewRaw],
+  );
   const preview = useQuery({
-    queryKey: ['preview', dashboardId, editingId ?? null, JSON.stringify(previewBody)],
-    queryFn: () => previewRequest(dashboardId, previewBody, editingId),
+    queryKey: ['preview', dashboardId, editingId ?? null, JSON.stringify(previewBody), view.key],
+    queryFn: () => previewRequest(dashboardId, previewBody, editingId, view.values),
     retry: false,
     enabled: previewable(debounced.source) && !previewBlocked,
   });
@@ -821,8 +1047,15 @@ function DatasetEditor({
       dashboardId,
       editingId ?? null,
       JSON.stringify({ name: debounced.name, source: debounced.source }),
+      sourceView.key,
     ],
-    queryFn: () => previewRequest(dashboardId, { name: debounced.name, source: debounced.source }, editingId),
+    queryFn: () =>
+      previewRequest(
+        dashboardId,
+        { name: debounced.name, source: debounced.source },
+        editingId,
+        sourceView.values,
+      ),
     retry: false,
     enabled: previewable(debounced.source) && !previewBlocked,
   });
@@ -895,6 +1128,12 @@ function DatasetEditor({
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const suggestions = preview.data?.suggestions ?? [];
   const result = preview.data?.result;
+  const shown = previewState({
+    credentialsBlocked: previewBlocked,
+    formError: sourceError,
+    requestError: preview.error ? errorMessage(preview.error) : null,
+    result,
+  });
 
   return (
     <div className="space-y-6">
@@ -904,6 +1143,7 @@ function DatasetEditor({
         credentials={credentials}
         doc={doc}
         editingId={initial?.id ?? null}
+        onBlockingError={setSourceError}
         onChange={(source) =>
           // A derived dataset has no interval or history of its own (the server would refuse them).
           setDraft((d) => ({
@@ -938,6 +1178,7 @@ function DatasetEditor({
           datasets={candidates.map((c) => ({ id: c.id, name: c.name }))}
           columnsOf={columnsOf}
           self={self}
+          parameters={doc?.parameters}
           onChange={(transforms) => setDraft((d) => ({ ...d, transforms }))}
         />
       </section>
@@ -1012,47 +1253,56 @@ function DatasetEditor({
         <div className="flex items-center gap-2">
           <h3 className="text-[13px] font-semibold text-ink-2">Preview</h3>
           {preview.isFetching ? <Spinner className="size-3.5" /> : null}
-          {result ? (
-            <span className="text-xs text-muted">
-              {result.table.rows.length.toLocaleString('en')} rows{result.truncated ? ' (first 500)' : ''} ·{' '}
-              {result.table.columns.length} columns
-            </span>
+          {shown.counts ? (
+            <span className="text-xs text-muted">{shown.counts}</span>
+          ) : shown.body.kind === 'stale' && shown.body.table ? (
+            <span className="text-xs text-ink-2">{shown.body.message}</span>
           ) : null}
         </div>
-        {previewBlocked ? (
-          <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">
-            Fix the credentials above to load a preview.
-          </p>
-        ) : preview.error || result?.error ? (
+        {shown.body.kind === 'blocked' ? (
+          <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">{shown.body.message}</p>
+        ) : shown.body.kind === 'error' ? (
           <PreviewError
-            message={preview.error ? errorMessage(preview.error) : (result?.error ?? '')}
+            message={shown.body.message}
             hasSecrets={sourceSecretIds(debounced.source).length > 0}
             canAddSecrets={credentials.canUseSecrets && debounced.source.kind === 'http'}
           />
-        ) : result ? (
+        ) : shown.body.kind === 'loading' ? (
+          <Spinner />
+        ) : (
           <>
-            {result.warning ? (
-              <p className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
-                <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" />
-                <span>{result.warning}</span>
-              </p>
+            {shown.body.kind === 'stale' && !shown.body.table ? (
+              <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">{shown.body.message}</p>
             ) : null}
-            <PreviewTable result={result} />
-            {preview.data?.profile ? (
-              <div className="flex flex-wrap gap-1">
-                {preview.data.profile.columns.map((c) => (
-                  <Badge
-                    key={c.name}
-                    tone={c.role === 'measure' ? 'data' : c.role === 'time' ? 'good' : 'neutral'}
-                  >
-                    {c.name}: {c.role}
-                  </Badge>
-                ))}
+            {/* An out-of-date table stays where it is, dimmed, with the hint in the heading: the field flips between
+                valid and invalid while typing, and nothing may move. */}
+            {result && (shown.body.kind === 'table' || shown.body.table) ? (
+              <div
+                className={cx('space-y-2 transition-opacity', shown.body.kind === 'stale' && 'opacity-40')}
+                aria-disabled={shown.body.kind === 'stale' || undefined}
+              >
+                {result.warning ? (
+                  <p className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
+                    <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" />
+                    <span>{result.warning}</span>
+                  </p>
+                ) : null}
+                <PreviewTable result={result} />
+                {preview.data?.profile ? (
+                  <div className="flex flex-wrap gap-1">
+                    {preview.data.profile.columns.map((c) => (
+                      <Badge
+                        key={c.name}
+                        tone={c.role === 'measure' ? 'data' : c.role === 'time' ? 'good' : 'neutral'}
+                      >
+                        {c.name}: {c.role}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </>
-        ) : (
-          <Spinner />
         )}
       </section>
 
@@ -1097,8 +1347,10 @@ function DatasetEditor({
         </Button>
         <Button
           variant="primary"
-          disabled={!draft.name.trim() || Boolean(preview.error) || blockedByCredentials}
-          title={blockedByCredentials ? 'Fix the credentials first' : undefined}
+          disabled={
+            !draft.name.trim() || Boolean(preview.error) || blockedByCredentials || sourceError !== null
+          }
+          title={sourceError ?? (blockedByCredentials ? 'Fix the credentials first' : undefined)}
           onClick={() =>
             void save(
               suggestions

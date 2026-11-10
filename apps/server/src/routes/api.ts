@@ -10,6 +10,7 @@ import {
   suggestWidgets,
   type ThemeMode,
   type UseCaseInfo,
+  viewQuery,
 } from '@patchbay/core';
 import { Hono } from 'hono';
 import { deleteCookie } from 'hono/cookie';
@@ -30,6 +31,7 @@ import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import { exportBodies } from '../services/export-body.ts';
 import { type Body, rowsFormat, streamBodies, streamBody } from '../services/result-wire.ts';
 import { listTemplates } from '../services/templates.ts';
+import { loadDataOptions, rawFromQuery, viewValues } from '../services/view.ts';
 import { useCaseInfo } from '../showcase/info.ts';
 import { badRequest, HttpError, notFound, RetryLaterError } from '../util/errors.ts';
 import { memoryGuard } from '../util/memory-pressure.ts';
@@ -369,7 +371,10 @@ export function apiRoutes(deps: Deps) {
     const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
     const dataset = doc.datasets.find((d) => d.id === c.req.param('datasetId'));
     if (!dataset) throw notFound('Dataset not found');
-    const result = await data.scope({ id, ownerId: meta.ownerId }, doc).resolve(dataset);
+    const raw = rawFromQuery(c.req.url);
+    const target = { id, ownerId: meta.ownerId };
+    const parameters = viewValues(doc, raw, Date.now(), await loadDataOptions(data, target, doc, raw));
+    const result = await data.scope(target, doc, { parameters }).resolve(dataset);
     return sendBody(c, await wire.dataBody(result, rowsFormat(c.req.query('rows'))));
   });
 
@@ -378,17 +383,27 @@ export function apiRoutes(deps: Deps) {
     const id = c.req.param('id');
     const principal = c.get('principal');
     // `editing`: the saved dataset the draft stands in for, so its readers and the cycle check see the draft there.
-    const body = z.object({ dataset: z.unknown(), editing: IdSchema.optional() }).parse(await c.req.json());
+    const body = z
+      .object({
+        dataset: z.unknown(),
+        editing: IdSchema.optional(),
+        // The view's values in their text form, as in a link: the draft is bound with them.
+        parameters: z.record(z.string().max(40), z.string().max(200)).optional(),
+      })
+      .parse(await c.req.json());
     const draft = DatasetSchema.parse({ id: 'preview', name: 'Preview', ...(body.dataset as object) });
     const target = await dashboards.previewTarget(principal, id, draft, {
       requireEdit: true,
       ...(body.editing ? { editing: body.editing } : {}),
+      ...(body.parameters ? { parameters: body.parameters } : {}),
+      loadOptions: (saved, t) => loadDataOptions(data, t, saved, body.parameters),
     });
-    if (draft.source.kind === 'connector')
-      connectors.validateParams(draft.source.connector, draft.source.params);
     const dataset = target.dataset;
+    // Checked on the bound draft: before binding, a parameter may be a filter reference such as "$param.days".
+    if (dataset.source.kind === 'connector')
+      connectors.validateParams(dataset.source.connector, dataset.source.params);
     const result = await data
-      .scope(target, target.doc)
+      .scope(target, target.doc, { parameters: target.parameters })
       .resolve({ ...dataset, accumulate: 0 }, { maxRows: 500 });
     const profile = profileTable(result.table);
     const rest = JSON.stringify({
@@ -412,7 +427,10 @@ export function apiRoutes(deps: Deps) {
     const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
     const dataset = doc.datasets.find((d) => d.id === c.req.param('datasetId'));
     if (!dataset) throw notFound('Dataset not found');
-    const result = await data.scope({ id, ownerId: meta.ownerId }, doc).resolve(dataset);
+    const raw = rawFromQuery(c.req.url);
+    const target = { id, ownerId: meta.ownerId };
+    const parameters = viewValues(doc, raw, Date.now(), await loadDataOptions(data, target, doc, raw));
+    const result = await data.scope(target, doc, { parameters }).resolve(dataset);
     const profile = profileTable(result.table);
     return c.json({
       profile,
@@ -433,6 +451,8 @@ export function apiRoutes(deps: Deps) {
         content: z.string(),
         format: z.enum(['csv', 'json', 'table']).optional(),
         fileId: FileIdSchema.optional(),
+        // Applied by the parser to JSON only, so a CSV upload may carry it.
+        path: z.string().max(200).optional(),
       })
       .parse(await c.req.json());
     return c.json(await dashboards.uploadFile(c.req.param('id'), c.get('principal'), body), 201);
@@ -528,7 +548,15 @@ export function apiRoutes(deps: Deps) {
     const widgetId = c.req.query('widget');
     const widget = widgetId ? doc.widgets.find((w) => w.id === widgetId) : undefined;
     if (widgetId && !widget) throw notFound('Widget not found');
-    const key = SnapshotCache.key({ id, version: meta.version, theme, widget: widgetId });
+    const raw = rawFromQuery(c.req.url);
+    const parameters = viewValues(doc, raw, Date.now(), await loadDataOptions(data, target, doc, raw));
+    const key = SnapshotCache.key({
+      id,
+      version: meta.version,
+      theme,
+      widget: widgetId,
+      view: viewQuery(doc.parameters, parameters),
+    });
     // Permission was checked above, for this request; the cache only saves the drawing. Busy, rate limited or out of
     // time, the error says when to come back (Retry-After, set by the app's error handler).
     const png = await snapshotCache.get(key, async () => {
@@ -536,13 +564,18 @@ export function apiRoutes(deps: Deps) {
       return snapshotGate.run(async (draw) => {
         // One scope for the whole picture: a parent read by several widgets' datasets is loaded and processed once.
         // Made once the gate admits the snapshot: its deadline starts with this render's own work, and a cache hit
-        // makes none.
-        const scope = data.scope(target, doc);
+        // draws nothing (a data-driven value still had its choices read above, to check it).
+        const scope = data.scope(target, doc, { parameters });
         if (widget) {
           const dataset =
             'datasetId' in widget ? doc.datasets.find((d) => d.id === widget.datasetId) : undefined;
           const result = dataset ? await scope.resolve(dataset) : undefined;
-          return draw({ kind: 'widget', widget, result, options: { theme, entityColors: doc.colors } });
+          return draw({
+            kind: 'widget',
+            widget,
+            result,
+            options: { theme, entityColors: doc.colors, parameters },
+          });
         }
         const results = new Map<string, DatasetResult>();
         await Promise.all(doc.datasets.map(async (d) => results.set(d.id, await scope.resolve(d))));
@@ -550,7 +583,7 @@ export function apiRoutes(deps: Deps) {
           kind: 'dashboard',
           doc,
           results,
-          options: { theme, attributions: connectors.attributions() },
+          options: { theme, attributions: connectors.attributions(), parameters },
         });
       });
     });

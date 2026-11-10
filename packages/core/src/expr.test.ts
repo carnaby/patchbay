@@ -3,8 +3,13 @@ import {
   compile,
   compileFor,
   ExprError,
+  fieldRef,
   inferTable,
+  MAX_BOUND_EXPRESSION,
+  paramNodes,
+  paramSpans,
   parse,
+  referencedFields,
   runPipeline,
   TABLE_FUNCTIONS,
   type Transform,
@@ -155,5 +160,60 @@ describe('whole-table functions', () => {
       { type: 'filter', expr: 'sales > col_avg(sales)' },
     ].map((s) => TransformSchema.parse(s)) as Transform[];
     expect(runPipeline(sales, steps).table.rows).toEqual([{ region: 'EU', sales: 30, share: 75 }]);
+  });
+});
+
+describe('filter references in expressions', () => {
+  it('parses $param references with parts, and leaves strings and backticked columns alone', () => {
+    expect(parse('region == $param.region')).toEqual({
+      k: 'binary',
+      op: '==',
+      left: { k: 'field', name: 'region' },
+      right: { k: 'param', id: 'region', part: null },
+    });
+    expect(parse('time >= $param.period.start')).toMatchObject({
+      right: { k: 'param', id: 'period', part: 'start' },
+    });
+    expect(parse('"$param.region"')).toEqual({ k: 'lit', v: '$param.region' });
+    expect(parse('`$param.region`')).toEqual({ k: 'field', name: '$param.region' });
+    expect([...referencedFields(parse('$param.q == "" || contains(title, $param.q)'))]).toEqual(['title']);
+    expect(paramNodes(parse('a > $param.x && $param.y.from != b'))).toEqual([
+      { k: 'param', id: 'x', part: null },
+      { k: 'param', id: 'y', part: 'from' },
+    ]);
+  });
+
+  it('refuses references that are not filter ids or parts, when the step is saved', () => {
+    expect(() => parse('$param.Region')).toThrow(/not a filter reference: filter ids are/);
+    expect(() => parse('$param.period.month')).toThrow(/has no part "month"/);
+    expect(() => parse('$param.a.from.x')).toThrow(/has no part "from.x"/);
+    expect(() => parse('$param.')).toThrow(/not a filter reference/);
+    expect(TransformSchema.safeParse({ type: 'filter', expr: 'x == $param.Region' }).success).toBe(false);
+  });
+
+  it('never evaluates an unbound reference', () => {
+    expect(() => compile('$param.region == "eu"')({})).toThrow('Filter "region" has no value here');
+  });
+
+  it('lists references with their place in the text, not inside strings or backticks', () => {
+    expect(paramSpans('a == $param.r || "$param.s" == `$param.t` || $param.p.to')).toEqual([
+      { start: 5, end: 13, text: '$param.r' },
+      { start: 45, end: 56, text: '$param.p.to' },
+    ]);
+    expect(paramSpans('a > 1')).toEqual([]);
+  });
+
+  it('keeps a column named like a reference reachable, in backticks', () => {
+    expect(fieldRef('$param.region')).toBe('`$param.region`');
+    expect(fieldRef('region')).toBe('region');
+  });
+
+  it('lets filter and derive steps run bound expressions longer than the authored limit', () => {
+    const long = `x == "${'a'.repeat(2500)}"`;
+    expect(() => parse(long)).toThrow('Expression longer than 2000 characters');
+    expect(() => parse(long, { maxLength: MAX_BOUND_EXPRESSION })).not.toThrow();
+    const table = inferTable([{ x: 'a'.repeat(2500) }, { x: 'b' }]);
+    expect(runPipeline(table, [{ type: 'filter', expr: long }]).table.rows).toHaveLength(1);
+    expect(runPipeline(table, [{ type: 'derive', as: 'same', expr: long }]).table.rows[0]!.same).toBe(true);
   });
 });

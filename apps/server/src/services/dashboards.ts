@@ -6,7 +6,9 @@
 import {
   type Actor,
   applyOps,
+  BindError,
   BindingError,
+  bindDataset,
   bindingMatches,
   bindingMismatchMessage,
   CONFIRM_PUBLIC_SECRETS,
@@ -22,6 +24,7 @@ import {
   emptyDashboard,
   FEED_MIN_REFRESH_SEC,
   HTTP_MIN_REFRESH_SEC,
+  type HttpMethod,
   isStaticSource,
   LIMITS,
   lineageDatasets,
@@ -31,6 +34,9 @@ import {
   MAX_TABLE_FILE_BYTES,
   normalizeLayout,
   OpError,
+  type OptionValue,
+  type ParameterValues,
+  parameterIssues,
   parseBinding,
   parseDashboard,
   placementConflict,
@@ -76,6 +82,7 @@ import {
   type UploadFormat,
   type UploadInput,
 } from './upload-parse.ts';
+import { type RawParameters, viewValues } from './view.ts';
 
 export interface Principal {
   user: UserRow | null;
@@ -122,6 +129,8 @@ const PREVIEW_PRIVATE_READ_ONLY =
   "Previewing plain http://, another port or a private host (ALLOW_PRIVATE_HOSTS) needs the dashboards:write scope, because it reaches the server operator's network. Reconnect with write access.";
 const PREVIEW_SECRETS_NEEDS_WRITE =
   'Previewing a source that uses secrets needs the dashboards:write scope, because it sends the credentials to the URL you choose. Reconnect with write access.';
+const PREVIEW_POST_NEEDS_WRITE =
+  'Previewing a POST source needs the dashboards:write scope, because it sends a request body of your choosing, which may change data at the API. Reconnect with write access.';
 export const DERIVED_NEEDS_DASHBOARD =
   'Derived sources read the saved datasets of a dashboard; pass dashboardId';
 const TOKEN_PUBLIC_EDIT =
@@ -134,10 +143,12 @@ function freeDatasetId(doc: DashboardDoc, base: string): string {
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
-/** Where a draft is previewed: the dashboard, plus its document with the draft in it. */
+/** Where a draft is previewed: the dashboard, its document with the draft in it, and the view's values. */
 export interface PreviewTarget extends DashboardTarget {
   doc: DashboardDoc;
+  /** The draft with the view's values bound in. */
   dataset: Dataset;
+  parameters: ParameterValues;
 }
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -598,18 +609,27 @@ export class DashboardService {
    * With URL_SOURCES=signed-in, a URL is fetched only for a dashboard that a signed-in user owns: a public instance
    * on its operator's connection must not fetch arbitrary addresses for strangers. Checked at use time (DataService
    * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
-   * exception is a URL that appears verbatim in the repository's showcase, so anonymous copies of a use case work;
-   * matching is exact (no normalising), so a variant of a trusted URL is still refused. Returns the private hosts
-   * the dashboard's sources may reach (null: public addresses only), decided by its owner, never by the viewer.
+   * exception is a GET of a URL that appears verbatim in the repository's showcase, so anonymous copies of a use case
+   * work (`isTrustedSource`). Returns the private hosts the dashboard's sources may reach (null: public addresses
+   * only), decided by its owner, never by the viewer.
    */
-  assertMayFetchUrl(target: DashboardTarget, url: string): PrivateHosts | null {
-    if (this.urlSources === 'signed-in' && target.ownerId === null && !this.trustedUrls.has(url))
+  assertMayFetchUrl(target: DashboardTarget, url: string, method: HttpMethod = 'GET'): PrivateHosts | null {
+    if (this.urlSources === 'signed-in' && target.ownerId === null && !this.isTrustedSource(url, method))
       throw forbidden(URL_SOURCES_SIGNED_IN);
     const hosts = target.publicOnly ? null : this.privateHostsFor(target.ownerId);
     // Without this, the dashboard would get the public instance's answer, which tells it to ask the operator.
     if (!hosts && this.privateHosts && needsList(url))
       throw forbidden(target.publicOnly ? PREVIEW_PRIVATE_READ_ONLY : this.privateHostsRefusal());
     return hosts;
+  }
+
+  /**
+   * A source an anonymous dashboard may use under URL_SOURCES=signed-in: a GET of a showcase URL, matched exactly
+   * (no normalising, so a variant is refused). The showcase's sources are all GETs; trusting a POST to the same
+   * address would let a stranger send any body there on the operator's connection.
+   */
+  private isTrustedSource(url: string, method: HttpMethod): boolean {
+    return method === 'GET' && this.trustedUrls.has(url);
   }
 
   /**
@@ -669,13 +689,19 @@ export class DashboardService {
     const changed = after.datasets.flatMap((d) =>
       (d.source.kind === 'http' || d.source.kind === 'feed') &&
       previous.get(d.id) !== JSON.stringify(d.source)
-        ? [{ id: d.id, url: d.source.url }]
+        ? [
+            {
+              id: d.id,
+              url: d.source.url,
+              method: d.source.kind === 'http' ? (d.source.method ?? 'GET') : 'GET',
+            },
+          ]
         : [],
     );
     if (
       this.urlSources === 'signed-in' &&
       ownerId === null &&
-      changed.some((s) => !this.trustedUrls.has(s.url))
+      changed.some((s) => !this.isTrustedSource(s.url, s.method))
     )
       throw badRequest(URL_SOURCES_SIGNED_IN);
     if (!options.restore) for (const s of changed) this.checkPrivateHosts(ownerId, s.id, s.url);
@@ -1253,7 +1279,14 @@ export class DashboardService {
   async uploadFile(
     id: string,
     p: Principal,
-    input: { name: string; content: string; format?: UploadFormat | undefined; fileId?: string | undefined },
+    input: {
+      name: string;
+      content: string;
+      format?: UploadFormat | undefined;
+      fileId?: string | undefined;
+      /** JSON only: where the records are; applied once, before the file becomes its stored table. */
+      path?: string | undefined;
+    },
   ): Promise<UploadedFile> {
     const { meta, doc } = await this.load(id);
     this.assertCanEdit(meta, p);
@@ -1309,14 +1342,19 @@ export class DashboardService {
   private async parseAndSave(
     id: string,
     meta: StoredMeta,
-    input: { name: string; content: string; fileId?: string | undefined },
+    input: { name: string; content: string; fileId?: string | undefined; path?: string | undefined },
     format: UploadFormat,
     maxCells: number,
     refused: (e: UploadError) => HttpError,
   ): Promise<UploadedFile> {
     let table: DataTable;
     try {
-      table = await this.uploads.parse({ content: input.content, format, maxCells });
+      table = await this.uploads.parse({
+        content: input.content,
+        format,
+        maxCells,
+        ...(input.path ? { path: input.path } : {}),
+      });
     } catch (e) {
       if (e instanceof UploadError) throw refused(e);
       if (e instanceof PipelineError) throw badRequest(`Could not read the file: ${e.message}`);
@@ -1384,25 +1422,61 @@ export class DashboardService {
     p: Principal,
     dashboardId: string | undefined,
     draft: Dataset,
-    options: { requireEdit?: boolean; editing?: string } = {},
+    options: {
+      requireEdit?: boolean;
+      editing?: string;
+      parameters?: RawParameters;
+      loadOptions?: (
+        saved: DashboardDoc,
+        target: DashboardTarget,
+      ) => Promise<ReadonlyMap<string, readonly OptionValue[]>>;
+    } = {},
   ): Promise<PreviewTarget> {
     // A preview sends the credentials to a URL of the caller's choosing (within the binding) without saving
     // anything, so it is a use of the secret, not a read: read-only tokens may not do it. Checked before the
     // dashboard is loaded, so such a token learns nothing about it.
     if (p.readOnly && sourceSecretIds(draft.source).length > 0) throw forbidden(PREVIEW_SECRETS_NEEDS_WRITE);
+    // A read scope reads; a POST of the caller's choosing may write to a third party. Saved POST sources a draft
+    // derives from are not affected: anyone who may view the dashboard already loads them.
+    if (p.readOnly && draft.source.kind === 'http' && draft.source.method === 'POST')
+      throw forbidden(PREVIEW_POST_NEEDS_WRITE);
     if (!dashboardId && upstreamOf(draft).length > 0) throw badRequest(DERIVED_NEEDS_DASHBOARD);
     const viewable = dashboardId ? await this.loadViewable(dashboardId, p) : null;
     const meta = viewable?.meta ?? null;
     // Before anything about the draft: someone who may not edit learns nothing from its cycle or its sources.
     if (options.requireEdit && meta && !this.canEdit(meta, p))
       throw forbidden('You cannot edit this dashboard');
+    // The binder trusts the save rules (no text filter in a request, no "All" or secrets with a path filter) and
+    // cannot check them again; a draft has not been saved, so its references meet those rules here. History is left
+    // out as in the cycle check below: a preview never accumulates.
+    const refIssues = parameterIssues({
+      parameters: viewable?.doc.parameters,
+      datasets: [{ ...draft, accumulate: 0 }],
+      widgets: [],
+    });
+    if (refIssues.length) throw badRequest(refIssues.join('; '));
+    // Bound before anything below judges the draft, so every rule (secrets, POST, private hosts, uploads) sees the
+    // request a preview sends. Values are read against the saved declarations, as for every other view.
+    // Choices from data are read for the view first, as for every other view (a callback: this service has no data).
+    const dataOptions =
+      viewable && dashboardId && options.loadOptions
+        ? await options.loadOptions(viewable.doc, { id: dashboardId, ownerId: viewable.meta.ownerId })
+        : undefined;
+    const parameters = viewValues(viewable?.doc ?? {}, options.parameters, Date.now(), dataOptions);
+    let bound: Dataset;
+    try {
+      bound = bindDataset(draft, parameters);
+    } catch (e) {
+      if (e instanceof BindError) throw badRequest(e.message);
+      throw e;
+    }
     let doc: DashboardDoc;
     let dataset: Dataset;
     if (viewable) {
       const saved = viewable.doc;
       const editing =
         options.editing && saved.datasets.some((d) => d.id === options.editing) ? options.editing : undefined;
-      dataset = { ...draft, id: editing ?? freeDatasetId(saved, draft.id) };
+      dataset = { ...bound, id: editing ?? freeDatasetId(saved, draft.id) };
       doc = {
         ...saved,
         datasets: editing
@@ -1416,8 +1490,8 @@ export class DashboardService {
       });
       if (issues.length) throw badRequest(issues.join('; '));
     } else {
-      dataset = draft;
-      doc = { ...emptyDashboard('Preview'), datasets: [draft] };
+      dataset = bound;
+      doc = { ...emptyDashboard('Preview'), datasets: [bound] };
     }
     // A draft reads its lineage with the owner's credentials: previewing it is a use of every secret in it, or a
     // read-only token could re-run a secret-backed source by previewing a dataset derived from it.
@@ -1443,7 +1517,7 @@ export class DashboardService {
     if (!dashboardId || !meta) {
       if (upload) throw badRequest('Uploaded files need dashboardId');
       if (!p.user) throw unauthorized();
-      return { id: 'preview00', ownerId: p.user.id, ...publicOnly, preview: true, doc, dataset };
+      return { id: 'preview00', ownerId: p.user.id, ...publicOnly, preview: true, doc, dataset, parameters };
     }
     if ((upload || secrets) && !this.canEdit(meta, p)) {
       throw forbidden(
@@ -1453,7 +1527,7 @@ export class DashboardService {
       );
     }
     // Secrets and uploads need an editor (above), so nothing else the target carries changes meaning for a viewer.
-    return { id: dashboardId, ownerId, ...publicOnly, preview: true, doc, dataset };
+    return { id: dashboardId, ownerId, ...publicOnly, preview: true, doc, dataset, parameters };
   }
 
   // Secrets ------------------------------------------------------------------------------------------------------

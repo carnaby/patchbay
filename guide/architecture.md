@@ -152,6 +152,13 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
   parses RSS, Atom and JSON Feed into fixed columns and turns every text into plain text at parse time, so nothing
   downstream renders feed markup. A feed is fetched at most every 5 minutes per address, shared by all dashboards
   (publishers block faster polling); `OFFLINE=1` serves a deterministic sample.
+- **JSON records** (`http` sources and JSON uploads) are found by one module in core (`packages/core/src/records.ts`):
+  the optional dot `path`, then a list as records, an object of equally long lists of plain values (at least two) as
+  columns turned into rows, any other object as its first list (without a path) or as one record. Column-shaped data
+  is turned into at most one row more than the cell limit keeps, so a dense response never builds more than records
+  would; an upload over the limit is measured and refused before any row is built. An upload's `path` comes with the
+  upload request and is applied once, in the pipeline worker, before the file becomes its stored table; the stored
+  file and the `upload` source do not record it.
 - **Pipelines run on the server.** The browser, the MCP agent and the PNG renderer therefore always agree on the numbers,
   and the browser never downloads more than it displays (10,000 rows max, at most 4 MB as JSON).
 - **Datasets can build on each other** (`source.kind: "dataset"`, and the `join` and `union` steps). The graph lives
@@ -211,6 +218,27 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
   Errors quote the document's URL, never the request. The HTTP cache key includes the owner, secret id and revision,
   so a public dataset never gets a secret-backed response, two users never share one, and replacing a value
   invalidates at once. Values are decrypted per request and never reach pipeline workers, which only see rows.
+- **POST sources.** An `http` source with `method: "POST"` sends its JSON `body` (at most 16,384 characters as JSON and
+  32 levels deep, checked by the schema on every write path) through the same `safeFetchJson`: the SSRF guard, the
+  private-host policy, secret bindings and limits apply unchanged. A 3xx answer to a POST is an error, never followed,
+  because following would resend the body elsewhere (307, 308) or turn it into a GET (301 to 303). The cache key adds
+  the method and a SHA-256 of the body, so two queries on one URL never share a response; GET keys are unchanged.
+  `DashboardService` refuses to preview a POST source for a read-only caller, since a preview sends a body of the
+  caller's choosing; saved POST sources load for every viewer. Under `URL_SOURCES=signed-in` the showcase's URLs are
+  trusted for GET only.
+- **Filters (dashboard parameters).** A dashboard may declare filters (`parameters`) that viewers set in the header; the
+  values live in the page URL (`p.<id>`), never in the document. Every scope binds them before anything is resolved
+  (`bindDoc` in core): `$param.<id>` in a step becomes a literal token, in a URL a percent-encoded whole path segment or
+  query value, in a body or connector a typed value. After binding a dataset is an ordinary one, so the HTTP cache, the
+  connector cache, pipeline results and final results key each view by its bound definition without any key built by
+  hand, and a dataset without references stays the same object with one cache entry for every view. Values are read
+  against the saved declarations (400 otherwise); the bound URL goes through `assertMayFetchUrl`, safe-fetch and the
+  secret binding like any saved URL. A snapshot's cache key adds the non-default values, and a dashboard snapshot prints
+  the view under its title, in the same words as presentation mode (one formatter in core, `parameterSummary`).
+  A chart, table or map may set a filter with a click (`crossFilter`); core decides what the selection is and dims
+  the other items in the chart and map options, so the browser and the snapshot renderer draw the same thing. A select
+  may take its choices from a column of a dataset that uses no filter: the server reads them through a scope before it
+  checks a value, and refuses every value but All when they cannot be read.
 - **Private hosts.** `ALLOW_PRIVATE_HOSTS` is parsed once (`util/private-hosts.ts`) into a policy object. There is no
   global: `DashboardService.assertMayFetchUrl` returns it for a dashboard whose owner `PRIVATE_HOSTS_FOR` names, and
   `DataService` passes it to `safeFetchJson` and, through `FeedService`, to `safeFetchText`. safe-fetch classifies each
@@ -220,14 +248,16 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
 
 **Live updates.** `LiveHub` keeps a "room" per dashboard while at least one browser is subscribed over SSE. Each live
 dataset gets its own interval; a tick also re-runs every dataset that reads the one that ticked, parents first, taking
-everything else from the room's latest tables, so a static sibling is not fetched again (an input that has no timer
-of its own, `http`, `feed` and connector sources included, is reused from those tables until the dashboard changes;
-a room keeps at most 8, drops them all when memory runs short, and loads any other through the data caches).
-Live datasets that share a dataset refresh together, one round at a time, so a viewer never sees a child built from an
-older reading than its parent: a slow member paces the chains of its own group, while unrelated live chains refresh
-independently. Results are hashed and pushed only when the hash changed. N viewers share one refresh
-loop and an unwatched dashboard costs nothing. SSE was chosen over WebSockets because traffic is one-directional
-(writes go through normal HTTP requests), it works through every proxy, and reconnection is built into `EventSource`.
+everything else from the room's latest tables, so a static sibling is not fetched again (an input that has no timer of
+its own, `http`, `feed` and connector sources included, is reused from those tables until the dashboard changes; a room
+keeps at most 8, drops them all when memory runs short, and loads any other through the data caches). Live datasets that
+share a dataset refresh together, one round at a time, so a viewer never sees a child built from an older reading than
+its parent: a slow member paces the chains of its own group, while unrelated live chains refresh independently. Results
+are hashed and pushed only when the hash changed. N viewers share one refresh loop and an unwatched dashboard costs
+nothing. Datasets that use filters have one result per view, so the hub leaves them out of its loops and chains;
+browsers poll them at the dataset's interval, with their filter values in the query. SSE was chosen over WebSockets
+because traffic is one-directional (writes go through normal HTTP requests), it works through every proxy, and
+reconnection is built into `EventSource`.
 
 ## 5. The editor: undo/redo and live collaboration with agents
 
