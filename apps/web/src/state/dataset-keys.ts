@@ -127,13 +127,13 @@ export function followsCalendar(doc: DashboardDoc, datasetId: string, raw: RawVa
 const DAY_MS = 86_400_000;
 
 /**
- * The next refetch: the live fallback interval, and for a relative period also a few seconds after midnight UTC, when
+ * The next refetch: the live fallback interval, and for a relative period also a minute after midnight UTC, when
  * the server resolves it to the new day. Without it a wall screen pinned to "last 7 days" on a dataset that never
  * refreshes would show the old week forever.
  */
 export function nextRefetch(interval: number | false, calendar: boolean, now: number): number | false {
   if (!calendar) return interval;
-  const rollover = DAY_MS - (now % DAY_MS) + 5_000;
+  const rollover = DAY_MS - (now % DAY_MS) + 60_000;
   return interval === false ? rollover : Math.min(interval, rollover);
 }
 

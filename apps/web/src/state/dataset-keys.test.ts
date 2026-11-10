@@ -1,5 +1,5 @@
 import { applyOps, type DashboardDoc, emptyDashboard, SoundRuleSchema } from '@patchbay/core';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   datasetInSync,
   datasetKey,
@@ -140,8 +140,21 @@ describe('dataset keys by view', () => {
     expect(soundIdentity(filtered, rule, 'temps', { region: 'eu' })).toBe(
       soundIdentity(filtered, rule, 'temps'),
     );
-    // A relative period keeps its text across midnight: the same identity, an ordinary refresh.
-    expect(soundIdentity(filtered, rule, 'recent', {})).toBe(soundIdentity(filtered, rule, 'recent', {}));
+  });
+
+  describe('across midnight UTC', () => {
+    afterEach(() => vi.useRealTimers());
+
+    it('keeps the sound identity and the view of a relative period: an ordinary refresh, no baseline', () => {
+      const rule = SoundRuleSchema.parse({ trigger: { kind: 'newRows' } });
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-11-10T23:59:59Z'));
+      const before = soundIdentity(filtered, rule, 'recent', {});
+      const viewBefore = viewKey(filtered, 'recent', {});
+      vi.setSystemTime(new Date('2026-11-11T00:01:00Z'));
+      expect(soundIdentity(filtered, rule, 'recent', {})).toBe(before);
+      expect(viewKey(filtered, 'recent', {})).toBe(viewBefore);
+    });
   });
 
   it('refetches a relative period right after midnight UTC, and nothing else on its account', () => {
@@ -149,7 +162,7 @@ describe('dataset keys by view', () => {
     expect(followsCalendar(filtered, 'recent', { period: '2026-01-01..2026-01-31' })).toBe(false);
     expect(followsCalendar(filtered, 'eu', {})).toBe(false);
     const late = Date.parse('2026-11-10T23:59:00Z');
-    expect(nextRefetch(false, true, late)).toBe(65_000);
+    expect(nextRefetch(false, true, late)).toBe(120_000);
     expect(nextRefetch(30_000, true, late)).toBe(30_000);
     expect(nextRefetch(5_000, false, late)).toBe(5_000);
     expect(nextRefetch(false, false, late)).toBe(false);

@@ -66,7 +66,16 @@ describe('filter values in the page URL', () => {
       { id: 'region', message: 'Filter "region" has no value "xx"; choose one of eu, us, or * for all' },
     ]);
     expect(normalizeRaw(undefined, { region: 'eu' }, NOW)).toEqual({ raw: {}, problems: [] });
-    expect(normalizeRaw(parameters, { constructor: 'x', __proto__: 'y' } as never, NOW).raw).toEqual({});
+    expect(
+      normalizeRaw(
+        parameters,
+        Object.fromEntries([
+          ['constructor', 'x'],
+          ['__proto__', 'y'],
+        ]),
+        NOW,
+      ).raw,
+    ).toEqual({});
   });
 
   it('resets a value whose option or filter an editor removed while the link was open', () => {

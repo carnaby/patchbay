@@ -24,7 +24,7 @@ import { liveReconnects } from './sync.ts';
 type SoundWidget = Extract<Widget, { datasetId: string }> & { sound: SoundRule };
 
 interface Tracked {
-  /** Rule + lineage of its dataset; a change means a new baseline. */
+  /** Rule, lineage and view of its dataset; a change means a new baseline. */
   identity: string;
   epoch: number;
   hash: string | null;
