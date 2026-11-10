@@ -8,6 +8,7 @@ import { api, errorMessage } from '../lib/api.ts';
 import { forgetEditKey, saveEditKey } from '../lib/edit-keys.ts';
 import { useMe } from '../lib/hooks.ts';
 import { useEditor } from '../state/editor.ts';
+import { rawQuery, summaryOf, useParameters } from '../state/parameters.ts';
 import { DetailsCard } from './DetailsFields.tsx';
 import { ExportDialog } from './ExportDialog.tsx';
 import { EntityColorsCard } from './FormattingFields.tsx';
@@ -30,6 +31,9 @@ export function SharePanel({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [exporting, setExporting] = useState(false);
   const url = `${window.location.origin}/d/${dashboardId}`;
+  const parameters = useEditor((s) => s.doc?.parameters);
+  const raw = useParameters((s) => s.raw);
+  const view = rawQuery(raw);
 
   const secretCount = useEditor((s) => (s.saved ? docSecretIds(s.saved).length : 0));
   const visibility = useMutation({
@@ -167,6 +171,31 @@ export function SharePanel({
               ? 'Anyone with the link can view. Only editors can change it.'
               : 'Only you can open it, after signing in.'}
           </p>
+          {view ? (
+            <div className="space-y-1.5 border-t border-line pt-3">
+              <div className="text-[13px] font-medium text-ink-2">Link to this view</div>
+              <div className="flex gap-2">
+                <input
+                  readOnly
+                  value={`${url}?${view}`}
+                  className="h-9 min-w-0 flex-1 rounded-lg border border-line bg-surface-2 px-3 font-mono text-xs"
+                  onFocus={(e) => e.target.select()}
+                />
+                <Button
+                  icon={<Copy className="size-4" />}
+                  onClick={() => {
+                    void navigator.clipboard.writeText(`${url}?${view}`);
+                    toast('Link copied');
+                  }}
+                >
+                  Copy
+                </Button>
+              </div>
+              <p className="text-xs text-muted">
+                Opens with the current filters: {summaryOf(parameters, raw, true)}.
+              </p>
+            </div>
+          ) : null}
           {meta.visibility === 'public' && secretCount > 0 ? (
             <p className="flex items-center gap-1.5 rounded-lg border border-warn/50 bg-warn/10 px-2.5 py-1.5 text-xs text-ink">
               <KeyRound className="size-3.5 shrink-0 text-warn" aria-hidden="true" />
@@ -190,7 +219,11 @@ export function SharePanel({
             <Button icon={<FileDown className="size-4" />} onClick={() => setExporting(true)}>
               Export file
             </Button>
-            <a href={`/api/dashboards/${dashboardId}/snapshot.png`} target="_blank" rel="noreferrer">
+            <a
+              href={`/api/dashboards/${dashboardId}/snapshot.png${view ? `?${view}` : ''}`}
+              target="_blank"
+              rel="noreferrer"
+            >
               <Button icon={<Download className="size-4" />}>PNG snapshot</Button>
             </a>
             {access.isOwner || (access.anonymous && access.canEdit) || me?.isAdmin ? (

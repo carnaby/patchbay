@@ -7,6 +7,7 @@ import {
   rawFromSearch,
   rawQuery,
   searchWith,
+  summaryOf,
   useParameters,
 } from './parameters.ts';
 
@@ -115,5 +116,14 @@ describe('filter values in the page URL', () => {
     expect(useParameters.getState().set('region', 'xx', parameters)).toMatch(/has no value "xx"/);
     useParameters.getState().reset();
     expect(useParameters.getState()).toMatchObject({ raw: {}, history: 'replace' });
+  });
+});
+
+describe('describing a view', () => {
+  it('says what a screen shows, or only what differs from the defaults for a link', () => {
+    expect(summaryOf(parameters, { region: 'eu' })).toBe('Region: EU · Period: Last 7 days');
+    expect(summaryOf(parameters, { region: 'eu', q: 'shoes' }, true)).toBe('Region: EU · Search: "shoes"');
+    expect(summaryOf(parameters, {}, true)).toBe('');
+    expect(summaryOf(undefined, {})).toBe('');
   });
 });

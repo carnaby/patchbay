@@ -49,6 +49,7 @@ import { useAutosave, useLiveEvents } from '../state/sync.ts';
 import { ConnectAiPanel } from './ConnectAiPanel.tsx';
 import { DatasetsPanel } from './DatasetsPanel.tsx';
 import { DetailsInput } from './DetailsFields.tsx';
+import { FilterBar, ParameterSummary } from './FilterBar.tsx';
 import { Grid } from './Grid.tsx';
 import {
   PresentationControls,
@@ -371,6 +372,7 @@ function Editor({ id }: { id: string }) {
         {presenting ? null : <SecretsSaveBanner />}
 
         <main className={cx('px-3 sm:px-4', presenting ? 'py-3' : 'py-4')}>
+          {presenting ? <ParameterSummary /> : <FilterBar />}
           {doc.description && !editing && !presenting ? (
             <p className="mb-4 max-w-3xl text-sm text-ink-2">{doc.description}</p>
           ) : null}

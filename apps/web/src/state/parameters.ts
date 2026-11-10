@@ -7,6 +7,7 @@
 import {
   defaultText,
   type Parameter,
+  parameterSummary,
   parameterText,
   readParameterValues,
   type ValueProblem,
@@ -86,6 +87,21 @@ export function applyValue(
   const normal = parameterText(param, values[id]!);
   if (normal !== defaultText(param)) next[id] = normal;
   return { raw: next };
+}
+
+/** "Region: EU · Period: Last 7 days" for the current values; `changedOnly` names only the non-default ones. */
+export function summaryOf(
+  parameters: readonly Parameter[] | undefined,
+  raw: RawValues,
+  changedOnly = false,
+): string {
+  const shown = changedOnly ? (parameters ?? []).filter((p) => Object.hasOwn(raw, p.id)) : parameters;
+  const { values } = readParameterValues(
+    shown,
+    (id) => (Object.hasOwn(raw, id) ? raw[id] : undefined),
+    Date.now(),
+  );
+  return parameterSummary(shown, values);
 }
 
 interface ParameterState {

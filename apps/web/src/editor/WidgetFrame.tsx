@@ -33,6 +33,7 @@ import { relativeTime, useAttributions, useSecretsStatus } from '../lib/hooks.ts
 import { credentialErrorHint } from '../lib/secrets.ts';
 import { SOUND_LABELS, useSoundSettings } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
+import { rawQuery, useParameters } from '../state/parameters.ts';
 import { MOVE_LABELS, type MoveDirection, reorderOp } from '../state/reorder.ts';
 import { useDatasetResult } from '../state/sync.ts';
 import { WidgetBody } from '../widgets/WidgetBody.tsx';
@@ -74,6 +75,7 @@ export const WidgetFrame = memo(function WidgetFrame({
   );
   // The credit line follows the whole lineage, so it needs every dataset of the document.
   const datasets = useEditor((s) => s.doc?.datasets);
+  const view = useParameters((s) => rawQuery(s.raw));
   const flashAt = useEditor((s) => s.flash[widget.id]);
   const entityColors = useEditor((s) => s.doc?.colors);
   const isOwner = useEditor((s) => Boolean(s.access?.isOwner));
@@ -286,7 +288,7 @@ export const WidgetFrame = memo(function WidgetFrame({
               {expanded ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
             </IconButton>
             <a
-              href={`/api/dashboards/${dashboardId}/snapshot.png?widget=${encodeURIComponent(widget.id)}`}
+              href={`/api/dashboards/${dashboardId}/snapshot.png?widget=${encodeURIComponent(widget.id)}${view ? `&${view}` : ''}`}
               target="_blank"
               rel="noreferrer"
               className="pb-no-drag hidden size-7 items-center justify-center rounded-md text-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface-2 hover:text-ink sm:flex"
