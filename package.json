@@ -1,6 +1,6 @@
 {
   "name": "patchbay",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Live dashboards that AI agents build over MCP: public APIs, your own files and private APIs behind a key, declarative pipelines, server-rendered snapshots.",
   "private": true,
   "license": "MIT",

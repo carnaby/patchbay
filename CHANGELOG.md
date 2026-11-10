@@ -6,6 +6,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-10
+
 ### Fixed
 
 - Filters that take their choices from data no longer slow the server down: the choices of a column with thousands of
@@ -17,6 +19,10 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 - On a public dashboard, switching a source that uses secrets between GET and POST, or changing its POST body (such
   as the GraphQL query), now asks for the same confirmation as pointing it at another URL: both send new queries with
   your key. Reordering the keys of the same body does not ask.
+
+### Changed
+
+- Dependency updates: Biome 2.6.6, Hono 4.13.17, undici 8.12.4, React Query 5.107, zustand 5.1, Tailwind 4.3.5, Vite 8.3.6.
 
 ## [0.3.0] - 2026-11-10
 
@@ -176,7 +182,8 @@ The server was reviewed adversarially before release, and every finding has a re
 - Hostile feeds are parsed in linear time off the main thread; snapshot drawing is bounded per render.
 - `URL_SOURCES=signed-in` keeps strangers from making a public instance fetch arbitrary addresses.
 
-[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/carnaby/patchbay/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/carnaby/patchbay/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/carnaby/patchbay/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/carnaby/patchbay/compare/v0.1.0...v0.2.0
