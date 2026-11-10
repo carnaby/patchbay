@@ -23,6 +23,7 @@ import {
   datasetKey,
   datasetKeyFor,
   followsCalendar,
+  lastFetch,
   lineageKey,
   nextRefetch,
   queryOfView,
@@ -248,10 +249,7 @@ export function useDatasetResult(dashboardId: string, dataset: Dataset | undefin
     staleTime: timing.staleTime,
     // SSE pushes live updates; poll when it cannot, and after midnight for a relative period.
     refetchInterval: (query) =>
-      nextRefetch(timing.refetchInterval, calendar, Date.now(), {
-        updatedAt: query.state.dataUpdatedAt,
-        failed: query.state.status === 'error',
-      }),
+      nextRefetch(timing.refetchInterval, calendar, Date.now(), lastFetch(query.state)),
   });
 }
 

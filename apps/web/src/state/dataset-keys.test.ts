@@ -9,6 +9,7 @@ import {
   draftParameterIds,
   draftView,
   followsCalendar,
+  lastFetch,
   lineageKey,
   nextRefetch,
   queryOfView,
@@ -221,6 +222,25 @@ describe('dataset keys by view', () => {
     // A regular refresh already comes back on its own, and nothing else moves with the calendar.
     expect(nextRefetch(300_000, true, after, { updatedAt: yesterday, failed: true })).toBe(300_000);
     expect(nextRefetch(false, false, after, { updatedAt: yesterday, failed: true })).toBe(false);
+  });
+
+  it('counts a result that carries an upstream error as a failed refetch', () => {
+    const at = (iso: string) => Date.parse(iso);
+    const fetched = at('2026-11-11T00:01:00Z');
+    const later = at('2026-11-11T00:01:30Z');
+    // A failing upstream answers 200 with `error`: query-core calls it a success, fetched just now.
+    const inBand = lastFetch({
+      dataUpdatedAt: fetched,
+      status: 'success',
+      data: { error: 'Upstream responded 502' },
+    });
+    expect(inBand).toEqual({ updatedAt: fetched, failed: true });
+    expect(nextRefetch(false, true, later, inBand)).toBe(60_000);
+    const good = lastFetch({ dataUpdatedAt: fetched, status: 'success', data: { error: undefined } });
+    expect(good).toEqual({ updatedAt: fetched, failed: false });
+    expect(nextRefetch(false, true, later, good)).toBe(86_370_000);
+    expect(lastFetch({ dataUpdatedAt: 0, status: 'error' }).failed).toBe(true);
+    expect(lastFetch({ dataUpdatedAt: 0, status: 'pending' }).failed).toBe(false);
   });
 
   it('lists the filters a draft reads, its own and through its source', () => {

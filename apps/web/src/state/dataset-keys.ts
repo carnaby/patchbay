@@ -176,6 +176,18 @@ export function behindCalendar(now: number, last: { updatedAt: number; failed: b
 }
 
 /**
+ * What `behindCalendar` reads from a dataset's query. A failing upstream arrives as a 200 whose result carries
+ * `error`, which query-core counts as a success: it is a failure all the same, or the error would stay up for a day.
+ */
+export function lastFetch(state: {
+  dataUpdatedAt: number;
+  status: string;
+  data?: { error?: string | undefined } | undefined;
+}): { updatedAt: number; failed: boolean } {
+  return { updatedAt: state.dataUpdatedAt, failed: state.status === 'error' || Boolean(state.data?.error) };
+}
+
+/**
  * The next refetch: the live fallback interval, and for a relative period also the coming 00:01 UTC. Without it a
  * wall screen pinned to "last 7 days" on a dataset that never refreshes would show the old week forever.
  * Query-core asks again on every render and update and restarts its timer, so the delay must aim at the coming
