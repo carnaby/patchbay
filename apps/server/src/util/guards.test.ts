@@ -203,6 +203,15 @@ describe('parseUpload', () => {
     ]);
   });
 
+  it('refuses a header repeating "__proto__" past the column limit like any other name', () => {
+    const header = (name: string) => `${Array.from({ length: 20_000 }, () => name).join(',')}\n1\n`;
+    const upload = (name: string) => () =>
+      parseUpload({ content: header(name), format: 'csv', maxCells: 100_000 });
+    // Naming 20,000 repeated markers one by one took 47 s; the count is known from the header alone.
+    expect(upload('a')).toThrow('The file has 20,000 columns; uploads are limited to 500');
+    expect(upload('__proto__')).toThrow('The file has 20,000 columns; uploads are limited to 500');
+  });
+
   it('ignores a path for CSV', () => {
     expect(
       parseUpload({ content: 'a,b\n1,2\n', format: 'csv', maxCells: 100, path: 'data.items' }).rows,

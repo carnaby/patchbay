@@ -146,16 +146,20 @@ const PROTO_MARKER = ' __proto__';
 /**
  * The column names of marked headers, or null when there are none. Papa renames a repeated marker with a suffix
  * (" __proto___1"), and the name without the space may be a header of the file already: such a header gets the next
- * name the file does not use.
+ * name the file does not use. One counter serves every copy, so naming them stays linear in the header.
  */
 function unmarkedNames(fields: readonly string[]): Map<string, string> | null {
   if (!fields.some((f) => f.startsWith(' '))) return null;
   const taken = new Set(fields.filter((f) => !f.startsWith(' ')));
   const names = new Map<string, string>();
+  let n = 0;
   for (const field of fields) {
     if (!field.startsWith(' ')) continue;
-    let name = field === PROTO_MARKER ? '__proto__' : null;
-    for (let n = 1; name === null || taken.has(name); n++) name = `__proto___${n}`;
+    let name = '__proto__';
+    if (field !== PROTO_MARKER || taken.has(name)) {
+      do name = `__proto___${++n}`;
+      while (taken.has(name));
+    }
     taken.add(name);
     names.set(field, name);
   }
@@ -180,8 +184,12 @@ function parseCsv(content: string, maxCells: number): DataTable {
       // The header decides the columns, so a bad one is refused before any row is kept.
       if (records.length === 0) {
         const fields = result.meta.fields ?? [];
-        marked = unmarkedNames(fields);
-        refused = columnsProblem(fields.map((f) => marked?.get(f) ?? f));
+        // The count first: naming thousands of marked copies is work a refused file must not cost.
+        refused = columnCountProblem(fields.length);
+        if (!refused) {
+          marked = unmarkedNames(fields);
+          refused = columnsProblem(fields.map((f) => marked?.get(f) ?? f));
+        }
         if (refused) {
           parser.abort();
           return;
