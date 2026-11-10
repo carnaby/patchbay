@@ -9,6 +9,7 @@ import {
   PARAM_PARTS,
   type Parameter,
   type ParamPart,
+  type ParamSpec,
   type RefPlace,
   readRef,
   refProblem,
@@ -44,6 +45,17 @@ export function refChoices(
           ],
     ),
   );
+}
+
+/**
+ * The references a connector parameter can take. None for a yes/no one: its schema coerces any text, "false" too, to
+ * true, so a filter could never turn it off.
+ */
+export function connectorChoices(
+  parameters: readonly Parameter[] | undefined,
+  spec: Pick<ParamSpec, 'type'>,
+): RefChoice[] {
+  return spec.type === 'boolean' ? [] : refChoices(parameters, 'connector', { secrets: false });
 }
 
 export function insertAt(

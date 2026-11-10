@@ -2,6 +2,7 @@ import { applyOps, emptyDashboard, type Parameter, ParameterSchema, parse } from
 import { describe, expect, it } from 'vitest';
 import {
   chosenOrFirst,
+  connectorChoices,
   filterPreset,
   filtersTooltip,
   insertAt,
@@ -115,5 +116,13 @@ describe('inserting filter references', () => {
     expect(chosenOrFirst('', ['date', 'region'])).toBe('date');
     expect(chosenOrFirst('region', ['date', 'region'])).toBe('region');
     expect(chosenOrFirst('gone', ['date', 'region'])).toBe('date');
+  });
+
+  it('offers no filter to a yes/no connector parameter, which reads any text as yes', () => {
+    expect(connectorChoices([region], { type: 'boolean' })).toEqual([]);
+    expect(connectorChoices([region], { type: 'string' })).toEqual(
+      refChoices([region], 'connector', { secrets: false }),
+    );
+    expect(connectorChoices([region], { type: 'number' }).length).toBeGreaterThan(0);
   });
 });

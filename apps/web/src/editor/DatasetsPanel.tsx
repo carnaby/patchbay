@@ -87,7 +87,14 @@ import {
 } from './dataset-lineage.ts';
 import { bodyText, parseBodyText, switchMethod, withBody } from './http-body.ts';
 import { InsertFilterMenu } from './InsertFilter.tsx';
-import { filtersTooltip, insertAt, refChoices, urlPlaceAt, wholeRef } from './parameter-refs.ts';
+import {
+  connectorChoices,
+  filtersTooltip,
+  insertAt,
+  refChoices,
+  urlPlaceAt,
+  wholeRef,
+} from './parameter-refs.ts';
 import { previewDelay, previewState } from './preview-state.ts';
 import { askPublicSecrets } from './public-secrets.tsx';
 import { TransformEditor } from './TransformEditor.tsx';
@@ -317,7 +324,7 @@ function ParamInput({
   const filter = ref
     ? parameters?.find((p) => ref === `$param.${p.id}` || ref.startsWith(`$param.${p.id}.`))
     : undefined;
-  const choices = refChoices(parameters, 'connector', { secrets: false });
+  const choices = connectorChoices(parameters, spec);
   return (
     <Field label={`${spec.label}${spec.required ? '' : ' (optional)'}`} hint={spec.description}>
       {(fid) =>
