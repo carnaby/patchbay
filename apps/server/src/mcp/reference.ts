@@ -215,8 +215,8 @@ and widgets per value. Viewers set filters in the dashboard header; values are n
 - Only select and dateRange filters reach URLs, bodies and connectors; text filters work in steps only. A path segment
   takes a select without all, and only on a source without secrets. Not in table rules, sound conditions or titles.
 - A dataset with accumulate cannot use filters in its source: accumulate one without filters and filter a dataset derived from it.
-- Clicks: crossFilter { parameter, field } on a chart (bar, line, area, pie, donut and funnel; field: its x, or its
-  series), a table or a map: clicking a bar, point, slice, row or dot sets that filter to the item's value of field;
+- Clicks: crossFilter { parameter, field } on a chart (bar, line, area, pie, donut and funnel; field: its x, which
+  must be categories, not a time column, or its series), a table or a map: clicking a bar, point, slice, row or dot sets that filter to the item's value of field;
   clicking the selected item again resets it. Only select and text filters; for a select the value must be one of its
   choices. The other items are dimmed, also in render_snapshot. If the clicked widget's own dataset uses the filter, it
   shows only the clicked item: give the clicked widget a dataset without that filter.

@@ -172,6 +172,18 @@ describe('clickable line and area charts', () => {
     expect(first(area, 'series').showSymbol).toBe(false);
   });
 
+  it('keeps the usual symbol rule of a long line on a time axis, where a click by x has no category', () => {
+    const days = inferTable(
+      Array.from({ length: 60 }, (_, i) => ({
+        day: new Date(Date.UTC(2026, 0, 1 + i)).toISOString(),
+        v: i,
+      })),
+    );
+    const timed = chart({ kind: 'line', x: 'day', y: ['v'] });
+    const [s] = buildChartOption(timed, days, theme, { clickable: 'x' }).series as Series[];
+    expect(s!.showSymbol).toBe(false);
+  });
+
   it('dims the points of other categories of a line by x', () => {
     const plain = chart({ kind: 'line', x: 'region', y: ['v'] });
     const [s] = buildChartOption(plain, table, theme, {

@@ -212,7 +212,9 @@ function cartesianOption(
       data,
       showSymbol:
         markType === 'scatter' ||
-        (markType === 'line' && (table.rows.length <= 40 || opts.clickable === 'x')),
+        (markType === 'line' &&
+          // Only a category axis gives a click by x a name to set; a time axis keeps the usual rule.
+          (table.rows.length <= 40 || (opts.clickable === 'x' && axisKind === 'category'))),
       symbolSize: markType === 'scatter' ? 8 : 6,
       emphasis: { focus: 'series' },
     };
