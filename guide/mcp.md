@@ -290,8 +290,8 @@ live in the page URL (`?p.region=eu&p.period=last7d`) and are never saved.
   host, a longer text or a query language: use the API's own parameters or GraphQL variables.
 - Clicks: `crossFilter: { "parameter": "region", "field": "region" }` in a chart (bar, line, area, pie, donut,
   funnel; `field` is its `x` or `series`, and an `x` must be categories, not a time column), table or map config makes
-  a click set the filter, and a second click on the same item reset it. The other items are dimmed in the browser and in snapshots. The clicked widget should read a
-  dataset without that filter, or it shows only the clicked item.
+  a click set the filter, and a second click on the same item resets it. The other items are dimmed in the browser
+  and in snapshots. The clicked widget should read a dataset without that filter, or it shows only the clicked item.
 - Choices from data: a select may take `optionsFrom: { "dataset": "countries", "field": "code" }` instead of
   `options`: the distinct values of that column, at most 200, sorted. The dataset must not use a filter itself, the
   select offers "All" and starts at it, and such a filter never reaches a source with secrets.

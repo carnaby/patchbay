@@ -238,7 +238,7 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
   A chart, table or map may set a filter with a click (`crossFilter`); core decides what the selection is and dims
   the other items in the chart and map options, so the browser and the snapshot renderer draw the same thing. A select
   may take its choices from a column of a dataset that uses no filter: the server reads them through a scope before it
-  checks a value, and refuses every value when they cannot be read.
+  checks a value, and refuses every value but All when they cannot be read.
 - **Private hosts.** `ALLOW_PRIVATE_HOSTS` is parsed once (`util/private-hosts.ts`) into a policy object. There is no
   global: `DashboardService.assertMayFetchUrl` returns it for a dashboard whose owner `PRIVATE_HOSTS_FOR` names, and
   `DataService` passes it to `safeFetchJson` and, through `FeedService`, to `safeFetchText`. safe-fetch classifies each
