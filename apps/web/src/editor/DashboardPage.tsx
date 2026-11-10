@@ -18,6 +18,7 @@ import {
   Plus,
   Redo2,
   Share2,
+  SlidersHorizontal,
   Sun,
   Undo2,
   Volume2,
@@ -51,6 +52,7 @@ import { DatasetsPanel } from './DatasetsPanel.tsx';
 import { DetailsInput } from './DetailsFields.tsx';
 import { FilterBar, ParameterSummary } from './FilterBar.tsx';
 import { Grid } from './Grid.tsx';
+import { ParametersPanel } from './ParametersPanel.tsx';
 import {
   PresentationControls,
   PresentingContext,
@@ -66,7 +68,7 @@ import { VersionsPanel } from './VersionsPanel.tsx';
 import { WidgetEditor } from './WidgetEditor.tsx';
 import { WidgetFrame } from './WidgetFrame.tsx';
 
-type Panel = 'data' | 'versions' | 'share' | 'ai' | null;
+type Panel = 'data' | 'filters' | 'versions' | 'share' | 'ai' | null;
 
 export default function DashboardPage() {
   const { id = '' } = useParams();
@@ -286,6 +288,14 @@ function Editor({ id }: { id: string }) {
                 >
                   Data
                 </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  icon={<SlidersHorizontal className="size-4" />}
+                  onClick={() => setPanel('filters')}
+                >
+                  Filters
+                </Button>
                 <Button size="sm" variant="ghost" icon={<Plus className="size-4" />} onClick={addWidget}>
                   Widget
                 </Button>
@@ -354,6 +364,15 @@ function Editor({ id }: { id: string }) {
                 className="max-sm:h-10"
               >
                 Data
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<SlidersHorizontal className="size-4" />}
+                onClick={() => setPanel('filters')}
+                className="max-sm:h-10"
+              >
+                Filters
               </Button>
               <Button
                 size="sm"
@@ -436,6 +455,7 @@ function Editor({ id }: { id: string }) {
         </main>
 
         <DatasetsPanel open={panel === 'data'} onClose={() => setPanel(null)} dashboardId={id} />
+        <ParametersPanel open={panel === 'filters'} onClose={() => setPanel(null)} />
         <VersionsPanel open={panel === 'versions'} onClose={() => setPanel(null)} dashboardId={id} />
         <SharePanel open={panel === 'share'} onClose={() => setPanel(null)} dashboardId={id} />
         <ConnectAiPanel open={panel === 'ai'} onClose={() => setPanel(null)} dashboardId={id} />
