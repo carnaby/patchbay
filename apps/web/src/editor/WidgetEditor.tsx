@@ -3,10 +3,13 @@ import {
   type ChartKind,
   type ClockConfig,
   type Column,
+  CROSS_FILTER_KINDS,
   coordinateRole,
   type Format,
   isDataWidgetType,
   KPI_AGGS,
+  lineageParameters,
+  PROPORTION_KINDS,
   parse,
   REFERENCE_LINE_KINDS,
   SEARCH_ENGINE_LABELS,
@@ -61,6 +64,7 @@ import {
 import { api } from '../lib/api.ts';
 import { previewSound, SOUND_LABELS } from '../lib/sounds.ts';
 import { groupTimeZones, timeZones } from '../lib/time-zones.ts';
+import { chartPatch } from '../state/cross-filter.ts';
 import { datasetInSync, lineageKey, queryOfView, viewKey } from '../state/dataset-keys.ts';
 import { useEditor } from '../state/editor.ts';
 import { useParameters } from '../state/parameters.ts';
@@ -427,6 +431,10 @@ function EditWidget({ widget }: { widget: Widget }) {
         ) : null}
       </Card>
 
+      {widget.type === 'chart' || widget.type === 'table' || widget.type === 'map' ? (
+        <CrossFilterFields widget={widget} columns={columns} setConfig={setConfig} />
+      ) : null}
+
       {widget.type === 'chart' ? (
         <>
           <ChartColorFields widget={widget} setConfig={setConfig} />
@@ -542,7 +550,7 @@ function ChartFields({
               onClick={() =>
                 setConfig(
                   {
-                    kind: k,
+                    ...chartPatch(c, { kind: k }),
                     // Kinds without a value axis cannot hold reference lines; drop them rather than refuse.
                     ...(c.referenceLines && !(REFERENCE_LINE_KINDS as readonly string[]).includes(k)
                       ? { referenceLines: undefined }
@@ -569,7 +577,7 @@ function ChartFields({
           label={proportion ? 'Label' : 'X axis'}
           value={c.x}
           columns={columns}
-          onChange={(v) => v && setConfig({ x: v }, 'Changed X axis')}
+          onChange={(v) => v && setConfig(chartPatch(c, { x: v }), 'Changed X axis')}
         />
         <ColumnSelect
           label={c.kind === 'heatmap' ? 'Rows (Y category)' : 'Split into series by'}
@@ -577,7 +585,7 @@ function ChartFields({
           columns={columns}
           optional
           filter={(col) => col.type === 'string' || col.type === 'boolean'}
-          onChange={(v) => setConfig({ series: v }, 'Changed series split')}
+          onChange={(v) => setConfig(chartPatch(c, { series: v }), 'Changed series split')}
         />
       </div>
       <div className="space-y-1.5">
@@ -1078,6 +1086,111 @@ function TableFields({
         )}
       </Field>
     </>
+  );
+}
+
+/** "Clicking sets a filter" for charts, tables and maps (proposal 0010, phase 2). */
+function CrossFilterFields({
+  widget,
+  columns,
+  setConfig,
+}: {
+  widget: Extract<Widget, { type: 'chart' | 'table' | 'map' }>;
+  columns: Column[];
+  setConfig: SetConfig;
+}) {
+  // Select stored references only: a selector that builds a new array on every call re-renders forever (zustand 5).
+  const doc = useEditor((s) => s.doc);
+  const ownFilters = doc ? lineageParameters(doc, widget.datasetId) : [];
+  const usable = (doc?.parameters ?? []).filter((p) => p.type !== 'dateRange');
+  const cross = widget.config.crossFilter;
+  if (usable.length === 0 && !cross) return null;
+  if (widget.type === 'chart' && !(CROSS_FILTER_KINDS as readonly string[]).includes(widget.config.kind))
+    return null;
+  // A track without size or colour draws no dots, and only dots take clicks.
+  if (
+    widget.type === 'map' &&
+    widget.config.mode === 'track' &&
+    !widget.config.size &&
+    !widget.config.color &&
+    !cross
+  )
+    return null;
+  const fields =
+    widget.type === 'chart'
+      ? [
+          // A time axis has no categories to click.
+          ...(columns.find((col) => col.name === widget.config.x)?.type === 'time' ? [] : [widget.config.x]),
+          ...(widget.config.series && !(PROPORTION_KINDS as readonly string[]).includes(widget.config.kind)
+            ? [widget.config.series]
+            : []),
+        ]
+      : columns.map((col) => col.name);
+  if (fields.length === 0 && !cross) return null;
+  // The current column stays listed, so the field shows what is set even when the data no longer offers it.
+  const choices = cross && !fields.includes(cross.field) ? [cross.field, ...fields] : fields;
+  const lineByX = widget.type === 'chart' && (widget.config.kind === 'line' || widget.config.kind === 'area');
+  return (
+    <Card className="space-y-3 p-4">
+      <div className="text-[13px] font-medium text-ink-2">Clicking sets a filter</div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Filter">
+          {(fid) => (
+            <Select
+              id={fid}
+              value={cross?.parameter ?? ''}
+              onChange={(e) =>
+                setConfig(
+                  {
+                    crossFilter: e.target.value
+                      ? { parameter: e.target.value, field: cross?.field ?? fields[0] ?? '' }
+                      : undefined,
+                  },
+                  e.target.value ? 'A click sets a filter' : 'A click sets no filter',
+                )
+              }
+            >
+              <option value="">None</option>
+              {cross && !usable.some((p) => p.id === cross.parameter) ? (
+                <option value={cross.parameter}>{cross.parameter} (missing)</option>
+              ) : null}
+              {usable.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </Select>
+          )}
+        </Field>
+        {cross ? (
+          <Field label="Value from">
+            {(fid) => (
+              <Select
+                id={fid}
+                value={cross.field}
+                onChange={(e) =>
+                  setConfig({ crossFilter: { ...cross, field: e.target.value } }, 'Changed the clicked value')
+                }
+              >
+                {choices.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </Select>
+            )}
+          </Field>
+        ) : null}
+      </div>
+      <p className="text-xs text-muted">
+        {cross && ownFilters.includes(cross.parameter)
+          ? "This widget's own data uses this filter, so a click leaves only the clicked item. Show it from a dataset without the filter to keep the others visible, dimmed."
+          : 'A click sets the filter to the item’s value; clicking it again resets it. Clicks do nothing while presenting.'}
+        {lineByX && cross?.field === widget.config.x
+          ? ' On a line, click a point: the points of the other values are dimmed, the line stays.'
+          : ''}
+      </p>
+    </Card>
   );
 }
 

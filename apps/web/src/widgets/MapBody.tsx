@@ -4,7 +4,14 @@
  * hashed file under /assets/, which the service worker caches, so a wall screen that lost its network still draws
  * the map.
  */
-import { type ColorMap, type DatasetResult, THEMES, type Widget } from '@patchbay/core';
+import {
+  type ColorMap,
+  type DatasetResult,
+  type Scalar,
+  type Selection,
+  THEMES,
+  type Widget,
+} from '@patchbay/core';
 import world from '@patchbay/core/geo/world-110m.json';
 import {
   buildMapOption,
@@ -22,7 +29,7 @@ import 'echarts/lib/component/geo';
 import 'echarts/lib/component/graphic';
 import { useMemo } from 'react';
 import { useTheme } from '../lib/hooks.ts';
-import { EChart } from './EChart.tsx';
+import { EChart, type EChartItem } from './EChart.tsx';
 import { TableBody } from './WidgetBody.tsx';
 
 // Scatter, tooltip, legend and visualMap are already registered by EChart.tsx.
@@ -33,6 +40,8 @@ export default function MapBody({
   result,
   asTable,
   entityColors,
+  selection,
+  onPick,
 }: {
   widget: Extract<Widget, { type: 'map' }>;
   result: DatasetResult;
@@ -40,13 +49,25 @@ export default function MapBody({
   asTable: boolean;
   /** The dashboard's entity colours (`doc.colors`), as charts get them. */
   entityColors?: ColorMap | undefined;
+  /** The item the map's cross-filter selects: the other dots are dimmed. */
+  selection: Selection | null;
+  /** A click on a dot, with its value of the cross-filter column; absent when clicks set nothing. */
+  onPick: ((value: Scalar | undefined) => void) | undefined;
 }) {
   const mode = useTheme();
   const config = widget.config;
   const at = mapTime(result.table, result.fetchedAt);
   const option = useMemo(
-    () => (asTable ? null : buildMapOption(config, result.table, THEMES[mode], { at, entityColors })),
-    [asTable, config, result.table, mode, at, entityColors],
+    () =>
+      asTable
+        ? null
+        : buildMapOption(config, result.table, THEMES[mode], {
+            at,
+            entityColors,
+            selection,
+            pickField: config.crossFilter?.field,
+          }),
+    [asTable, config, result.table, mode, at, entityColors, selection],
   );
   const description = describeMap(config, result.table, at);
 
@@ -73,6 +94,20 @@ export default function MapBody({
   // lingers; new data with the same config merges and animates.
   const shape = [config.mode, config.series, config.size, config.color, config.terminator, mode].join('|');
   return (
-    <EChart key={shape} option={option} label={`${widget.title ? `${widget.title}: ` : ''}${description}`} />
+    <EChart
+      key={shape}
+      option={option}
+      label={`${widget.title ? `${widget.title}: ` : ''}${description}`}
+      onItemClick={
+        onPick && config.crossFilter
+          ? (item: EChartItem) => {
+              // Each dot carries its value of the cross-filter column (core map.ts), since ECharts reports only the
+              // index in its sorted series.
+              const pick = (item.data as { pick?: Scalar } | null | undefined)?.pick;
+              if (pick !== undefined) onPick(pick);
+            }
+          : undefined
+      }
+    />
   );
 }
