@@ -3,6 +3,7 @@
 // runtime core runs in. Only the members core uses are declared; the apps type-check against their full definitions.
 declare class URLSearchParams {
   keys(): IterableIterator<string>;
+  get(name: string): string | null;
 }
 
 declare class URL {
