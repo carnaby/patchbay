@@ -221,7 +221,9 @@ export function inferTableCapped(
   }
   const columns: Column[] = [...names.keys()].map((name) => ({
     name,
-    type: options.types?.[name] ?? detectType(flat.slice(0, 500).map((r) => cellOf(r, name))),
+    type:
+      (options.types && Object.hasOwn(options.types, name) ? options.types[name] : undefined) ??
+      detectType(flat.slice(0, 500).map((r) => cellOf(r, name))),
   }));
   // Decided per column, not per cell: this loop touches every cell of the table, and ordinary names take the plain
   // read and write.
@@ -247,7 +249,8 @@ export function inferTable(records: unknown[], options: InferOptions = {}): Data
 export function retype(rows: Row[], order?: string[], known: Record<string, ColumnType> = {}): DataTable {
   const names = order ?? [...new Set(rows.flatMap((r) => Object.keys(r)))];
   const columns: Column[] = names.map((name) => {
-    const hint = known[name];
+    // Own entries only: a new column called "__proto__" or "constructor" has no hint, not Object's member.
+    const hint = Object.hasOwn(known, name) ? known[name] : undefined;
     // Time columns are plain numbers at runtime, so a known `time` hint survives retyping.
     if (hint === 'time' && rows.every((r) => r[name] === null || typeof r[name] === 'number')) {
       return { name, type: 'time' };
