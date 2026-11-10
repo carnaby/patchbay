@@ -74,6 +74,14 @@ export function urlPlaceAt(url: string, caret: number): 'urlPath' | 'urlQuery' |
   return null;
 }
 
+/**
+ * What a select shows when `chosen` may not be among its options (yet): the browser shows the first one, so the form
+ * must use it too. Columns arrive after the step is added on a slow API, and filters can be removed meanwhile.
+ */
+export function chosenOrFirst(chosen: string, options: readonly string[]): string {
+  return options.includes(chosen) ? chosen : (options[0] ?? '');
+}
+
 /** "Match a filter" for the Filter rows step: the expression for a filter and the column it filters. */
 export function filterPreset(param: Parameter, column: string): string {
   const col = fieldRef(column);

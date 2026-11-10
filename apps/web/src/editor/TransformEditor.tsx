@@ -16,7 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, cx, IconButton, Input, Select } from '../components/ui.tsx';
 import { columnsAfter, defaultOtherDataset, repickJoinKeys, switchJoinDataset } from './columns.ts';
 import { FilterChips } from './InsertFilter.tsx';
-import { filterPreset, insertAt, refChoices } from './parameter-refs.ts';
+import { chosenOrFirst, filterPreset, insertAt, refChoices } from './parameter-refs.ts';
 import {
   defaultPresetColumn,
   PRESETS,
@@ -351,8 +351,13 @@ function MatchFilter({
   columns: string[];
   onApply: (expr: string) => void;
 }) {
-  const [id, setId] = useState(parameters[0]?.id ?? '');
-  const [column, setColumn] = useState(columns[0] ?? '');
+  const [chosenId, setId] = useState('');
+  const [chosenColumn, setColumn] = useState('');
+  const id = chosenOrFirst(
+    chosenId,
+    parameters.map((p) => p.id),
+  );
+  const column = chosenOrFirst(chosenColumn, columns);
   const param = parameters.find((p) => p.id === id);
   if (parameters.length === 0) return null;
   return (

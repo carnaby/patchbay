@@ -1,6 +1,7 @@
 import { applyOps, emptyDashboard, type Parameter, ParameterSchema, parse } from '@patchbay/core';
 import { describe, expect, it } from 'vitest';
 import {
+  chosenOrFirst,
   filterPreset,
   filtersTooltip,
   insertAt,
@@ -106,5 +107,13 @@ describe('inserting filter references', () => {
     expect(wholeRef('city')).toBeNull();
     expect(wholeRef('$param.Bad')).toBeNull();
     expect(wholeRef(3)).toBeNull();
+  });
+
+  it('shows and uses the first choice until one that exists is picked', () => {
+    // Match a filter on a slow API: no columns when the step is added, then the columns arrive.
+    expect(chosenOrFirst('', [])).toBe('');
+    expect(chosenOrFirst('', ['date', 'region'])).toBe('date');
+    expect(chosenOrFirst('region', ['date', 'region'])).toBe('region');
+    expect(chosenOrFirst('gone', ['date', 'region'])).toBe('date');
   });
 });
