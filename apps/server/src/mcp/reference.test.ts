@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { referenceText } from './reference.ts';
+import { referenceText, SERVER_INSTRUCTIONS } from './reference.ts';
 
 describe('the Addresses line of the reference', () => {
   it('tells agents on a public instance not to try home-network services', () => {
@@ -81,5 +81,26 @@ describe('JSON sources in the reference', () => {
     expect(text).toContain('one row per position, columns in key order');
     expect(text).toContain('Lists of lists ([[t, v], ...]) are not converted');
     expect(text).toContain('or "in the file" for an upload');
+  });
+});
+
+describe('filters in the reference', () => {
+  it('documents declarations, references, the operations, the tool arguments and view links', () => {
+    const text = referenceText('https://dash.example.com');
+    expect(text).toContain('## Filters (dashboard parameters)');
+    for (const words of [
+      'type: "select", options: [{ value, label? }], all?: "All regions", default',
+      'type: "dateRange", presets: [today|yesterday|last7d|last30d|last90d|thisMonth|lastMonth|thisYear|last12m]',
+      'filter { expr: "$param.region == null || region == $param.region" }',
+      'filter { expr: "time >= $param.period.start && time < $param.period.end" }',
+      'https://api.example.com/v1/sales?region=$param.region&from=$param.period.from&to=$param.period.to',
+      'A query pair whose filter is at "all" is left out',
+      'Only select and dateRange filters reach URLs, bodies and connectors',
+      'addParameter { parameter, before? }, updateParameter { id, set }',
+      'get_data, render_snapshot, suggest_widgets and preview_data take parameters',
+      'https://dash.example.com/d/<id>?p.region=eu&p.period=last7d',
+    ])
+      expect(text, words).toContain(words);
+    expect(SERVER_INSTRUCTIONS).toContain('declare a filter (addParameter) and use $param.<id>');
   });
 });

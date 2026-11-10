@@ -2,9 +2,11 @@
  * Dashboard filters (proposal 0010) end to end over REST (and, from the MCP task on, over MCP): views of the data,
  * suggest, preview and snapshot routes. Upstream-level checks (one fetch per value) live in services/view.test.ts.
  */
+
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
@@ -211,5 +213,103 @@ describe('views over REST', () => {
   it('sends no referrer, so a view link opened from a dashboard does not carry its values', async () => {
     const res = await app.request(`${BASE}/api/connectors`);
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+  });
+});
+
+describe('filters over MCP', () => {
+  const clients: Client[] = [];
+  afterAll(async () => {
+    for (const c of clients) await c.close();
+  });
+
+  async function agent(email: string, scopes = ['dashboards:read', 'dashboards:write']) {
+    const login = await app.request(`${BASE}/auth/dev`, {
+      method: 'POST',
+      headers: { origin: BASE, 'content-type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+    const pat = await call('/api/tokens', { body: { name: 'test', scopes }, headers: { cookie } });
+    const c = new Client({ name: 'vitest', version: '1.0.0' });
+    await c.connect(
+      new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`), {
+        requestInit: { headers: { authorization: `Bearer ${pat.json.token}` } },
+        fetch: async (url, init) => app.request(String(url), init as RequestInit),
+      }),
+    );
+    clients.push(c);
+    return c;
+  }
+  const text = (r: { content?: unknown }) =>
+    (r.content as { type: string; text?: string }[]).find((c) => c.type === 'text')!.text!;
+  const tool = async (c: Client, name: string, args: Record<string, unknown>) =>
+    JSON.parse(text(await c.callTool({ name, arguments: args })));
+
+  it('reads, suggests, previews and draws a view, echoes it, and checks writes with the defaults', async () => {
+    const c = await agent('filters-agent@example.com');
+    const { dashboardId } = await tool(c, 'create_dashboard', { title: 'Filters' });
+    const applied = await tool(c, 'apply_operations', {
+      dashboardId,
+      operations: [
+        { op: 'addParameter', parameter: REGION },
+        { op: 'addDataset', dataset: SALES },
+        { op: 'addWidget', widget: BARS },
+      ],
+    });
+    expect(applied.dataChecks).toEqual([expect.objectContaining({ datasetId: 'sales', rowCount: 2 })]);
+    expect(applied.parametersNote).toBe(
+      'Checked with the defaults (Region: All regions); use get_data with parameters to check another view.',
+    );
+
+    const eu = await tool(c, 'get_data', { dashboardId, datasetId: 'sales', parameters: { region: 'eu' } });
+    expect(eu.rowCount).toBe(1);
+    expect(eu.parameters).toEqual({ region: 'eu' });
+    expect(eu.viewUrl).toBe(`${BASE}/d/${dashboardId}?p.region=eu`);
+    const bad = await c.callTool({
+      name: 'get_data',
+      arguments: { dashboardId, datasetId: 'sales', parameters: { region: 'xx' } },
+    });
+    expect(bad.isError).toBe(true);
+    expect(text(bad)).toBe('Filter "region" has no value "xx"; choose one of eu, us, or * for all');
+
+    const suggested = await tool(c, 'suggest_widgets', {
+      dashboardId,
+      datasetId: 'sales',
+      parameters: { region: 'us' },
+    });
+    expect(suggested.rows).toBe(1);
+    expect(suggested.parameters).toEqual({ region: 'us' });
+
+    const preview = await tool(c, 'preview_data', {
+      dashboardId,
+      source: { kind: 'inline', rows: [{ region: 'eu' }, { region: 'us' }] },
+      transforms: [{ type: 'filter', expr: 'region == $param.region' }],
+      parameters: { region: 'us' },
+    });
+    expect(preview.rowCount).toBe(1);
+
+    const shot = await c.callTool({
+      name: 'render_snapshot',
+      arguments: { dashboardId, parameters: { region: 'eu' } },
+    });
+    expect(text(shot)).toContain('Filters: Region: EU');
+  });
+
+  it('keeps a read-only token from previewing a POST, with filter values or without', async () => {
+    const reader = await agent('filters-reader@example.com', ['dashboards:read']);
+    const r = await reader.callTool({
+      name: 'preview_data',
+      arguments: {
+        source: {
+          kind: 'http',
+          url: 'https://api.example.com/q?region=$param.region',
+          method: 'POST',
+          body: { r: 1 },
+        },
+        parameters: { region: 'eu' },
+      },
+    });
+    expect(r.isError).toBe(true);
+    expect(text(r)).toMatch(/Previewing a POST source needs the dashboards:write scope/);
   });
 });

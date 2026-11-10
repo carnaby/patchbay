@@ -1055,8 +1055,9 @@ describe('MCP tools', () => {
     // descriptions in get_reference instead; -> 44,300: the http source's method and body (POST queries), the body
     // advertised as any JSON value, and upload_data's optional `path` for JSON files; -> 47,400: the filter
     // operations (proposal 0010), addParameter with the parameter union and three small branches, descriptions in
-    // get_reference).
-    expect(JSON.stringify(list).length).toBeLessThanOrEqual(47_400);
+    // get_reference; -> 47,800: parameters on get_data, render_snapshot, suggest_widgets and preview_data (filter
+    // values of a view), descriptions in get_reference).
+    expect(JSON.stringify(list).length).toBeLessThanOrEqual(47_800);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
     expect(Object.keys(ops.$defs)).toEqual(
