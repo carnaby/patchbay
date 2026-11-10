@@ -3,8 +3,16 @@
  * body, always read against the saved declarations. Values are never stored; they only decide what a scope binds, and
  * binding gives every view its own cache entries (core bind.ts).
  */
-import { type DashboardDoc, type ParameterValues, readParameterValues } from '@patchbay/core';
+import {
+  ALL_TEXT,
+  type DashboardDoc,
+  distinctOptions,
+  type OptionValue,
+  type ParameterValues,
+  readParameterValues,
+} from '@patchbay/core';
 import { badRequest } from '../util/errors.ts';
+import type { DashboardTarget, DataService } from './data.ts';
 
 export type RawParameters = Readonly<Record<string, string>>;
 
@@ -22,12 +30,43 @@ export function viewValues(
   doc: Pick<DashboardDoc, 'parameters'>,
   raw: RawParameters | undefined,
   now = Date.now(),
+  dataOptions?: ReadonlyMap<string, readonly OptionValue[]>,
 ): ParameterValues {
   const { values, problems } = readParameterValues(
     doc.parameters,
     (id) => (raw && Object.hasOwn(raw, id) ? raw[id] : undefined),
     now,
+    { ...(dataOptions ? { dataOptions } : {}) },
   );
   if (problems.length) throw badRequest(problems.map((p) => p.message).join('; '));
   return values;
+}
+
+/**
+ * The choices of selects that take them from a dataset column, for the values a request gives (none when it gives
+ * none, or "All"). Read through a scope, so it is usually a cached lookup; a dataset that fails gives no choices, and
+ * `viewValues` then refuses its values instead of accepting them unchecked.
+ */
+export async function loadDataOptions(
+  data: DataService,
+  target: DashboardTarget,
+  doc: DashboardDoc,
+  raw: RawParameters | undefined,
+): Promise<ReadonlyMap<string, OptionValue[]>> {
+  const out = new Map<string, OptionValue[]>();
+  const wanted = (doc.parameters ?? []).flatMap((p) =>
+    p.type === 'select' && p.optionsFrom && raw && Object.hasOwn(raw, p.id) && raw[p.id] !== ALL_TEXT
+      ? [{ id: p.id, ...p.optionsFrom }]
+      : [],
+  );
+  if (wanted.length === 0) return out;
+  // The options datasets use no filter (validation), so the defaults the scope binds change nothing in them.
+  const scope = data.scope(target, doc);
+  for (const w of wanted) {
+    const dataset = doc.datasets.find((d) => d.id === w.dataset);
+    if (!dataset) continue;
+    const result = await scope.resolve(dataset);
+    if (!result.error) out.set(w.id, distinctOptions(result.table, w.field));
+  }
+  return out;
 }

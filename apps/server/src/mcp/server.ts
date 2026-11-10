@@ -40,7 +40,7 @@ import type { Deps } from '../context.ts';
 import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import type { Principal } from '../services/dashboards.ts';
 import { listTemplates } from '../services/templates.ts';
-import { viewValues } from '../services/view.ts';
+import { loadDataOptions, viewValues } from '../services/view.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
 import { APP_VERSION } from '../util/version.ts';
@@ -505,12 +505,10 @@ export function createMcp(deps: Deps) {
           });
           // Raw uploads and secrets are for editors only, in the draft and in every dataset it reads; without a
           // dashboard only the user's own secrets apply, and nothing can be read from other datasets.
-          const target = await dashboards.previewTarget(
-            p,
-            args.dashboardId,
-            draft,
-            args.parameters ? { parameters: args.parameters } : {},
-          );
+          const target = await dashboards.previewTarget(p, args.dashboardId, draft, {
+            ...(args.parameters ? { parameters: args.parameters } : {}),
+            loadOptions: (saved, t) => loadDataOptions(data, t, saved, args.parameters),
+          });
           const dataset = target.dataset;
           // Checked on the bound draft: before binding, a parameter may be a filter reference.
           if (dataset.source.kind === 'connector')
@@ -573,10 +571,14 @@ export function createMcp(deps: Deps) {
             return fail(
               `No dataset "${args.datasetId}". Datasets: ${doc.datasets.map((d) => d.id).join(', ') || 'none'}`,
             );
-          const values = viewValues(doc, args.parameters);
-          const result = await data
-            .scope({ id: args.dashboardId, ownerId: meta.ownerId }, doc, { parameters: values })
-            .resolve(dataset);
+          const target = { id: args.dashboardId, ownerId: meta.ownerId };
+          const values = viewValues(
+            doc,
+            args.parameters,
+            Date.now(),
+            await loadDataOptions(data, target, doc, args.parameters),
+          );
+          const result = await data.scope(target, doc, { parameters: values }).resolve(dataset);
           const profile = profileTable(result.table);
           return json({
             ...sampleTable(result.table, args.limit, args.from),
@@ -610,10 +612,14 @@ export function createMcp(deps: Deps) {
           const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
           const dataset = doc.datasets.find((d) => d.id === args.datasetId);
           if (!dataset) return fail(`No dataset "${args.datasetId}"`);
-          const values = viewValues(doc, args.parameters);
-          const result = await data
-            .scope({ id: args.dashboardId, ownerId: meta.ownerId }, doc, { parameters: values })
-            .resolve(dataset);
+          const target = { id: args.dashboardId, ownerId: meta.ownerId };
+          const values = viewValues(
+            doc,
+            args.parameters,
+            Date.now(),
+            await loadDataOptions(data, target, doc, args.parameters),
+          );
+          const result = await data.scope(target, doc, { parameters: values }).resolve(dataset);
           const profile = profileTable(result.table);
           return json({
             rows: profile.rows,
@@ -708,7 +714,12 @@ export function createMcp(deps: Deps) {
         ) => {
           const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
           const target = { id: args.dashboardId, ownerId: meta.ownerId };
-          const values = viewValues(doc, args.parameters);
+          const values = viewValues(
+            doc,
+            args.parameters,
+            Date.now(),
+            await loadDataOptions(data, target, doc, args.parameters),
+          );
           const results = new Map<string, DatasetResult>();
           const needed = args.widgetId ? doc.widgets.filter((w) => w.id === args.widgetId) : doc.widgets;
           if (args.widgetId && needed.length === 0) return fail(`No widget "${args.widgetId}"`);

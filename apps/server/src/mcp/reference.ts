@@ -200,6 +200,9 @@ and widgets per value. Viewers set filters in the dashboard header; values are n
   | { id, label, type: "text", placeholder?, default: "" }
   | { id, label, type: "dateRange", presets: [${DATE_PRESETS.join('|')}],
       custom?: false, min?, max?, maxDays?: 366, default: "last30d" | { from: "YYYY-MM-DD", to: "YYYY-MM-DD" } }
+- Choices from data: a select may take optionsFrom: { dataset, field } instead of options: the distinct values of that
+  column, at most 200, sorted. The dataset must use no filter itself; the select needs all and default null; such a
+  filter never reaches a source with secrets (give that one fixed options).
 - In filter and derive steps, wherever a value goes:
   filter { expr: "$param.region == null || region == $param.region" }  (null is the "all" choice)
   filter { expr: '$param.q == "" || contains(title, $param.q)' }

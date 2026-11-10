@@ -15,7 +15,7 @@ vi.mock('../util/safe-fetch.ts', async (original) => ({
 
 const { DataService } = await import('./data.ts');
 const { InlineRunner } = await import('./pipeline-pool.ts');
-const { rawFromQuery, viewValues } = await import('./view.ts');
+const { loadDataOptions, rawFromQuery, viewValues } = await import('./view.ts');
 
 const dir = mkdtempSync(join(tmpdir(), 'patchbay-view-test-'));
 const store = new FolderStore(dir);
@@ -204,5 +204,53 @@ describe('resolving a view', () => {
     const doc = docOf([sales]);
     await resolveIn(data, doc, { region: 'us' }, 'sales');
     expect(policy.mock.calls.map((c) => c[1])).toEqual(['https://api.example.com/v1/sales?region=us']);
+  });
+});
+
+describe('choices from data', () => {
+  const country = {
+    id: 'country',
+    label: 'Country',
+    type: 'select',
+    optionsFrom: { dataset: 'countries', field: 'code' },
+    all: 'All',
+    default: null,
+  };
+  const docWith = (countries: unknown) =>
+    parseDashboard({ ...emptyDashboard('t'), parameters: [country], datasets: [countries] });
+
+  it('reads a value against the dataset’s distinct values, loaded through a scope', async () => {
+    const doc = docWith({
+      id: 'countries',
+      name: 'Countries',
+      source: { kind: 'inline', rows: [{ code: 'SK' }, { code: 'AT' }, { code: 'SK' }] },
+    });
+    const data = new DataService(connectors, store);
+    const read = async (raw: Record<string, string>) =>
+      viewValues(doc, raw, Date.now(), await loadDataOptions(data, target, doc, raw));
+    expect((await read({ country: 'AT' })).country).toBe('AT');
+    expect((await read({ country: '*' })).country).toBeNull();
+    const error = await read({ country: 'DE' }).catch((e: HttpError) => e);
+    expect((error as HttpError).status).toBe(400);
+    expect((error as HttpError).message).toBe(
+      'Filter "country" has no value "DE"; choose one of AT, SK, or * for all',
+    );
+  });
+
+  it('refuses every value when the choices cannot be read, and loads nothing without a value', async () => {
+    fetchMock.mockRejectedValueOnce(new HttpError(502, 'Upstream responded 500'));
+    const doc = docWith({
+      id: 'countries',
+      name: 'Countries',
+      source: { kind: 'http', url: 'https://api.example.com/c' },
+    });
+    const data = new DataService(connectors, store);
+    expect([...(await loadDataOptions(data, target, doc, undefined))]).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    const raw = { country: 'AT' };
+    const options = await loadDataOptions(data, target, doc, raw);
+    expect(() => viewValues(doc, raw, Date.now(), options)).toThrow(
+      'Filter "country" takes its choices from dataset "countries", which could not be read',
+    );
   });
 });

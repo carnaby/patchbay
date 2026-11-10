@@ -31,7 +31,7 @@ import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import { exportBodies } from '../services/export-body.ts';
 import { type Body, rowsFormat, streamBodies, streamBody } from '../services/result-wire.ts';
 import { listTemplates } from '../services/templates.ts';
-import { rawFromQuery, viewValues } from '../services/view.ts';
+import { loadDataOptions, rawFromQuery, viewValues } from '../services/view.ts';
 import { useCaseInfo } from '../showcase/info.ts';
 import { badRequest, HttpError, notFound, RetryLaterError } from '../util/errors.ts';
 import { memoryGuard } from '../util/memory-pressure.ts';
@@ -371,8 +371,10 @@ export function apiRoutes(deps: Deps) {
     const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
     const dataset = doc.datasets.find((d) => d.id === c.req.param('datasetId'));
     if (!dataset) throw notFound('Dataset not found');
-    const parameters = viewValues(doc, rawFromQuery(c.req.url));
-    const result = await data.scope({ id, ownerId: meta.ownerId }, doc, { parameters }).resolve(dataset);
+    const raw = rawFromQuery(c.req.url);
+    const target = { id, ownerId: meta.ownerId };
+    const parameters = viewValues(doc, raw, Date.now(), await loadDataOptions(data, target, doc, raw));
+    const result = await data.scope(target, doc, { parameters }).resolve(dataset);
     return sendBody(c, await wire.dataBody(result, rowsFormat(c.req.query('rows'))));
   });
 
@@ -394,6 +396,7 @@ export function apiRoutes(deps: Deps) {
       requireEdit: true,
       ...(body.editing ? { editing: body.editing } : {}),
       ...(body.parameters ? { parameters: body.parameters } : {}),
+      loadOptions: (saved, t) => loadDataOptions(data, t, saved, body.parameters),
     });
     const dataset = target.dataset;
     // Checked on the bound draft: before binding, a parameter may be a filter reference such as "$param.days".
@@ -424,8 +427,10 @@ export function apiRoutes(deps: Deps) {
     const { meta, doc } = await dashboards.loadViewable(id, c.get('principal'));
     const dataset = doc.datasets.find((d) => d.id === c.req.param('datasetId'));
     if (!dataset) throw notFound('Dataset not found');
-    const parameters = viewValues(doc, rawFromQuery(c.req.url));
-    const result = await data.scope({ id, ownerId: meta.ownerId }, doc, { parameters }).resolve(dataset);
+    const raw = rawFromQuery(c.req.url);
+    const target = { id, ownerId: meta.ownerId };
+    const parameters = viewValues(doc, raw, Date.now(), await loadDataOptions(data, target, doc, raw));
+    const result = await data.scope(target, doc, { parameters }).resolve(dataset);
     const profile = profileTable(result.table);
     return c.json({
       profile,
@@ -543,7 +548,8 @@ export function apiRoutes(deps: Deps) {
     const widgetId = c.req.query('widget');
     const widget = widgetId ? doc.widgets.find((w) => w.id === widgetId) : undefined;
     if (widgetId && !widget) throw notFound('Widget not found');
-    const parameters = viewValues(doc, rawFromQuery(c.req.url));
+    const raw = rawFromQuery(c.req.url);
+    const parameters = viewValues(doc, raw, Date.now(), await loadDataOptions(data, target, doc, raw));
     const key = SnapshotCache.key({
       id,
       version: meta.version,

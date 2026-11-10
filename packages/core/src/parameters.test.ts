@@ -5,17 +5,22 @@ import {
   DocumentError,
   defaultText,
   describeParameterValue,
+  distinctOptions,
   emptyDashboard,
+  inferTable,
   isoDay,
   LIMITS,
+  optionsFromIssues,
   type Parameter,
   ParameterSchema,
+  parameterIssues,
   parameterSummary,
   parameterText,
   parseDashboard,
   presetRange,
   readParameterValues,
   readRef,
+  refProblem,
   viewQuery,
   writeParameterValues,
 } from './index.ts';
@@ -293,5 +298,121 @@ describe('declaration checks', () => {
     expect(issues([{ ...period, min: '2026-02-01', max: '2026-01-01' }])).toContain(
       'Filter "period": min is after max',
     );
+  });
+});
+
+describe('options from a dataset column', () => {
+  const country = ParameterSchema.parse({
+    id: 'country',
+    label: 'Country',
+    type: 'select',
+    optionsFrom: { dataset: 'countries', field: 'code' },
+    all: 'All countries',
+    default: null,
+  });
+  const dataOptions = new Map([['country', ['AT', 'SK']]]);
+
+  it('takes either fixed options or a column, never both or neither', () => {
+    expect(ParameterSchema.safeParse({ ...country, options: [{ value: 'AT' }] }).success).toBe(false);
+    const { optionsFrom: _from, ...neither } = country as Extract<Parameter, { type: 'select' }>;
+    expect(ParameterSchema.safeParse(neither).success).toBe(false);
+  });
+
+  it('reads a value against the loaded choices, refuses it without them, and the browser may defer', () => {
+    const readOne = (text: string, options = {}) =>
+      readParameterValues([country], () => text, at('2026-11-10'), options);
+    expect(readOne('AT', { dataOptions }).values.country).toBe('AT');
+    expect(readOne('DE', { dataOptions }).problems[0]!.message).toBe(
+      'Filter "country" has no value "DE"; choose one of AT, SK, or * for all',
+    );
+    expect(readOne('*').values.country).toBeNull();
+    expect(readOne('AT').problems[0]!.message).toBe(
+      'Filter "country" takes its choices from dataset "countries", which could not be read',
+    );
+    expect(readOne('AT', { lenientData: true }).values.country).toBe('AT');
+    expect(describeParameterValue(country, 'AT')).toBe('AT');
+    expect(describeParameterValue(country, null)).toBe('All countries');
+  });
+
+  it('says so when the data offers no choices at all', () => {
+    const read = readParameterValues([country], () => 'AT', at('2026-11-10'), {
+      dataOptions: new Map([['country', []]]),
+    });
+    expect(read.problems[0]!.message).toBe(
+      'Filter "country" has no value "AT"; the data offers no choices, only * for all',
+    );
+  });
+
+  it('collects at most 200 distinct, sorted values that can be choices', () => {
+    const table = inferTable([
+      { code: 'SK' },
+      { code: 'AT' },
+      { code: 'SK' },
+      { code: null },
+      { code: '' },
+      { code: '*' },
+      { code: '$param.x' },
+      { code: 'x'.repeat(101) },
+      { code: 'broken\uD800' },
+      { code: 10 },
+    ]);
+    // A column of mostly text is text: its 10 arrives as '10'.
+    expect(distinctOptions(table, 'code')).toEqual(['10', 'AT', 'SK']);
+    expect(distinctOptions(inferTable([{ n: 10 }, { n: 2 }, { n: 10 }]), 'n')).toEqual([2, 10]);
+    const many = inferTable(
+      Array.from({ length: 300 }, (_, i) => ({ code: `c${String(i).padStart(3, '0')}` })),
+    );
+    expect(distinctOptions(many, 'code')).toHaveLength(200);
+    expect(distinctOptions(many, 'missing')).toEqual([]);
+  });
+
+  it('checks the column filter on every write', () => {
+    const doc = (parameter: unknown, datasets: unknown[]) => ({
+      ...emptyDashboard('t'),
+      parameters: [parameter],
+      datasets,
+    });
+    const countries = {
+      id: 'countries',
+      name: 'Countries',
+      source: { kind: 'inline', rows: [{ code: 'AT' }] },
+    };
+    const issuesOf = (d: unknown) => {
+      try {
+        parseDashboard(d);
+        return [];
+      } catch (e) {
+        if (e instanceof DocumentError) return e.issues;
+        throw e;
+      }
+    };
+    expect(issuesOf(doc(country, [countries]))).toEqual([]);
+    expect(issuesOf(doc(country, []))).toEqual([
+      'Filter "country" takes its choices from unknown dataset "countries"',
+    ]);
+    const { all: _all, ...noAll } = country as Extract<Parameter, { type: 'select' }>;
+    expect(issuesOf(doc({ ...noAll, default: 'AT' }, [countries]))).toEqual([
+      'Filter "country" takes its choices from data, so it needs "All" (all) and the default null',
+    ]);
+    const filtered = {
+      ...countries,
+      source: { kind: 'http', url: 'https://api.example.com/c?x=$param.country' },
+    };
+    expect(issuesOf(doc(country, [filtered]))).toContain(
+      'Filter "country" takes its choices from "countries", which changes with filters itself; use a dataset without filters',
+    );
+    expect(refProblem(country, { id: 'country', part: null, place: 'urlQuery' }, { secrets: true })).toBe(
+      'choices from data never reach a source with secrets; give filter "country" a fixed list of options',
+    );
+    expect(
+      refProblem(country, { id: 'country', part: null, place: 'urlQuery' }, { secrets: false }),
+    ).toBeNull();
+  });
+
+  it('leaves the options dataset to whole documents: a preview checks filters against its draft alone', () => {
+    expect(parameterIssues({ parameters: [country], datasets: [], widgets: [] })).toEqual([]);
+    expect(optionsFromIssues({ parameters: [country], datasets: [] })).toEqual([
+      'Filter "country" takes its choices from unknown dataset "countries"',
+    ]);
   });
 });

@@ -323,7 +323,7 @@ export function parameterRequestShape(parameter: Parameter): unknown {
     case 'select':
       return {
         type: parameter.type,
-        values: sortedJson(parameter.options.map((o) => o.value)),
+        values: sortedJson((parameter.options ?? []).map((o) => o.value)),
         all: parameter.all !== undefined,
         default: parameter.default,
       };

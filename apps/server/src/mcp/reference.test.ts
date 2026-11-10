@@ -114,4 +114,14 @@ describe('filters in the reference', () => {
     ])
       expect(text, words).toContain(words);
   });
+
+  it('documents choices from a dataset column', () => {
+    const text = referenceText('https://dash.example.com');
+    for (const words of [
+      'optionsFrom: { dataset, field }',
+      'at most 200',
+      'never reaches a source with secrets',
+    ])
+      expect(text, words).toContain(words);
+  });
 });

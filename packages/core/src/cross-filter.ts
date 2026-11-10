@@ -47,7 +47,9 @@ export function crossFilterPick(
   const text = String(value);
   switch (param.type) {
     case 'select':
-      return param.options.some((o) => String(o.value) === text)
+      // Choices from data are not at hand here: the server reads them and refuses a value they do not hold.
+      if (param.optionsFrom) return { text };
+      return (param.options ?? []).some((o) => String(o.value) === text)
         ? { text }
         : { problem: `${text} is not one of the ${param.label} choices` };
     case 'text': {

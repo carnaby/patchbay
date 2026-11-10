@@ -210,6 +210,66 @@ describe('views over REST', () => {
     expect(connector.json.result.table.rows.length).toBeGreaterThan(0);
   });
 
+  it('reads a filter whose choices come from a dataset column, also in a preview', async () => {
+    const created = await call('/api/dashboards', { body: {} });
+    const id = created.json.envelope.meta.id as string;
+    const headers = { 'x-edit-key': created.json.editKey as string };
+    const ops = [
+      {
+        op: 'addDataset',
+        dataset: {
+          id: 'orders',
+          name: 'Orders',
+          source: {
+            kind: 'inline',
+            rows: [
+              { country: 'SK', n: 1 },
+              { country: 'AT', n: 2 },
+            ],
+          },
+        },
+      },
+      {
+        op: 'addParameter',
+        parameter: {
+          id: 'country',
+          label: 'Country',
+          type: 'select',
+          optionsFrom: { dataset: 'orders', field: 'country' },
+          all: 'All',
+          default: null,
+        },
+      },
+      {
+        op: 'addDataset',
+        dataset: {
+          id: 'mine',
+          name: 'Mine',
+          source: { kind: 'dataset', id: 'orders' },
+          transforms: [{ type: 'filter', expr: '$param.country == null || country == $param.country' }],
+        },
+      },
+    ];
+    expect((await call(`/api/dashboards/${id}/ops`, { body: { ops }, headers })).status).toBe(200);
+    expect((await call(`/api/dashboards/${id}/data/mine?p.country=AT`)).json.table.rows).toEqual([
+      { country: 'AT', n: 2 },
+    ]);
+    const bad = await call(`/api/dashboards/${id}/data/mine?p.country=DE`);
+    expect(bad.status).toBe(400);
+    expect(bad.json.error).toBe('Filter "country" has no value "DE"; choose one of AT, SK, or * for all');
+    const preview = await call(`/api/dashboards/${id}/preview`, {
+      body: {
+        dataset: {
+          source: { kind: 'dataset', id: 'orders' },
+          transforms: [{ type: 'filter', expr: 'country == $param.country' }],
+        },
+        parameters: { country: 'SK' },
+      },
+      headers,
+    });
+    expect(preview.json.result.table.rows).toEqual([{ country: 'SK', n: 1 }]);
+  });
+
   it('sends no referrer, so a view link opened from a dashboard does not carry its values', async () => {
     const res = await app.request(`${BASE}/api/connectors`);
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');

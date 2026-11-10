@@ -96,7 +96,7 @@ function FilterControl({
             className="h-8 w-auto min-w-32 text-[13px]"
           >
             {p.all ? <option value="*">{p.all}</option> : null}
-            {p.options.map((o) => (
+            {(p.options ?? []).map((o) => (
               <option key={String(o.value)} value={String(o.value)}>
                 {o.label ?? String(o.value)}
               </option>

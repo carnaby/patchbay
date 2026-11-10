@@ -80,6 +80,18 @@ describe('the selection of a cross-filter', () => {
     expect(crossFilterPick(q, '  shoes ')).toEqual({ text: 'shoes' });
     expect(crossFilterPick(q, 'x'.repeat(101))).toEqual({ problem: 'Search takes at most 100 characters' });
   });
+
+  it('lets the server judge a click on a select whose choices come from data', () => {
+    const country = ParameterSchema.parse({
+      id: 'country',
+      label: 'Country',
+      type: 'select',
+      optionsFrom: { dataset: 'countries', field: 'code' },
+      all: 'All',
+      default: null,
+    });
+    expect(crossFilterPick(country, 'SK')).toEqual({ text: 'SK' });
+  });
 });
 
 describe('dimming', () => {

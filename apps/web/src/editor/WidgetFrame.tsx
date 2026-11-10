@@ -95,6 +95,8 @@ export const WidgetFrame = memo(function WidgetFrame({
       parameters,
       (id) => (Object.hasOwn(raw, id) ? raw[id] : undefined),
       Date.now(),
+      // As the store reads it: a value of a select fed by data is kept until its choices are loaded.
+      { lenientData: true },
     );
     return crossFilterSelection(widget, values);
   }, [widget, parameters, raw]);

@@ -59,7 +59,8 @@ export function normalizeRaw(
 ): { raw: Record<string, string>; problems: ValueProblem[] } {
   // Own-property lookup only: a link must not reach a prototype name.
   const given = (id: string) => (Object.hasOwn(raw, id) ? raw[id] : undefined);
-  const { values, problems } = readParameterValues(parameters, given, now);
+  // A value of a select fed by data is kept until its choices are loaded; the server decides meanwhile.
+  const { values, problems } = readParameterValues(parameters, given, now, { lenientData: true });
   const invalid = new Set(problems.map((p) => p.id));
   const out: Record<string, string> = {};
   for (const p of parameters ?? []) {
@@ -82,7 +83,9 @@ export function applyValue(
   const next = Object.fromEntries(Object.entries(raw).filter(([key]) => key !== id));
   const param = parameters?.find((p) => p.id === id);
   if (!param || text === null) return { raw: next };
-  const { values, problems } = readParameterValues([param], (x) => (x === id ? text : undefined), now);
+  const { values, problems } = readParameterValues([param], (x) => (x === id ? text : undefined), now, {
+    lenientData: true,
+  });
   if (problems.length > 0) return { problem: problems[0]!.message };
   const normal = parameterText(param, values[id]!);
   if (normal !== defaultText(param)) next[id] = normal;
@@ -100,6 +103,7 @@ export function summaryOf(
     shown,
     (id) => (Object.hasOwn(raw, id) ? raw[id] : undefined),
     Date.now(),
+    { lenientData: true },
   );
   return parameterSummary(shown, values);
 }

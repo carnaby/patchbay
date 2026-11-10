@@ -9,12 +9,16 @@
  */
 import { z } from 'zod';
 import { MAX_BOUND_EXPRESSION, paramNodes, parse } from './expr.ts';
+import { IdSchema } from './ids.ts';
 import { type LineageDataset, type LineageDoc, lineageDatasets } from './lineage.ts';
 import { PARAM_ID, PARAM_PREFIX, type RefName, readRef } from './param-ref.ts';
 import type { DashboardDoc } from './schema.ts';
+import type { DataTable } from './table.ts';
 
 export const MAX_PARAMETERS = 8;
 export const MAX_TEXT_VALUE = 100;
+/** Choices a select takes from a dataset column (proposal 0010, phase 2): the bound on views and on the list. */
+export const MAX_DATA_OPTIONS = 200;
 /** "All" in the text form of a select. An option may therefore not be "*". */
 export const ALL_TEXT = '*';
 
@@ -73,17 +77,25 @@ const base = { id: ParamIdSchema, label: z.string().min(1).max(40) };
 
 // Field descriptions live in the MCP reference text: every byte here is paid on each MCP connection.
 export const ParameterSchema = z.discriminatedUnion('type', [
-  z.strictObject({
-    ...base,
-    type: z.literal('select'),
-    options: z
-      .array(z.strictObject({ value: OptionValueSchema, label: z.string().min(1).max(60).optional() }))
-      .min(1)
-      .max(50),
-    // Its presence offers "All" under this label ("All regions", "Any status"); the value of "All" is null.
-    all: z.string().min(1).max(40).optional(),
-    default: OptionValueSchema.nullable(),
-  }),
+  z
+    .strictObject({
+      ...base,
+      type: z.literal('select'),
+      options: z
+        .array(z.strictObject({ value: OptionValueSchema, label: z.string().min(1).max(60).optional() }))
+        .min(1)
+        .max(50)
+        .optional(),
+      // The distinct values of a column of a dataset that uses no filter, instead of a fixed list.
+      optionsFrom: z.strictObject({ dataset: IdSchema, field: z.string().min(1).max(200) }).optional(),
+      // Its presence offers "All" under this label ("All regions", "Any status"); the value of "All" is null.
+      all: z.string().min(1).max(40).optional(),
+      default: OptionValueSchema.nullable(),
+    })
+    .superRefine((p, ctx) => {
+      if ((p.options === undefined) === (p.optionsFrom === undefined))
+        ctx.addIssue({ code: 'custom', path: ['options'], message: 'Give either options or optionsFrom' });
+    }),
   z.strictObject({
     ...base,
     type: z.literal('text'),
@@ -205,15 +217,47 @@ export function defaultText(param: Parameter): string {
 /** A value as the messages quote it: a hand-edited link can carry anything, and the message goes back to it. */
 const quoted = (text: string) => `"${text.length > 40 ? `${text.slice(0, 40)}…` : text}"`;
 
-function readValue(p: Parameter, text: string, now: number): { value: ParameterValue } | { message: string } {
+export interface ReadOptions {
+  /** The loaded choices of selects with optionsFrom, by filter id. */
+  dataOptions?: ReadonlyMap<string, readonly OptionValue[]>;
+  /**
+   * The browser reads the page URL before the choices arrive: it keeps such a value, and the server (which always
+   * loads them) decides.
+   */
+  lenientData?: boolean;
+}
+
+/** The choices of a select as values: its fixed options, the loaded data options, or null when not loaded. */
+function choicesOf(p: SelectParam, options: ReadOptions): readonly OptionValue[] | null {
+  if (!p.optionsFrom) return (p.options ?? []).map((o) => o.value);
+  return options.dataOptions?.get(p.id) ?? null;
+}
+
+function readValue(
+  p: Parameter,
+  text: string,
+  now: number,
+  options: ReadOptions,
+): { value: ParameterValue } | { message: string } {
   switch (p.type) {
     case 'select': {
-      const choices = `choose one of ${p.options.map((o) => String(o.value)).join(', ')}${p.all ? ', or * for all' : ''}`;
       if (text === ALL_TEXT && p.all) return { value: null };
-      const option = p.options.find((o) => String(o.value) === text);
-      return option
-        ? { value: option.value }
-        : { message: `Filter "${p.id}" has no value ${quoted(text)}; ${choices}` };
+      const choices = choicesOf(p, options);
+      if (choices === null) {
+        if (options.lenientData && text.length > 0 && text.length <= MAX_TEXT_VALUE) return { value: text };
+        return {
+          message: `Filter "${p.id}" takes its choices from dataset "${p.optionsFrom!.dataset}", which could not be read`,
+        };
+      }
+      const found = choices.find((v) => String(v) === text);
+      if (found !== undefined) return { value: found };
+      const listed = choices.slice(0, 20).map(String).join(', ') + (choices.length > 20 ? ', …' : '');
+      // Only data can offer none: a fixed list has at least one option.
+      const offer =
+        choices.length === 0
+          ? `the data offers no choices${p.all ? ', only * for all' : ''}`
+          : `choose one of ${listed}${p.all ? ', or * for all' : ''}`;
+      return { message: `Filter "${p.id}" has no value ${quoted(text)}; ${offer}` };
     }
     case 'text': {
       const value = text.trim();
@@ -250,6 +294,7 @@ export function readParameterValues(
   parameters: readonly Parameter[] | undefined,
   raw: (id: string) => string | undefined,
   now: number,
+  options: ReadOptions = {},
 ): { values: Record<string, ParameterValue>; problems: ValueProblem[] } {
   const values: Record<string, ParameterValue> = {};
   const problems: ValueProblem[] = [];
@@ -259,7 +304,7 @@ export function readParameterValues(
       values[p.id] = defaultValue(p, now);
       continue;
     }
-    const read = readValue(p, text, now);
+    const read = readValue(p, text, now, options);
     if ('message' in read) {
       problems.push({ id: p.id, message: read.message });
       values[p.id] = defaultValue(p, now);
@@ -294,7 +339,7 @@ export function describeParameterValue(param: Parameter, value: ParameterValue):
   switch (param.type) {
     case 'select': {
       if (value === null) return param.all ?? 'All';
-      const option = param.options.find((o) => o.value === value);
+      const option = param.options?.find((o) => o.value === value);
       return option?.label ?? String(value);
     }
     case 'text':
@@ -533,6 +578,9 @@ export function refProblem(
   // Free text would let a viewer send anything to an upstream: decision 2 of proposal 0010.
   if (param.type === 'text')
     return `text filters work in filter and derive steps only, never in a request (filter "${param.id}")`;
+  // Only static options reach a request sent with the owner's key (proposal 0010, "Security").
+  if (param.type === 'select' && param.optionsFrom && context.secrets)
+    return `choices from data never reach a source with secrets; give filter "${param.id}" a fixed list of options`;
   if (ref.place === 'urlPath') {
     if (param.type !== 'select') return `only a select filter can be a path segment (filter "${param.id}")`;
     if (param.all !== undefined)
@@ -568,9 +616,17 @@ export function declarationIssues(parameters: readonly Parameter[]): string[] {
     if (seen.has(p.id)) issues.push(`Filter ids must be unique: "${p.id}" appears twice`);
     seen.add(p.id);
     const name = `Filter "${p.id}"`;
+    if (p.type === 'select' && p.optionsFrom) {
+      // Data may not hold a fixed default tomorrow; "All" always exists.
+      if (p.all === undefined || p.default !== null)
+        issues.push(
+          `Filter "${p.id}" takes its choices from data, so it needs "All" (all) and the default null`,
+        );
+      continue;
+    }
     if (p.type === 'select') {
       const texts = new Set<string>();
-      for (const o of p.options) {
+      for (const o of p.options ?? []) {
         const text = String(o.value);
         if (texts.has(text)) issues.push(`${name}: option "${text}" appears twice`);
         texts.add(text);
@@ -663,4 +719,50 @@ export function parameterIssues(doc: Pick<DashboardDoc, 'parameters' | 'datasets
     }
   }
   return issues;
+}
+
+/**
+ * Where selects take their choices from. Whole-document rules, run by integrityIssues next to parameterIssues: a
+ * preview checks parameterIssues on a document that holds only its draft, where every options dataset is unknown.
+ */
+export function optionsFromIssues(doc: Pick<DashboardDoc, 'parameters' | 'datasets'>): string[] {
+  const issues: string[] = [];
+  for (const p of doc.parameters ?? []) {
+    if (p.type !== 'select' || !p.optionsFrom) continue;
+    const from = p.optionsFrom.dataset;
+    if (!doc.datasets.some((d) => d.id === from))
+      issues.push(`Filter "${p.id}" takes its choices from unknown dataset "${from}"`);
+    // Choices that change with a filter would make a value valid in one view and not in another.
+    else if (lineageParameters(doc, from).length > 0)
+      issues.push(
+        `Filter "${p.id}" takes its choices from "${from}", which changes with filters itself; use a dataset without filters`,
+      );
+  }
+  return issues;
+}
+
+/** A select's choices from a column: distinct values that can be choices, sorted, at most MAX_DATA_OPTIONS. */
+export function distinctOptions(table: DataTable, field: string): OptionValue[] {
+  const seen = new Set<string>();
+  const out: OptionValue[] = [];
+  for (const row of table.rows) {
+    const v = row[field];
+    if (typeof v !== 'string' && typeof v !== 'number') continue;
+    const text = String(v);
+    // The rules of a fixed option: no "All" text, no reference, no broken character, and what a link can carry.
+    if (
+      text === '' ||
+      text.length > MAX_TEXT_VALUE ||
+      text === ALL_TEXT ||
+      text.startsWith(PARAM_PREFIX) ||
+      brokenText(text) ||
+      seen.has(text)
+    )
+      continue;
+    seen.add(text);
+    out.push(v);
+  }
+  return out
+    .sort((a, b) => String(a).localeCompare(String(b), 'en', { numeric: true }))
+    .slice(0, MAX_DATA_OPTIONS);
 }

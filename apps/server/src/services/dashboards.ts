@@ -34,6 +34,7 @@ import {
   MAX_TABLE_FILE_BYTES,
   normalizeLayout,
   OpError,
+  type OptionValue,
   type ParameterValues,
   parameterIssues,
   parseBinding,
@@ -1421,7 +1422,15 @@ export class DashboardService {
     p: Principal,
     dashboardId: string | undefined,
     draft: Dataset,
-    options: { requireEdit?: boolean; editing?: string; parameters?: RawParameters } = {},
+    options: {
+      requireEdit?: boolean;
+      editing?: string;
+      parameters?: RawParameters;
+      loadOptions?: (
+        saved: DashboardDoc,
+        target: DashboardTarget,
+      ) => Promise<ReadonlyMap<string, readonly OptionValue[]>>;
+    } = {},
   ): Promise<PreviewTarget> {
     // A preview sends the credentials to a URL of the caller's choosing (within the binding) without saving
     // anything, so it is a use of the secret, not a read: read-only tokens may not do it. Checked before the
@@ -1448,7 +1457,12 @@ export class DashboardService {
     if (refIssues.length) throw badRequest(refIssues.join('; '));
     // Bound before anything below judges the draft, so every rule (secrets, POST, private hosts, uploads) sees the
     // request a preview sends. Values are read against the saved declarations, as for every other view.
-    const parameters = viewValues(viewable?.doc ?? {}, options.parameters);
+    // Choices from data are read for the view first, as for every other view (a callback: this service has no data).
+    const dataOptions =
+      viewable && dashboardId && options.loadOptions
+        ? await options.loadOptions(viewable.doc, { id: dashboardId, ownerId: viewable.meta.ownerId })
+        : undefined;
+    const parameters = viewValues(viewable?.doc ?? {}, options.parameters, Date.now(), dataOptions);
     let bound: Dataset;
     try {
       bound = bindDataset(draft, parameters);

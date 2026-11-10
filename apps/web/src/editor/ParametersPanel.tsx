@@ -184,7 +184,7 @@ function ParameterForm({
   const [draft, setDraft] = useState<Record<string, unknown>>(initial);
   const [idTouched, setIdTouched] = useState(!isNew);
   const [optionsDraft, setOptionsDraft] = useState(() =>
-    initial.type === 'select' ? optionsText(initial.options) : '',
+    initial.type === 'select' ? optionsText(initial.options ?? []) : '',
   );
   const taken = useMemo(() => new Set(others.map((p) => p.id)), [others]);
   const check = checkParameter(draft, others);
