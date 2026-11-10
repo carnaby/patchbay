@@ -8,6 +8,18 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ### Added
 
+- **Dashboard filters**: a dashboard can declare filters (a choice such as a region, a search text, a period with
+  presets like "Last 30 days") that every viewer sets in a filter bar under the header. Datasets use them as
+  `$param.<id>` in filter and derive steps, as a whole query value or path segment of an `http` or `feed` URL, and as
+  a whole value of a POST body or connector parameters, so one dashboard serves every region or period instead of a
+  copy per value. Values live only in the page link (`?p.region=eu`): a link opens a view, presentation mode can be
+  pinned to one and shows which, and nothing is saved or seen by other viewers. Editors declare filters in the
+  Filters panel; agents use the new operations and pass `parameters` to `get_data`, `render_snapshot`,
+  `suggest_widgets` and `preview_data`. Datasets that use filters refresh by polling rather than the live push.
+- **Click to filter**: a chart (bar, line, area, pie, donut, funnel), table or map can set a dashboard filter when an
+  item is clicked; clicking it again resets it, Back undoes it, and the other items are dimmed in the browser and in
+  snapshots. Clicks do nothing in presentation mode. A choice filter can also take its choices from a column of a
+  dataset (`optionsFrom`), up to 200 distinct values.
 - **POST for `http` sources**: `method: "POST"` with a JSON `body` (at most 16,384 characters) loads read APIs that
   take their query in a POST body, such as GitHub GraphQL, PostHog or ClickHouse over HTTP. The editor has a GET / POST
   switch and a JSON body field; agents find the fields and a GitHub example in `get_reference`. The request repeats on

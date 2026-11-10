@@ -9,6 +9,7 @@
 import { type AuthInfo, createMcpHandler, McpServer } from '@modelcontextprotocol/server';
 import {
   credentialLikeParams,
+  type DashboardDoc,
   type Dataset,
   type DatasetResult,
   DatasetSchema,
@@ -16,7 +17,12 @@ import {
   dependentsOf,
   formattingWarnings,
   type LineageDoc,
+  lineageParameters,
   OpSchema,
+  type ParameterValue,
+  type ParameterValues,
+  parameterSummary,
+  parameterText,
   profileTable,
   type Row,
   rowSize,
@@ -26,6 +32,7 @@ import {
   suggestionDataset,
   suggestWidgets,
   TransformSchema,
+  viewQuery,
 } from '@patchbay/core';
 import { z } from 'zod';
 import { SCOPES } from '../auth/tokens.ts';
@@ -33,6 +40,7 @@ import type { Deps } from '../context.ts';
 import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import type { Principal } from '../services/dashboards.ts';
 import { listTemplates } from '../services/templates.ts';
+import { loadDataOptions, viewValues } from '../services/view.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
 import { APP_VERSION } from '../util/version.ts';
@@ -144,6 +152,19 @@ function suggestionOps(
 export function createMcp(deps: Deps) {
   const { dashboards, data, connectors, config, users } = deps;
   const urlOf = (id: string) => `${config.publicUrl}/d/${id}`;
+  /** The values a view answer used and the link to that view; nothing for a dashboard without filters. */
+  const viewEcho = (id: string, doc: DashboardDoc, values: ParameterValues) => {
+    if (!doc.parameters?.length) return {};
+    const query = viewQuery(doc.parameters, values);
+    return {
+      parameters: Object.fromEntries(
+        doc.parameters.map((param) => [param.id, parameterText(param, values[param.id] as ParameterValue)]),
+      ),
+      viewUrl: query ? `${urlOf(id)}?${query}` : urlOf(id),
+    };
+  };
+  // A view in the text form of a link ("*" is all); descriptions live in get_reference.
+  const viewParameters = z.record(z.string(), z.string()).optional();
 
   // Built once: the factory below runs per request, and the advertised JSON Schemas are cached on these objects.
   const connectorIds = connectors.list().map((c) => c.id);
@@ -172,6 +193,7 @@ export function createMcp(deps: Deps) {
       transforms: z.array(TransformSchema).default([]),
       dashboardId: dashboardId.optional(),
       sampleRows: z.number().int().min(1).max(100).default(15),
+      parameters: z.record(z.string(), z.string()).optional(),
     }),
     { connectorIds },
   );
@@ -379,7 +401,9 @@ export function createMcp(deps: Deps) {
           const checked = new Set(touched);
           for (const id of touched) for (const d of dependentsOf(doc, id)) checked.add(d);
           const checkedDatasets = doc.datasets.filter((d) => checked.has(d.id));
-          const scope = data.scope(target, doc);
+          // The data checks show the view at the defaults; the answer says so when it matters.
+          const defaults = viewValues(doc, undefined);
+          const scope = data.scope(target, doc, { parameters: defaults });
           // Keys pasted into URLs end up in every version and every get_dashboard answer: point to secrets instead.
           const warnings = touchedDatasets.flatMap((d) => {
             const params =
@@ -437,6 +461,11 @@ export function createMcp(deps: Deps) {
             version: result.envelope.meta.version,
             changes: result.changes,
             dataChecks,
+            ...(checkedDatasets.some((d) => lineageParameters(doc, d.id).length > 0)
+              ? {
+                  parametersNote: `Checked with the defaults (${parameterSummary(doc.parameters, defaults)}); use get_data with parameters to check another view.`,
+                }
+              : {}),
             ...(warnings.length ? { warnings } : {}),
             url: urlOf(args.dashboardId),
             hint: args.dryRun
@@ -459,7 +488,13 @@ export function createMcp(deps: Deps) {
       tool(
         SCOPES.read,
         async (
-          args: { source: unknown; transforms: unknown[]; dashboardId?: string; sampleRows: number },
+          args: {
+            source: unknown;
+            transforms: unknown[];
+            dashboardId?: string;
+            sampleRows: number;
+            parameters?: Record<string, string>;
+          },
           p,
         ) => {
           const draft = DatasetSchema.parse({
@@ -470,11 +505,17 @@ export function createMcp(deps: Deps) {
           });
           // Raw uploads and secrets are for editors only, in the draft and in every dataset it reads; without a
           // dashboard only the user's own secrets apply, and nothing can be read from other datasets.
-          const target = await dashboards.previewTarget(p, args.dashboardId, draft);
-          if (draft.source.kind === 'connector')
-            connectors.validateParams(draft.source.connector, draft.source.params);
+          const target = await dashboards.previewTarget(p, args.dashboardId, draft, {
+            ...(args.parameters ? { parameters: args.parameters } : {}),
+            loadOptions: (saved, t) => loadDataOptions(data, t, saved, args.parameters),
+          });
           const dataset = target.dataset;
-          const result = await data.scope(target, target.doc).resolve(dataset, { maxRows: 5000 });
+          // Checked on the bound draft: before binding, a parameter may be a filter reference.
+          if (dataset.source.kind === 'connector')
+            connectors.validateParams(dataset.source.connector, dataset.source.params);
+          const result = await data
+            .scope(target, target.doc, { parameters: target.parameters })
+            .resolve(dataset, { maxRows: 5000 });
           if (result.error && result.table.rows.length === 0) return fail(result.error);
           const profile = profileTable(result.table);
           return json({
@@ -508,21 +549,36 @@ export function createMcp(deps: Deps) {
             .enum(['start', 'end'])
             .default('start')
             .describe('"end": the last rows (newest of a time series)'),
+          parameters: viewParameters,
         }),
         annotations: read,
       },
       tool(
         SCOPES.read,
-        async (args: { dashboardId: string; datasetId: string; limit: number; from: 'start' | 'end' }, p) => {
+        async (
+          args: {
+            dashboardId: string;
+            datasetId: string;
+            limit: number;
+            from: 'start' | 'end';
+            parameters?: Record<string, string>;
+          },
+          p,
+        ) => {
           const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
           const dataset = doc.datasets.find((d) => d.id === args.datasetId);
           if (!dataset)
             return fail(
               `No dataset "${args.datasetId}". Datasets: ${doc.datasets.map((d) => d.id).join(', ') || 'none'}`,
             );
-          const result = await data
-            .scope({ id: args.dashboardId, ownerId: meta.ownerId }, doc)
-            .resolve(dataset);
+          const target = { id: args.dashboardId, ownerId: meta.ownerId };
+          const values = viewValues(
+            doc,
+            args.parameters,
+            Date.now(),
+            await loadDataOptions(data, target, doc, args.parameters),
+          );
+          const result = await data.scope(target, doc, { parameters: values }).resolve(dataset);
           const profile = profileTable(result.table);
           return json({
             ...sampleTable(result.table, args.limit, args.from),
@@ -535,6 +591,7 @@ export function createMcp(deps: Deps) {
               ? { watchers: deps.hub.watchers(args.dashboardId), note: ACCUMULATE_NOTE }
               : {}),
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
+            ...viewEcho(args.dashboardId, doc, values),
           });
         },
       ),
@@ -546,28 +603,37 @@ export function createMcp(deps: Deps) {
         title: 'Suggest visualisations',
         description:
           'Profiles a saved dataset and returns suggested widgets as ready-to-apply operations, each with a rationale.',
-        inputSchema: z.object({ dashboardId, datasetId: z.string() }),
+        inputSchema: z.object({ dashboardId, datasetId: z.string(), parameters: viewParameters }),
         annotations: read,
       },
-      tool(SCOPES.read, async (args: { dashboardId: string; datasetId: string }, p) => {
-        const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
-        const dataset = doc.datasets.find((d) => d.id === args.datasetId);
-        if (!dataset) return fail(`No dataset "${args.datasetId}"`);
-        const result = await data
-          .scope({ id: args.dashboardId, ownerId: meta.ownerId }, doc)
-          .resolve(dataset);
-        const profile = profileTable(result.table);
-        return json({
-          rows: profile.rows,
-          columns: profile.columns.map(({ sample: _s, ...c }) => c),
-          suggestions: suggestionOps(
+      tool(
+        SCOPES.read,
+        async (args: { dashboardId: string; datasetId: string; parameters?: Record<string, string> }, p) => {
+          const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
+          const dataset = doc.datasets.find((d) => d.id === args.datasetId);
+          if (!dataset) return fail(`No dataset "${args.datasetId}"`);
+          const target = { id: args.dashboardId, ownerId: meta.ownerId };
+          const values = viewValues(
             doc,
-            dataset,
-            suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
-            'derive',
-          ),
-        });
-      }),
+            args.parameters,
+            Date.now(),
+            await loadDataOptions(data, target, doc, args.parameters),
+          );
+          const result = await data.scope(target, doc, { parameters: values }).resolve(dataset);
+          const profile = profileTable(result.table);
+          return json({
+            rows: profile.rows,
+            columns: profile.columns.map(({ sample: _s, ...c }) => c),
+            suggestions: suggestionOps(
+              doc,
+              dataset,
+              suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
+              'derive',
+            ),
+            ...viewEcho(args.dashboardId, doc, values),
+          });
+        },
+      ),
     );
 
     server.registerTool(
@@ -631,14 +697,29 @@ export function createMcp(deps: Deps) {
           dashboardId,
           widgetId: z.string().optional(),
           theme: z.enum(['light', 'dark']).default('light'),
+          parameters: viewParameters,
         }),
         annotations: read,
       },
       tool(
         SCOPES.read,
-        async (args: { dashboardId: string; widgetId?: string; theme: 'light' | 'dark' }, p) => {
+        async (
+          args: {
+            dashboardId: string;
+            widgetId?: string;
+            theme: 'light' | 'dark';
+            parameters?: Record<string, string>;
+          },
+          p,
+        ) => {
           const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
           const target = { id: args.dashboardId, ownerId: meta.ownerId };
+          const values = viewValues(
+            doc,
+            args.parameters,
+            Date.now(),
+            await loadDataOptions(data, target, doc, args.parameters),
+          );
           const results = new Map<string, DatasetResult>();
           const needed = args.widgetId ? doc.widgets.filter((w) => w.id === args.widgetId) : doc.widgets;
           if (args.widgetId && needed.length === 0) return fail(`No widget "${args.widgetId}"`);
@@ -649,7 +730,7 @@ export function createMcp(deps: Deps) {
           const png = await snapshotGate.run(async (draw) => {
             // One scope for every widget of this picture, made once the gate admits it, so its deadline starts with
             // this render's own work.
-            const scope = data.scope(target, doc);
+            const scope = data.scope(target, doc, { parameters: values });
             await Promise.all(
               doc.datasets
                 .filter((d) => ids.has(d.id))
@@ -661,13 +742,17 @@ export function createMcp(deps: Deps) {
                     kind: 'widget',
                     widget,
                     result: 'datasetId' in widget ? results.get(widget.datasetId) : undefined,
-                    options: { theme: args.theme, entityColors: doc.colors },
+                    options: { theme: args.theme, entityColors: doc.colors, parameters: values },
                   }
                 : {
                     kind: 'dashboard',
                     doc,
                     results,
-                    options: { theme: args.theme, attributions: deps.connectors.attributions() },
+                    options: {
+                      theme: args.theme,
+                      attributions: deps.connectors.attributions(),
+                      parameters: values,
+                    },
                   },
             );
           });
@@ -677,6 +762,7 @@ export function createMcp(deps: Deps) {
           const warnings = [...results.values()]
             .filter((r) => r.warning && !r.error)
             .map((r) => `${r.datasetId}: ${r.warning}`);
+          const view = doc.parameters?.length ? [`Filters: ${parameterSummary(doc.parameters, values)}`] : [];
           const lines = [
             ...(problems.length ? [`Data problems: ${problems.join('; ')}`] : []),
             ...(warnings.length ? [`Data warnings: ${warnings.join('; ')}`] : []),
@@ -686,7 +772,10 @@ export function createMcp(deps: Deps) {
               { type: 'image', data: png.toString('base64'), mimeType: 'image/png' },
               {
                 type: 'text',
-                text: lines.length ? lines.join('\n') : `Rendered ${needed.length} widget(s).`,
+                text: [
+                  lines.length ? lines.join('\n') : `Rendered ${needed.length} widget(s).`,
+                  ...view,
+                ].join('\n'),
               },
             ],
           };

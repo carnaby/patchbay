@@ -730,7 +730,11 @@ export function Menu({
   };
 
   useEffect(() => {
-    if (open) list.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)')?.focus();
+    if (!open) return;
+    // A menu with nothing to choose (only a hint) takes the focus itself: left on the trigger, Escape would reach the
+    // drawer around it and close that instead, losing its draft.
+    const first = list.current?.querySelector<HTMLElement>('[role="menuitem"]:not(:disabled)');
+    (first ?? list.current)?.focus();
   }, [open]);
 
   const onKeyDown = (e: ReactKeyboardEvent) => {
@@ -793,7 +797,7 @@ export function Menu({
                 tabIndex={-1}
                 onKeyDown={onKeyDown}
                 style={position}
-                className="fixed z-50 overflow-y-auto overscroll-contain rounded-xl border border-line bg-surface p-1 shadow-xl"
+                className="fixed z-50 overflow-y-auto overscroll-contain rounded-xl border border-line bg-surface p-1 shadow-xl outline-none"
               >
                 {children}
               </div>

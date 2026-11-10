@@ -1,8 +1,12 @@
 import {
   CACHED_DATA_WARNING,
   creditLine,
+  crossFilterOf,
+  crossFilterSelection,
   effectiveRefreshSec,
   isDataWidgetType,
+  readParameterValues,
+  type Scalar,
   type SoundRule,
   soundRuleMissingColumns,
   sourceSecretIds,
@@ -27,15 +31,19 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { cx, IconButton, Menu, MenuItem, MenuSeparator, toast } from '../components/ui.tsx';
 import { relativeTime, useAttributions, useSecretsStatus } from '../lib/hooks.ts';
 import { credentialErrorHint } from '../lib/secrets.ts';
 import { SOUND_LABELS, useSoundSettings } from '../lib/sounds.ts';
+import { crossFilterClick } from '../state/cross-filter.ts';
 import { useEditor } from '../state/editor.ts';
+import { dataPickProblem, rawQuery, useParameters } from '../state/parameters.ts';
 import { MOVE_LABELS, type MoveDirection, reorderOp } from '../state/reorder.ts';
 import { useDatasetResult } from '../state/sync.ts';
 import { WidgetBody } from '../widgets/WidgetBody.tsx';
+import { useDataChoices } from './DataOptions.tsx';
+import { PresentingContext } from './presentation.tsx';
 
 function uniqueId(base: string, taken: Set<string>) {
   const root = base.replace(/-\d+$/, '').slice(0, 34);
@@ -74,9 +82,47 @@ export const WidgetFrame = memo(function WidgetFrame({
   );
   // The credit line follows the whole lineage, so it needs every dataset of the document.
   const datasets = useEditor((s) => s.doc?.datasets);
+  const view = useParameters((s) => rawQuery(s.raw));
   const flashAt = useEditor((s) => s.flash[widget.id]);
   const entityColors = useEditor((s) => s.doc?.colors);
   const isOwner = useEditor((s) => Boolean(s.access?.isOwner));
+  const presenting = useContext(PresentingContext);
+  const parameters = useEditor((s) => s.doc?.parameters);
+  const raw = useParameters((s) => s.raw);
+  // What the widget's filter selects now, also while presenting: a pinned view shows which item it is about.
+  const selection = useMemo(() => {
+    if (!crossFilterOf(widget)) return null;
+    const { values } = readParameterValues(
+      parameters,
+      (id) => (Object.hasOwn(raw, id) ? raw[id] : undefined),
+      Date.now(),
+      // As the store reads it: a value of a select fed by data is kept until its choices are loaded.
+      { lenientData: true },
+    );
+    return crossFilterSelection(widget, values);
+  }, [widget, parameters, raw]);
+  const crossParam = parameters?.find((p) => p.id === crossFilterOf(widget)?.parameter);
+  // Choices of a select fed by data: a click is checked against them, not left to the server's 400 and a reset that
+  // would follow a pushed history entry.
+  const dataChoices = useDataChoices(dashboardId, crossParam, live);
+  const onPick = useMemo(() => {
+    if (!crossFilterOf(widget) || presenting) return undefined;
+    return (value: Scalar | undefined) => {
+      const result = crossFilterClick(widget, parameters, useParameters.getState().raw, value, presenting);
+      if (!result) return;
+      const refused = 'text' in result ? dataPickProblem(crossParam, result.text, dataChoices) : null;
+      if (refused) {
+        toast(refused, 'bad');
+        return;
+      }
+      // Pushed, not replaced: Back undoes a click (decision 7 of proposal 0010).
+      const problem =
+        'problem' in result
+          ? result.problem
+          : useParameters.getState().set(result.id, result.text, parameters, 'push');
+      if (problem) toast(problem, 'bad');
+    };
+  }, [widget, parameters, presenting, crossParam, dataChoices]);
   const { data: secretsStatus } = useSecretsStatus();
   const apply = useEditor((s) => s.apply);
   const query = useDatasetResult(dashboardId, dataset, live);
@@ -286,7 +332,7 @@ export const WidgetFrame = memo(function WidgetFrame({
               {expanded ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
             </IconButton>
             <a
-              href={`/api/dashboards/${dashboardId}/snapshot.png?widget=${encodeURIComponent(widget.id)}`}
+              href={`/api/dashboards/${dashboardId}/snapshot.png?widget=${encodeURIComponent(widget.id)}${view ? `&${view}` : ''}`}
               target="_blank"
               rel="noreferrer"
               className="pb-no-drag hidden size-7 items-center justify-center rounded-md text-muted opacity-0 transition group-hover:opacity-100 hover:bg-surface-2 hover:text-ink sm:flex"
@@ -302,6 +348,8 @@ export const WidgetFrame = memo(function WidgetFrame({
           widget={widget}
           result={result}
           entityColors={entityColors}
+          selection={selection}
+          onPick={onPick}
           loading={query.isFetching || !query.isFetched}
           asTable={asTable}
           errorHint={

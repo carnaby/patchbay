@@ -32,8 +32,15 @@ export class SnapshotCache {
     this.now = options.now ?? Date.now;
   }
 
-  static key(parts: { id: string; version: number; theme: string; widget?: string | undefined }) {
-    return JSON.stringify([parts.id, parts.version, parts.theme, parts.widget ?? null]);
+  /** `view`: the non-default filter values, canonical (core viewQuery); a snapshot at the defaults shares the plain link's. */
+  static key(parts: {
+    id: string;
+    version: number;
+    theme: string;
+    widget?: string | undefined;
+    view?: string | undefined;
+  }) {
+    return JSON.stringify([parts.id, parts.version, parts.theme, parts.widget ?? null, parts.view || null]);
   }
 
   get(key: string, render: () => Promise<Buffer>): Promise<Buffer> {

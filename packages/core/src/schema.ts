@@ -11,6 +11,13 @@ import { isValidTimeZone } from './clock.ts';
 import { IdSchema } from './ids.ts';
 import { jsonShapeProblem } from './json-shape.ts';
 import { DATASET_DEPTH, DATASET_INPUTS, lineageIssues } from './lineage.ts';
+import {
+  MAX_PARAMETERS,
+  optionsFromIssues,
+  ParameterSchema,
+  ParamIdSchema,
+  parameterIssues,
+} from './parameters.ts';
 import { SEARCH_ENGINES } from './search.ts';
 import { SoundRuleSchema } from './sound.ts';
 import { STATUS_LEVELS, STATUS_LIMITS } from './status.ts';
@@ -41,6 +48,8 @@ export const LIMITS = {
   datasetDepth: DATASET_DEPTH,
   /** Datasets one dataset reads, directly or through others. */
   datasetInputs: DATASET_INPUTS,
+  /** Filters a dashboard declares (proposal 0010). */
+  parameters: MAX_PARAMETERS,
   markdown: 20_000,
   title: 120,
   description: 1000,
@@ -65,6 +74,13 @@ export const SecretIdSchema = z
 
 const scalar = z.union([z.number(), z.string(), z.boolean(), z.null()]);
 const field = z.string().min(1).max(200);
+
+/**
+ * A click on an item of a chart, table or map sets a dashboard filter (proposal 0010, phase 2): the filter, and the
+ * column whose value the clicked item gives. Its rules are in parameterIssues; descriptions in the MCP reference text.
+ */
+export const CrossFilterSchema = z.strictObject({ parameter: ParamIdSchema, field });
+export type CrossFilter = z.infer<typeof CrossFilterSchema>;
 
 /** Feeds are fetched at most this often per address, whatever a dataset's refreshSec says. */
 export const FEED_MIN_REFRESH_SEC = 300;
@@ -287,6 +303,7 @@ export const ChartConfigSchema = z.strictObject({
   colors: z.union([z.array(ColorSchema).max(12), ColorMapSchema]).optional(),
   maxPoints: z.number().int().min(10).max(20_000).default(5000),
   referenceLines: z.array(ReferenceLineSchema).max(3).optional(),
+  crossFilter: CrossFilterSchema.optional(),
 });
 export type ChartConfig = z.infer<typeof ChartConfigSchema>;
 
@@ -363,6 +380,7 @@ export const TableConfigSchema = z.strictObject({
   rules: z.array(TableRuleSchema).max(6).optional(),
   // Optional, not defaulted: tables saved before it existed must round-trip unchanged. Absent means "table".
   style: z.enum(['table', 'list']).optional(),
+  crossFilter: CrossFilterSchema.optional(),
 });
 export type TableConfig = z.infer<typeof TableConfigSchema>;
 
@@ -381,6 +399,7 @@ export const MapConfigSchema = z.strictObject({
   format: FormatSchema.optional(),
   // Map form only: the array form of chart colors exists for documents older than colour maps.
   colors: ColorMapSchema.optional(),
+  crossFilter: CrossFilterSchema.optional(),
 });
 export type MapConfig = z.infer<typeof MapConfigSchema>;
 
@@ -490,6 +509,8 @@ export const DashboardDocSchema = z.strictObject({
   colors: ColorMapSchema.optional().describe(
     "Dashboard-wide colour per entity (series value, y column or slice label); a widget's own map wins",
   ),
+  // Optional, not defaulted, like colors: documents without filters must round-trip unchanged.
+  parameters: z.array(ParameterSchema).max(LIMITS.parameters).optional(),
 });
 export type DashboardDoc = z.infer<typeof DashboardDocSchema>;
 export type DashboardDocInput = z.input<typeof DashboardDocSchema>;
@@ -541,6 +562,8 @@ export function integrityIssues(doc: DashboardDoc): string[] {
     }
   }
   issues.push(...lineageIssues(doc));
+  issues.push(...parameterIssues(doc));
+  issues.push(...optionsFromIssues(doc));
   const widgetIds = new Set<string>();
   for (const w of doc.widgets) {
     if (widgetIds.has(w.id)) issues.push(`Duplicate widget id "${w.id}"`);
