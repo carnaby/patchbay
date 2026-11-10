@@ -1,7 +1,5 @@
 import type { ConnectorInfo, DataTable } from '@patchbay/core';
 import { HttpError } from '../util/errors.ts';
-import { OutboundLimiter } from '../util/outbound.ts';
-import { currentClient } from '../util/request-context.ts';
 import { fetchJson } from '../util/safe-fetch.ts';
 import { demoSales, demoSignal } from './demo.ts';
 import { githubRepo, hackerNews, npmDownloads } from './dev.ts';
@@ -58,12 +56,9 @@ export class ConnectorService {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly inflight = new Map<string, Promise<ConnectorResult>>();
   private readonly offline: boolean;
-  private readonly outbound: OutboundLimiter;
 
-  /** `outbound` is shared with http sources and feeds (app.ts), so one budget covers all of this server's requests. */
-  constructor(options: { offline: boolean; outbound?: OutboundLimiter }) {
+  constructor(options: { offline: boolean }) {
     this.offline = options.offline;
-    this.outbound = options.outbound ?? new OutboundLimiter();
   }
 
   list(): ConnectorInfo[] {
@@ -109,15 +104,11 @@ export class ConnectorService {
 
     const run = (async (): Promise<ConnectorResult> => {
       try {
-        // Every filter value is a new set of params and so a new upstream load: they share a per-connector budget
-        // like http sources share a per-host one. Counted per load, as one load may ask a host for many URLs.
         const table = this.offline
           ? connector.sample(params)
-          : await this.outbound.runFor(currentClient(), `the ${connector.info.name} connector`, () =>
-              connector.fetch(params, {
-                fetchJson: (url, headers) => fetchJson(url, headers ? { headers } : {}),
-              }),
-            );
+          : await connector.fetch(params, {
+              fetchJson: (url, headers) => fetchJson(url, headers ? { headers } : {}),
+            });
         const fetchedAt = Date.now();
         this.cache.set(key, { table, fetchedAt, expiresAt: fetchedAt + connector.info.minRefreshSec * 1000 });
         this.evict();

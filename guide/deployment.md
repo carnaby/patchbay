@@ -348,8 +348,7 @@ request gets `408` and the connection is closed, so a slow sender never holds th
 arriving or waiting hold at most 16 MB together, two per client. Node waits at most 20 s for a request's headers and 90
 s for a whole request. Every JSON request body and HTTP source response is refused before parsing when it nests deeper
 than 64 levels. HTTP sources are fetched at most three at a time, two at a time and 60 times a minute per host, and a
-failing address is not asked again for 30 s; connector loads share those three places and are limited the same way
-per connector; the pipeline worker's queue takes jobs round-robin per client, one client
+failing address is not asked again for 30 s; the pipeline worker's queue takes jobs round-robin per client, one client
 holding at most a tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are drawn one at a time in a worker thread,
 at most four requests in flight and two per client; each client may have four drawn at once and then one every two
 seconds (images served from the 30 s cache do not count), beyond which the API answers `429 Too Many Requests` with

@@ -69,14 +69,6 @@ export class OutboundLimiter {
     } catch {
       throw new HttpError(400, 'Invalid URL');
     }
-    return this.runFor(client, host, task);
-  }
-
-  /**
-   * Runs one request against the budget of `host`: a host name, or a connector ("the Hacker News connector", never a
-   * host name), whose single load may fan out to many URLs (one per story) and so is counted once per load.
-   */
-  async runFor<T>(client: string, host: string, task: () => Promise<T>): Promise<T> {
     const b = this.bucket(host);
     if (b.active >= this.perHostConcurrency || b.tokens < 1) {
       throw new HttpError(
