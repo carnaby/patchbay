@@ -2,6 +2,7 @@ import { applyOps, emptyDashboard, type Parameter, ParameterSchema, ParamIdSchem
 import { describe, expect, it } from 'vitest';
 import {
   checkParameter,
+  choiceSourcePatch,
   defaultOps,
   idFromLabel,
   newParameter,
@@ -70,6 +71,26 @@ describe('the Filters panel form', () => {
     });
     expect(checkParameter(region, [region])).toEqual({
       error: 'Filter ids must be unique: "region" appears twice',
+    });
+  });
+
+  it('switches a choice between a fixed list and a dataset column, never inventing an option', () => {
+    const fromData = choiceSourcePatch('data', region, 'eu | EU\nus | US', 'sales');
+    expect(fromData).toEqual({
+      options: undefined,
+      optionsFrom: { dataset: 'sales', field: '' },
+      all: 'All regions',
+      default: null,
+    });
+    const { options: _options, ...dataDraft } = { ...region, ...fromData };
+    // Back to a list with nothing typed yet: no option named "a" appears, and Save says what is missing.
+    const empty = choiceSourcePatch('list', dataDraft, '', 'sales');
+    expect(empty).toEqual({ optionsFrom: undefined, options: [] });
+    const { optionsFrom: _from, ...listDraft } = { ...dataDraft, ...empty };
+    expect(checkParameter(listDraft, [])).toEqual({ error: 'options: Give at least one option' });
+    expect(choiceSourcePatch('list', dataDraft, 'eu\nus', 'sales')).toEqual({
+      optionsFrom: undefined,
+      options: [{ value: 'eu' }, { value: 'us' }],
     });
   });
 

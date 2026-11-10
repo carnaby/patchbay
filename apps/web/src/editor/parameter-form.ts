@@ -92,6 +92,27 @@ export function parseOptions(text: string, previous: readonly OptionInput[] = []
   });
 }
 
+/**
+ * The draft change of the "Fixed list" / "From a dataset column" switch. Never both: the schema refuses options
+ * together with optionsFrom. A list starts from what the author typed before, or empty: a made-up option would save
+ * as a real choice, while an empty list keeps Save disabled with the reason.
+ */
+export function choiceSourcePatch(
+  mode: 'list' | 'data',
+  draft: Record<string, unknown>,
+  optionsDraft: string,
+  firstDataset: string | undefined,
+): Record<string, unknown> {
+  if (mode === 'data')
+    return {
+      options: undefined,
+      optionsFrom: { dataset: firstDataset ?? '', field: '' },
+      all: typeof draft.all === 'string' ? draft.all : 'All',
+      default: null,
+    };
+  return { optionsFrom: undefined, options: parseOptions(optionsDraft, []) };
+}
+
 /** The declaration a form describes, or the first reason it cannot be saved (the same checks as a save). */
 export function checkParameter(
   candidate: unknown,

@@ -83,7 +83,7 @@ export const ParameterSchema = z.discriminatedUnion('type', [
       type: z.literal('select'),
       options: z
         .array(z.strictObject({ value: OptionValueSchema, label: z.string().min(1).max(60).optional() }))
-        .min(1)
+        .min(1, 'Give at least one option')
         .max(50)
         .optional(),
       // The distinct values of a column of a dataset that uses no filter, instead of a fixed list.

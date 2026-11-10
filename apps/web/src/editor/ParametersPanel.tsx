@@ -33,6 +33,7 @@ import { summaryOf, useParameters } from '../state/parameters.ts';
 import { useDatasetColumns } from '../state/sync.ts';
 import {
   checkParameter,
+  choiceSourcePatch,
   defaultOps,
   idFromLabel,
   newParameter,
@@ -331,18 +332,7 @@ function SelectFields({
         value={fromData ? 'data' : 'list'}
         onChange={(mode) => {
           if (mode === (fromData ? 'data' : 'list')) return;
-          if (mode === 'data')
-            set({
-              options: undefined,
-              optionsFrom: { dataset: sources[0]?.id ?? '', field: '' },
-              all: all ?? 'All',
-              default: null,
-            });
-          else {
-            setOptionsDraft(optionsDraft || 'a');
-            // Never both: the schema refuses options together with optionsFrom.
-            set({ optionsFrom: undefined, options: parseOptions(optionsDraft || 'a', []) });
-          }
+          set(choiceSourcePatch(mode, draft, optionsDraft, sources[0]?.id));
         }}
         options={[
           { value: 'list', label: 'Fixed list' },
