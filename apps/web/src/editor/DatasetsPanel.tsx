@@ -437,6 +437,10 @@ function SourceEditor({
   // Where the caret was last in the URL and the body: the Insert filter menu takes the focus away.
   const [urlCaret, setUrlCaret] = useState<number | null>(null);
   const [bodyCaret, setBodyCaret] = useState<number | null>(null);
+  // The body is pretty-printed on blur, except when the blur goes to its Insert filter menu: the caret would no longer
+  // point where the user put it, and the growing field would move the menu away from the pointer.
+  const bodyInsert = useRef<HTMLSpanElement>(null);
+  const toBodyInsert = useRef(false);
   const urlChoices = (url: string, secrets: boolean) => {
     const place = urlPlaceAt(url, urlCaret ?? url.length);
     return place ? refChoices(parameters, place, { secrets }) : [];
@@ -828,30 +832,50 @@ function SourceEditor({
                       setBodyProblem(parsed.ok ? null : parsed.error);
                       if (parsed.ok) onChange(withBody(source, parsed.body));
                     }}
-                    onBlur={() => {
+                    onFocus={() => {
+                      toBodyInsert.current = false;
+                    }}
+                    onBlur={(e) => {
+                      const target = e.relatedTarget;
+                      if (toBodyInsert.current || (target && bodyInsert.current?.contains(target))) return;
                       // Pretty-printed once the user is done typing, never while they type.
                       const parsed = parseBodyText(bodyDraft);
-                      if (parsed.ok) setBodyDraft(bodyText(parsed.body));
+                      if (!parsed.ok) return;
+                      const pretty = bodyText(parsed.body);
+                      if (pretty === bodyDraft) return;
+                      setBodyDraft(pretty);
+                      // A caret in the old text points elsewhere in the new one: inserts go to the end until the
+                      // user puts it back.
+                      setBodyCaret(null);
                     }}
                   />
                 )}
               </Field>
               {parameters?.length ? (
                 <div className="flex justify-end">
-                  <InsertFilterMenu
-                    choices={refChoices(parameters, 'body', { secrets: (source.secrets?.length ?? 0) > 0 })}
-                    emptyHint="Only choice and period filters can go into a body."
-                    onInsert={(text) => {
-                      // A whole JSON string value: "region": "$param.region".
-                      const at = bodyCaret ?? bodyDraft.length;
-                      const next = insertAt(bodyDraft, at, at, `"${text}"`);
-                      setBodyDraft(next.value);
-                      setBodyCaret(next.caret);
-                      const parsed = parseBodyText(next.value);
-                      setBodyProblem(parsed.ok ? null : parsed.error);
-                      if (parsed.ok) onChange(withBody(source, parsed.body));
+                  <span
+                    ref={bodyInsert}
+                    className="contents"
+                    onPointerDown={() => {
+                      // Before the body's blur, which in some browsers names no related target for a button.
+                      toBodyInsert.current = true;
                     }}
-                  />
+                  >
+                    <InsertFilterMenu
+                      choices={refChoices(parameters, 'body', { secrets: (source.secrets?.length ?? 0) > 0 })}
+                      emptyHint="Only choice and period filters can go into a body."
+                      onInsert={(text) => {
+                        // A whole JSON string value: "region": "$param.region".
+                        const at = bodyCaret ?? bodyDraft.length;
+                        const next = insertAt(bodyDraft, at, at, `"${text}"`);
+                        setBodyDraft(next.value);
+                        setBodyCaret(next.caret);
+                        const parsed = parseBodyText(next.value);
+                        setBodyProblem(parsed.ok ? null : parsed.error);
+                        if (parsed.ok) onChange(withBody(source, parsed.body));
+                      }}
+                    />
+                  </span>
                 </div>
               ) : null}
             </>
