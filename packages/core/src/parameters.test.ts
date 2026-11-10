@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   DATE_PRESETS,
   DashboardDocSchema,
@@ -364,6 +364,30 @@ describe('options from a dataset column', () => {
     );
     expect(distinctOptions(many, 'code')).toHaveLength(200);
     expect(distinctOptions(many, 'missing')).toEqual([]);
+  });
+
+  it('sorts a large column with one collator, in the same natural order', () => {
+    // localeCompare with options builds a collator per comparison: 10,000 values took ~480 ms of the main thread.
+    const spy = vi.spyOn(String.prototype, 'localeCompare');
+    try {
+      const table = inferTable(
+        Array.from({ length: 10_000 }, (_, i) => ({ code: `name-${(i * 7919) % 100_003}` })),
+      );
+      const options = distinctOptions(table, 'code');
+      expect(spy).not.toHaveBeenCalled();
+      expect(options).toHaveLength(200);
+      const all = table.rows.map((r) => String(r.code));
+      const expected = all.sort((a, b) => a.localeCompare(b, 'en', { numeric: true })).slice(0, 200);
+      expect(options).toEqual(expected);
+      expect(distinctOptions(inferTable([{ c: 'b10' }, { c: 'b9' }, { c: 'B1' }, { c: 'a' }]), 'c')).toEqual([
+        'a',
+        'B1',
+        'b9',
+        'b10',
+      ]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('checks the column filter on every write', () => {

@@ -6,6 +6,7 @@
 import {
   ALL_TEXT,
   type DashboardDoc,
+  type DataTable,
   distinctOptions,
   type OptionValue,
   type ParameterValues,
@@ -43,6 +44,27 @@ export function viewValues(
 }
 
 /**
+ * Choices per result table and column. A cached result keeps its table object until a new reading replaces it, so
+ * every request on the same result shares one computation instead of repeating it on the main thread; a new reading
+ * is a new table, and a dropped table takes its entry with it.
+ */
+const choicesByTable = new WeakMap<DataTable, Map<string, readonly OptionValue[]>>();
+
+function choicesOf(table: DataTable, field: string): readonly OptionValue[] {
+  let byField = choicesByTable.get(table);
+  if (!byField) {
+    byField = new Map();
+    choicesByTable.set(table, byField);
+  }
+  let choices = byField.get(field);
+  if (!choices) {
+    choices = distinctOptions(table, field);
+    byField.set(field, choices);
+  }
+  return choices;
+}
+
+/**
  * The choices of selects that take them from a dataset column, for the values a request gives (none when it gives
  * none, or "All"). Read through a scope, so it is usually a cached lookup; a dataset that fails gives no choices, and
  * `viewValues` then refuses its values instead of accepting them unchecked.
@@ -52,8 +74,8 @@ export async function loadDataOptions(
   target: DashboardTarget,
   doc: DashboardDoc,
   raw: RawParameters | undefined,
-): Promise<ReadonlyMap<string, OptionValue[]>> {
-  const out = new Map<string, OptionValue[]>();
+): Promise<ReadonlyMap<string, readonly OptionValue[]>> {
+  const out = new Map<string, readonly OptionValue[]>();
   const wanted = (doc.parameters ?? []).flatMap((p) =>
     p.type === 'select' && p.optionsFrom && raw && Object.hasOwn(raw, p.id) && raw[p.id] !== ALL_TEXT
       ? [{ id: p.id, ...p.optionsFrom }]
@@ -66,7 +88,7 @@ export async function loadDataOptions(
     const dataset = doc.datasets.find((d) => d.id === w.dataset);
     if (!dataset) continue;
     const result = await scope.resolve(dataset);
-    if (!result.error) out.set(w.id, distinctOptions(result.table, w.field));
+    if (!result.error) out.set(w.id, choicesOf(result.table, w.field));
   }
   return out;
 }

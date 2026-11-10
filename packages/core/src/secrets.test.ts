@@ -378,13 +378,43 @@ describe('filters on secret-backed sources (proposal 0010, decision 1)', () => {
     expect(secretRefChanges(query, docWith(URL_REGION, [region, { ...q, label: 'Search' }]))).toEqual([]);
   });
 
-  it('counts a body that starts sending a filter, and leaves other body edits as they were', () => {
+  it('counts a body that starts sending a filter', () => {
     const fixed = docWith(URL_PLAIN, [region], { variables: { r: 'eu' } });
     const sends = docWith(URL_PLAIN, [region], { variables: { r: '$param.region' } });
     expect(secretRefChanges(fixed, sends)).toEqual(['o']);
-    expect(secretRefChanges(fixed, docWith(URL_PLAIN, [region], { variables: { r: 'us' } }))).toEqual([]);
     expect(sourceParameterIds(sends.datasets[0]!.source)).toEqual(['region']);
     expect(sourceParameterIds(docWith(URL_REGION).datasets[0]!.source)).toEqual(['region']);
+  });
+
+  it('counts a new method or body, which are new queries with the key, but not the order of its keys', () => {
+    const graphql = 'https://api.example.com/graphql';
+    const get = docWith(graphql, [region]);
+    const stats = docWith(graphql, [region], { query: '{ publicStats }', variables: { a: 1, b: 2 } });
+    // GET to POST, and a POST whose query asks for something else, send new requests with the owner's key.
+    expect(secretRefChanges(get, stats)).toEqual(['o']);
+    expect(
+      secretRefChanges(stats, docWith(graphql, [region], { query: '{ users { email apiKey } }' })),
+    ).toEqual(['o']);
+    expect(secretRefChanges(stats, docWith(graphql, [region], { query: '{ publicStats }' }))).toEqual(['o']);
+    expect(secretRefChanges(stats, get)).toEqual(['o']);
+    // The same JSON with its keys in another order is the same query; so is the same body.
+    const reordered = docWith(graphql, [region], { variables: { b: 2, a: 1 }, query: '{ publicStats }' });
+    expect(secretRefChanges(stats, reordered)).toEqual([]);
+    expect(secretRefChanges(stats, stats)).toEqual([]);
+    // Words on screen still send nothing new.
+    const renamed = structuredClone(stats);
+    renamed.datasets[0]!.name = 'Orders';
+    expect(secretRefChanges(stats, renamed)).toEqual([]);
+    // Without a secret nothing is asked, whatever the body.
+    const open = parseDashboard({
+      ...emptyDashboard('t'),
+      datasets: [
+        { id: 'o', name: 'O', source: { kind: 'http', url: graphql, method: 'POST', body: { q: 1 } } },
+      ],
+    });
+    const openChanged = structuredClone(open);
+    (openChanged.datasets[0]!.source as { body: unknown }).body = { q: 2 };
+    expect(secretRefChanges(open, openChanged)).toEqual([]);
   });
 
   it('counts only what changes the queries a sent filter allows, never its labels or its place', () => {
