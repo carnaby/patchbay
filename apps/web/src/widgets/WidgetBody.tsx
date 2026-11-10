@@ -138,7 +138,8 @@ function ChartBody({
   const cross = widget.config.crossFilter;
   const byX = cross !== undefined && cross.field === widget.config.x;
   // By x the line keeps its symbols, which carry the dimming too, so also while presenting (as in snapshots). By
-  // series only the clicks need it: a line that takes clicks where none can land would still show a pointer.
+  // series only the clicks need it, so not while presenting. The pointer cursor over chart items is ECharts' default
+  // either way: this does not remove it.
   const clickable = byX ? 'x' : cross && onPick ? 'series' : undefined;
   const option = useMemo(
     () =>

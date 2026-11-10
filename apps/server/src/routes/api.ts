@@ -564,7 +564,7 @@ export function apiRoutes(deps: Deps) {
       return snapshotGate.run(async (draw) => {
         // One scope for the whole picture: a parent read by several widgets' datasets is loaded and processed once.
         // Made once the gate admits the snapshot: its deadline starts with this render's own work, and a cache hit
-        // makes none.
+        // draws nothing (a data-driven value still had its choices read above, to check it).
         const scope = data.scope(target, doc, { parameters });
         if (widget) {
           const dataset =
