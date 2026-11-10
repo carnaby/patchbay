@@ -1108,7 +1108,11 @@ function DatasetEditor({
         <div className="flex items-center gap-2">
           <h3 className="text-[13px] font-semibold text-ink-2">Preview</h3>
           {preview.isFetching ? <Spinner className="size-3.5" /> : null}
-          {shown.counts ? <span className="text-xs text-muted">{shown.counts}</span> : null}
+          {shown.counts ? (
+            <span className="text-xs text-muted">{shown.counts}</span>
+          ) : shown.body.kind === 'stale' && shown.body.table ? (
+            <span className="text-xs text-ink-2">{shown.body.message}</span>
+          ) : null}
         </div>
         {shown.body.kind === 'blocked' ? (
           <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">{shown.body.message}</p>
@@ -1118,30 +1122,42 @@ function DatasetEditor({
             hasSecrets={sourceSecretIds(debounced.source).length > 0}
             canAddSecrets={credentials.canUseSecrets && debounced.source.kind === 'http'}
           />
-        ) : result ? (
+        ) : shown.body.kind === 'loading' ? (
+          <Spinner />
+        ) : (
           <>
-            {result.warning ? (
-              <p className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
-                <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" />
-                <span>{result.warning}</span>
-              </p>
+            {shown.body.kind === 'stale' && !shown.body.table ? (
+              <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">{shown.body.message}</p>
             ) : null}
-            <PreviewTable result={result} />
-            {preview.data?.profile ? (
-              <div className="flex flex-wrap gap-1">
-                {preview.data.profile.columns.map((c) => (
-                  <Badge
-                    key={c.name}
-                    tone={c.role === 'measure' ? 'data' : c.role === 'time' ? 'good' : 'neutral'}
-                  >
-                    {c.name}: {c.role}
-                  </Badge>
-                ))}
+            {/* An out-of-date table stays where it is, dimmed, with the hint in the heading: the field flips between
+                valid and invalid while typing, and nothing may move. */}
+            {result && (shown.body.kind === 'table' || shown.body.table) ? (
+              <div
+                className={cx('space-y-2 transition-opacity', shown.body.kind === 'stale' && 'opacity-40')}
+                aria-disabled={shown.body.kind === 'stale' || undefined}
+              >
+                {result.warning ? (
+                  <p className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
+                    <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" />
+                    <span>{result.warning}</span>
+                  </p>
+                ) : null}
+                <PreviewTable result={result} />
+                {preview.data?.profile ? (
+                  <div className="flex flex-wrap gap-1">
+                    {preview.data.profile.columns.map((c) => (
+                      <Badge
+                        key={c.name}
+                        tone={c.role === 'measure' ? 'data' : c.role === 'time' ? 'good' : 'neutral'}
+                      >
+                        {c.name}: {c.role}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </>
-        ) : (
-          <Spinner />
         )}
       </section>
 

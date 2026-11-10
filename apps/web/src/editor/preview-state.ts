@@ -35,6 +35,8 @@ export function previewDelay(previewed: PreviewDraft, draft: PreviewDraft): numb
 
 export type PreviewBody =
   | { kind: 'blocked'; message: string }
+  /** The draft is out of date: the hint, above the last table (dimmed) when there is one to keep. */
+  | { kind: 'stale'; message: string; table: boolean }
   | { kind: 'error'; message: string }
   | { kind: 'table' }
   | { kind: 'loading' };
@@ -53,18 +55,27 @@ export interface PreviewInput {
 /**
  * Counts appear only beside the table they describe. Next to an error they would describe something else: the empty
  * table of a failed source, or the last good answer a failed request keeps as data. A form error keeps the draft at
- * its last valid value, so its preview is out of date and is replaced, as the credentials problem replaces it.
+ * its last valid value, so its preview is out of date: it is marked so but stays in place, because typing a body flips
+ * between valid and invalid at almost every keystroke and swapping the table for a message made the panel jump.
  */
 export function previewState(input: PreviewInput): { counts: string | null; body: PreviewBody } {
   const { result } = input;
+  const failed = input.requestError !== null || Boolean(result?.error);
   if (input.credentialsBlocked)
     return {
       counts: null,
       body: { kind: 'blocked', message: 'Fix the credentials above to load a preview.' },
     };
   if (input.formError !== null)
-    return { counts: null, body: { kind: 'blocked', message: 'Fix the error above to update the preview.' } };
-  if (input.requestError !== null || result?.error)
+    return {
+      counts: null,
+      body: {
+        kind: 'stale',
+        message: 'Fix the error above to update the preview.',
+        table: Boolean(result) && !failed,
+      },
+    };
+  if (failed)
     return { counts: null, body: { kind: 'error', message: input.requestError ?? result?.error ?? '' } };
   if (!result) return { counts: null, body: { kind: 'loading' } };
   const rows = `${result.table.rows.length.toLocaleString('en')} rows${result.truncated ? ' (first 500)' : ''}`;

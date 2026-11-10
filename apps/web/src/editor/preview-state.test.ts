@@ -72,11 +72,29 @@ describe('the dataset editor preview', () => {
     });
   });
 
-  it('does not present the last valid draft as current while the form has an error', () => {
-    // The draft keeps the last valid body while the field holds invalid JSON: its preview is out of date.
-    expect(previewState({ ...ok, formError: 'Not valid JSON: Unexpected end', result: result(5) })).toEqual({
+  it('keeps the last table, marked out of date, while the form has an error', () => {
+    // The draft keeps the last valid body while the field holds invalid JSON. Typing flips between valid and invalid
+    // at almost every keystroke, so the table stays in place (dimmed) instead of being swapped for a message.
+    const stale = { kind: 'stale', message: 'Fix the error above to update the preview.' };
+    const formError = 'Not valid JSON: Unexpected end';
+    expect(previewState({ ...ok, formError, result: result(5) })).toEqual({
       counts: null,
-      body: { kind: 'blocked', message: 'Fix the error above to update the preview.' },
+      body: { ...stale, table: true },
+    });
+    // Without a table to keep (none yet, or the last one failed), only the hint shows.
+    expect(previewState({ ...ok, formError, result: undefined })).toEqual({
+      counts: null,
+      body: { ...stale, table: false },
+    });
+    expect(
+      previewState({ ...ok, formError, result: result(0, { error: 'Upstream responded 500' }) }),
+    ).toEqual({
+      counts: null,
+      body: { ...stale, table: false },
+    });
+    expect(previewState({ ...ok, formError, requestError: 'Network error', result: result(5) })).toEqual({
+      counts: null,
+      body: { ...stale, table: false },
     });
     expect(previewState({ ...ok, credentialsBlocked: true, result: result(5) })).toEqual({
       counts: null,
