@@ -5,6 +5,7 @@ import {
   datasetKey,
   datasetKeyFor,
   draftParameterIds,
+  draftView,
   followsCalendar,
   lineageKey,
   nextRefetch,
@@ -194,5 +195,34 @@ describe('dataset keys by view', () => {
       }),
     ).toEqual(['period', 'region']);
     expect(draftParameterIds(null, { source: { kind: 'inline', rows: [] }, transforms: [] })).toEqual([]);
+  });
+
+  it('previews a draft with the saved declarations in its key and only values they accept', () => {
+    const draft = {
+      source: { kind: 'dataset' as const, id: 'w' },
+      transforms: [{ type: 'filter' as const, expr: '$param.region == null || region == $param.region' }],
+    };
+    const view = draftView(filtered, filtered, draft, { region: 'eu' });
+    expect(view.values).toEqual({ region: 'eu' });
+    // A new default changes what the server answers for the same link: the preview asks again.
+    const newDefault = applyOps(filtered, [
+      { op: 'updateParameter', id: 'region', set: { default: 'us' } },
+    ]).doc;
+    expect(draftView(newDefault, newDefault, draft, { region: 'eu' }).key).not.toBe(view.key);
+    // A value the saved declaration no longer has is not sent.
+    const withoutEu = applyOps(filtered, [
+      { op: 'updateParameter', id: 'region', set: { options: [{ value: 'us' }] } },
+    ]).doc;
+    expect(draftView(withoutEu, withoutEu, draft, { region: 'eu' }).values).toEqual({});
+    // A filter the draft reads before it is declared, then once it is saved.
+    const city = { ...draft, transforms: [{ type: 'filter' as const, expr: 'city == $param.city' }] };
+    const declared = applyOps(filtered, [
+      {
+        op: 'addParameter',
+        parameter: { id: 'city', label: 'City', type: 'text', default: '' },
+      },
+    ]).doc;
+    expect(draftView(declared, declared, city, {}).key).not.toBe(draftView(filtered, filtered, city, {}).key);
+    expect(draftView(null, filtered, city, { city: 'x' }).values).toEqual({});
   });
 });

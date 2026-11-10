@@ -12,7 +12,7 @@ import {
   type SoundRule,
   upstreamOf,
 } from '@patchbay/core';
-import { normalizeRaw, type RawValues } from './parameters.ts';
+import { normalizeRaw, pickRaw, type RawValues } from './parameters.ts';
 
 const memo = new WeakMap<DashboardDoc, Map<string, string>>();
 
@@ -165,4 +165,23 @@ export function draftParameterIds(
   const own = parameterRefs(draft).map((r) => r.id);
   const upstream = doc ? upstreamOf(draft).flatMap((id) => lineageParameters(doc, id)) : [];
   return [...new Set([...own, ...upstream].filter(Boolean))].sort();
+}
+
+/**
+ * The view a preview of an unsaved draft sends, and the part of its query key that names it. The server reads the
+ * values against the saved declarations, so those are in the key (a new default or a just-saved filter asks again)
+ * and only values they accept are sent.
+ */
+export function draftView(
+  saved: DashboardDoc | null,
+  doc: DashboardDoc | null,
+  draft: Pick<LineageDataset, 'source' | 'transforms'>,
+  raw: RawValues,
+): { values: Record<string, string>; key: string } {
+  const ids = draftParameterIds(doc, draft);
+  const values = saved ? pickRaw(acceptedRaw(saved, raw), ids) : {};
+  const key = JSON.stringify(
+    ids.map((id) => [id, saved?.parameters?.find((p) => p.id === id) ?? null, values[id] ?? null]),
+  );
+  return { values, key };
 }
