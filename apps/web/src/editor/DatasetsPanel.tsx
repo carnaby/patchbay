@@ -80,7 +80,8 @@ import {
   slug,
   sourceCandidates,
 } from './dataset-lineage.ts';
-import { bodyText, parseBodyText, withBody, withMethod } from './http-body.ts';
+import { bodyText, parseBodyText, switchMethod, withBody } from './http-body.ts';
+import { previewDelay, previewState } from './preview-state.ts';
 import { askPublicSecrets } from './public-secrets.tsx';
 import { TransformEditor } from './TransformEditor.tsx';
 
@@ -396,10 +397,10 @@ function SourceEditor({
   };
   const setMethod = (method: HttpMethod) => {
     if (source.kind !== 'http' || method === (source.method ?? 'GET')) return;
-    // Neither direction carries a body over: a GET has none, and a fresh POST starts empty.
-    setBodyDraft('');
-    setBodyProblem(null);
-    onChange(withMethod(source, method));
+    const next = switchMethod(source, method, bodyDraft);
+    setBodyDraft(next.text);
+    setBodyProblem(next.error);
+    onChange(next.source);
   };
 
   const grouped = useMemo(() => {
@@ -841,9 +842,9 @@ function DatasetEditor({
   // A form problem that a save must not hide by storing the last valid value (an invalid POST body).
   const [sourceError, setSourceError] = useState<string | null>(null);
   useEffect(() => {
-    const t = setTimeout(() => setDebounced(draft), 450);
+    const t = setTimeout(() => setDebounced(draft), previewDelay(debounced, draft));
     return () => clearTimeout(t);
-  }, [draft]);
+  }, [draft, debounced]);
 
   const { data: connectors } = useConnectors();
   // Default the name to the connector's name until the user types their own.
@@ -983,6 +984,12 @@ function DatasetEditor({
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const suggestions = preview.data?.suggestions ?? [];
   const result = preview.data?.result;
+  const shown = previewState({
+    credentialsBlocked: previewBlocked,
+    formError: sourceError,
+    requestError: preview.error ? errorMessage(preview.error) : null,
+    result,
+  });
 
   return (
     <div className="space-y-6">
@@ -1101,47 +1108,56 @@ function DatasetEditor({
         <div className="flex items-center gap-2">
           <h3 className="text-[13px] font-semibold text-ink-2">Preview</h3>
           {preview.isFetching ? <Spinner className="size-3.5" /> : null}
-          {result ? (
-            <span className="text-xs text-muted">
-              {result.table.rows.length.toLocaleString('en')} rows{result.truncated ? ' (first 500)' : ''} ·{' '}
-              {result.table.columns.length} columns
-            </span>
+          {shown.counts ? (
+            <span className="text-xs text-muted">{shown.counts}</span>
+          ) : shown.body.kind === 'stale' && shown.body.table ? (
+            <span className="text-xs text-ink-2">{shown.body.message}</span>
           ) : null}
         </div>
-        {previewBlocked ? (
-          <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">
-            Fix the credentials above to load a preview.
-          </p>
-        ) : preview.error || result?.error ? (
+        {shown.body.kind === 'blocked' ? (
+          <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">{shown.body.message}</p>
+        ) : shown.body.kind === 'error' ? (
           <PreviewError
-            message={preview.error ? errorMessage(preview.error) : (result?.error ?? '')}
+            message={shown.body.message}
             hasSecrets={sourceSecretIds(debounced.source).length > 0}
             canAddSecrets={credentials.canUseSecrets && debounced.source.kind === 'http'}
           />
-        ) : result ? (
+        ) : shown.body.kind === 'loading' ? (
+          <Spinner />
+        ) : (
           <>
-            {result.warning ? (
-              <p className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
-                <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" />
-                <span>{result.warning}</span>
-              </p>
+            {shown.body.kind === 'stale' && !shown.body.table ? (
+              <p className="rounded-lg bg-surface-2 p-3 text-sm text-ink-2">{shown.body.message}</p>
             ) : null}
-            <PreviewTable result={result} />
-            {preview.data?.profile ? (
-              <div className="flex flex-wrap gap-1">
-                {preview.data.profile.columns.map((c) => (
-                  <Badge
-                    key={c.name}
-                    tone={c.role === 'measure' ? 'data' : c.role === 'time' ? 'good' : 'neutral'}
-                  >
-                    {c.name}: {c.role}
-                  </Badge>
-                ))}
+            {/* An out-of-date table stays where it is, dimmed, with the hint in the heading: the field flips between
+                valid and invalid while typing, and nothing may move. */}
+            {result && (shown.body.kind === 'table' || shown.body.table) ? (
+              <div
+                className={cx('space-y-2 transition-opacity', shown.body.kind === 'stale' && 'opacity-40')}
+                aria-disabled={shown.body.kind === 'stale' || undefined}
+              >
+                {result.warning ? (
+                  <p className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
+                    <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" />
+                    <span>{result.warning}</span>
+                  </p>
+                ) : null}
+                <PreviewTable result={result} />
+                {preview.data?.profile ? (
+                  <div className="flex flex-wrap gap-1">
+                    {preview.data.profile.columns.map((c) => (
+                      <Badge
+                        key={c.name}
+                        tone={c.role === 'measure' ? 'data' : c.role === 'time' ? 'good' : 'neutral'}
+                      >
+                        {c.name}: {c.role}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </>
-        ) : (
-          <Spinner />
         )}
       </section>
 

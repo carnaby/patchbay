@@ -6,9 +6,11 @@ import {
   computeGauge,
   computeKpi,
   DocumentError,
+  decodeTable,
   diffSteps,
   ExprError,
   emptyDashboard,
+  findRecords,
   GaugeConfigSchema,
   INFER_MAX_COLUMNS,
   inferTable,
@@ -25,6 +27,7 @@ import {
   THEMES,
   TransformError,
   TransformSchema,
+  tableFromPacked,
   WidgetSchema,
 } from './index.ts';
 import { measureScaling, scalingProblem } from './scaling.test-helper.ts';
@@ -118,6 +121,56 @@ describe('table inference', () => {
     expect(tight.capped).toBe(true);
     expect(tight.table.rows).toHaveLength(200);
     expect(tight.table.columns).toEqual([]);
+  });
+
+  const proto = '__proto__';
+
+  it('keeps a "__proto__" key as an ordinary column, from records and from column-shaped JSON', () => {
+    const expected = {
+      columns: [
+        { name: '__proto__', type: 'number' },
+        { name: 'b', type: 'number' },
+      ],
+      rows: JSON.parse('[{"__proto__": null, "b": 2}, {"__proto__": 3, "b": 4}]'),
+    };
+    // A null value is the worst case: assigned to "__proto__", it would turn the row into a prototype-less object.
+    const records = JSON.parse('[{"__proto__": null, "b": 2}, {"__proto__": 3, "b": 4}]');
+    const columnar = findRecords(JSON.parse('{"__proto__": [null, 3], "b": [2, 4]}'), {
+      viaPath: false,
+      maxCells: 100,
+    })!;
+    for (const table of [inferTable(records), inferTable(columnar)]) {
+      expect(table).toEqual(expected);
+      expect(Object.keys(table.rows[1]!)).toEqual(['__proto__', 'b']);
+      expect(Object.hasOwn(table.rows[1]!, proto)).toBe(true);
+      expect(table.rows[1]![proto]).toBe(3);
+      // The rows stay ordinary objects, and nothing reaches the shared prototype.
+      expect(Object.getPrototypeOf(table.rows[0]!)).toBe(Object.prototype);
+      expect(({} as Record<string, unknown>).b).toBeUndefined();
+    }
+  });
+
+  it('keeps a "__proto__" column when rows travel as value lists (wire format, packed tables)', () => {
+    const columns = [
+      { name: '__proto__', type: 'number' as const },
+      { name: 'b', type: 'number' as const },
+    ];
+    const data = [
+      [null, 2],
+      [3, 4],
+    ];
+    for (const table of [decodeTable({ columns, rows: data }), tableFromPacked({ columns, data })]) {
+      expect(Object.keys(table.rows[1]!)).toEqual(['__proto__', 'b']);
+      expect(table.rows[1]![proto]).toBe(3);
+      expect(Object.hasOwn(table.rows[0]!, proto)).toBe(true);
+      expect(Object.getPrototypeOf(table.rows[0]!)).toBe(Object.prototype);
+    }
+  });
+
+  it('does not read a missing field from the prototype', () => {
+    // A record without "constructor" next to one with it used to read Object's constructor function as its value.
+    const table = inferTable([{ constructor: 'a', toString: 'b' }, { n: 1 }]);
+    expect(table.rows[1]).toEqual({ constructor: null, toString: null, n: 1 });
   });
 
   it('leaves tables within the limits as they were', () => {

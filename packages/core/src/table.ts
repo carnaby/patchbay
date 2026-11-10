@@ -22,6 +22,31 @@ export interface DataTable {
 
 export const EMPTY_TABLE: DataTable = { columns: [], rows: [] };
 
+/**
+ * Sets one cell. Assigning to "__proto__" would replace the row's prototype (or do nothing, for a scalar), and a JSON
+ * or CSV source may well name a column so: defining the property keeps it an ordinary column of an ordinary row.
+ */
+export function setCell<T>(row: Record<string, T>, name: string, value: T): void {
+  if (name === '__proto__')
+    Object.defineProperty(row, name, { value, enumerable: true, writable: true, configurable: true });
+  else row[name] = value;
+}
+
+/**
+ * Reads one cell of a record that may lack the column. A plain read of a missing "constructor" or "toString" would
+ * return Object's member; checking the name first keeps ordinary names at the speed of a plain read.
+ */
+export function cellOf<T>(row: Record<string, T>, name: string): T | undefined {
+  return name in Object.prototype && !Object.hasOwn(row, name) ? undefined : row[name];
+}
+
+/** A row from its values in column order (the arrays wire format, packed tables); a missing value becomes null. */
+export function rowFromValues(names: readonly string[], values: readonly (Scalar | undefined)[]): Row {
+  const row: Row = {};
+  for (let i = 0; i < names.length; i++) setCell(row, names[i]!, values[i] ?? null);
+  return row;
+}
+
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
 // The fraction is one optional group: `\d+\.?\d*` can split a run of digits in n ways, and a long digit string that
 // fails at its end ("1111…1x" in an upload) then takes quadratic time, seconds for 80,000 digits.
@@ -85,6 +110,9 @@ function coerce(value: unknown, type: ColumnType): Scalar {
  * Flattens one level of nested objects into dotted keys (`a.b`). Arrays are serialised. Stops once it holds more
  * than `limit` keys: the caller refuses such a record anyway, and a record of 400,000 keys copied whole (with an
  * entry pair per key) filled a worker's heap before the column limit could say so.
+ *
+ * The result is an ordinary object written with `setCell`, so a "__proto__" key is a column; read it with `cellOf`. A
+ * prototype-less object would do both, but V8 keeps such objects in dictionary mode and inference ran 1.6 times slower.
  */
 function flatten(
   record: Record<string, unknown>,
@@ -108,7 +136,7 @@ function flatten(
       flatten(value as Record<string, unknown>, limit, out, name, depth + 1, count);
     } else {
       if (!Object.hasOwn(out, name)) count.keys++;
-      out[name] = value;
+      setCell(out, name, value);
     }
     if (count.keys > limit) break;
   }
@@ -193,11 +221,20 @@ export function inferTableCapped(
   }
   const columns: Column[] = [...names.keys()].map((name) => ({
     name,
-    type: options.types?.[name] ?? detectType(flat.slice(0, 500).map((r) => r[name])),
+    type:
+      (options.types && Object.hasOwn(options.types, name) ? options.types[name] : undefined) ??
+      detectType(flat.slice(0, 500).map((r) => cellOf(r, name))),
   }));
+  // Decided per column, not per cell: this loop touches every cell of the table, and ordinary names take the plain
+  // read and write.
+  const inherited = columns.map((c) => c.name in Object.prototype);
   const rows = flat.map((r) => {
     const row: Row = {};
-    for (const col of columns) row[col.name] = coerce(r[col.name], col.type);
+    for (let i = 0; i < columns.length; i++) {
+      const { name, type } = columns[i]!;
+      if (!inherited[i]) row[name] = coerce(r[name], type);
+      else setCell(row, name, coerce(cellOf(r, name), type));
+    }
     return row;
   });
   return { table: { columns, rows }, capped };
@@ -212,7 +249,8 @@ export function inferTable(records: unknown[], options: InferOptions = {}): Data
 export function retype(rows: Row[], order?: string[], known: Record<string, ColumnType> = {}): DataTable {
   const names = order ?? [...new Set(rows.flatMap((r) => Object.keys(r)))];
   const columns: Column[] = names.map((name) => {
-    const hint = known[name];
+    // Own entries only: a new column called "__proto__" or "constructor" has no hint, not Object's member.
+    const hint = Object.hasOwn(known, name) ? known[name] : undefined;
     // Time columns are plain numbers at runtime, so a known `time` hint survives retyping.
     if (hint === 'time' && rows.every((r) => r[name] === null || typeof r[name] === 'number')) {
       return { name, type: 'time' };

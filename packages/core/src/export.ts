@@ -27,7 +27,7 @@ import {
   type ColumnType,
   type DataTable,
   INFER_MAX_COLUMNS,
-  type Row,
+  rowFromValues,
   type Scalar,
 } from './table.ts';
 
@@ -202,11 +202,8 @@ export function tableFromPacked(raw: unknown): DataTable {
   const { columns, data } = parsed.data;
   const issue = packedTableIssue(columns, data);
   if (issue) throw new ExportFormatError(issue);
-  const rows = (data as Scalar[][]).map((values) => {
-    const row: Row = {};
-    for (let i = 0; i < columns.length; i++) row[columns[i]!.name] = values[i] ?? null;
-    return row;
-  });
+  const names = columns.map((c) => c.name);
+  const rows = (data as Scalar[][]).map((values) => rowFromValues(names, values));
   return { columns, rows };
 }
 

@@ -1,5 +1,6 @@
+import { SourceSchema } from '@patchbay/core';
 import { describe, expect, it } from 'vitest';
-import { bodyText, parseBodyText, withBody, withMethod } from './http-body.ts';
+import { bodyText, parseBodyText, switchMethod, withBody, withMethod } from './http-body.ts';
 
 const get = { kind: 'http' as const, url: 'https://api.github.com/graphql', path: 'data.viewer' };
 
@@ -31,5 +32,27 @@ describe('the POST body field', () => {
     // GET removes method and body, so the source is saved exactly as before POST existed.
     expect(withMethod(withQuery, 'GET')).toEqual(get);
     expect(withBody(withQuery, undefined)).toEqual({ ...get, method: 'POST' });
+  });
+
+  it('keeps the typed body through GET and back to POST, without saving it on the GET source', () => {
+    const text = '{\n  "query": "x"\n}';
+    const post = withBody(withMethod(get, 'POST'), { query: 'x' });
+    const toGet = switchMethod(post, 'GET', text);
+    // The saved GET source is exactly as before POST existed, and valid under the strict schema.
+    expect(toGet).toEqual({ source: get, text, error: null });
+    expect(SourceSchema.parse(toGet.source)).toEqual(get);
+    const back = switchMethod(toGet.source, 'POST', toGet.text);
+    expect(back).toEqual({ source: post, text, error: null });
+    expect(switchMethod(back.source, 'GET', back.text).source).toEqual(get);
+  });
+
+  it('brings back unfinished body text with its error, and GET never blocks on it', () => {
+    const text = '{"query": ';
+    const back = switchMethod(get, 'POST', text);
+    expect(back.source).toEqual({ ...get, method: 'POST' });
+    expect(back.text).toBe(text);
+    expect(back.error).toMatch(/^Not valid JSON/);
+    // A GET sends no body, so text it does not send must not keep Save disabled.
+    expect(switchMethod(back.source, 'GET', text)).toEqual({ source: get, text, error: null });
   });
 });
