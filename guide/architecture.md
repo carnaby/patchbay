@@ -277,7 +277,8 @@ use theirs. Nothing is silently discarded, and the other side's version stays in
 A save can also come back `428`: it would show data fetched with secrets on a public dashboard (§7). The refused
 document then waits in `secretsPrompt` and is not resent until the user confirms, edits further, or discards the
 unsaved changes (an undoable step). A confirmation covers exactly the references the user saw, fingerprinted by
-dataset, URL and secret ids, so pointing the same secret at another URL later asks again.
+dataset, URL, secret ids, method and body (key order aside) and the choices of the filters the request sends, so
+pointing the same secret at another URL or sending it another query later asks again.
 
 The same holds for processing rules. Every pipeline step has a stable id (assigned automatically, `s1`, `s2`, …, which
 also migrated older documents on read), and the editor saves a dataset edit as step operations computed by `diffSteps`

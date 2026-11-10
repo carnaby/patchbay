@@ -9,6 +9,7 @@ import {
   CONFIRM_PUBLIC_SECRETS,
   CREDENTIAL_ERRORS,
   type DashboardDoc,
+  httpRequestKey,
   parameterRequestShape,
   placementConflict,
   type SecretBinding,
@@ -55,11 +56,13 @@ export function publicSecretsRequest(error: unknown): PublicSecretRef[] | null {
     .map((s) => ({ id: s.id, name: typeof s.name === 'string' ? s.name : null }));
 }
 
+const PLAIN_GET = httpRequestKey({ kind: 'http', url: '' });
+
 /**
  * Fingerprints of the secret references `next` introduces or retargets compared with `prev` (the server's rule,
- * `secretRefChanges`): one per dataset, made of its id, URL and secret ids, and the request shapes of the filters
- * it sends. A confirmation covers exactly these, so pointing a confirmed secret at another URL later asks again, as
- * the server does.
+ * `secretRefChanges`): one per dataset, made of its id, URL and secret ids, its method and body (`httpRequestKey`),
+ * and the request shapes of the filters it sends. A confirmation covers exactly these, so pointing a confirmed secret
+ * at another URL or query later asks again, as the server does.
  */
 export function introducedSecretRefs(prev: DashboardDoc, next: DashboardDoc): string[] {
   const changed = new Set(secretRefChanges(prev, next));
@@ -73,7 +76,10 @@ export function introducedSecretRefs(prev: DashboardDoc, next: DashboardDoc): st
         const parameter = next.parameters?.find((p) => p.id === id);
         return parameter ? parameterRequestShape(parameter) : null;
       });
-      return `${d.id} ${(d.source as { url: string }).url} ${sourceSecretIds(d.source).join(',')}${filters.length ? ` ${JSON.stringify(filters)}` : ''}`;
+      // A plain GET keeps the fingerprint it had before POST existed.
+      const request = httpRequestKey(d.source);
+      const asked = request === PLAIN_GET ? '' : ` ${request}`;
+      return `${d.id} ${(d.source as { url: string }).url} ${sourceSecretIds(d.source).join(',')}${asked}${filters.length ? ` ${JSON.stringify(filters)}` : ''}`;
     });
 }
 
