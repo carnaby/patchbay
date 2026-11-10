@@ -15,6 +15,7 @@ import {
   type SecretMode,
   type Source,
   secretRefChanges,
+  sourceParameterIds,
   sourceSecretIds,
 } from '@patchbay/core';
 
@@ -55,14 +56,22 @@ export function publicSecretsRequest(error: unknown): PublicSecretRef[] | null {
 
 /**
  * Fingerprints of the secret references `next` introduces or retargets compared with `prev` (the server's rule,
- * `secretRefChanges`): one per dataset, made of its id, URL and secret ids. A confirmation covers exactly these, so
- * pointing a confirmed secret at another URL later asks again, as the server does.
+ * `secretRefChanges`): one per dataset, made of its id, URL and secret ids, and the declarations of the filters it
+ * sends. A confirmation covers exactly these, so pointing a confirmed secret at another URL later asks again, as the
+ * server does.
  */
 export function introducedSecretRefs(prev: DashboardDoc, next: DashboardDoc): string[] {
   const changed = new Set(secretRefChanges(prev, next));
   return next.datasets
     .filter((d) => changed.has(d.id) && d.source.kind === 'http')
-    .map((d) => `${d.id} ${(d.source as { url: string }).url} ${sourceSecretIds(d.source).join(',')}`);
+    .map((d) => {
+      // The filters the request sends, with their choices: new choices are new queries with the owner's key. A
+      // source that sends none keeps the fingerprint it had before filters existed.
+      const filters = sourceParameterIds(d.source).map(
+        (id) => next.parameters?.find((p) => p.id === id) ?? null,
+      );
+      return `${d.id} ${(d.source as { url: string }).url} ${sourceSecretIds(d.source).join(',')}${filters.length ? ` ${JSON.stringify(filters)}` : ''}`;
+    });
 }
 
 /** The secret ids behind `introducedSecretRefs`, once each, to name them in the confirmation. */

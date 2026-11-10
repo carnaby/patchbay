@@ -224,3 +224,46 @@ describe('moving a key out of the URL', () => {
     expect(extractQueryParam('https://api.example.com/v1/x', 'token')).toBeNull();
   });
 });
+
+describe('confirming filters on a public secret-backed source', () => {
+  const region = {
+    id: 'region',
+    label: 'Region',
+    type: 'select' as const,
+    options: [{ value: 'eu' }, { value: 'us' }],
+    all: 'All',
+    default: null,
+  };
+  const prev = applyOps(emptyDashboard('t'), [
+    { op: 'addParameter', parameter: region },
+    {
+      op: 'addDataset',
+      dataset: {
+        id: 'o',
+        name: 'O',
+        source: {
+          kind: 'http',
+          url: 'https://api.example.com/v1/orders?region=$param.region',
+          secrets: ['sec_AAAAAAAAAAAAAAAA'],
+        },
+      },
+    },
+  ]).doc;
+  const widen = (doc: typeof prev, value: string) =>
+    applyOps(doc, [
+      {
+        op: 'updateParameter',
+        id: 'region',
+        set: { options: [...(doc.parameters![0] as typeof region).options, { value }] },
+      },
+    ]).doc;
+
+  it('asks again for every change of the choices the request sends with the secret', () => {
+    const once = widen(prev, 'apac');
+    const confirmed = introducedSecretRefs(prev, once);
+    expect(confirmed).toHaveLength(1);
+    expect(confirmedForSave(prev, once, confirmed)).toBe(true);
+    const twice = widen(once, 'latam');
+    expect(confirmedForSave(once, twice, confirmed)).toBe(false);
+  });
+});
