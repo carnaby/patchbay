@@ -156,6 +156,41 @@ describe('resolving a view', () => {
     expect(bound.table.rows).toEqual([{ url: 'https://api.example.com/v2/bratislava' }]);
   });
 
+  it('never loads the template of a root that failed to bind, however its readers are resolved', async () => {
+    const policy = vi.fn((_target: unknown, _url: string) => null);
+    fetchMock.mockImplementation(async (url) => [{ url }]);
+    const data = new DataService(connectors, store, new InlineRunner(), { urlPolicy: policy });
+    const doc = docOf([
+      { id: 'root', name: 'Root', source: { kind: 'http', url: 'https://api.example.com/v1/$param.city/x' } },
+      { id: 'kid', name: 'Kid', source: { kind: 'dataset', id: 'root' } },
+      plain,
+    ]);
+    const scope = data.scope(target, doc, { parameters: viewValues(doc, { city: '..' }) });
+    const [kid, sibling] = await Promise.all(
+      ['kid', 'plain'].map((id) => scope.resolve(doc.datasets.find((d) => d.id === id)!)),
+    );
+    expect(kid!.error).toBe(
+      'Source dataset "root" failed: Filter "city" cannot be used as a path segment with the value ".."',
+    );
+    expect(sibling!.table.rows).toEqual([{ url: 'https://api.example.com/v1/all' }]);
+    const seen = [...policy.mock.calls.map((c) => c[1]), ...fetchMock.mock.calls.map((c) => c[0])];
+    expect(seen.filter((url) => url.includes('$param.'))).toEqual([]);
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual(['https://api.example.com/v1/all']);
+  });
+
+  it('refuses to load a source that still holds a reference, whoever asks', async () => {
+    const policy = vi.fn((_target: unknown, _url: string) => null);
+    const data = new DataService(connectors, store, new InlineRunner(), { urlPolicy: policy });
+    const [path] = docOf([
+      { id: 'path', name: 'Path', source: { kind: 'http', url: 'https://api.example.com/v1/$param.city/x' } },
+    ]).datasets;
+    await expect(data.loadInput(target, path!)).rejects.toThrow(
+      'Dataset "path" uses filters; resolve it through its dashboard.',
+    );
+    expect(policy).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('refuses a dataset with filters resolved without its dashboard', async () => {
     const result = await resolver().resolve(target, docOf([sales]).datasets[0]!);
     expect(result.error).toBe('Dataset "sales" uses filters; resolve it through its dashboard.');

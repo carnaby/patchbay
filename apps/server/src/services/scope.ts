@@ -255,7 +255,11 @@ export class ResolveScope {
    */
   private async finalKey(id: string, maxRows: number | undefined): Promise<string | undefined> {
     if (this.target.preview || this.seed) return undefined;
-    const roots = lineageDatasets(this.doc, id).filter((d) => d.source.kind !== 'dataset');
+    const lineage = lineageDatasets(this.doc, id);
+    // A dataset that failed to bind still holds its template: loading it would send the references as text. The
+    // build reports the failure, named after that dataset.
+    if (lineage.some((d) => this.bindErrors.has(d.id))) return undefined;
+    const roots = lineage.filter((d) => d.source.kind !== 'dataset');
     if (roots.some((d) => d.accumulate > 0)) return undefined;
     let inputs: Awaited<ReturnType<DataService['loadInput']>>[];
     try {

@@ -473,6 +473,9 @@ export class DataService {
 
   async loadSource(target: DashboardTarget, dataset: Dataset): Promise<Loaded> {
     const source = dataset.source;
+    // Every upstream load passes here: a reference left unbound (a binding that failed upstream of the caller) would
+    // otherwise be sent as text, with the owner's credentials when the source is secret-backed.
+    if (parameterRefs({ source, transforms: [] }).length) throw new HttpError(400, usesFilters(dataset.id));
     switch (source.kind) {
       case 'connector': {
         const r = await this.connectors.load(source.connector, source.params);
