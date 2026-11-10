@@ -237,6 +237,34 @@ describe('choices from data', () => {
     );
   });
 
+  it('collects the choices of a cached result once, for every request that reads it', async () => {
+    // Two selects read two columns of the same table: each column has choices of its own.
+    const doc = parseDashboard({
+      ...emptyDashboard('t'),
+      parameters: [country, { ...country, id: 'name', optionsFrom: { dataset: 'countries', field: 'name' } }],
+      datasets: [
+        {
+          id: 'countries',
+          name: 'Countries',
+          source: {
+            kind: 'inline',
+            rows: [
+              { code: 'SK', name: 'Slovakia' },
+              { code: 'AT', name: 'Austria' },
+            ],
+          },
+        },
+      ],
+    });
+    const data = new DataService(connectors, store);
+    const first = await loadDataOptions(data, target, doc, { country: 'AT', name: 'Austria' });
+    const second = await loadDataOptions(data, target, doc, { country: 'nope', name: 'nope' });
+    expect(first.get('country')).toEqual(['AT', 'SK']);
+    expect(first.get('name')).toEqual(['Austria', 'Slovakia']);
+    expect(second.get('country')).toBe(first.get('country'));
+    expect(second.get('name')).toBe(first.get('name'));
+  });
+
   it('refuses every value when the choices cannot be read, and loads nothing without a value', async () => {
     fetchMock.mockRejectedValueOnce(new HttpError(502, 'Upstream responded 500'));
     const doc = docWith({

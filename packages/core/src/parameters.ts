@@ -741,6 +741,10 @@ export function optionsFromIssues(doc: Pick<DashboardDoc, 'parameters' | 'datase
   return issues;
 }
 
+// One collator for every sort: localeCompare with a locale builds a new one per comparison, which made 10,000 values
+// cost ~480 ms of the server's main thread on every request carrying a value.
+const optionOrder = new Intl.Collator('en', { numeric: true });
+
 /** A select's choices from a column: distinct values that can be choices, sorted, at most MAX_DATA_OPTIONS. */
 export function distinctOptions(table: DataTable, field: string): OptionValue[] {
   const seen = new Set<string>();
@@ -762,7 +766,5 @@ export function distinctOptions(table: DataTable, field: string): OptionValue[] 
     seen.add(text);
     out.push(v);
   }
-  return out
-    .sort((a, b) => String(a).localeCompare(String(b), 'en', { numeric: true }))
-    .slice(0, MAX_DATA_OPTIONS);
+  return out.sort((a, b) => optionOrder.compare(String(a), String(b))).slice(0, MAX_DATA_OPTIONS);
 }

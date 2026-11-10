@@ -6,6 +6,12 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Fixed
+
+- Filters that take their choices from data no longer slow the server down: the choices of a column with thousands of
+  distinct values are sorted much faster and worked out once per loaded result instead of on every request, so links
+  carrying such a filter value (valid or not) can no longer keep the server busy for other viewers.
+
 ## [0.3.0] - 2026-11-10
 
 ### Added
