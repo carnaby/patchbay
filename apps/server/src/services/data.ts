@@ -29,6 +29,7 @@ import {
   PIPELINE_LIMITS,
   type PipelineInputs,
   type PipelineResult,
+  parameterRefs,
   pickPath,
   sourceSecretIds,
   TableTooWideError,
@@ -58,6 +59,8 @@ export const MAX_ROWS_OUT = 10_000;
 /** The message for a dataset resolved without its document: it reads other datasets, which only a scope can load. */
 export const readsOtherDatasets = (id: string) =>
   `Dataset "${id}" reads other datasets and can only be loaded with its dashboard`;
+/** The message for a dataset with filter references resolved without its document: only a scope binds values. */
+export const usesFilters = (id: string) => `Dataset "${id}" uses filters; resolve it through its dashboard.`;
 /** Default cap on the table an HTTP source may produce; a 5 MB body of short values is far more. */
 export const DEFAULT_MAX_SOURCE_CELLS = 500_000;
 const HTTP_TTL_MS = HTTP_MIN_REFRESH_SEC * 1000;
@@ -707,6 +710,8 @@ export class DataService {
     const base = { datasetId: dataset.id };
     try {
       if (upstreamOf(dataset).length) throw new HttpError(400, readsOtherDatasets(dataset.id));
+      // An unbound reference would reach a fetch or a step as text: refused, never guessed.
+      if (parameterRefs(dataset).length) throw new HttpError(400, usesFilters(dataset.id));
       const loaded = await this.loadSource(target, dataset);
       const max = options.maxRows ?? MAX_ROWS_OUT;
       const computed =

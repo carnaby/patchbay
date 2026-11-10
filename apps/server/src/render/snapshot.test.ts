@@ -924,3 +924,39 @@ describe('status snapshots', () => {
     expect(pixelsOf(img, THEMES.light.status.critical, { x: 14, y: 36, w: 400, h: 24 })).toBeGreaterThan(0);
   });
 });
+
+describe('the filter line of a dashboard snapshot', () => {
+  const region = {
+    id: 'region',
+    label: 'Region',
+    type: 'select',
+    options: [
+      { value: 'eu', label: 'EU' },
+      { value: 'us', label: 'US' },
+    ],
+    all: 'All regions',
+    default: null,
+  };
+  const withFilters = parseDashboard({ ...emptyDashboard('Sales'), parameters: [region] });
+  /** Dark pixels between the title and where the cards start without a line (y 48-61): the summary line's ink. */
+  const band = (img: Image) => {
+    let n = 0;
+    for (let y = 48; y < 62; y++)
+      for (let x = 0; x < img.width; x++) if (img.rgba[(y * img.width + x) * 4]! < 200) n++;
+    return n;
+  };
+  const rowsOf = (img: Image) => img.rgba.slice(48 * img.width * 4, 62 * img.width * 4);
+
+  it('prints the view under the title with every filter, defaults included, and nothing without filters', () => {
+    const plain = decodePng(renderDashboardPng(emptyDashboard('Sales'), new Map()));
+    const atDefaults = decodePng(renderDashboardPng(withFilters, new Map()));
+    const eu = decodePng(renderDashboardPng(withFilters, new Map(), { parameters: { region: 'eu' } }));
+    expect(band(plain)).toBe(0);
+    // "Region: All regions" with no parameters given: the defaults are a view too.
+    expect(band(atDefaults)).toBeGreaterThan(20);
+    // "Region: EU": the bound value, not the default.
+    expect(Buffer.from(rowsOf(eu)).equals(Buffer.from(rowsOf(atDefaults)))).toBe(false);
+    // The line takes its own room; the cards move down by it.
+    expect(atDefaults.height).toBe(plain.height + 20);
+  });
+});

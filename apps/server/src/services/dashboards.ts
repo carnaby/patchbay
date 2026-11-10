@@ -6,7 +6,9 @@
 import {
   type Actor,
   applyOps,
+  BindError,
   BindingError,
+  bindDataset,
   bindingMatches,
   bindingMismatchMessage,
   CONFIRM_PUBLIC_SECRETS,
@@ -32,6 +34,8 @@ import {
   MAX_TABLE_FILE_BYTES,
   normalizeLayout,
   OpError,
+  type ParameterValues,
+  parameterIssues,
   parseBinding,
   parseDashboard,
   placementConflict,
@@ -77,6 +81,7 @@ import {
   type UploadFormat,
   type UploadInput,
 } from './upload-parse.ts';
+import { type RawParameters, viewValues } from './view.ts';
 
 export interface Principal {
   user: UserRow | null;
@@ -137,10 +142,12 @@ function freeDatasetId(doc: DashboardDoc, base: string): string {
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
-/** Where a draft is previewed: the dashboard, plus its document with the draft in it. */
+/** Where a draft is previewed: the dashboard, its document with the draft in it, and the view's values. */
 export interface PreviewTarget extends DashboardTarget {
   doc: DashboardDoc;
+  /** The draft with the view's values bound in. */
   dataset: Dataset;
+  parameters: ParameterValues;
 }
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
@@ -1414,7 +1421,7 @@ export class DashboardService {
     p: Principal,
     dashboardId: string | undefined,
     draft: Dataset,
-    options: { requireEdit?: boolean; editing?: string } = {},
+    options: { requireEdit?: boolean; editing?: string; parameters?: RawParameters } = {},
   ): Promise<PreviewTarget> {
     // A preview sends the credentials to a URL of the caller's choosing (within the binding) without saving
     // anything, so it is a use of the secret, not a read: read-only tokens may not do it. Checked before the
@@ -1430,13 +1437,32 @@ export class DashboardService {
     // Before anything about the draft: someone who may not edit learns nothing from its cycle or its sources.
     if (options.requireEdit && meta && !this.canEdit(meta, p))
       throw forbidden('You cannot edit this dashboard');
+    // The binder trusts the save rules (no text filter in a request, no "All" or secrets with a path filter) and
+    // cannot check them again; a draft has not been saved, so its references meet those rules here. History is left
+    // out as in the cycle check below: a preview never accumulates.
+    const refIssues = parameterIssues({
+      parameters: viewable?.doc.parameters,
+      datasets: [{ ...draft, accumulate: 0 }],
+      widgets: [],
+    });
+    if (refIssues.length) throw badRequest(refIssues.join('; '));
+    // Bound before anything below judges the draft, so every rule (secrets, POST, private hosts, uploads) sees the
+    // request a preview sends. Values are read against the saved declarations, as for every other view.
+    const parameters = viewValues(viewable?.doc ?? {}, options.parameters);
+    let bound: Dataset;
+    try {
+      bound = bindDataset(draft, parameters);
+    } catch (e) {
+      if (e instanceof BindError) throw badRequest(e.message);
+      throw e;
+    }
     let doc: DashboardDoc;
     let dataset: Dataset;
     if (viewable) {
       const saved = viewable.doc;
       const editing =
         options.editing && saved.datasets.some((d) => d.id === options.editing) ? options.editing : undefined;
-      dataset = { ...draft, id: editing ?? freeDatasetId(saved, draft.id) };
+      dataset = { ...bound, id: editing ?? freeDatasetId(saved, draft.id) };
       doc = {
         ...saved,
         datasets: editing
@@ -1450,8 +1476,8 @@ export class DashboardService {
       });
       if (issues.length) throw badRequest(issues.join('; '));
     } else {
-      dataset = draft;
-      doc = { ...emptyDashboard('Preview'), datasets: [draft] };
+      dataset = bound;
+      doc = { ...emptyDashboard('Preview'), datasets: [bound] };
     }
     // A draft reads its lineage with the owner's credentials: previewing it is a use of every secret in it, or a
     // read-only token could re-run a secret-backed source by previewing a dataset derived from it.
@@ -1477,7 +1503,7 @@ export class DashboardService {
     if (!dashboardId || !meta) {
       if (upload) throw badRequest('Uploaded files need dashboardId');
       if (!p.user) throw unauthorized();
-      return { id: 'preview00', ownerId: p.user.id, ...publicOnly, preview: true, doc, dataset };
+      return { id: 'preview00', ownerId: p.user.id, ...publicOnly, preview: true, doc, dataset, parameters };
     }
     if ((upload || secrets) && !this.canEdit(meta, p)) {
       throw forbidden(
@@ -1487,7 +1513,7 @@ export class DashboardService {
       );
     }
     // Secrets and uploads need an editor (above), so nothing else the target carries changes meaning for a viewer.
-    return { id: dashboardId, ownerId, ...publicOnly, preview: true, doc, dataset };
+    return { id: dashboardId, ownerId, ...publicOnly, preview: true, doc, dataset, parameters };
   }
 
   // Secrets ------------------------------------------------------------------------------------------------------

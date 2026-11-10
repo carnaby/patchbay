@@ -5,6 +5,8 @@
  */
 import { createHash } from 'node:crypto';
 import {
+  bindDataset,
+  bindDoc,
   type DashboardDoc,
   type Dataset,
   type DatasetResult,
@@ -13,9 +15,11 @@ import {
   lineageCycles,
   lineageDatasets,
   lineageKey,
+  type ParameterValues,
   PIPELINE_LIMITS,
   type PipelineInputs,
   type PipelineResult,
+  readParameterValues,
   stepInputsOf,
   upstreamOf,
 } from '@patchbay/core';
@@ -45,6 +49,8 @@ export interface ScopeOptions {
   seed?: (id: string) => FullResult | undefined;
   /** Overall time for the scope; a chain of slow steps ends with a clear error instead of holding the request. */
   deadlineMs?: number;
+  /** The view's filter values (services/view.ts); the declared defaults when absent. */
+  parameters?: ParameterValues;
 }
 
 /** A failure upstream, named once after the dataset that actually failed, however deep the chain. */
@@ -115,7 +121,13 @@ function cyclesIn(doc: DashboardDoc): Map<string, string[]> {
 
 export class ResolveScope {
   readonly target: DashboardTarget;
+  /** The document with the view's values bound in: nothing below ever sees a filter reference. */
   readonly doc: DashboardDoc;
+  private readonly values: ParameterValues;
+  /** Each stored dataset to its bound twin, so a caller's dataset object finds its shared, bound definition. */
+  private readonly twins: Map<Dataset, Dataset>;
+  /** Datasets whose values could not be bound (a path value ".."): they fail with this message. */
+  private readonly bindErrors: ReadonlyMap<string, string>;
   private readonly data: DataService;
   private readonly seed: ((id: string) => FullResult | undefined) | undefined;
   private readonly deadline: number;
@@ -128,7 +140,14 @@ export class ResolveScope {
   constructor(data: DataService, target: DashboardTarget, doc: DashboardDoc, options: ScopeOptions = {}) {
     this.data = data;
     this.target = target;
-    this.doc = doc;
+    // Bound once, before anything is resolved: every cache below is keyed by the bound definitions, which is what
+    // gives each view its own entries without a key built by hand (proposal 0010).
+    this.values =
+      options.parameters ?? readParameterValues(doc.parameters, () => undefined, Date.now()).values;
+    const bound = bindDoc(doc, this.values);
+    this.doc = bound.doc;
+    this.bindErrors = bound.errors;
+    this.twins = new Map(doc.datasets.map((d, i) => [d, bound.doc.datasets[i]!]));
     this.seed = options.seed;
     this.deadline = Date.now() + (options.deadlineMs ?? SCOPE_DEADLINE_MS);
   }
@@ -148,12 +167,15 @@ export class ResolveScope {
     if (!pending) {
       const seeded = this.seed?.(id);
       const dataset = this.doc.datasets.find((d) => d.id === id);
+      const unbound = this.bindErrors.get(id);
       // The work starts on a later microtask, after the memo entry below is in place.
-      pending = seeded
-        ? Promise.resolve(seeded)
-        : dataset
-          ? Promise.resolve().then(() => this.process(dataset, [...path, id]))
-          : Promise.reject(new HttpError(404, `Unknown dataset "${id}"`));
+      pending = unbound
+        ? Promise.reject(new HttpError(400, unbound))
+        : seeded
+          ? Promise.resolve(seeded)
+          : dataset
+            ? Promise.resolve().then(() => this.process(dataset, [...path, id]))
+            : Promise.reject(new HttpError(404, `Unknown dataset "${id}"`));
       pending.then(
         (r) => this.done.set(id, r),
         () => {},
@@ -172,7 +194,16 @@ export class ResolveScope {
    * What widgets, agents and snapshots get. `dataset` may be a draft that is not in `doc` (previews): its upstream is
    * then read from `doc`.
    */
-  async resolve(dataset: Dataset, options: { maxRows?: number } = {}): Promise<DatasetResult> {
+  async resolve(input: Dataset, options: { maxRows?: number } = {}): Promise<DatasetResult> {
+    let dataset: Dataset;
+    try {
+      const unbound = this.twins.has(input) ? this.bindErrors.get(input.id) : undefined;
+      if (unbound) throw new HttpError(400, unbound);
+      // A stored dataset finds its bound twin; a draft (a preview) is bound with the same values.
+      dataset = this.twins.get(input) ?? bindDataset(input, this.values);
+    } catch (e) {
+      return errorResult(input.id, e);
+    }
     // Nothing reads it and it reads nothing: today's path, with its caches, exactly as before.
     if (upstreamOf(dataset).length === 0 && !hasLineage(this.doc, dataset.id))
       return this.data.resolve(this.target, dataset, options);

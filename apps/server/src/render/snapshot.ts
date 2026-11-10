@@ -28,6 +28,9 @@ import {
   GRID_COLUMNS,
   isDataWidgetType,
   MAX_SERIES,
+  type ParameterValues,
+  parameterSummary,
+  readParameterValues,
   resolveColor,
   searchPlaceholder,
   statusConfigProblem,
@@ -82,6 +85,8 @@ const WIDGET_SIZE = { width: 640, height: 360, min: 80, max: 1600, scale: 1.5 };
 const CROP_NOTE = 40;
 /** Room for the line crediting the data sources, when the dashboard uses connectors that ask for one. */
 const CREDIT_LINE = 26;
+/** Room for the filter line under the title of a dashboard with filters (proposal 0010). */
+const SUMMARY_LINE = 20;
 /**
  * Marks (dots, bars, cells) one snapshot may draw in charts and maps together. Each mark is an SVG element that
  * ECharts builds and resvg parses, about 400 bytes of SVG: 60 scatter charts of 10 000 rows took 15 s and 1.9 GB.
@@ -490,6 +495,11 @@ export interface DashboardRenderOptions {
   svgBytes?: number;
   /** Connector id to credit text. The sources of the dashboard's widgets are listed in one line at the bottom. */
   attributions?: Record<string, string>;
+  /**
+   * The view's filter values. A dashboard with filters prints them under its title, as presentation mode does, so a
+   * snapshot of a filtered view says which; the declared defaults when absent.
+   */
+  parameters?: ParameterValues;
 }
 
 /** Draws a whole dashboard, at most MAX_PIXELS. Like renderWidgetPng, request handlers go through `snapshotGate`. */
@@ -504,7 +514,12 @@ export function renderDashboardPng(
   const theme = THEMES[options.theme ?? 'light'];
   const width = clamp(options.width, DASHBOARD_WIDTH.default, DASHBOARD_WIDTH.min, DASHBOARD_WIDTH.max);
   const col = (width - GAP * (GRID_COLUMNS + 1)) / GRID_COLUMNS;
-  const top = 64;
+  // The view this picture shows; phase 2 dims cross-filtered items with the same values.
+  const values =
+    options.parameters ?? readParameterValues(doc.parameters, () => undefined, Date.now()).values;
+  // The same text as presentation mode's summary (core parameterSummary): every filter, defaults included.
+  const summary = doc.parameters?.length ? parameterSummary(doc.parameters, values) : '';
+  const top = 64 + (summary ? SUMMARY_LINE : 0);
   // The browser grid compacts vertically, so empty rows a stored layout may have (the schema allows y up to
   // 10 000) are never on screen. Compacting here keeps the image faithful and keeps those rows out of the budget.
   const layout = compact(doc.layout.filter((it) => doc.widgets.some((w) => w.id === it.i)));
@@ -528,6 +543,14 @@ export function renderDashboardPng(
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
     `<rect width="${width}" height="${height}" fill="${page}"/>`,
     text(GAP + 4, 40, truncate(doc.title, 80), { size: 22, weight: 700, color: theme.textPrimary }),
+    ...(summary
+      ? [
+          text(GAP + 4, 62, truncate(summary, Math.floor((width - GAP * 2) / 7)), {
+            size: 13,
+            color: theme.textSecondary,
+          }),
+        ]
+      : []),
   ];
   const visible = layout.flatMap((item) => {
     const y = top + item.y * ROW_HEIGHT;

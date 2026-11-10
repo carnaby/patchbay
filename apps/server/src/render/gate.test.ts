@@ -153,6 +153,19 @@ describe('SnapshotCache', () => {
     expect((await cache.get(key(), render)).toString()).toBe('r5');
   });
 
+  it('keeps a snapshot per view, and shares the plain link’s at the defaults', async () => {
+    const cache = new SnapshotCache();
+    let renders = 0;
+    const render = async () => png(`r${++renders}`);
+    const key = (view?: string) => SnapshotCache.key({ id: 'd', version: 1, theme: 'light', view });
+    await cache.get(key(), render);
+    await cache.get(key(''), render);
+    await cache.get(key('p.region=eu'), render);
+    await cache.get(key('p.region=us'), render);
+    await cache.get(key('p.region=eu'), render);
+    expect(renders).toBe(3);
+  });
+
   it('does not remember failures and keeps within its byte budget', async () => {
     const cache = new SnapshotCache({ maxBytes: 10 });
     const key = (n: number) => SnapshotCache.key({ id: `d${n}`, version: 1, theme: 'light' });
