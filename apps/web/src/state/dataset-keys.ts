@@ -2,7 +2,17 @@
  * Identities of dataset results in the web app (proposal 0005). A derived dataset's data changes when anything it
  * reads changes, so keys, the "saved yet?" check and sound baselines all use its lineage, not its own definition.
  */
-import { lineageKey as computeLineageKey, type DashboardDoc, type SoundRule } from '@patchbay/core';
+import {
+  lineageKey as computeLineageKey,
+  type DashboardDoc,
+  defaultText,
+  type LineageDataset,
+  lineageParameters,
+  parameterRefs,
+  type SoundRule,
+  upstreamOf,
+} from '@patchbay/core';
+import type { RawValues } from './parameters.ts';
 
 const memo = new WeakMap<DashboardDoc, Map<string, string>>();
 
@@ -20,11 +30,52 @@ export function lineageKey(doc: DashboardDoc, datasetId: string): string {
   return key;
 }
 
-export const datasetKeyFor = (dashboardId: string, datasetId: string, lineage: string) =>
-  ['data', dashboardId, datasetId, lineage] as const;
+const parameterMemo = new WeakMap<DashboardDoc, Map<string, string[]>>();
 
-export const datasetKey = (dashboardId: string, doc: DashboardDoc, datasetId: string) =>
-  datasetKeyFor(dashboardId, datasetId, lineageKey(doc, datasetId));
+/** The filters a dataset depends on, its own and those of everything it reads; cached per document like the lineage. */
+export function datasetParameters(doc: DashboardDoc, datasetId: string): string[] {
+  const byId = parameterMemo.get(doc) ?? new Map<string, string[]>();
+  parameterMemo.set(doc, byId);
+  let ids = byId.get(datasetId);
+  if (!ids) {
+    ids = lineageParameters(doc, datasetId);
+    byId.set(datasetId, ids);
+  }
+  return ids;
+}
+
+/**
+ * The view part of a dataset's key: each filter it depends on with its declaration and current value, '' for a
+ * dataset that uses none. A change of a filter changes the keys of exactly the datasets that use it, and the
+ * declarations are in it because the server reads values against them.
+ */
+export function viewKey(doc: DashboardDoc, datasetId: string, raw: RawValues): string {
+  const ids = datasetParameters(doc, datasetId);
+  if (ids.length === 0) return '';
+  return JSON.stringify(
+    ids.map((id) => [
+      id,
+      doc.parameters?.find((p) => p.id === id) ?? null,
+      Object.hasOwn(raw, id) ? raw[id] : null,
+    ]),
+  );
+}
+
+/** The query a view key asks the server for: `&p.region=eu`, or '' at the defaults. Read from the key itself, so a
+ * request always carries exactly the values its cache entry is for. */
+export function queryOfView(view: string): string {
+  if (!view) return '';
+  const entries = JSON.parse(view) as [string, unknown, string | null][];
+  return entries
+    .flatMap(([id, , text]) => (text === null ? [] : [`&p.${id}=${encodeURIComponent(text)}`]))
+    .join('');
+}
+
+export const datasetKeyFor = (dashboardId: string, datasetId: string, lineage: string, view: string) =>
+  ['data', dashboardId, datasetId, lineage, view] as const;
+
+export const datasetKey = (dashboardId: string, doc: DashboardDoc, datasetId: string, raw: RawValues = {}) =>
+  datasetKeyFor(dashboardId, datasetId, lineageKey(doc, datasetId), viewKey(doc, datasetId, raw));
 
 /**
  * The server only knows saved definitions. A child whose parent has unsaved edits would come back computed from the
@@ -37,7 +88,11 @@ export function datasetInSync(
 ): boolean {
   if (!saved || !doc || !saved.datasets.some((d) => d.id === datasetId)) return false;
   if (!doc.datasets.some((d) => d.id === datasetId)) return false;
-  return lineageKey(saved, datasetId) === lineageKey(doc, datasetId);
+  // The server reads filter values against the saved declarations: a value of a new option waits for the save.
+  return (
+    lineageKey(saved, datasetId) === lineageKey(doc, datasetId) &&
+    viewKey(saved, datasetId, {}) === viewKey(doc, datasetId, {})
+  );
 }
 
 /** How long a result stays fresh, and the polling used only when the live channel is down. */
@@ -48,12 +103,46 @@ export function refreshTiming(refreshSec: number, live: boolean) {
   };
 }
 
-/** Rule plus lineage: a change of either means the next result is only a baseline (CLAUDE.md). */
+/** Rule, lineage and view: a change of any means the next result is only a baseline (CLAUDE.md). */
 export function soundIdentity(
   doc: DashboardDoc | null | undefined,
   sound: SoundRule,
   datasetId: string,
+  raw: RawValues = {},
 ): string | null {
   if (!doc?.datasets.some((d) => d.id === datasetId)) return null;
-  return JSON.stringify([sound, lineageKey(doc, datasetId)]);
+  return JSON.stringify([sound, lineageKey(doc, datasetId), viewKey(doc, datasetId, raw)]);
+}
+
+/** Whether the data moves with the calendar: a date range filter it uses is at a relative preset ("last7d"). */
+export function followsCalendar(doc: DashboardDoc, datasetId: string, raw: RawValues): boolean {
+  return datasetParameters(doc, datasetId).some((id) => {
+    const p = doc.parameters?.find((x) => x.id === id);
+    if (p?.type !== 'dateRange') return false;
+    const text = Object.hasOwn(raw, id) ? raw[id]! : defaultText(p);
+    return !text.includes('..');
+  });
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * The next refetch: the live fallback interval, and for a relative period also a few seconds after midnight UTC, when
+ * the server resolves it to the new day. Without it a wall screen pinned to "last 7 days" on a dataset that never
+ * refreshes would show the old week forever.
+ */
+export function nextRefetch(interval: number | false, calendar: boolean, now: number): number | false {
+  if (!calendar) return interval;
+  const rollover = DAY_MS - (now % DAY_MS) + 5_000;
+  return interval === false ? rollover : Math.min(interval, rollover);
+}
+
+/** The filters an unsaved draft depends on: its own references and those of the saved datasets it reads. */
+export function draftParameterIds(
+  doc: DashboardDoc | null,
+  draft: Pick<LineageDataset, 'source' | 'transforms'>,
+): string[] {
+  const own = parameterRefs(draft).map((r) => r.id);
+  const upstream = doc ? upstreamOf(draft).flatMap((id) => lineageParameters(doc, id)) : [];
+  return [...new Set([...own, ...upstream].filter(Boolean))].sort();
 }

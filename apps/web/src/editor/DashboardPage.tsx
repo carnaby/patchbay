@@ -43,6 +43,7 @@ import { api } from '../lib/api.ts';
 import { relativeTime, setTheme, useDocumentTitle, useMe, useTheme } from '../lib/hooks.ts';
 import { setMuted, useSoundSettings } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
+import { useParameterUrl } from '../state/parameter-url.ts';
 import { soundWidgets, useSoundCues } from '../state/sound-cues.ts';
 import { useAutosave, useLiveEvents } from '../state/sync.ts';
 import { ConnectAiPanel } from './ConnectAiPanel.tsx';
@@ -160,6 +161,8 @@ function Editor({ id }: { id: string }) {
   // Presentation mode for wall screens; /d/:id?present=1 opens straight into it (kiosk links).
   const presentation = usePresentation(search.get('present') === '1');
   const { presenting } = presentation;
+  // Filter values live in the URL (p.<id>), next to present=1: a link opens a view, a wall screen is pinned to one.
+  useParameterUrl(id, presenting);
   const idle = useIdle(presenting);
   useEffect(() => {
     if (presenting) setEditing(false);

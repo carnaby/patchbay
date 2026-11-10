@@ -61,7 +61,9 @@ import { countLabel } from '../lib/count-label.ts';
 import { useConnectors } from '../lib/hooks.ts';
 import { withRetry } from '../lib/retry.ts';
 import { credentialErrorHint, introducedSecretIds, introducedSecretRefs } from '../lib/secrets.ts';
+import { draftParameterIds } from '../state/dataset-keys.ts';
 import { useEditor } from '../state/editor.ts';
+import { pickRaw, type RawValues, rawQuery, useParameters } from '../state/parameters.ts';
 import { fromWire, useDatasetColumns } from '../state/sync.ts';
 import {
   type CredentialContext,
@@ -115,9 +117,15 @@ async function previewRequest(
   dashboardId: string,
   dataset: unknown,
   editing?: string,
+  parameters: RawValues = {},
 ): Promise<PreviewResponse> {
   const res = await api<PreviewResponse>(`/api/dashboards/${dashboardId}/preview?rows=arrays`, {
-    body: { dataset, ...(editing ? { editing } : {}) },
+    body: {
+      dataset,
+      ...(editing ? { editing } : {}),
+      // The current view's values of the filters the draft uses: the preview shows what this view would show.
+      ...(Object.keys(parameters).length > 0 ? { parameters } : {}),
+    },
     dashboardId,
   });
   return { ...res, result: fromWire(res.result) };
@@ -898,9 +906,18 @@ function DatasetEditor({
   // The name travels too: the server needs the draft as it will be saved. `editing` is the saved dataset it replaces.
   const editingId = initial?.id;
   const previewBody = { name: debounced.name, source: debounced.source, transforms: debounced.transforms };
+  const viewRaw = useParameters((s) => s.raw);
+  const viewParams = useMemo(
+    () => pickRaw(viewRaw, draftParameterIds(doc, debounced)),
+    [viewRaw, doc, debounced],
+  );
+  const sourceParams = useMemo(
+    () => pickRaw(viewRaw, draftParameterIds(doc, { source: debounced.source, transforms: [] })),
+    [viewRaw, doc, debounced.source],
+  );
   const preview = useQuery({
-    queryKey: ['preview', dashboardId, editingId ?? null, JSON.stringify(previewBody)],
-    queryFn: () => previewRequest(dashboardId, previewBody, editingId),
+    queryKey: ['preview', dashboardId, editingId ?? null, JSON.stringify(previewBody), rawQuery(viewParams)],
+    queryFn: () => previewRequest(dashboardId, previewBody, editingId, viewParams),
     retry: false,
     enabled: previewable(debounced.source) && !previewBlocked,
   });
@@ -910,8 +927,15 @@ function DatasetEditor({
       dashboardId,
       editingId ?? null,
       JSON.stringify({ name: debounced.name, source: debounced.source }),
+      rawQuery(sourceParams),
     ],
-    queryFn: () => previewRequest(dashboardId, { name: debounced.name, source: debounced.source }, editingId),
+    queryFn: () =>
+      previewRequest(
+        dashboardId,
+        { name: debounced.name, source: debounced.source },
+        editingId,
+        sourceParams,
+      ),
     retry: false,
     enabled: previewable(debounced.source) && !previewBlocked,
   });

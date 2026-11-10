@@ -61,8 +61,9 @@ import {
 import { api } from '../lib/api.ts';
 import { previewSound, SOUND_LABELS } from '../lib/sounds.ts';
 import { groupTimeZones, timeZones } from '../lib/time-zones.ts';
-import { datasetInSync, lineageKey } from '../state/dataset-keys.ts';
+import { datasetInSync, lineageKey, queryOfView, viewKey } from '../state/dataset-keys.ts';
 import { useEditor } from '../state/editor.ts';
+import { useParameters } from '../state/parameters.ts';
 import { useDatasetResult } from '../state/sync.ts';
 import {
   ChartColorFields,
@@ -199,13 +200,15 @@ function NewWidget({ onCreated }: { onCreated: (id: string) => void }) {
   const { columns } = useColumns(datasetId);
   const lineage = useEditor((s) => (s.doc && datasetId ? lineageKey(s.doc, datasetId) : ''));
   const inSync = useEditor((s) => datasetInSync(s.saved, s.doc, datasetId));
+  const raw = useParameters((s) => s.raw);
+  const view = useEditor((s) => (s.doc && datasetId ? viewKey(s.doc, datasetId, raw) : ''));
   const suggestions = useQuery({
-    // Keyed on the lineage (a derived dataset follows its parent) and fetched only once the server knows the
-    // current definitions: it profiles the saved dataset, not the unsaved one.
-    queryKey: ['suggest', dashboardId, datasetId, lineage],
+    // Keyed on the lineage and the view (a derived dataset follows its parent, a filter its value), and fetched only
+    // once the server knows the current definitions: it profiles the saved dataset, not the unsaved one.
+    queryKey: ['suggest', dashboardId, datasetId, lineage, view],
     queryFn: () =>
       api<{ profile: TableProfile; suggestions: Suggestion[] }>(
-        `/api/dashboards/${dashboardId}/suggest/${datasetId}`,
+        `/api/dashboards/${dashboardId}/suggest/${datasetId}${queryOfView(view).replace(/^&/, '?')}`,
         { dashboardId },
       ),
     enabled: Boolean(datasetId) && inSync,
