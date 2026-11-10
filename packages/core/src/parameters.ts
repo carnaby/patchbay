@@ -8,7 +8,9 @@
  * checks, like `lineage.ts`.
  */
 import { z } from 'zod';
-import { PARAM_ID, PARAM_PREFIX } from './param-ref.ts';
+import { MAX_BOUND_EXPRESSION, paramNodes, parse } from './expr.ts';
+import { type LineageDataset, type LineageDoc, lineageDatasets } from './lineage.ts';
+import { PARAM_ID, PARAM_PREFIX, type RefName, readRef } from './param-ref.ts';
 import type { DashboardDoc } from './schema.ts';
 
 export const MAX_PARAMETERS = 8;
@@ -315,6 +317,222 @@ export function parameterSummary(
     .join(' · ');
 }
 
+/** Where a reference stands. `url` is a misplaced one: in an address's authority or fragment, or a query name. */
+export type RefPlace = 'filter' | 'derive' | 'url' | 'urlPath' | 'urlQuery' | 'body' | 'connector';
+
+export const PLACE_LABELS: Record<RefPlace, string> = {
+  filter: 'filter step',
+  derive: 'derive step',
+  url: 'URL',
+  urlPath: 'URL path',
+  urlQuery: 'URL query',
+  body: 'body',
+  connector: 'connector parameters',
+};
+
+export interface ParameterRef extends RefName {
+  place: RefPlace;
+  /** The reference as written, for messages. */
+  text: string;
+  /** Why it cannot stand there; set for references no value could fill, whatever the declarations. */
+  problem?: string;
+}
+
+/** A reference and what may follow its id: the class decides where an embedded one ends, for messages only. */
+const REF_TEXT = /\$param\.[A-Za-z0-9_.]*/g;
+const WHOLE_REF = /^\$param\.[A-Za-z0-9_.]*$/;
+const shortQuote = (text: string) => `"${text.length > 60 ? `${text.slice(0, 59)}…` : text}"`;
+
+/**
+ * A value that may hold one reference, as the whole of it: no delimiter rules, nothing to escape by context, and no
+ * way to splice a value into a query language.
+ */
+function wholeValue(text: string, place: RefPlace, inside: string, example: string, out: ParameterRef[]) {
+  if (!text.includes(PARAM_PREFIX)) return;
+  if (WHOLE_REF.test(text)) {
+    const ref = readRef(text)!;
+    out.push(
+      'problem' in ref ? { id: '', part: null, place, text, problem: ref.problem } : { ...ref, place, text },
+    );
+    return;
+  }
+  for (const m of text.matchAll(REF_TEXT)) {
+    const ref = readRef(m[0]);
+    out.push({
+      id: ref && !('problem' in ref) ? ref.id : '',
+      part: null,
+      place,
+      text: m[0],
+      problem: `${shortQuote(text)} puts a filter inside a longer ${inside}; ${example}`,
+    });
+  }
+}
+
+const AUTHORITY = /^[A-Za-z][A-Za-z0-9+.-]*:[/\\]*[^/?#\\]*/;
+
+/**
+ * The parts of an address as written. Split as text rather than parsed with `new URL`, which normalises: binding must
+ * keep every byte outside a reference exactly as saved (the HTTP cache key and the showcase's exact-match trust).
+ */
+export function splitUrl(url: string): {
+  authority: string;
+  path: string;
+  query: string | null;
+  fragment: string;
+} {
+  const authority = AUTHORITY.exec(url)?.[0] ?? '';
+  const rest = url.slice(authority.length);
+  const hash = rest.indexOf('#');
+  const beforeHash = hash < 0 ? rest : rest.slice(0, hash);
+  const fragment = hash < 0 ? '' : rest.slice(hash);
+  const q = beforeHash.indexOf('?');
+  return {
+    authority,
+    path: q < 0 ? beforeHash : beforeHash.slice(0, q),
+    query: q < 0 ? null : beforeHash.slice(q + 1),
+    fragment,
+  };
+}
+
+const PATH_EXAMPLE = 'a filter must be a whole path segment, as in /regions/$param.region/sales';
+const QUERY_EXAMPLE = 'a filter must be a whole query value, as in ?region=$param.region';
+const VALUE_EXAMPLE =
+  'a filter must be the whole value, as in { "region": "$param.region" }; never put one into query text, pass it as a variable';
+
+function urlRefs(url: string, out: ParameterRef[]) {
+  if (!url.includes(PARAM_PREFIX)) return;
+  const { authority, path, query, fragment } = splitUrl(url);
+  // The scheme, host, port and user info are where a request goes: no value may move it (SSRF).
+  const misplaced = (text: string, problem: string) => {
+    for (const m of text.matchAll(REF_TEXT))
+      out.push({ id: '', part: null, place: 'url', text: m[0], problem });
+  };
+  misplaced(authority, 'Filters cannot be part of the scheme, host, port or user name of an address');
+  misplaced(fragment, 'Filters cannot be part of the fragment (#…) of an address');
+  for (const segment of path.split('/')) wholeValue(segment, 'urlPath', 'path segment', PATH_EXAMPLE, out);
+  for (const pair of query === null ? [] : query.split('&')) {
+    const eq = pair.indexOf('=');
+    misplaced(
+      eq < 0 ? pair : pair.slice(0, eq),
+      'A query parameter name cannot be a filter; use it as the value: ?region=$param.region',
+    );
+    if (eq >= 0) wholeValue(pair.slice(eq + 1), 'urlQuery', 'query value', QUERY_EXAMPLE, out);
+  }
+}
+
+function jsonRefs(value: unknown, place: 'body' | 'connector', out: ParameterRef[]) {
+  if (typeof value === 'string') wholeValue(value, place, 'text', VALUE_EXAMPLE, out);
+  else if (Array.isArray(value)) for (const v of value) jsonRefs(v, place, out);
+  else if (value !== null && typeof value === 'object')
+    for (const [key, v] of Object.entries(value)) {
+      for (const m of key.matchAll(REF_TEXT))
+        out.push({
+          id: '',
+          part: null,
+          place,
+          text: m[0],
+          problem: 'A key cannot be a filter; use it as a value',
+        });
+      jsonRefs(v, place, out);
+    }
+}
+
+/** A dataset's own references (not those of the datasets it reads), in source order, then step by step. */
+export function parameterRefs(dataset: Pick<LineageDataset, 'source' | 'transforms'>): ParameterRef[] {
+  const out: ParameterRef[] = [];
+  const source = dataset.source;
+  if (source.kind === 'http' || source.kind === 'feed') urlRefs(source.url, out);
+  if (source.kind === 'http' && source.body !== undefined) jsonRefs(source.body, 'body', out);
+  if (source.kind === 'connector') jsonRefs(source.params, 'connector', out);
+  for (const step of dataset.transforms) {
+    if ((step.type !== 'filter' && step.type !== 'derive') || !step.expr.includes(PARAM_PREFIX)) continue;
+    let ast: ReturnType<typeof parse>;
+    try {
+      ast = parse(step.expr, { maxLength: MAX_BOUND_EXPRESSION });
+    } catch {
+      // An expression that does not parse is reported by the schema, with its position.
+      continue;
+    }
+    for (const n of paramNodes(ast))
+      out.push({
+        id: n.id,
+        part: n.part,
+        place: step.type,
+        text: `${PARAM_PREFIX}${n.id}${n.part ? `.${n.part}` : ''}`,
+      });
+  }
+  return out;
+}
+
+/** The filters a dataset depends on, its own and those of everything it reads (proposal 0005), sorted. */
+export function lineageParameters(doc: LineageDoc, id: string): string[] {
+  const ids = lineageDatasets(doc, id).flatMap((d) => parameterRefs(d).map((r) => r.id));
+  return [...new Set(ids.filter(Boolean))].sort();
+}
+
+export interface ParameterUse {
+  /** The dataset (phase 2: also the widget) that uses the filter. */
+  id: string;
+  name: string;
+  place: RefPlace;
+}
+
+/** What uses a filter, once per place: "Used by Sales (filter step), Orders (URL query)". */
+export function parameterUsage(doc: Pick<DashboardDoc, 'datasets'>, paramId: string): ParameterUse[] {
+  return doc.datasets.flatMap((d) =>
+    [
+      ...new Set(
+        parameterRefs(d)
+          .filter((r) => r.id === paramId)
+          .map((r) => r.place),
+      ),
+    ].map((place) => ({
+      id: d.id,
+      name: d.name,
+      place,
+    })),
+  );
+}
+
+export interface RefContext {
+  /** The source sends secrets: references stay out of its path, so the secret's binding holds for every value. */
+  secrets: boolean;
+}
+
+/** Why `param` cannot fill a reference at this place, or null. The editor offers only references this accepts. */
+export function refProblem(
+  param: Parameter,
+  ref: RefName & { place: RefPlace },
+  context: RefContext,
+): string | null {
+  if (param.type === 'dateRange') {
+    if (!ref.part)
+      return `filter "${param.id}" is a date range: use .from, .to (YYYY-MM-DD) or .start, .end (epoch ms)`;
+  } else if (ref.part) return `filter "${param.id}" has no part .${ref.part}; only date ranges have parts`;
+  if (ref.place === 'filter' || ref.place === 'derive') return null;
+  // Free text would let a viewer send anything to an upstream: decision 2 of proposal 0010.
+  if (param.type === 'text')
+    return `text filters work in filter and derive steps only, never in a request (filter "${param.id}")`;
+  if (ref.place === 'urlPath') {
+    if (param.type !== 'select') return `only a select filter can be a path segment (filter "${param.id}")`;
+    if (param.all !== undefined)
+      return `filter "${param.id}" offers "All", which no path segment can mean; use it in the query string`;
+    if (context.secrets)
+      return `a source with secrets takes filters only in query values and the body, never in the path (filter "${param.id}")`;
+  }
+  return null;
+}
+
+/** Whether an expression of a table rule or sound condition uses a filter, which it may not (phase 1). */
+function expressionUsesFilters(src: string): boolean {
+  if (!src.includes(PARAM_PREFIX)) return false;
+  try {
+    return paramNodes(parse(src)).length > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** What the schema cannot say about declarations: duplicates, reserved values, defaults that are not choices. */
 export function declarationIssues(parameters: readonly Parameter[]): string[] {
   const issues: string[] = [];
@@ -360,5 +578,33 @@ export function declarationIssues(parameters: readonly Parameter[]): string[] {
 
 /** Problems of a document's filters that the schema cannot express; `integrityIssues` runs it on every write. */
 export function parameterIssues(doc: Pick<DashboardDoc, 'parameters' | 'datasets' | 'widgets'>): string[] {
-  return declarationIssues(doc.parameters ?? []);
+  const parameters = doc.parameters ?? [];
+  const issues = declarationIssues(parameters);
+  const byId = new Map(parameters.map((p) => [p.id, p]));
+  const declared = parameters.length
+    ? `declared filters: ${parameters.map((p) => p.id).join(', ')}`
+    : 'no filters are declared';
+  for (const d of doc.datasets) {
+    const secrets = d.source.kind === 'http' && (d.source.secrets?.length ?? 0) > 0;
+    const refs = parameterRefs(d);
+    for (const r of refs) {
+      const param = byId.get(r.id);
+      const problem =
+        r.problem ?? (param ? refProblem(param, r, { secrets }) : `unknown filter "${r.id}"; ${declared}`);
+      if (problem) issues.push(`Dataset "${d.id}" (${PLACE_LABELS[r.place]}): ${problem}`);
+    }
+    // The history holds the source's rows, keyed by dashboard and dataset, and restarts when the source text
+    // changes: a source that differs per view would restart it on every load. Steps run after it and are harmless.
+    if (d.accumulate > 0 && refs.some((r) => r.place !== 'filter' && r.place !== 'derive'))
+      issues.push(
+        `Dataset "${d.id}" keeps a history (accumulate) and its source uses filters, so every view would restart it; accumulate a dataset without filters and filter in a dataset derived from it`,
+      );
+  }
+  for (const w of doc.widgets) {
+    if (w.type === 'table' && (w.config.rules ?? []).some((rule) => expressionUsesFilters(rule.when)))
+      issues.push(`Widget "${w.id}": filters ($param) work in datasets only, not in table rules`);
+    if ('sound' in w && w.sound?.trigger.kind === 'condition' && expressionUsesFilters(w.sound.trigger.expr))
+      issues.push(`Widget "${w.id}": filters ($param) work in datasets only, not in sound conditions`);
+  }
+  return issues;
 }
