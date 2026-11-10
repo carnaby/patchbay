@@ -1,7 +1,7 @@
 {
   "name": "@patchbay/web",
   "description": "Patchbay web app: landing page, dashboard editor and viewer.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "license": "MIT",
   "homepage": "https://github.com/carnaby/patchbay#readme",
@@ -23,25 +23,25 @@
   },
   "dependencies": {
     "@patchbay/core": "workspace:*",
-    "@tanstack/react-query": "^5.105.3",
+    "@tanstack/react-query": "^5.107.1",
     "clsx": "^2.1.1",
     "echarts": "^6.1.0",
     "immer": "^11.2.9",
-    "lucide-react": "^1.67.0",
+    "lucide-react": "^1.70.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-grid-layout": "^2.3.0",
     "react-markdown": "^10.1.0",
     "react-router": "^8.5.1",
-    "zustand": "^5.0.16"
+    "zustand": "^5.1.0"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
-    "@tailwindcss/vite": "^4.3.4",
+    "@tailwindcss/vite": "^4.3.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.2.1",
-    "tailwindcss": "^4.3.4",
-    "vite": "^8.3.5"
+    "tailwindcss": "^4.3.5",
+    "vite": "^8.3.6"
   }
 }

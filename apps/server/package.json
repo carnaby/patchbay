@@ -1,7 +1,7 @@
 {
   "name": "@patchbay/server",
   "description": "Patchbay server: REST, SSE, MCP, OAuth, connectors, storage and the PNG renderer.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "license": "MIT",
   "homepage": "https://github.com/carnaby/patchbay#readme",
@@ -28,10 +28,10 @@
     "arctic": "^3.7.0",
     "echarts": "^6.1.0",
     "fast-xml-parser": "^5.12.0",
-    "hono": "^4.13.16",
+    "hono": "^4.13.17",
     "nanoid": "^6.0.2",
     "papaparse": "^5.7.0",
-    "undici": "^8.12.3",
+    "undici": "^8.12.4",
     "zod": "^4.6.7"
   },
   "devDependencies": {

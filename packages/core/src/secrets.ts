@@ -351,6 +351,27 @@ const declarationsOf = (doc: DashboardDoc, ids: string[]) =>
     }),
   );
 
+/** A JSON value with every object's keys sorted: two bodies that differ only in key order are one query. */
+const sortedKeys = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(sortedKeys);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((k) => [k, sortedKeys((value as Record<string, unknown>)[k])]),
+  );
+};
+
+/**
+ * What an http request asks besides its URL: the method and the body (key order aside). A GraphQL or SQL query sits
+ * in the body, so changing it is as much a new query with the owner's key as changing the URL. Server
+ * (`secretRefChanges`) and editor (`introducedSecretRefs`) compare this.
+ */
+export function httpRequestKey(source: Source): string {
+  if (source.kind !== 'http') return '';
+  return JSON.stringify([source.method ?? 'GET', sortedKeys(source.body ?? null)]);
+}
+
 /** Every secret id a document references, once. */
 export function docSecretIds(doc: DashboardDoc): string[] {
   return [...new Set(doc.datasets.flatMap((d) => sourceSecretIds(d.source)))];
@@ -358,7 +379,7 @@ export function docSecretIds(doc: DashboardDoc): string[] {
 
 /**
  * Ids of datasets in `next` that introduce or retarget a secret reference: new datasets with secrets, datasets that
- * gained a secret, and datasets with secrets whose URL changed. Removing a secret, or leaving references alone, is
+ * gained a secret, and datasets with secrets whose URL, method or body (`httpRequestKey`) changed. Removing a secret, or leaving references alone, is
  * not a change: those are never re-checked, so deleting a secret never blocks unrelated edits. A dataset whose
  * request sends a filter (URL or body) also counts when it starts or stops sending one, or when the request shape
  * (`parameterRequestShape`) of one it sends changes (proposal 0010).
@@ -372,9 +393,11 @@ export function secretRefChanges(prev: DashboardDoc, next: DashboardDoc): string
     if (old?.kind !== 'http' || d.source.kind !== 'http' || old.url !== d.source.url) return [d.id];
     const had = new Set(sourceSecretIds(old));
     if (ids.some((id) => !had.has(id))) return [d.id];
+    // Another method or body is another query with the owner's key, like another URL.
+    if (httpRequestKey(old) !== httpRequestKey(d.source)) return [d.id];
     // Decision 1 of proposal 0010: what viewers may ask for through a filter is sent with the owner's key, so a
     // request that starts or stops sending a filter, or new choices for one it sends, count like re-pointing the
-    // secret. Other body edits stay uncounted, as before filters existed.
+    // secret.
     const sends = sourceParameterIds(d.source);
     if (JSON.stringify(sourceParameterIds(old)) !== JSON.stringify(sends)) return [d.id];
     return declarationsOf(prev, sends) !== declarationsOf(next, sends) ? [d.id] : [];

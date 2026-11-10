@@ -1614,6 +1614,37 @@ describe('filters on secret-backed sources', () => {
     expect(
       (await env.ops(dash, cookie, [{ op: 'updateParameter', id: 'city', set: { label: 'Town' } }])).status,
     ).toBe(200);
+    // Another method or body is another query with the owner's key: asked like a new URL, whatever the filters.
+    const url = `${API}/v1/whoami?region=$param.region`;
+    const asPost = (body: unknown) => [
+      {
+        op: 'updateDataset',
+        id: 'who',
+        set: { source: { kind: 'http', url, secrets: [s.id], method: 'POST', body } },
+      },
+    ];
+    const toPost = await env.ops(
+      dash,
+      cookie,
+      asPost({ query: '{ publicStats }', variables: { a: 1, b: 2 } }),
+    );
+    expect(toPost.status, toPost.text).toBe(428);
+    expect(toPost.json.secrets).toEqual([{ id: s.id, name: 'Orders key' }]);
+    const confirmed = await env.ops(
+      dash,
+      cookie,
+      asPost({ query: '{ publicStats }', variables: { a: 1, b: 2 } }),
+      { confirmPublicSecrets: true },
+    );
+    expect(confirmed.status, confirmed.text).toBe(200);
+    expect((await env.ops(dash, cookie, asPost({ query: '{ users { email apiKey } }' }))).status).toBe(428);
+    // The same JSON with its keys in another order is the same query.
+    const reordered = await env.ops(
+      dash,
+      cookie,
+      asPost({ variables: { b: 2, a: 1 }, query: '{ publicStats }' }),
+    );
+    expect(reordered.status, reordered.text).toBe(200);
     // Tokens never change such a public dashboard, declarations included.
     const pat = await env.pat(cookie);
     const viaToken = await env.call(`/api/dashboards/${dash}/ops`, {

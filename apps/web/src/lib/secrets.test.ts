@@ -4,6 +4,7 @@ import {
   CREDENTIAL_ERRORS,
   type DashboardDoc,
   emptyDashboard,
+  httpRequestKey,
   parameterRequestShape,
   type Source,
 } from '@patchbay/core';
@@ -100,6 +101,23 @@ describe('confirmation of references on a public dashboard', () => {
     expect(confirmedForSave(plain, moved, refs)).toBe(false);
     // Nothing introduced: no flag at all.
     expect(confirmedForSave(withA, withA, refs)).toBe(false);
+  });
+
+  it('asks again for another method or body, as the server does, but not for the order of its keys', () => {
+    const url = 'https://api.example.com/v1/graphql';
+    const post = (body: unknown): Source => ({ kind: 'http', url, secrets: [A], method: 'POST', body });
+    const get = docWith(http(url, [A]));
+    const stats = docWith(post({ query: '{ publicStats }', variables: { a: 1, b: 2 } }));
+    const users = docWith(post({ query: '{ users { email apiKey } }' }));
+    const toPost = introducedSecretRefs(get, stats);
+    expect(toPost).toHaveLength(1);
+    expect(confirmedForSave(get, stats, toPost)).toBe(true);
+    // The confirmation of one query does not cover the next one.
+    expect(introducedSecretRefs(stats, users)).toHaveLength(1);
+    expect(confirmedForSave(stats, users, toPost)).toBe(false);
+    expect(confirmedForSave(stats, get, toPost)).toBe(false);
+    const reordered = docWith(post({ variables: { b: 2, a: 1 }, query: '{ publicStats }' }));
+    expect(introducedSecretRefs(stats, reordered)).toEqual([]);
   });
 });
 
@@ -288,7 +306,7 @@ describe('confirming filters on a public secret-backed source', () => {
     ]).doc;
     const [fingerprint] = introducedSecretRefs(emptyDashboard('t'), body);
     expect(fingerprint).toBe(
-      `o https://api.example.com/v1/orders sec_AAAAAAAAAAAAAAAA ${JSON.stringify([parameterRequestShape(body.parameters![0]!)])}`,
+      `o https://api.example.com/v1/orders sec_AAAAAAAAAAAAAAAA ${httpRequestKey(body.datasets[0]!.source)} ${JSON.stringify([parameterRequestShape(body.parameters![0]!)])}`,
     );
     expect(fingerprint).toContain('"us"');
     expect(fingerprint).not.toContain('Region');
