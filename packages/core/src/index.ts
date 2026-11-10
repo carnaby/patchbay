@@ -13,6 +13,8 @@ export * from './json-shape.ts';
 export * from './layout.ts';
 export * from './lineage.ts';
 export * from './ops.ts';
+export * from './param-ref.ts';
+export * from './parameters.ts';
 export * from './profile.ts';
 export * from './records.ts';
 export * from './schema.ts';

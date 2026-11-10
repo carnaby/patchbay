@@ -11,6 +11,7 @@ import { isValidTimeZone } from './clock.ts';
 import { IdSchema } from './ids.ts';
 import { jsonShapeProblem } from './json-shape.ts';
 import { DATASET_DEPTH, DATASET_INPUTS, lineageIssues } from './lineage.ts';
+import { MAX_PARAMETERS, ParameterSchema, parameterIssues } from './parameters.ts';
 import { SEARCH_ENGINES } from './search.ts';
 import { SoundRuleSchema } from './sound.ts';
 import { STATUS_LEVELS, STATUS_LIMITS } from './status.ts';
@@ -41,6 +42,8 @@ export const LIMITS = {
   datasetDepth: DATASET_DEPTH,
   /** Datasets one dataset reads, directly or through others. */
   datasetInputs: DATASET_INPUTS,
+  /** Filters a dashboard declares (proposal 0010). */
+  parameters: MAX_PARAMETERS,
   markdown: 20_000,
   title: 120,
   description: 1000,
@@ -490,6 +493,8 @@ export const DashboardDocSchema = z.strictObject({
   colors: ColorMapSchema.optional().describe(
     "Dashboard-wide colour per entity (series value, y column or slice label); a widget's own map wins",
   ),
+  // Optional, not defaulted, like colors: documents without filters must round-trip unchanged.
+  parameters: z.array(ParameterSchema).max(LIMITS.parameters).optional(),
 });
 export type DashboardDoc = z.infer<typeof DashboardDocSchema>;
 export type DashboardDocInput = z.input<typeof DashboardDocSchema>;
@@ -541,6 +546,7 @@ export function integrityIssues(doc: DashboardDoc): string[] {
     }
   }
   issues.push(...lineageIssues(doc));
+  issues.push(...parameterIssues(doc));
   const widgetIds = new Set<string>();
   for (const w of doc.widgets) {
     if (widgetIds.has(w.id)) issues.push(`Duplicate widget id "${w.id}"`);
