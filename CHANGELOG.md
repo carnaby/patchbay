@@ -17,6 +17,9 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 - On a public dashboard, switching a source that uses secrets between GET and POST, or changing its POST body (such
   as the GraphQL query), now asks for the same confirmation as pointing it at another URL: both send new queries with
   your key. Reordering the keys of the same body does not ask.
+- Connector datasets now go through the same upstream limits as `http` sources (at most three requests at a time in
+  total, and two at a time and 60 a minute per connector), so many filter values on a connector parameter cannot
+  multiply the calls to its API without bound. Offline samples are not limited.
 
 ## [0.3.0] - 2026-11-10
 
