@@ -102,6 +102,10 @@ describe('date presets', () => {
     expect(r('thisYear', '2026-11-10')).toBe('2026-01-01..2026-11-10');
     expect(r('last12m', '2026-03-31')).toBe('2025-04-01..2026-03-31');
     expect(r('last12m', '2026-01-01')).toBe('2025-01-02..2026-01-01');
+    // A leap day has no twin a year earlier: the range starts the day after the last day of February.
+    expect(r('last12m', '2028-02-29')).toBe('2027-03-01..2028-02-29');
+    expect(r('last12m', '2028-02-28')).toBe('2027-03-01..2028-02-28');
+    expect(r('last12m', '2029-02-28')).toBe('2028-02-29..2029-02-28');
   });
 
   it('turns at midnight UTC whatever the zone of the machine, and gives epoch ms with an exclusive end', () => {

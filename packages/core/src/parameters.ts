@@ -137,7 +137,11 @@ const PRESET_DAYS: Record<DatePreset, (today: number, y: number, m: number, d: n
     thisMonth: (t, y, m) => [Date.UTC(y, m, 1), t],
     lastMonth: (_t, y, m) => [Date.UTC(y, m - 1, 1), Date.UTC(y, m, 1) - DAY_MS],
     thisYear: (t, y) => [Date.UTC(y, 0, 1), t],
-    last12m: (t, y, m, d) => [Date.UTC(y - 1, m, d) + DAY_MS, t],
+    // The day after the same day a year earlier; a leap day, which has none, uses the last day of that February.
+    last12m: (t, y, m, d) => [
+      Date.UTC(y - 1, m, Math.min(d, new Date(Date.UTC(y - 1, m + 1, 0)).getUTCDate())) + DAY_MS,
+      t,
+    ],
   };
 
 /** A relative preset against `now`, in UTC: a wall screen pinned to one moves to the new day by itself. */
