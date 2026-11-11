@@ -175,6 +175,16 @@ export function behindCalendar(now: number, last: { updatedAt: number; failed: b
   return last.failed || last.updatedAt < now - ((now - ROLLOVER_MS) % DAY_MS);
 }
 
+/**
+ * Whether a failed request may succeed when repeated: a network error (no status), a 5xx, 429 or 408. A permanent 4xx
+ * (a deleted secret, a missing dashboard) would only be asked again every minute for nothing. Structural, so this file
+ * stays free of the api module.
+ */
+function mayPass(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null | undefined)?.status;
+  return typeof status !== 'number' || status >= 500 || status === 429 || status === 408;
+}
+
 interface LastFetch {
   updatedAt: number;
   failed: boolean;
@@ -189,11 +199,12 @@ interface LastFetch {
 export function lastFetch(state: {
   dataUpdatedAt: number;
   status: string;
+  error?: unknown;
   data?: { error?: string | undefined; retryAfterSec?: number | undefined } | undefined;
 }): LastFetch {
   const last: LastFetch = {
     updatedAt: state.dataUpdatedAt,
-    failed: state.status === 'error' || Boolean(state.data?.error),
+    failed: (state.status === 'error' && mayPass(state.error)) || Boolean(state.data?.error),
   };
   // The server refused the load for its own limits, not the source's: its turn comes soon, not at the next interval.
   const retry = state.data?.retryAfterSec;
