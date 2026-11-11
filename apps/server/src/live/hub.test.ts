@@ -514,4 +514,45 @@ describe('LiveHub', () => {
     busy.mockRestore();
     hub.close();
   });
+
+  it('pushes a warning that appears or clears over unchanged rows, and nothing when both stay', async () => {
+    useFakeTimers();
+    const result = (warning?: string) => ({
+      datasetId: 'c',
+      table: { columns: [{ name: 'v', type: 'number' as const }], rows: [{ v: 1 }] },
+      fetchedAt: new Date(0).toISOString(),
+      hash: 'same-rows',
+      truncated: false,
+      ...(warning ? { warning } : {}),
+    });
+    // A lone live dataset (no lineage) is refreshed through `resolve`, outside any chain.
+    vi.spyOn(data, 'resolve')
+      .mockResolvedValueOnce(result())
+      .mockResolvedValueOnce(result('Showing cached data: x'))
+      .mockResolvedValueOnce(result('Showing cached data: x'))
+      .mockResolvedValueOnce(result());
+    const events: LiveEvent[] = [];
+    const hub = new LiveHub(data, async () => ({
+      ownerId: null,
+      doc: doc([
+        { id: 'c', name: 'c', source: { kind: 'connector', connector: 'demo.signal' }, refreshSec: 5 },
+      ]),
+    }));
+    hub.subscribe(
+      'd-warn',
+      viewer((e) => events.push(e)),
+    );
+    await settle();
+    for (let tick = 0; tick < 4; tick++) {
+      await advance(5_000);
+      await settle();
+    }
+    const pushed = events.flatMap((e) => (e.type === 'data' ? [e.result] : []));
+    expect(pushed).toHaveLength(3);
+    expect(pushed.map((r) => r.hash)).toEqual(['same-rows', 'same-rows', 'same-rows']);
+    expect(pushed[0]!.warning).toBeUndefined();
+    expect(pushed[1]!.warning).toBe('Showing cached data: x');
+    expect(pushed[2]!.warning).toBeUndefined();
+    hub.close();
+  });
 });

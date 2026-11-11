@@ -102,7 +102,8 @@ function componentsOf(touches: ReadonlyMap<string, ReadonlySet<string>>): Map<st
 interface Room {
   subscribers: Set<Subscriber>;
   timers: NodeJS.Timeout[];
-  lastHash: Map<string, string>;
+  /** Per dataset, what its viewers last got: the rows' hash and the warning (see `push`). */
+  lastSeen: Map<string, string>;
   /** Bumped on every (re)schedule; stale async schedules notice and bail out. */
   generation: number;
   /** Replaced on every (re)schedule: a new document may have a new graph. */
@@ -122,7 +123,7 @@ export class LiveHub {
   subscribe(dashboardId: string, subscriber: Subscriber): () => void {
     let room = this.rooms.get(dashboardId);
     if (!room) {
-      room = { subscribers: new Set(), timers: [], lastHash: new Map(), generation: 0, chains: null };
+      room = { subscribers: new Set(), timers: [], lastSeen: new Map(), generation: 0, chains: null };
       this.rooms.set(dashboardId, room);
       void this.schedule(dashboardId);
     }
@@ -289,8 +290,11 @@ export class LiveHub {
 
   private push(dashboardId: string, room: Room, generation: number, result: DatasetResult) {
     if (room.generation !== generation) return;
-    if (room.lastHash.get(result.datasetId) === result.hash) return;
-    room.lastHash.set(result.datasetId, result.hash);
+    // Rows and the cached-data warning: a warning that appears or clears over unchanged rows must reach the screen.
+    // The result's hash itself stays the rows' hash, so a sound never rings on a warning alone.
+    const seen = `${result.hash}\u0000${result.warning ?? ''}`;
+    if (room.lastSeen.get(result.datasetId) === seen) return;
+    room.lastSeen.set(result.datasetId, seen);
     this.publish(dashboardId, { type: 'data', result });
   }
 
