@@ -11,6 +11,7 @@ import {
   type Dataset,
   type DatasetResult,
   type DataTable,
+  defaultParameterValues,
   hasLineage,
   lineageCycles,
   lineageDatasets,
@@ -19,7 +20,6 @@ import {
   PIPELINE_LIMITS,
   type PipelineInputs,
   type PipelineResult,
-  readParameterValues,
   stepInputsOf,
   upstreamOf,
 } from '@patchbay/core';
@@ -187,8 +187,7 @@ export class ResolveScope {
     this.target = target;
     // Bound once, before anything is resolved: every cache below is keyed by the bound definitions, which is what
     // gives each view its own entries without a key built by hand (proposal 0010).
-    this.values =
-      options.parameters ?? readParameterValues(doc.parameters, () => undefined, Date.now()).values;
+    this.values = options.parameters ?? defaultParameterValues(doc.parameters);
     const bound = bindDoc(doc, this.values);
     this.doc = bound.doc;
     this.bindErrors = bound.errors;

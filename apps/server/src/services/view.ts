@@ -56,6 +56,22 @@ export function viewValues(
   return values;
 }
 
+/** The values of a request's view: its data-fed choices are loaded first, so a value they lack is a 400. */
+export async function readView(
+  data: DataService,
+  target: DashboardTarget,
+  doc: DashboardDoc,
+  raw: RawParameters | undefined,
+  now = Date.now(),
+): Promise<ParameterValues> {
+  return viewValues(doc, raw, now, await loadDataOptions(data, target, doc, raw));
+}
+
+/** The `loadOptions` of a preview: the same choices a read of the saved view would load. */
+export const optionsLoader =
+  (data: DataService, raw: RawParameters | undefined) => (saved: DashboardDoc, target: DashboardTarget) =>
+    loadDataOptions(data, target, saved, raw);
+
 /**
  * Choices per result table and column. A cached result keeps its table object until a new reading replaces it, so
  * every request on the same result shares one computation instead of repeating it on the main thread; a new reading
