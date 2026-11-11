@@ -206,6 +206,7 @@ function NewWidget({ onCreated }: { onCreated: (id: string) => void }) {
   const inSync = useEditor((s) => datasetInSync(s.saved, s.doc, datasetId));
   const raw = useParameters((s) => s.raw);
   const view = useEditor((s) => (s.doc && datasetId ? viewKey(s.doc, datasetId, raw) : ''));
+  const ready = useParameters((s) => s.dashboardId === dashboardId);
   const suggestions = useQuery({
     // Keyed on the lineage and the view (a derived dataset follows its parent, a filter its value), and fetched only
     // once the server knows the current definitions: it profiles the saved dataset, not the unsaved one.
@@ -215,7 +216,7 @@ function NewWidget({ onCreated }: { onCreated: (id: string) => void }) {
         `/api/dashboards/${dashboardId}/suggest/${datasetId}${queryOfView(view).replace(/^&/, '?')}`,
         { dashboardId },
       ),
-    enabled: Boolean(datasetId) && inSync,
+    enabled: Boolean(datasetId) && inSync && ready,
   });
 
   const create = (widget: Omit<WidgetInput, 'id'>, transforms: Suggestion['transforms'] = []) => {

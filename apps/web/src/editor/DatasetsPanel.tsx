@@ -21,6 +21,7 @@ import {
   type TableProfile,
   type TransformInput,
   type UploadedFile,
+  upstreamOf,
   type WidgetInput,
 } from '@patchbay/core';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -69,7 +70,7 @@ import {
   introducedSecretIds,
   introducedSecretRefs,
 } from '../lib/secrets.ts';
-import { draftView } from '../state/dataset-keys.ts';
+import { draftView, lineageKey } from '../state/dataset-keys.ts';
 import { useEditor } from '../state/editor.ts';
 import { type RawValues, useParameters } from '../state/parameters.ts';
 import { fromWire, useDatasetColumns } from '../state/sync.ts';
@@ -282,10 +283,13 @@ export function DatasetsPanel({
                   <GitBranchPlus className="size-3.5" />
                 </IconButton>
                 <IconButton
-                  label="Delete dataset"
-                  disabled={Boolean(blocker)}
-                  title={blocker ?? 'Delete dataset'}
+                  label={blocker ? `Delete dataset (${blocker})` : 'Delete dataset'}
+                  aria-disabled={blocker ? true : undefined}
                   onClick={() => {
+                    if (blocker) {
+                      toast(blocker, 'bad');
+                      return;
+                    }
                     const err = apply(
                       [{ op: 'removeDataset', id: d.id, cascade: true }],
                       `Removed dataset "${d.name}"`,
@@ -856,8 +860,8 @@ function SourceEditor({
                       const pretty = bodyText(parsed.body);
                       if (pretty === bodyDraft) return;
                       setBodyDraft(pretty);
-                      // A caret in the old text points elsewhere in the new one: inserts go to the end until the
-                      // user puts it back.
+                      // A caret in the old text points elsewhere in the new one: inserts wait until the user
+                      // puts the caret back.
                       setBodyCaret(null);
                     }}
                   />
@@ -874,11 +878,20 @@ function SourceEditor({
                     }}
                   >
                     <InsertFilterMenu
-                      choices={refChoices(parameters, 'body', { secrets: (source.secrets?.length ?? 0) > 0 })}
-                      emptyHint="Only choice and period filters can go into a body."
+                      choices={
+                        bodyCaret === null
+                          ? []
+                          : refChoices(parameters, 'body', { secrets: (source.secrets?.length ?? 0) > 0 })
+                      }
+                      emptyHint={
+                        bodyCaret === null
+                          ? "Click in the body where the value goes, after a key's colon."
+                          : 'Only choice and period filters can go into a body.'
+                      }
                       onInsert={(text) => {
-                        // A whole JSON string value: "region": "$param.region".
-                        const at = bodyCaret ?? bodyDraft.length;
+                        // A whole JSON string value: "region": "$param.region". The menu offers nothing without a
+                        // caret, so there is always a place.
+                        const at = bodyCaret!;
                         const next = insertAt(bodyDraft, at, at, `"${text}"`);
                         setBodyDraft(next.value);
                         setBodyCaret(next.caret);
@@ -1035,11 +1048,23 @@ function DatasetEditor({
     () => draftView(saved, doc, { source: debounced.source, transforms: [] }, viewRaw),
     [saved, doc, debounced.source, viewRaw],
   );
+  // The server previews against the saved datasets it reads: a parent saved elsewhere asks again.
+  const parents = useMemo(
+    () =>
+      saved
+        ? upstreamOf(debounced)
+            .map((u) => lineageKey(saved, u))
+            .join('|')
+        : '',
+    [saved, debounced],
+  );
+  // The URL values are read once per dashboard; a request before that would carry the wrong ones.
+  const ready = useParameters((s) => s.dashboardId === dashboardId);
   const preview = useQuery({
-    queryKey: ['preview', dashboardId, editingId ?? null, JSON.stringify(previewBody), view.key],
+    queryKey: ['preview', dashboardId, editingId ?? null, JSON.stringify(previewBody), view.key, parents],
     queryFn: () => previewRequest(dashboardId, previewBody, editingId, view.values),
     retry: false,
-    enabled: previewable(debounced.source) && !previewBlocked,
+    enabled: previewable(debounced.source) && !previewBlocked && ready,
   });
   const raw = useQuery({
     queryKey: [
@@ -1048,6 +1073,7 @@ function DatasetEditor({
       editingId ?? null,
       JSON.stringify({ name: debounced.name, source: debounced.source }),
       sourceView.key,
+      parents,
     ],
     queryFn: () =>
       previewRequest(
@@ -1057,7 +1083,7 @@ function DatasetEditor({
         sourceView.values,
       ),
     retry: false,
-    enabled: previewable(debounced.source) && !previewBlocked,
+    enabled: previewable(debounced.source) && !previewBlocked && ready,
   });
   const baseColumns = raw.data?.result.table.columns.map((c) => c.name) ?? [];
   const baseTypes = Object.fromEntries(raw.data?.result.table.columns.map((c) => [c.name, c.type]) ?? []);
