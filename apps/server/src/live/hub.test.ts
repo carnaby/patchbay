@@ -5,6 +5,7 @@ import { type DashboardDoc, DatasetSchema, LIMITS, type LiveEvent } from '@patch
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { ConnectorService } from '../connectors/registry.ts';
 import { DataService } from '../services/data.ts';
+import { STILL_LOADING_OWN } from '../services/scope.ts';
 import { FolderStore } from '../store/folder-store.ts';
 import { HttpError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
@@ -415,6 +416,41 @@ describe('LiveHub', () => {
     await advance(800);
     expect(scopes).toHaveBeenCalledTimes(2);
     for (const id of ['a', 'ka', 'x', 'kx']) expect(pushedFor(events, id)).toEqual(['1']);
+    hub.close();
+  });
+
+  it('pushes a source still loading at the deadline with a hint to ask again', async () => {
+    useFakeTimers();
+    vi.spyOn(data, 'loadSource').mockImplementation(async () => {
+      await sleep(800);
+      return reading(1);
+    });
+    const open = data.scope.bind(data);
+    vi.spyOn(data, 'scope').mockImplementation((target, d, options) =>
+      open(target, d, { ...options, deadlineMs: 500 }),
+    );
+    const events: LiveEvent[] = [];
+    const hub = new LiveHub(data, async () => ({ ownerId: null, doc: separate() }));
+    hub.subscribe(
+      'd-still-loading',
+      viewer((e) => events.push(e)),
+    );
+    await settle();
+    await advance(5_000);
+    await advance(800);
+    const errors = (id: string) =>
+      events.flatMap((e) =>
+        e.type === 'data' && e.result.datasetId === id && e.result.error ? [e.result] : [],
+      );
+    expect(errors('a')).toContainEqual(
+      expect.objectContaining({ error: STILL_LOADING_OWN, retryAfterSec: 10 }),
+    );
+    expect(errors('ka')).toContainEqual(
+      expect.objectContaining({
+        error: expect.stringMatching(/^Source dataset "a" is still loading/),
+        retryAfterSec: 10,
+      }),
+    );
     hub.close();
   });
 

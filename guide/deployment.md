@@ -350,9 +350,10 @@ s for a whole request. Every JSON request body and HTTP source response is refus
 than 64 levels. HTTP sources are fetched at most three at a time, two at a time and 60 times a minute per host, and a
 failing address is not asked again for 30 s; an HTTP source or feed refused over these limits shows an error, and the
 page asks again after 10 s. Built-in connectors share a separate budget per upstream host (four loads at a time and 120
-a minute): a load over it waits up to 8 s for its turn, then shows an error that the page retries after 10 s; the demo
-connectors never leave the server and are not counted. The pipeline worker's queue takes jobs round-robin per client,
-one client holding at most a tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are drawn one at a time in a
+a minute): a load over it waits up to 8 s for its turn, then shows an error that the page retries after 10 s; a dataset
+that others read, or that reads others, has 20 s in all, and past that its widget says the source is still loading and
+the page asks again after 10 s; the demo connectors never leave the server and are not counted.
+The pipeline worker's queue takes jobs round-robin per client, one client holding at most a tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are drawn one at a time in a
 worker thread, at most four requests in flight and two per client; each client may have four drawn at once and then
 one every two seconds (images served from the 30 s cache do not count), beyond which the API answers `429 Too Many Requests` with
 `Retry-After`. When a queue is full the API answers `503 Service Unavailable` with `Retry-After`, and live refreshes

@@ -31,6 +31,13 @@ import type { DashboardTarget, DataService } from './data.ts';
 export const SCOPE_DEADLINE_MS = 20_000;
 export const SCOPE_TIMEOUT_MESSAGE =
   'Loading this dataset and the datasets it reads took longer than 20 s; shorten the chain or simplify its steps';
+/** The deadline passed while `id`'s source was still loading: the load goes on, so asking again joins or reads it. */
+export const stillLoadingMessage = (id: string) =>
+  `Source dataset "${id}" is still loading (its source is slow or busy); it is asked again shortly`;
+/** The same, shown on the widget of the dataset whose own source is the slow one. */
+export const STILL_LOADING_OWN = 'Still loading; trying again shortly';
+/** As the connector limiter's busy-host hint: a load still in flight has usually finished by then. */
+const STILL_LOADING_RETRY_SEC = 10;
 
 export interface FullResult {
   /** The processed rows, at most PIPELINE_LIMITS.maxRows (the last ones). */
@@ -73,6 +80,19 @@ export class UpstreamError extends Error {
   }
 }
 
+/** The scope ran out of time. With a source load still pending, the page may ask again: the load goes on. */
+export class ScopeTimeoutError extends HttpError {
+  readonly retryAfterSec: number | undefined;
+  /** The dataset whose source load was still pending, by id. */
+  readonly source: string | undefined;
+  constructor(message: string, options: { retryAfterSec?: number; source?: string } = {}) {
+    super(504, message);
+    this.retryAfterSec = options.retryAfterSec;
+    this.source = options.source;
+  }
+}
+const isTimeout = (e: unknown) => e instanceof ScopeTimeoutError;
+
 const isLasting = (e: unknown) =>
   (e instanceof HttpError || e instanceof UpstreamError || e instanceof CycleError) && e.lasting;
 
@@ -83,7 +103,9 @@ export function errorResult(datasetId: string, e: unknown): DatasetResult {
   const lasting = isLasting(e);
   // A refusal is in-band (a 503 would fail every widget of the request), so the page learns when to ask again here.
   const retryAfterSec =
-    !lasting && (e instanceof RetryLaterError || e instanceof UpstreamError) ? e.retryAfterSec : undefined;
+    !lasting && (e instanceof RetryLaterError || e instanceof UpstreamError || e instanceof ScopeTimeoutError)
+      ? e.retryAfterSec
+      : undefined;
   return {
     datasetId,
     table: { columns: [], rows: [] },
@@ -97,7 +119,6 @@ export function errorResult(datasetId: string, e: unknown): DatasetResult {
 }
 
 const rows = (n: number) => n.toLocaleString('en-US');
-const isTimeout = (e: unknown) => e instanceof HttpError && e.message === SCOPE_TIMEOUT_MESSAGE;
 
 /**
  * A table cut to its last PIPELINE_LIMITS.maxRows rows, the same object for as long as the uncapped one is shared:
@@ -157,6 +178,8 @@ export class ResolveScope {
   private readonly done = new Map<string, FullResult>();
   /** Source loads of the document's datasets: the final key reads them first, and processing must see the same. */
   private readonly loads = new Map<string, ReturnType<DataService['loadInput']>>();
+  /** Source loads started by this scope and not settled yet, by dataset id: what a timeout says is still loading. */
+  private readonly pending = new Map<string, number>();
   private cycles: Map<string, string[]> | undefined;
 
   constructor(data: DataService, target: DashboardTarget, doc: DashboardDoc, options: ScopeOptions = {}) {
@@ -263,7 +286,12 @@ export class ResolveScope {
     } catch (e) {
       // The server, not the dataset, is the problem: callers answer 503 or skip a refresh.
       if (e instanceof BusyError) throw e;
-      return errorResult(dataset.id, e);
+      // The widget's own source is the slow one: naming itself as a "source dataset" would read as another dataset.
+      const shown =
+        e instanceof ScopeTimeoutError && e.source === dataset.id
+          ? new ScopeTimeoutError(STILL_LOADING_OWN, { retryAfterSec: e.retryAfterSec, source: e.source })
+          : e;
+      return errorResult(dataset.id, shown);
     }
   }
 
@@ -307,15 +335,41 @@ export class ResolveScope {
   /** A stored dataset's source, loaded once per scope; a draft that is not the stored object loads its own. */
   private load(dataset: Dataset): ReturnType<DataService['loadInput']> {
     if (this.doc.datasets.find((d) => d.id === dataset.id) !== dataset)
-      return this.data.loadInput(this.target, dataset);
+      return this.track(dataset.id, this.data.loadInput(this.target, dataset));
     let pending = this.loads.get(dataset.id);
     if (!pending) {
-      pending = this.data.loadInput(this.target, dataset);
+      pending = this.track(dataset.id, this.data.loadInput(this.target, dataset));
       // Its readers may give up on it first (the deadline); a later failure must not go unhandled.
       pending.catch(() => {});
       this.loads.set(dataset.id, pending);
     }
     return pending;
+  }
+
+  /** Counts a source load as pending until it settles, either way; the count's own chain never rejects. */
+  private track<T>(id: string, load: Promise<T>): Promise<T> {
+    this.pending.set(id, (this.pending.get(id) ?? 0) + 1);
+    const done = () => {
+      const left = (this.pending.get(id) ?? 1) - 1;
+      if (left > 0) this.pending.set(id, left);
+      else this.pending.delete(id);
+    };
+    load.then(done, done);
+    return load;
+  }
+
+  /**
+   * The error for running out of time, built when it happens. The first pending load in the document's order (drafts
+   * after it) is named, so a wall screen keeps showing the same text however the loads interleave.
+   */
+  private timeoutError(): ScopeTimeoutError {
+    const id = this.doc.datasets.find((d) => this.pending.has(d.id))?.id ?? this.pending.keys().next().value;
+    return id === undefined
+      ? new ScopeTimeoutError(SCOPE_TIMEOUT_MESSAGE)
+      : new ScopeTimeoutError(stillLoadingMessage(id), {
+          retryAfterSec: STILL_LOADING_RETRY_SEC,
+          source: id,
+        });
   }
 
   private async process(dataset: Dataset, path: readonly string[]): Promise<FullResult> {
@@ -389,7 +443,7 @@ export class ResolveScope {
    */
   private within<T>(work: () => Promise<T>): Promise<T> {
     const left = this.deadline - Date.now();
-    if (left <= 0) return Promise.reject(new HttpError(504, SCOPE_TIMEOUT_MESSAGE));
+    if (left <= 0) return Promise.reject(this.timeoutError());
     // Started before the timer, and a synchronous throw becomes a rejection: no timer is ever left armed for it.
     let started: Promise<T>;
     try {
@@ -399,7 +453,8 @@ export class ResolveScope {
     }
     let timer: NodeJS.Timeout | undefined;
     const late = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new HttpError(504, SCOPE_TIMEOUT_MESSAGE)), left);
+      // Built when it fires, from the loads pending then: the outer and inner races of one scope say the same.
+      timer = setTimeout(() => reject(this.timeoutError()), left);
       timer.unref();
     });
     // The race handles a rejection of `work` that comes after the deadline.

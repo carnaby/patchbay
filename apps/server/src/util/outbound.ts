@@ -27,8 +27,9 @@ export interface ConnectorOptions {
   /** Loads one host may receive per minute (burst = the same number). */
   perHostPerMinute?: number;
   /**
-   * How long a load waits for its turn before it is refused. Below the scope deadline (20 s) minus safe-fetch's
-   * 10 s timeout, so a load that got its place late can still finish in time.
+   * How long a load waits for its turn before it is refused. A single-host load that waited the full 8 s still fits
+   * the scope deadline (20 s) with its 10 s fetch; a two-host load (geocoder, then forecast) may not, and a scope then
+   * reports its source as still loading and the page asks again.
    */
   maxWaitMs?: number;
   /** Loads waiting for one host beyond this are refused at once. */

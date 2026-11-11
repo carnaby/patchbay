@@ -12,6 +12,7 @@ import {
 } from '@patchbay/core';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConnectorService } from '../connectors/registry.ts';
+import type { Connector } from '../connectors/types.ts';
 import { FolderStore } from '../store/folder-store.ts';
 import { HttpError, lastingError, RetryLaterError } from '../util/errors.ts';
 import { HEAVY_PIPELINE_CELLS, heavyWork } from '../util/heavy.ts';
@@ -25,7 +26,8 @@ vi.mock('../util/safe-fetch.ts', async (original) => ({
 
 const { DataService } = await import('./data.ts');
 const { InlineRunner } = await import('./pipeline-pool.ts');
-const { SCOPE_TIMEOUT_MESSAGE, errorResult } = await import('./scope.ts');
+const { SCOPE_TIMEOUT_MESSAGE, STILL_LOADING_OWN, ScopeTimeoutError, errorResult, stillLoadingMessage } =
+  await import('./scope.ts');
 
 class CountingRunner extends InlineRunner {
   runs: string[] = [];
@@ -220,6 +222,12 @@ describe('resolution scopes', () => {
     const busy = errorResult('d', new RetryLaterError(429, 'busy', 10));
     expect(busy.retryAfterSec).toBe(10);
     expect(busy).not.toHaveProperty('lasting');
+    const loading = errorResult(
+      'd',
+      new ScopeTimeoutError(stillLoadingMessage('w'), { retryAfterSec: 10, source: 'w' }),
+    );
+    expect(loading.retryAfterSec).toBe(10);
+    expect(loading).not.toHaveProperty('lasting');
   });
 
   it('passes a lasting failure on to the datasets that read it, and only a lasting one', async () => {
@@ -379,6 +387,8 @@ describe('resolution scopes', () => {
     const d = doc(inline('w', cities), from('c', 'w'));
     const r = await data.scope(target, d, { deadlineMs: 0 }).resolve(byId(d, 'c'));
     expect(r.error).toBe(SCOPE_TIMEOUT_MESSAGE);
+    // Nothing was started, so nothing is still loading that asking again could join.
+    expect(r.retryAfterSec).toBeUndefined();
   });
 
   it('starts no work once the deadline has passed, so a late failure is never left unhandled', async () => {
@@ -397,11 +407,109 @@ describe('resolution scopes', () => {
         return { table: inferTable(cities), trace: [], fetchedAt: 0, cut: 0 };
       },
     });
-    expect((await slow.resolve(byId(d, 'c'))).error).toBe(SCOPE_TIMEOUT_MESSAGE);
+    const late = await slow.resolve(byId(d, 'c'));
+    expect(late.error).toBe(SCOPE_TIMEOUT_MESSAGE);
+    expect(late.retryAfterSec).toBeUndefined();
     const draft = { ...byId(d, 'c'), id: 'draft' };
     expect((await data.scope(target, d, { deadlineMs: 0 }).resolve(draft)).error).toBe(SCOPE_TIMEOUT_MESSAGE);
     // Any orphaned rejection surfaces on a later turn of the event loop and fails this file.
     await new Promise((r) => setTimeout(r, 20));
+  });
+
+  describe('a source still loading at the deadline', () => {
+    const gate = () => {
+      let open!: () => void;
+      let close!: (e: Error) => void;
+      const p = new Promise<void>((resolve, reject) => {
+        open = resolve;
+        close = reject;
+      });
+      p.catch(() => {}); // rejected on purpose in one case; the connector's own await sees it
+      return { p, open, close };
+    };
+    const slowConnector = (calls: { n: number }, wait: Promise<void>): Connector => ({
+      info: {
+        id: 'test.slow',
+        name: 'Slow',
+        category: 'Test',
+        description: '',
+        params: [],
+        minRefreshSec: 60,
+        docsUrl: 'https://example.com',
+        attribution: '',
+      },
+      async fetch() {
+        calls.n++;
+        await wait;
+        return { columns: [{ name: 'v', type: 'number' }], rows: [{ v: 1 }] };
+      },
+      sample: () => ({ columns: [], rows: [] }),
+    });
+    const slowDoc = () =>
+      doc(
+        { id: 'w', name: 'W', source: { kind: 'connector', connector: 'test.slow', params: {} } },
+        from('c', 'w'),
+      );
+
+    it('names a source that is still loading at the deadline, and lets the page ask again', async () => {
+      const calls = { n: 0 };
+      const { p, open } = gate();
+      const data = new DataService(
+        new ConnectorService({ offline: false, connectors: [slowConnector(calls, p)] }),
+        store,
+      );
+      const d = slowDoc();
+      const timedOut = await data.scope(target, d, { deadlineMs: 50 }).resolve(byId(d, 'c'));
+      expect(timedOut.error).toBe(
+        'Source dataset "w" is still loading (its source is slow or busy); it is asked again shortly',
+      );
+      expect(timedOut.retryAfterSec).toBe(10);
+      expect(timedOut.lasting).toBeUndefined();
+      // The next scope joins the load still in flight instead of starting another.
+      const next = data.scope(target, d).resolve(byId(d, 'c'));
+      open();
+      expect((await next).table.rows).toEqual([{ v: 1 }]);
+      expect(calls.n).toBe(1);
+    });
+
+    it('says the dataset itself is still loading when its own source is the slow one', async () => {
+      const calls = { n: 0 };
+      const { p, open } = gate();
+      const data = new DataService(
+        new ConnectorService({ offline: false, connectors: [slowConnector(calls, p)] }),
+        store,
+      );
+      const d = slowDoc();
+      const own = await data.scope(target, d, { deadlineMs: 50 }).resolve(byId(d, 'w'));
+      expect(own.error).toBe(STILL_LOADING_OWN);
+      expect(own.retryAfterSec).toBe(10);
+      expect(own.lasting).toBeUndefined();
+      open();
+      expect((await data.scope(target, d).resolve(byId(d, 'w'))).table.rows).toEqual([{ v: 1 }]);
+      expect(calls.n).toBe(1);
+    });
+
+    it('lets a load that fails after the deadline end quietly, and reports its own error next time', async () => {
+      const calls = { n: 0 };
+      const { p, close } = gate();
+      const data = new DataService(
+        new ConnectorService({ offline: false, connectors: [slowConnector(calls, p)] }),
+        store,
+      );
+      const d = slowDoc();
+      const scope = data.scope(target, d, { deadlineMs: 50 });
+      const timedOut = await scope.resolve(byId(d, 'c'));
+      expect(timedOut.error).toBe(stillLoadingMessage('w'));
+      close(new Error('down'));
+      // An unhandled rejection from the load this scope tracked would surface on a later turn and fail this file.
+      await new Promise((r) => setTimeout(r, 20));
+      // The failed load is no longer pending in the scope that started it.
+      const after = await scope.resolve(byId(d, 'c'));
+      expect(after.error).toBe(SCOPE_TIMEOUT_MESSAGE);
+      expect(after.retryAfterSec).toBeUndefined();
+      const next = await data.scope(target, d).resolve(byId(d, 'c'));
+      expect(next.error).toMatch(/^Source dataset "w" failed: .*down/);
+    });
   });
 
   it('names a cycle that slipped past validation instead of overflowing the stack', async () => {
@@ -632,6 +740,7 @@ describe('final results across scopes', () => {
     const patient = data.scope(target, d).resolve(byId(d, 'c'));
     const [h, p] = await Promise.all([hurried, patient]);
     expect(h.error).toBe(SCOPE_TIMEOUT_MESSAGE);
+    expect(h.retryAfterSec).toBeUndefined();
     expect(p.error).toBeUndefined();
     expect(p.table.rows).toHaveLength(1);
   });
