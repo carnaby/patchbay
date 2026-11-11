@@ -6,6 +6,7 @@ import {
   crossFilterPick,
   crossFilterSelection,
   DIMMED_OPACITY,
+  effectiveSelection,
   inferTable,
   MapConfigSchema,
   ParameterSchema,
@@ -211,5 +212,20 @@ describe('clickable line and area charts', () => {
     expect(chosen.a!.areaStyle.opacity).toBeCloseTo(0.12 * DIMMED_OPACITY);
     expect(chosen.b!.areaStyle.opacity).toBeCloseTo(0.12);
     expect(option(null).a!.areaStyle.opacity).toBeCloseTo(0.12);
+  });
+});
+
+describe('effectiveSelection', () => {
+  it('selects nothing when no row holds the value, so a typed partial text dims nothing', () => {
+    const rows = [{ src: 'BBC News' }, { src: 'bbc sport' }, { src: 'Reuters' }];
+    expect(effectiveSelection({ field: 'src', value: 'bbc' }, rows)).toBeNull();
+    expect(effectiveSelection({ field: 'src', value: 'Reuters' }, rows)).toEqual({
+      field: 'src',
+      value: 'Reuters',
+    });
+    expect(effectiveSelection(null, rows)).toBeNull();
+    const sel = { field: 'src', value: 'Reuters' };
+    // The same object: ChartBody memoizes on it.
+    expect(effectiveSelection(sel, rows)).toBe(sel);
   });
 });

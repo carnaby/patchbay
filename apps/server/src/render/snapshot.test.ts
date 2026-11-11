@@ -978,6 +978,12 @@ describe('cross-filter in snapshots', () => {
     expect(one).toBeGreaterThan(full * 0.2);
   });
 
+  it('draws everything at full strength when the selected value is not in the data', () => {
+    expect(ink(renderWidgetPng(bars, result, { parameters: { month: 'Zzz' } }))).toBe(
+      ink(renderWidgetPng(bars, result)),
+    );
+  });
+
   it('dims the table rows that are not selected', () => {
     const table = widget({
       id: 't',

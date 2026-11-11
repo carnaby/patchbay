@@ -32,6 +32,7 @@ import { useEditor } from '../state/editor.ts';
 import { summaryOf, useParameters } from '../state/parameters.ts';
 import { useDatasetColumns } from '../state/sync.ts';
 import {
+  addFilterBlocker,
   checkParameter,
   choiceSourcePatch,
   defaultOps,
@@ -41,6 +42,7 @@ import {
   optionsText,
   type ParameterType,
   parseOptions,
+  reseatDefault,
   TYPE_LABELS,
   updateOps,
   usageText,
@@ -72,6 +74,8 @@ export function ParametersPanel({
     return !error;
   };
   const taken = new Set(parameters.map((p) => p.id));
+  const addBlocker = addFilterBlocker(parameters);
+  const defaultsToSave = defaultOps(parameters, raw);
   const add = (type: ParameterType) => setEditing({ parameter: newParameter(type, taken), isNew: true });
 
   return (
@@ -158,17 +162,27 @@ export function ParametersPanel({
             );
           })}
           <div className="flex flex-wrap items-center gap-2">
-            <Menu label="Add filter" icon={<Plus className="size-4" />}>
-              {(['select', 'text', 'dateRange'] as const).map((type) => (
-                <MenuItem key={type} onSelect={() => add(type)}>
-                  {TYPE_LABELS[type]}
-                </MenuItem>
-              ))}
-            </Menu>
-            {Object.keys(raw).length > 0 ? (
+            {addBlocker ? (
+              <>
+                <Button size="sm" disabled title={addBlocker}>
+                  <Plus className="size-4" />
+                  Add filter
+                </Button>
+                <p className="w-full text-xs text-muted">{addBlocker}</p>
+              </>
+            ) : (
+              <Menu label="Add filter" icon={<Plus className="size-4" />}>
+                {(['select', 'text', 'dateRange'] as const).map((type) => (
+                  <MenuItem key={type} onSelect={() => add(type)}>
+                    {TYPE_LABELS[type]}
+                  </MenuItem>
+                ))}
+              </Menu>
+            )}
+            {defaultsToSave.length > 0 ? (
               <Button
                 size="sm"
-                onClick={() => run(defaultOps(parameters, raw), 'Made the current filter values the default')}
+                onClick={() => run(defaultsToSave, 'Made the current filter values the default')}
                 title={summaryOf(parameters, raw, true)}
               >
                 Make current values the default
@@ -202,7 +216,7 @@ function ParameterForm({
     initial.type === 'select' ? optionsText(initial.options ?? []) : '',
   );
   const taken = useMemo(() => new Set(others.map((p) => p.id)), [others]);
-  const check = checkParameter(draft, others);
+  const check = checkParameter(draft, others, isNew ? undefined : initial);
   /** Merges a patch; undefined removes a field, as the save's updateParameter would. */
   const set = (patch: Record<string, unknown>) =>
     setDraft((d) => {
@@ -275,6 +289,7 @@ function ParameterForm({
                 value={text('default')}
                 maxLength={100}
                 onChange={(e) => set({ default: e.target.value })}
+                onBlur={(e) => set({ default: e.target.value.trim() })}
               />
             )}
           </Field>
@@ -391,7 +406,8 @@ function SelectFields({
               spellCheck={false}
               onChange={(e) => {
                 setOptionsDraft(e.target.value);
-                set({ options: parseOptions(e.target.value, options) });
+                const next = { ...draft, options: parseOptions(e.target.value, options) };
+                set({ options: next.options, ...reseatDefault(next) });
               }}
             />
           )}
@@ -464,13 +480,15 @@ function DateFields({
               <input
                 type="checkbox"
                 checked={presets.includes(preset)}
-                onChange={(e) =>
-                  set({
+                onChange={(e) => {
+                  const next = {
+                    ...draft,
                     presets: DATE_PRESETS.filter((x) =>
                       x === preset ? e.target.checked : presets.includes(x),
                     ),
-                  })
-                }
+                  };
+                  set({ presets: next.presets, ...reseatDefault(next) });
+                }}
               />
               {DATE_PRESET_LABELS[preset]}
             </label>

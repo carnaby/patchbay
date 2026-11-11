@@ -32,7 +32,13 @@ import {
 } from './dataset-keys.ts';
 import { useEditor } from './editor.ts';
 import { openLiveChannel } from './live-channel.ts';
-import { choicesOfResult, dataValueReady, type RawValues, useParameters } from './parameters.ts';
+import {
+  choicesOfResult,
+  dataValueReady,
+  pendingDataValue,
+  type RawValues,
+  useParameters,
+} from './parameters.ts';
 import { performSave } from './save.ts';
 
 const SAVE_DEBOUNCE_MS = 600;
@@ -196,12 +202,23 @@ const fetchResult =
 
 type ChoiceCheck = [id: string, dataset: string, lineage: string, view: string];
 
+/** A data-driven value a dataset's request waits for: the filter's label and the value its choices lack. */
+export interface PendingValue {
+  label: string;
+  value: string;
+}
+
 /**
  * Whether the data-driven values a request would carry may be sent (`dataValueReady`): their choices are loaded and
- * hold them, or failed. The choices are read from the cache without fetching them: the page's DataOptionsGuard loads
- * every options dataset, with the same key.
+ * hold them, or failed. Also the first of them that loaded choices lack, which a wall screen holds until they hold it
+ * again. The choices are read from the cache without fetching them: the page's DataOptionsGuard loads every options
+ * dataset, with the same key.
  */
-function useChoicesChecked(dashboardId: string, checks: string, raw: RawValues): boolean {
+function useChoiceState(
+  dashboardId: string,
+  checks: string,
+  raw: RawValues,
+): { ready: boolean; pending: PendingValue | null } {
   const entries = useMemo(() => (checks ? (JSON.parse(checks) as ChoiceCheck[]) : []), [checks]);
   const parameters = useEditor((s) => s.doc?.parameters);
   return useQueries({
@@ -210,15 +227,33 @@ function useChoicesChecked(dashboardId: string, checks: string, raw: RawValues):
       queryFn: fetchResult(dashboardId, dataset, view),
       enabled: false,
     })),
-    combine: (results) =>
-      entries.every(([id], i) => {
+    combine: (results) => {
+      let ready = true;
+      let pending: PendingValue | null = null;
+      for (const [i, [id]] of entries.entries()) {
         const param = parameters?.find((p) => p.id === id);
         const from = param?.type === 'select' ? param.optionsFrom : undefined;
-        if (!param || !from) return true;
+        if (!param || !from) continue;
         const query = results[i];
-        return dataValueReady(param, raw, choicesOfResult(from.field, query?.data, Boolean(query?.isError)));
-      }),
+        const choices = choicesOfResult(from.field, query?.data, Boolean(query?.isError));
+        if (!dataValueReady(param, raw, choices)) ready = false;
+        const value = pendingDataValue(param, raw, choices);
+        if (pending === null && value !== null) pending = { label: param.label, value };
+      }
+      return { ready, pending };
+    },
   });
+}
+
+/**
+ * The data-driven value a dataset's request waits for because the loaded choices lack it, or null. The checks are the
+ * ones `useDatasetResult` waits on, so a widget can tell a held value from an ordinary wait.
+ */
+export function usePendingDataValue(dashboardId: string, dataset: Dataset | undefined): PendingValue | null {
+  const id = dataset?.id;
+  const raw = useParameters((s) => s.raw);
+  const checks = useEditor((s) => (id && s.doc ? choiceChecks(s.doc, id, raw) : ''));
+  return useChoiceState(dashboardId, checks, raw).pending;
 }
 
 /**
@@ -238,7 +273,7 @@ export function useDatasetResult(dashboardId: string, dataset: Dataset | undefin
   const inSync = useEditor((s) => (id ? datasetInSync(s.saved, s.doc, id) : false));
   const refreshSec = useEditor((s) => (id && s.doc ? effectiveRefreshSec(s.doc, id) : 0));
   const checks = useEditor((s) => (id && s.doc ? choiceChecks(s.doc, id, raw) : ''));
-  const checked = useChoicesChecked(dashboardId, checks, raw);
+  const checked = useChoiceState(dashboardId, checks, raw).ready;
   // A dataset that uses filters is never pushed (one result per view): it polls even while the live channel is up.
   const timing = refreshTiming(refreshSec, live && view === '');
   return useQuery({

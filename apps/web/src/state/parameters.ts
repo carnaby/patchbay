@@ -5,10 +5,13 @@
  * Values are never saved into the document.
  */
 import {
+  type DashboardDoc,
   type DatasetResult,
   type DataTable,
   defaultText,
   distinctOptions,
+  isStaticSource,
+  lineageDatasets,
   type OptionValue,
   type Parameter,
   parameterSummary,
@@ -194,6 +197,42 @@ export function staleDataValue(
 }
 
 /**
+ * What the page does about a data-driven value the loaded choices lack. A wall screen holds it while its choices
+ * refresh, so the view comes back by itself when the data does; a static list cannot bring it back without a reload,
+ * and outside presentation someone is there to see the reset.
+ */
+export function guardAction(
+  stale: boolean,
+  presenting: boolean,
+  optionsLive: boolean,
+): 'reset' | 'hold' | null {
+  if (!stale) return null;
+  return presenting && optionsLive ? 'hold' : 'reset';
+}
+
+/**
+ * The value a request waits for while it is held: only once loaded, non-empty choices lack it. Loading, failed and
+ * empty lists let the request go (`dataValueReady`), so nothing waits on them.
+ */
+export function pendingDataValue(param: Parameter, raw: RawValues, choices: DataChoices): string | null {
+  return staleDataValue(param, raw, choices.options) ? raw[param.id]! : null;
+}
+
+/**
+ * Whether the choices of an options dataset can change by themselves: some dataset of its lineage refreshes and reads
+ * a source that can change. Inline rows and uploads may carry a refreshSec but are never refetched on a timer, and a
+ * dataset link is not a root of its own.
+ */
+export function optionsRefresh(doc: DashboardDoc, datasetId: string): boolean {
+  return lineageDatasets(doc, datasetId).some(
+    (d) => d.refreshSec > 0 && !isStaticSource(d.source) && d.source.kind !== 'dataset',
+  );
+}
+
+/** A hold just ended: the result cached from before it may still be fresh and would come back unasked. */
+export const resumed = (wasHeld: boolean, held: boolean) => wasHeld && !held;
+
+/**
  * The value the filter bar shows besides the loaded choices: a link's value while they load, after they failed, or
  * when they do not hold it. Without it the bar would read "All" while the view is filtered.
  */
@@ -221,8 +260,8 @@ export function dataPickProblem(
 
 /**
  * Whether a request may carry a data-driven select's value: once the choices hold it, or once they failed or came
- * back empty (the server answers then). A value they lack waits for the guard's reset, so a link to a value the data
- * dropped never reaches the server.
+ * back empty (the server answers then). A value they lack waits for the guard's reset, or on a wall screen until the
+ * choices hold it again, so a link to a value the data dropped never reaches the server.
  */
 export function dataValueReady(param: Parameter, raw: RawValues, choices: DataChoices): boolean {
   const text = dataValue(param, raw);

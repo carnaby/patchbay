@@ -21,7 +21,7 @@ logic is covered by fast unit tests.
 A dashboard is one JSON document:
 
 ```ts
-{ schemaVersion: 1, title, description, datasets: Dataset[], widgets: Widget[], layout: LayoutItem[], colors? }
+{ schemaVersion: 1, title, description, datasets: Dataset[], widgets: Widget[], layout: LayoutItem[], colors?, parameters? }
 ```
 
 - **Datasets** describe where data comes from (`source`) and how it is processed (`transforms`), plus live behaviour
@@ -35,6 +35,7 @@ A dashboard is one JSON document:
   sizes and side-by-side placement are edited on a wider screen.
 - **Colors** (optional) map entities (series values, columns, slice labels) to colours for every chart of the
   dashboard. It is absent unless set, so documents without it round-trip unchanged.
+- **Parameters** (optional) declare the dashboard's filters; see §4 (Filters).
 
 All schemas are `z.strictObject`: unknown keys are errors. A typo in an agent's config (`colour` instead of `colors`)
 fails loudly instead of being silently ignored.

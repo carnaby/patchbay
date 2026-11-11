@@ -26,6 +26,25 @@ function failure(run: () => unknown) {
   throw new Error('Expected the pipeline to fail');
 }
 
+describe('rename', () => {
+  const t = inferTable([{ a: 1, b: 'x' }]);
+  it('refuses a rename onto an existing column', () => {
+    expect(() => runPipeline(t, steps([{ type: 'rename', map: { a: 'b' } }]))).toThrow(
+      /Step 1: Column "b" already exists/,
+    );
+  });
+  it('refuses two columns renamed to one name', () => {
+    expect(() => runPipeline(t, steps([{ type: 'rename', map: { a: 'x', b: 'x' } }]))).toThrow(
+      /"x" already exists/,
+    );
+  });
+  it('allows a swap', () => {
+    const out = runPipeline(t, steps([{ type: 'rename', map: { a: 'b', b: 'a' } }])).table;
+    expect(out.columns.map((c) => c.name)).toEqual(['b', 'a']);
+    expect(out.rows[0]).toEqual({ b: 1, a: 'x' });
+  });
+});
+
 describe('pipeline size limit', () => {
   afterEach(() => vi.restoreAllMocks());
 

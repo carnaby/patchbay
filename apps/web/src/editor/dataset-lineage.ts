@@ -36,10 +36,14 @@ export function sourceCandidates(doc: DashboardDoc, editingId: string | null): D
 
 /** Why a dataset cannot be deleted yet, for the disabled button's tooltip; null when it can. */
 export function deleteBlocker(doc: DashboardDoc, id: string): string | null {
-  const readers = readersOf(doc, id);
-  return readers.length
-    ? `Used by ${readers.map((r) => nameOf(doc, r)).join(', ')}. Delete or re-point those first.`
-    : null;
+  const users = [
+    ...readersOf(doc, id).map((r) => nameOf(doc, r)),
+    // A filter that takes its choices from the dataset would silently lose them.
+    ...(doc.parameters ?? [])
+      .filter((p) => p.type === 'select' && p.optionsFrom?.dataset === id)
+      .map((p) => `filter ${p.label}`),
+  ];
+  return users.length ? `Used by ${users.join(', ')}. Delete or re-point those first.` : null;
 }
 
 const hasSecrets = (d: Dataset) => d.source.kind === 'http' && (d.source.secrets?.length ?? 0) > 0;

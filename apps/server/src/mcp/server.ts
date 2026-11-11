@@ -40,7 +40,7 @@ import type { Deps } from '../context.ts';
 import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import type { Principal } from '../services/dashboards.ts';
 import { listTemplates } from '../services/templates.ts';
-import { loadDataOptions, viewValues } from '../services/view.ts';
+import { loadDataOptions, RawParametersSchema, unknownIds, viewValues } from '../services/view.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
 import { APP_VERSION } from '../util/version.ts';
@@ -149,6 +149,12 @@ function suggestionOps(
   });
 }
 
+/** One `note` field from the sentences that exist. */
+function noteOf(...notes: (string | undefined)[]): { note?: string } {
+  const found = notes.filter((n): n is string => !!n);
+  return found.length ? { note: found.join(' ') } : {};
+}
+
 export function createMcp(deps: Deps) {
   const { dashboards, data, connectors, config, users } = deps;
   const urlOf = (id: string) => `${config.publicUrl}/d/${id}`;
@@ -164,7 +170,12 @@ export function createMcp(deps: Deps) {
     };
   };
   // A view in the text form of a link ("*" is all); descriptions live in get_reference.
-  const viewParameters = z.record(z.string(), z.string()).optional();
+  const viewParameters = RawParametersSchema.optional();
+  /** A typo in a filter id is ignored by design (links stay lenient); say so instead of silently showing another view. */
+  const unknownNote = (doc: DashboardDoc, raw: Record<string, string> | undefined) => {
+    const ids = unknownIds(doc, raw);
+    return ids.length ? `Unknown filter ids ignored: ${ids.join(', ')}` : undefined;
+  };
 
   // Built once: the factory below runs per request, and the advertised JSON Schemas are cached on these objects.
   const connectorIds = connectors.list().map((c) => c.id);
@@ -193,7 +204,7 @@ export function createMcp(deps: Deps) {
       transforms: z.array(TransformSchema).default([]),
       dashboardId: dashboardId.optional(),
       sampleRows: z.number().int().min(1).max(100).default(15),
-      parameters: z.record(z.string(), z.string()).optional(),
+      parameters: RawParametersSchema.optional(),
     }),
     { connectorIds },
   );
@@ -529,6 +540,8 @@ export function createMcp(deps: Deps) {
               suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
               'copy',
             ),
+            ...noteOf(unknownNote(target.doc, args.parameters)),
+            ...(args.dashboardId ? viewEcho(args.dashboardId, target.doc, target.parameters) : {}),
             suggestionsNote:
               'These suggestions copy the previewed source because it is not saved yet. Once the dataset is saved, suggest_widgets returns suggestions that derive from it (source kind "dataset") instead.',
           });
@@ -587,9 +600,11 @@ export function createMcp(deps: Deps) {
             error: result.error,
             ...(result.warning ? { warning: result.warning } : {}),
             // Open browsers decide whether the history grows on its own, so tell the agent how many there are.
-            ...(dataset.accumulate > 0
-              ? { watchers: deps.hub.watchers(args.dashboardId), note: ACCUMULATE_NOTE }
-              : {}),
+            ...(dataset.accumulate > 0 ? { watchers: deps.hub.watchers(args.dashboardId) } : {}),
+            ...noteOf(
+              dataset.accumulate > 0 ? ACCUMULATE_NOTE : undefined,
+              unknownNote(doc, args.parameters),
+            ),
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
             ...viewEcho(args.dashboardId, doc, values),
           });
@@ -630,6 +645,7 @@ export function createMcp(deps: Deps) {
               suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
               'derive',
             ),
+            ...noteOf(unknownNote(doc, args.parameters)),
             ...viewEcho(args.dashboardId, doc, values),
           });
         },
@@ -762,7 +778,14 @@ export function createMcp(deps: Deps) {
           const warnings = [...results.values()]
             .filter((r) => r.warning && !r.error)
             .map((r) => `${r.datasetId}: ${r.warning}`);
-          const view = doc.parameters?.length ? [`Filters: ${parameterSummary(doc.parameters, values)}`] : [];
+          const echo = viewEcho(args.dashboardId, doc, values);
+          const unknown = unknownNote(doc, args.parameters);
+          const view = doc.parameters?.length
+            ? [
+                `Filters: ${parameterSummary(doc.parameters, values)}`,
+                ...(echo.viewUrl ? [`Link: ${echo.viewUrl}`] : []),
+              ]
+            : [];
           const lines = [
             ...(problems.length ? [`Data problems: ${problems.join('; ')}`] : []),
             ...(warnings.length ? [`Data warnings: ${warnings.join('; ')}`] : []),
@@ -775,6 +798,7 @@ export function createMcp(deps: Deps) {
                 text: [
                   lines.length ? lines.join('\n') : `Rendered ${needed.length} widget(s).`,
                   ...view,
+                  ...(unknown ? [unknown] : []),
                 ].join('\n'),
               },
             ],

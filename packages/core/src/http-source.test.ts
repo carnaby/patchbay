@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyOps,
+  bindDataset,
   emptyDashboard,
   HTTP_METHODS,
   httpBodyIssue,
@@ -122,5 +123,35 @@ describe('POST for http sources', () => {
       body: { query: QUERY },
       path: 'data.viewer',
     });
+  });
+});
+
+describe('tab and newline in a URL template', () => {
+  const withUrl = (url: string) => ({
+    ...emptyDashboard('Tabs'),
+    parameters: [
+      {
+        id: 'h',
+        label: 'Host part',
+        type: 'select',
+        options: [{ value: 'eu' }, { value: 'us' }],
+        default: 'eu',
+      },
+    ],
+    datasets: [{ id: 'd', name: 'D', source: { kind: 'http', url } }],
+  });
+  const url = (doc: ReturnType<typeof parseDashboard>) => (doc.datasets[0]!.source as { url: string }).url;
+
+  it('refuses a tab that would move the host into the template (the URL parser drops it)', () => {
+    expect(() => parseDashboard(withUrl('https://\t/$param.h/x'))).toThrow(/scheme, host, port or user name/);
+  });
+
+  it('keeps a tab or newline in the path or at the end out of the saved URL, so the reference still binds', () => {
+    for (const raw of ['https://a.example/\t$param.h/x', 'https://a.example/$param.h/x\n']) {
+      const doc = parseDashboard(withUrl(raw));
+      expect(url(doc), JSON.stringify(raw)).toBe('https://a.example/$param.h/x');
+      const bound = bindDataset(doc.datasets[0]!, { h: 'eu' });
+      expect((bound.source as { url: string }).url, JSON.stringify(raw)).toBe('https://a.example/eu/x');
+    }
   });
 });

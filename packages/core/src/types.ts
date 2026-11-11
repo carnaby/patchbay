@@ -60,6 +60,8 @@ export interface DatasetResult {
   trace?: PipelineResult['trace'];
   /** The dataset failed: no rows, or only what an earlier step kept. */
   error?: string;
+  /** The failure is this server's own limit, not the source: ask again after this many seconds. */
+  retryAfterSec?: number;
   /**
    * Rows were served but with a caveat (a capped source, a cached copy after a failed refresh, a long parent cut):
    * shown next to the data, never treated as a failure.

@@ -1,5 +1,6 @@
 import { applyOps, type DashboardDoc, emptyDashboard, SoundRuleSchema } from '@patchbay/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../lib/api.ts';
 import {
   behindCalendar,
   choiceChecks,
@@ -167,15 +168,31 @@ describe('dataset keys by view', () => {
   describe('across midnight UTC', () => {
     afterEach(() => vi.useRealTimers());
 
-    it('keeps the sound identity and the view of a relative period: an ordinary refresh, no baseline', () => {
+    it('takes a new sound baseline when a relative period moves to a new day, and keeps the data key', () => {
       const rule = SoundRuleSchema.parse({ trigger: { kind: 'newRows' } });
+      const before = soundIdentity(filtered, rule, 'recent', {}, Date.parse('2026-11-10T23:59:59Z'));
+      const after = soundIdentity(filtered, rule, 'recent', {}, Date.parse('2026-11-11T00:01:00Z'));
+      const later = soundIdentity(filtered, rule, 'recent', {}, Date.parse('2026-11-11T18:00:00Z'));
+      expect(after).not.toBe(before);
+      expect(later).toBe(after);
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-11-10T23:59:59Z'));
-      const before = soundIdentity(filtered, rule, 'recent', {});
       const viewBefore = viewKey(filtered, 'recent', {});
       vi.setSystemTime(new Date('2026-11-11T00:01:00Z'));
-      expect(soundIdentity(filtered, rule, 'recent', {})).toBe(before);
       expect(viewKey(filtered, 'recent', {})).toBe(viewBefore);
+    });
+
+    it('keeps the identity of a dataset without a relative period across midnight', () => {
+      const rule = SoundRuleSchema.parse({ trigger: { kind: 'newRows' } });
+      const night = Date.parse('2026-11-10T23:59:59Z');
+      const morning = Date.parse('2026-11-11T00:01:00Z');
+      expect(soundIdentity(filtered, rule, 'temps', {}, night)).toBe(
+        soundIdentity(filtered, rule, 'temps', {}, morning),
+      );
+      const fixed = { period: '2026-01-01..2026-01-31' };
+      expect(soundIdentity(filtered, rule, 'recent', fixed, night)).toBe(
+        soundIdentity(filtered, rule, 'recent', fixed, morning),
+      );
     });
   });
 
@@ -241,6 +258,38 @@ describe('dataset keys by view', () => {
     expect(nextRefetch(false, true, later, good)).toBe(86_370_000);
     expect(lastFetch({ dataUpdatedAt: 0, status: 'error' }).failed).toBe(true);
     expect(lastFetch({ dataUpdatedAt: 0, status: 'pending' }).failed).toBe(false);
+  });
+
+  it('retries a relative period after network errors, 5xx and 429, not after other 4xx', () => {
+    const at = Date.parse('2026-11-11T12:00:00Z');
+    const err = (error: unknown) => lastFetch({ dataUpdatedAt: at, status: 'error', error });
+    expect(err(new ApiError(404, 'gone', {})).failed).toBe(false);
+    expect(err(new ApiError(403, 'secret deleted', {})).failed).toBe(false);
+    expect(err(new ApiError(503, 'busy', {})).failed).toBe(true);
+    expect(err(new ApiError(429, 'slow down', {})).failed).toBe(true);
+    expect(err(new ApiError(408, 'timeout', {})).failed).toBe(true);
+    expect(err(new TypeError('Failed to fetch')).failed).toBe(true);
+    expect(lastFetch({ dataUpdatedAt: at, status: 'success', data: { error: 'upstream 500' } }).failed).toBe(
+      true,
+    );
+  });
+
+  it('asks again soon after a result the server refused for its own limits', () => {
+    const now = Date.parse('2026-11-11T12:00:00Z');
+    const refused = lastFetch({
+      dataUpdatedAt: now,
+      status: 'success',
+      data: { error: 'busy', retryAfterSec: 10 },
+    });
+    expect(refused).toEqual({ updatedAt: now, failed: true, retryAfterSec: 10 });
+    expect(nextRefetch(false, false, now, refused)).toBe(10_000); // a dataset that never refreshes
+    expect(nextRefetch(60_000, false, now, refused)).toBe(10_000); // sooner than its interval
+    expect(nextRefetch(5_000, false, now, refused)).toBe(5_000); // never later than its interval
+    expect(nextRefetch(false, true, now, refused)).toBe(10_000); // a relative period too
+    expect(nextRefetch(false, false, now, { ...refused, retryAfterSec: 1 })).toBe(5_000); // floor 5 s
+    expect(
+      nextRefetch(false, false, now, lastFetch({ dataUpdatedAt: now, status: 'success', data: {} })),
+    ).toBe(false);
   });
 
   it('lists the filters a draft reads, its own and through its source', () => {

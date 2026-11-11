@@ -103,7 +103,8 @@ ${UPLOAD_MAX_COLUMNS} columns with names of up to ${UPLOAD_MAX_COLUMN_NAME} char
   other object gives its first list without a path, or is one record with one.
   Lists of lists ([[t, v], ...]) are not converted.
 ${addressesLine(network)}
-- refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers. Below the
+- refreshSec > 0 makes it live: the server re-fetches on that interval and pushes changes to viewers (a dataset that
+  uses filters is not pushed: each viewer's page polls it at that interval with its own filter values). Below the
   source's minimum (a connector's minRefreshSec from list_connectors, ${HTTP_MIN_REFRESH_SEC} s for http, ${FEED_MIN_REFRESH_SEC} s for feeds) it is
   raised to that minimum when saved, and \`changes\` says so. Upload and inline sources only change when edited:
   their refreshSec is set to 0 when saved, and widgets update on the edit itself.
@@ -200,6 +201,7 @@ and widgets per value. Viewers set filters in the dashboard header; values are n
   | { id, label, type: "text", placeholder?, default: "" }
   | { id, label, type: "dateRange", presets: [${DATE_PRESETS.join('|')}],
       custom?: false, min?, max?, maxDays?: 366, default: "last30d" | { from: "YYYY-MM-DD", to: "YYYY-MM-DD" } }
+  (min, max and maxDays, at most 3660, limit custom ranges and a range default, not presets)
 - Choices from data: a select may take optionsFrom: { dataset, field } instead of options: the distinct values of that
   column, at most 200, sorted. The dataset must use no filter itself; the select needs all and default null; such a
   filter never reaches a source with secrets (give that one fixed options).
@@ -216,12 +218,13 @@ and widgets per value. Viewers set filters in the dashboard header; values are n
   takes a select without all, and only on a source without secrets. Not in table rules, sound conditions or titles.
 - A dataset with accumulate cannot use filters in its source: accumulate one without filters and filter a dataset derived from it.
 - Clicks: crossFilter { parameter, field } on a chart (bar, line, area, pie, donut and funnel; field: its x, which
-  must be categories, not a time column, or its series), a table or a map: clicking a bar, point, slice, row or dot sets that filter to the item's value of field;
+  must be categories, not a time column, or its series; pie, donut and funnel allow only x), a table or a map: clicking a bar, point, slice, row or dot sets that filter to the item's value of field;
   clicking the selected item again resets it. Only select and text filters; for a select the value must be one of its
   choices. The other items are dimmed, also in render_snapshot. If the clicked widget's own dataset uses the filter, it
   shows only the clicked item: give the clicked widget a dataset without that filter.
 - Ops: addParameter { parameter, before? }, updateParameter { id, set } (merged; id and type cannot change; null removes
-  all, placeholder, min or max), removeParameter { id } (refused while anything uses it), moveParameter { id, before: id | null }.
+  an optional field (all, placeholder, min, max, options, optionsFrom); for default, null is "All". To switch options
+  to optionsFrom, set optionsFrom and options: null in one updateParameter), removeParameter { id } (refused while anything uses it), moveParameter { id, before: id | null }.
   Renaming is addParameter, re-pointing the references and removeParameter, in one batch.
 - get_data, render_snapshot, suggest_widgets and preview_data take parameters: { "region": "eu", "period": "last7d" }
   (the text of a link: "*" is all, a range is "2026-01-01..2026-03-31"). Without them the defaults apply, also for the
@@ -321,7 +324,8 @@ An optional \`sound\` field makes browsers showing the dashboard play a short bu
 - trigger { kind: "condition", expr }: plays once when expr, evaluated on the LAST row (the newest reading), becomes
   true. It must become false again before it can play again.
 - sound: ${SOUND_IDS.join(', ')} (default bell). volume 0..1 (default 0.7). cooldownSec 0..3600 (default 10).
-- Never plays on page load, after a reconnect or after the dataset changed: the first result is the baseline.
+- Never plays on page load, after a reconnect, after the dataset changed, or for the first result after a relative
+  period (yesterday, last month, ...) moves to a new window: that first result is the baseline.
   Viewers can mute their own screen; browsers stay silent until the page is clicked once.
 Example: { "op": "updateWidget", "id": "orders", "set": { "sound": { "trigger": { "kind": "newRows", "key": "order_id" }, "sound": "bell" } } }
 To try it without real data, put the widget on a demo.sales dataset with params { "live": true } and refreshSec 5:

@@ -25,6 +25,7 @@ import {
   type DashboardDoc,
   type DatasetResult,
   DIMMED_OPACITY,
+  effectiveSelection,
   formatNumber,
   formatRelative,
   GRID_COLUMNS,
@@ -367,6 +368,8 @@ function card(
   note?: string,
   selection: Selection | null = null,
 ): string {
+  // As in the browser: a value the data does not hold dims nothing.
+  const shown = effectiveSelection(selection, result?.table.rows ?? []);
   const pad = 14;
   const title = widget.title ?? (isDataWidgetType(widget.type) ? widget.id : '');
   // As in the browser: an untitled search box is one line, without an empty title row above it.
@@ -385,7 +388,7 @@ function card(
     `<g transform="translate(${pad}, ${top})">${
       note
         ? text(0, 16, truncate(note, Math.floor(bodyW / 6.5)), { color: theme.muted })
-        : widgetBody(widget, result, theme, bodyW, bodyH, entityColors, selection)
+        : widgetBody(widget, result, theme, bodyW, bodyH, entityColors, shown)
     }</g>`,
     '</svg>',
   ].join('');

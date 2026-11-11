@@ -7,6 +7,7 @@
  */
 import { z } from 'zod';
 import { compileFor, ExprError, isTruthy, parse, referencedFields } from './expr.ts';
+import { DATE_PRESETS, type DatePreset, presetRange } from './parameters.ts';
 import type { DataTable, Scalar } from './table.ts';
 
 export const SOUND_IDS = ['bell', 'chime', 'ding', 'cash', 'pop', 'alert'] as const;
@@ -100,10 +101,25 @@ function conditionHolds(expr: string, table: DataTable): boolean {
 }
 
 /**
+ * The calendar windows of the relative periods a result was asked for ("2026-11-10..2026-11-10" for yesterday). The
+ * first result in a new window replaces the whole window, so it is a new baseline, never a ring.
+ */
+export function soundWindow(texts: readonly string[], now: number): string {
+  return texts
+    .filter((t): t is DatePreset => (DATE_PRESETS as readonly string[]).includes(t))
+    .map((t) => {
+      const r = presetRange(t, now);
+      return `${r.from}..${r.to}`;
+    })
+    .join('|');
+}
+
+/**
  * Decides whether a widget should play its sound for a new result.
  *
  * `state` is null for the first result after opening the page, reconnecting,
- * refetching or changing the rule: that result only sets the baseline.
+ * refetching, changing the rule or moving to a new calendar window (`soundWindow`):
+ * that result only sets the baseline.
  */
 export function soundDecision(
   rule: SoundRule,
