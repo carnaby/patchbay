@@ -176,8 +176,14 @@ export function PresentationControls({
       setVisibleSince(null);
       return;
     }
-    setVisibleSince(Date.now());
-    const timer = setTimeout(() => setNow(Date.now()), CONTROLS_DELAY_MS);
+    const since = Date.now();
+    setVisibleSince(since);
+    // A timeout may fire a millisecond before the clock says the delay passed; the floor keeps the bar from
+    // staying dead with nothing left to re-render it.
+    const timer = setTimeout(
+      () => setNow(Math.max(Date.now(), since + CONTROLS_DELAY_MS)),
+      CONTROLS_DELAY_MS,
+    );
     return () => clearTimeout(timer);
   }, [idle]);
   const live = !idle && controlsLive(visibleSince, now);
