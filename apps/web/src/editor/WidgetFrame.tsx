@@ -40,7 +40,7 @@ import { crossFilterClick } from '../state/cross-filter.ts';
 import { useEditor } from '../state/editor.ts';
 import { dataPickProblem, rawQuery, resumed, useParameters } from '../state/parameters.ts';
 import { MOVE_LABELS, type MoveDirection, reorderOp } from '../state/reorder.ts';
-import { useDatasetResult, usePendingDataValue } from '../state/sync.ts';
+import { useDatasetState } from '../state/sync.ts';
 import { WidgetBody } from '../widgets/WidgetBody.tsx';
 import { useDataChoices } from './DataOptions.tsx';
 import { PresentingContext } from './presentation.tsx';
@@ -125,10 +125,9 @@ export const WidgetFrame = memo(function WidgetFrame({
   }, [widget, parameters, presenting, crossParam, dataChoices]);
   const { data: secretsStatus } = useSecretsStatus();
   const apply = useEditor((s) => s.apply);
-  const query = useDatasetResult(dashboardId, dataset, live);
   // A wall screen holds a data-driven value its choices dropped (DataOptions.tsx). The cache still has this view's
   // result from before, so nothing in the frame reads it while held: a TV must not show old numbers as current.
-  const pending = usePendingDataValue(dashboardId, dataset);
+  const { query, pending } = useDatasetState(dashboardId, dataset, live);
   const held = presenting && pending !== null;
   const shown = held ? undefined : query.data;
   const wasHeld = useRef(held);

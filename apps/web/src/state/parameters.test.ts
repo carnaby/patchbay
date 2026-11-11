@@ -238,16 +238,20 @@ describe('choices from data in the browser', () => {
       expect(guardAction(staleDataValue(country, { country: 'AT' }, []), true, true)).toBeNull();
       expect(guardAction(staleDataValue(country, { country: 'AT' }, []), false, true)).toBeNull();
     });
-    it('names the pending value only once the loaded list lacks it', () => {
-      expect(pendingDataValue(country, { country: 'DE' }, { options: ['AT', 'SK'], failed: false })).toBe(
-        'DE',
-      );
+    it('names the pending value only once a loaded list that can bring it back lacks it', () => {
       expect(
-        pendingDataValue(country, { country: 'AT' }, { options: ['AT', 'SK'], failed: false }),
+        pendingDataValue(country, { country: 'DE' }, { options: ['AT', 'SK'], failed: false }, true),
+      ).toBe('DE');
+      // A static list cannot bring the value back: the guard resets it, so nothing is held, not even for a frame.
+      expect(
+        pendingDataValue(country, { country: 'DE' }, { options: ['AT', 'SK'], failed: false }, false),
       ).toBeNull();
-      expect(pendingDataValue(country, { country: 'DE' }, { options: null, failed: false })).toBeNull(); // loading
-      expect(pendingDataValue(country, { country: 'DE' }, { options: null, failed: true })).toBeNull(); // failed
-      expect(pendingDataValue(country, { country: 'DE' }, { options: [], failed: false })).toBeNull(); // empty
+      expect(
+        pendingDataValue(country, { country: 'AT' }, { options: ['AT', 'SK'], failed: false }, true),
+      ).toBeNull();
+      expect(pendingDataValue(country, { country: 'DE' }, { options: null, failed: false }, true)).toBeNull(); // loading
+      expect(pendingDataValue(country, { country: 'DE' }, { options: null, failed: true }, true)).toBeNull(); // failed
+      expect(pendingDataValue(country, { country: 'DE' }, { options: [], failed: false }, true)).toBeNull(); // empty
     });
     it('resumes: the same value is ready again once the list holds it', () => {
       expect(dataValueReady(country, { country: 'DE' }, { options: ['AT'], failed: false })).toBe(false);
