@@ -421,7 +421,6 @@ The server runs TypeScript directly with Node's type stripping, so there is no b
 
 - Incremental live updates (send appended rows instead of whole tables): specified in
   [guide/ideas/0001-sse-deltas.md](guide/ideas/0001-sse-deltas.md), not implemented yet.
-- Dashboard-level filters and variables (date range, city) that agents can bind widgets to.
 - Shared editing with named collaborators.
 - Scheduled snapshots (daily PNG to email/Slack).
 - Postgres-backed index for multi-instance deployments.
