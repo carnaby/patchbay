@@ -201,7 +201,7 @@ and widgets per value. Viewers set filters in the dashboard header; values are n
   | { id, label, type: "text", placeholder?, default: "" }
   | { id, label, type: "dateRange", presets: [${DATE_PRESETS.join('|')}],
       custom?: false, min?, max?, maxDays?: 366, default: "last30d" | { from: "YYYY-MM-DD", to: "YYYY-MM-DD" } }
-  (min, max and maxDays, at most 3660, limit custom ranges and a range default, not presets)
+  (min, max and maxDays (default 366, at most 3660) limit custom ranges and a range default, not presets)
 - Choices from data: a select may take optionsFrom: { dataset, field } instead of options: the distinct values of that
   column, at most 200, sorted. The dataset must use no filter itself; the select needs all and default null; such a
   filter never reaches a source with secrets (give that one fixed options).
@@ -209,6 +209,8 @@ and widgets per value. Viewers set filters in the dashboard header; values are n
   filter { expr: "$param.region == null || region == $param.region" }  (null is the "all" choice)
   filter { expr: '$param.q == "" || contains(title, $param.q)' }
   filter { expr: "time >= $param.period.start && time < $param.period.end" }  (epoch ms, UTC, end exclusive)
+  Compare a time column with .start/.end (epoch ms); .from/.to are text (YYYY-MM-DD) for URLs and bodies, and against a
+  time column they keep no row.
 - In http and feed URLs as a whole query value or a whole path segment; in a POST body and connector params as a whole value:
   https://api.example.com/v1/sales?region=$param.region&from=$param.period.from&to=$param.period.to
   (.from/.to are YYYY-MM-DD, inclusive). A query pair whose filter is at "all" is left out; in a body the value is null,
@@ -220,10 +222,11 @@ and widgets per value. Viewers set filters in the dashboard header; values are n
 - Clicks: crossFilter { parameter, field } on a chart (bar, line, area, pie, donut and funnel; field: its x, which
   must be categories, not a time column, or its series; pie, donut and funnel allow only x), a table or a map: clicking a bar, point, slice, row or dot sets that filter to the item's value of field;
   clicking the selected item again resets it. Only select and text filters; for a select the value must be one of its
-  choices. The other items are dimmed, also in render_snapshot. If the clicked widget's own dataset uses the filter, it
+  choices. The other items are dimmed (on a map, a group of
+  more than 2,000 plain dots, one series without size or colour, is not dimmed), also in render_snapshot. If the clicked widget's own dataset uses the filter, it
   shows only the clicked item: give the clicked widget a dataset without that filter.
 - Ops: addParameter { parameter, before? }, updateParameter { id, set } (merged; id and type cannot change; null removes
-  an optional field (all, placeholder, min, max, options, optionsFrom); for default, null is "All". To switch options
+  an optional field (all, placeholder, min, max, options, optionsFrom); null resets custom and maxDays to false and 366; for default, null is "All". To switch options
   to optionsFrom, set optionsFrom and options: null in one updateParameter), removeParameter { id } (refused while anything uses it), moveParameter { id, before: id | null }.
   Renaming is addParameter, re-pointing the references and removeParameter, in one batch.
 - get_data, render_snapshot, suggest_widgets and preview_data take parameters: { "region": "eu", "period": "last7d" }
