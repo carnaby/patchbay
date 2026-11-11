@@ -10,7 +10,7 @@ import { lookup as dnsLookup, type LookupAddress, type LookupAllOptions } from '
 import { BlockList, isIP, type LookupFunction } from 'node:net';
 import { bindingLabel, bindingMatches, type SecretPlacement } from '@patchbay/core';
 import { Agent, type Dispatcher, fetch as undiciFetch } from 'undici';
-import { HttpError } from './errors.ts';
+import { HttpError, lastingError } from './errors.ts';
 import { jsonShapeProblem, MAX_JSON_DEPTH } from './json-shape.ts';
 import type { PrivateHosts } from './private-hosts.ts';
 import { USER_AGENT } from './version.ts';
@@ -108,23 +108,23 @@ export function checkUrl(raw: string, privateHosts: PrivateHosts | null = null):
   try {
     url = new URL(raw);
   } catch {
-    throw new HttpError(400, 'Invalid URL');
+    throw lastingError(400, 'Invalid URL');
   }
   const plain = url.protocol === 'http:';
-  if (url.protocol !== 'https:' && !plain) throw new HttpError(400, 'Only https:// URLs are allowed');
+  if (url.protocol !== 'https:' && !plain) throw lastingError(400, 'Only https:// URLs are allowed');
   // Before the credentials check, so a public instance keeps answering plain http:// with the https-only text.
-  if (!privateHosts && plain) throw new HttpError(400, URL_MESSAGES.httpOff);
-  if (url.username || url.password) throw new HttpError(400, 'URLs with credentials are not allowed');
+  if (!privateHosts && plain) throw lastingError(400, URL_MESSAGES.httpOff);
+  if (url.username || url.password) throw lastingError(400, 'URLs with credentials are not allowed');
   const host = url.hostname.replace(/^\[|\]$/g, '');
   const otherPort = url.port !== '' && url.port !== '443';
   if (!privateHosts) {
-    if (otherPort) throw new HttpError(400, URL_MESSAGES.portOff);
-    if (isIP(host) && isPrivateAddress(host)) throw new HttpError(400, URL_MESSAGES.privateOff);
+    if (otherPort) throw lastingError(400, URL_MESSAGES.portOff);
+    if (isIP(host) && isPrivateAddress(host)) throw lastingError(400, URL_MESSAGES.privateOff);
     return { url, mode: 'public' };
   }
   if (isIP(host)) {
     if (privateHosts.listsHost(host)) return { url, mode: 'lan' };
-    if (plain || otherPort || isPrivateAddress(host)) throw new HttpError(400, URL_MESSAGES.notListed(host));
+    if (plain || otherPort || isPrivateAddress(host)) throw lastingError(400, URL_MESSAGES.notListed(host));
     return { url, mode: 'public' };
   }
   return { url, mode: plain || otherPort ? 'lan' : 'mixed' };
@@ -142,7 +142,13 @@ export function redirectTarget(
   } catch {
     throw new HttpError(502, 'Invalid redirect');
   }
-  const next = checkUrl(target, privateHosts);
+  let next: { url: URL; mode: HopMode };
+  try {
+    next = checkUrl(target, privateHosts);
+  } catch (e) {
+    // The upstream chose this address and may choose another: transient.
+    throw e instanceof HttpError ? new HttpError(e.status, e.message) : e;
+  }
   if (from.protocol === 'https:' && next.url.protocol === 'http:')
     throw new HttpError(502, URL_MESSAGES.downgrade);
   return next;
@@ -487,7 +493,7 @@ export async function safeFetchJson(raw: string, options: SafeFetchOptions = {})
   } catch (e) {
     // New errors without a cause: nothing that might hold request options reaches a logger.
     const err = e instanceof HttpError ? e : new HttpError(502, 'Request failed');
-    throw new HttpError(err.status, redact(err.message, values));
+    throw new HttpError(err.status, redact(err.message, values), undefined, { lasting: err.lasting });
   }
 }
 
@@ -532,7 +538,8 @@ async function fetchHops(
       if (bindingMatches(c, url.href).ok) continue;
       // Not retried without credentials either: an anonymous request to wherever the API pointed is not what the
       // user configured.
-      if (hop === 0) throw new HttpError(400, 'Credentials for this source are bound to another address.');
+      // The first hop is the address the user wrote: lasting. Later hops are the upstream's choice: transient.
+      if (hop === 0) throw lastingError(400, 'Credentials for this source are bound to another address.');
       throw new HttpError(
         502,
         `The API redirected to another address. Credentials are only sent to ${bindingLabel(c)}, so the request was stopped.`,
@@ -548,6 +555,7 @@ async function fetchHops(
       signal: AbortSignal.timeout(options.test?.timeoutMs ?? options.timeoutMs ?? TIMEOUT_MS),
     }).catch((e: unknown) => {
       const cause = (e as { cause?: { code?: string } }).cause;
+      // A DNS answer, which can change without any edit: transient, on every hop.
       if (cause?.code === 'EBLOCKED')
         throw new HttpError(
           400,

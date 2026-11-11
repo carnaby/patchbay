@@ -25,14 +25,16 @@ import {
   type Widget,
 } from '@patchbay/core';
 import { AlertTriangle, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Clock, Minus } from 'lucide-react';
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { lazy, Suspense, useContext, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import { cx, Spinner } from '../components/ui.tsx';
+import { PresentingContext } from '../editor/presentation.tsx';
 import { useNow, useTheme } from '../lib/hooks.ts';
 import { ClockBody } from './ClockBody.tsx';
 import { EChart, type EChartItem } from './EChart.tsx';
 import { SearchBody } from './SearchBody.tsx';
 import { StatusBody } from './StatusBody.tsx';
+import { stateClasses } from './state-message.ts';
 
 // Its own chunk: the base map and the map-only ECharts modules are downloaded only when a dashboard has a map.
 const MapBody = lazy(() => import('./MapBody.tsx'));
@@ -65,30 +67,31 @@ export function WidgetBody({
   /** A click on an item, with its value of the cross-filter column; absent when clicks set nothing. */
   onPick?: ((value: Scalar | undefined) => void) | undefined;
 }) {
+  // First, before any early return below (rules of hooks).
+  const presenting = useContext(PresentingContext);
   if (widget.type === 'text') return <TextBody markdown={widget.config.markdown} />;
   if (widget.type === 'clock') return <ClockBody config={widget.config} />;
   if (widget.type === 'search') return <SearchBody config={widget.config} />;
   if (waiting) {
+    const c = stateClasses('waiting', presenting);
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-sm text-muted">
-        <Clock className="size-5" aria-hidden="true" />
-        <span className="line-clamp-3">{waiting}</span>
+      <div className={c.box}>
+        <Clock className={c.icon} aria-hidden="true" />
+        <span className={c.text}>{waiting}</span>
       </div>
     );
   }
   if (!result) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        {loading ? <Spinner /> : <span className="text-sm text-muted">No data</span>}
-      </div>
-    );
+    const c = stateClasses('empty', presenting);
+    return <div className={c.box}>{loading ? <Spinner /> : <span className={c.text}>No data</span>}</div>;
   }
   if (result.error && result.table.rows.length === 0) {
+    const c = stateClasses('error', presenting);
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-sm text-bad">
-        <AlertTriangle className="size-5" />
-        <span className="line-clamp-3">{result.error}</span>
-        {errorHint ? <span className="line-clamp-3 text-xs text-ink-2">{errorHint}</span> : null}
+      <div className={c.box}>
+        <AlertTriangle className={c.icon} />
+        <span className={c.text}>{result.error}</span>
+        {errorHint ? <span className={c.hint}>{errorHint}</span> : null}
       </div>
     );
   }

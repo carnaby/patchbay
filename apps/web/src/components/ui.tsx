@@ -398,6 +398,7 @@ export function Modal({
   children,
   footer,
   size = 'md',
+  label,
 }: {
   open: boolean;
   title: ReactNode;
@@ -405,6 +406,8 @@ export function Modal({
   children: ReactNode;
   footer?: ReactNode;
   size?: 'md' | 'lg';
+  /** The dialog's accessible name when the visible title carries more than the name (a link's hidden hint). */
+  label?: string;
 }) {
   const panel = useRef<HTMLDivElement>(null);
   const titleId = useId();
@@ -423,7 +426,8 @@ export function Modal({
         ref={panel}
         role="dialog"
         aria-modal="true"
-        aria-labelledby={titleId}
+        aria-label={label || undefined}
+        aria-labelledby={label ? undefined : titleId}
         tabIndex={-1}
         className={clsx(
           'relative flex max-h-[85dvh] w-full flex-col rounded-t-2xl border border-line bg-page pb-[env(safe-area-inset-bottom)] shadow-2xl outline-none sm:max-h-[calc(100dvh-2rem)] sm:rounded-2xl sm:pb-0',

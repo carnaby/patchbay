@@ -4,10 +4,11 @@
  * kept awake with the Screen Wake Lock API so a live dashboard never dims.
  */
 import { Copy, Info, Minimize2 } from 'lucide-react';
-import { createContext, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, cx, Popover, toast } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
 import { rawQuery, summaryOf, useParameters } from '../state/parameters.ts';
+import { closesUnattended, unattendedTimer } from './presentation-state.ts';
 import { EnableSoundButton, MuteButton } from './sound-controls.tsx';
 
 const IDLE_MS = 2500;
@@ -108,6 +109,35 @@ export function useIdle(active: boolean) {
     };
   }, [active]);
   return idle;
+}
+
+/**
+ * Closes an overlay that was opened by a tap during a presentation once nobody has touched the screen for 30 s: a
+ * wall screen runs unattended, and a stray tap must not cover the board for good. Input restarts the count, as for
+ * useIdle. An overlay opened before the presentation started is left alone.
+ */
+export function useUnattendedClose(open: boolean, close: () => void) {
+  const presenting = useContext(PresentingContext);
+  const openedWhilePresenting = useRef(false);
+  const wasOpen = useRef(false);
+  if (open && !wasOpen.current) openedWhilePresenting.current = presenting;
+  wasOpen.current = open;
+  const latestClose = useRef(close);
+  latestClose.current = close;
+  const armed = open && closesUnattended(openedWhilePresenting.current, presenting);
+  useEffect(() => {
+    if (!armed) return;
+    const timer = unattendedTimer(() => latestClose.current());
+    const poke = () => timer.poke();
+    // The wheel counts: a mouse user scrolling a long status panel is reading it.
+    for (const type of ['pointerdown', 'pointermove', 'keydown', 'wheel'] as const)
+      window.addEventListener(type, poke, { passive: true });
+    return () => {
+      timer.stop();
+      for (const type of ['pointerdown', 'pointermove', 'keydown', 'wheel'] as const)
+        window.removeEventListener(type, poke);
+    };
+  }, [armed]);
 }
 
 export function PresentationControls({

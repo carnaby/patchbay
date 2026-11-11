@@ -32,11 +32,18 @@ export function useSoundCues(dashboardId: string) {
     if (!hasSounds) return;
     const tracked = new Map<string, Tracked>();
 
-    const identityOf = (w: SoundWidget, now: number) =>
-      soundIdentity(useEditor.getState().doc, w.sound, w.datasetId, useParameters.getState().raw, now);
+    const identityOf = (w: SoundWidget, now: number, result?: DatasetResult) =>
+      soundIdentity(
+        useEditor.getState().doc,
+        w.sound,
+        w.datasetId,
+        useParameters.getState().raw,
+        now,
+        result,
+      );
 
     const consider = (w: SoundWidget, result: DatasetResult, now: number): boolean =>
-      considerResult(tracked, w.id, w.sound, identityOf(w, now), liveReconnects(), result, now);
+      considerResult(tracked, w.id, w.sound, identityOf(w, now, result), liveReconnects(), result, now);
 
     const decide = (datasetId: string, result: DatasetResult) => {
       const widgets = soundWidgets(useEditor.getState().doc?.widgets).filter(
@@ -63,7 +70,7 @@ export function useSoundCues(dashboardId: string) {
           : undefined;
         const entry = tracked.get(w.id);
         const now = Date.now();
-        if (cached && (!entry || entry.identity !== identityOf(w, now))) consider(w, cached, now);
+        if (cached && (!entry || entry.identity !== identityOf(w, now, cached))) consider(w, cached, now);
       }
     };
     seed();

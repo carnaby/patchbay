@@ -206,6 +206,13 @@ describe('a public instance (ALLOW_PRIVATE_HOSTS empty)', () => {
     expect(pub.deps.dashboards.networkAccess(admin.ownerId)).toEqual({ kind: 'public' });
   });
 
+  it('does not offer private hosts to the owner when the operator lists none', async () => {
+    const admin = await pub.dashboard(ADMIN);
+    const read = (await pub.call(`/api/dashboards/${admin.id}`, { headers: admin.headers })).json;
+    expect(read.access.canEdit).toBe(true);
+    expect(read.access.privateHosts).toBe(false);
+  });
+
   it('refuses to import a document with an http:// source, as a save would', async () => {
     const res = await pub.call('/api/dashboards/import', {
       body: { doc: { schemaVersion: 1, title: 'Home', datasets: [home(states())] } },
@@ -261,7 +268,9 @@ describe('a self-hosted instance with ALLOW_PRIVATE_HOSTS=127.0.0.1', () => {
       { kind: 'anonymous', label: 'test' },
       ['Saved before'],
     );
-    expect((await lan.data(other)).json.error).toContain('only dashboards owned by an administrator');
+    const refused = (await lan.data(other)).json;
+    expect(refused.error).toContain('only dashboards owned by an administrator');
+    expect(refused.lasting).toBe(true);
     // After a restore the load still refuses it (the restore exemption itself is pinned by its own test).
     const restored = await lan.call(`/api/dashboards/${other.id}/versions/${meta.version + 1}/restore`, {
       body: {},
@@ -523,12 +532,34 @@ describe('a self-hosted instance with ALLOW_PRIVATE_HOSTS=127.0.0.1', () => {
     expect((await lan.call('/api/me', { headers: auth })).json.privateHosts).toBe(true);
   });
 
+  it('tells only the editors of a dashboard whether its owner may use the private hosts', async () => {
+    const admin = await lan.dashboard(ADMIN);
+    const published = await lan.call(`/api/dashboards/${admin.id}/settings`, {
+      method: 'PATCH',
+      body: { visibility: 'public' },
+      headers: admin.headers,
+    });
+    expect(published.status).toBe(200);
+    const read = async (headers: Record<string, string>) =>
+      (await lan.call(`/api/dashboards/${admin.id}`, { headers })).json.access;
+    expect((await read(admin.headers)).privateHosts).toBe(true);
+    expect((await read(await lan.login('reader@example.com'))).privateHosts).toBe(false);
+    expect((await read({})).privateHosts).toBe(false);
+    // The rule is the owner's, not the viewer's: an anonymous dashboard stays on the public list by default.
+    const anon = await lan.dashboard();
+    const anonRead = (await lan.call(`/api/dashboards/${anon.id}`, { headers: anon.headers })).json;
+    expect(anonRead.access.canEdit).toBe(true);
+    expect(anonRead.access.privateHosts).toBe(false);
+  });
+
   it('opens the list to anonymous dashboards with PRIVATE_HOSTS_FOR=everyone', async () => {
     const open = await instance({ ALLOW_PRIVATE_HOSTS: '127.0.0.1', PRIVATE_HOSTS_FOR: 'everyone' });
     try {
       const anon = await open.dashboard();
       expect((await open.addDataset(anon, home(states()))).status).toBe(200);
       expect((await open.data(anon)).json.table.rows).toHaveLength(1);
+      const read = (await open.call(`/api/dashboards/${anon.id}`, { headers: anon.headers })).json;
+      expect(read.access.privateHosts).toBe(true);
     } finally {
       await open.close();
     }

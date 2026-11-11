@@ -33,7 +33,7 @@ import {
 import { AlertTriangle, ArrowUpRight } from 'lucide-react';
 import { type CSSProperties, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { cx, Modal } from '../components/ui.tsx';
-import { PresentingContext } from '../editor/presentation.tsx';
+import { PresentingContext, useUnattendedClose } from '../editor/presentation.tsx';
 import { useNow, useTheme } from '../lib/hooks.ts';
 
 const M = STATUS_METRICS;
@@ -110,6 +110,7 @@ export function StatusBody({
   useEffect(() => {
     if (presenting) setPanel(null);
   }, [presenting]);
+  useUnattendedClose(panel !== null, () => setPanel(null));
   const problem = statusConfigProblem(model, widget.config);
   const open: Open = (title, tiles, entity = false) =>
     setPanel({ title, keys: tiles.map((t) => t.key), entity });
@@ -177,6 +178,7 @@ export function StatusBody({
       <Modal
         open={panel !== null}
         title={titleHref ? <NameLink name={panel?.title ?? ''} href={titleHref} /> : (panel?.title ?? '')}
+        label={panel?.title ?? ''}
         onClose={() => setPanel(null)}
         size="lg"
       >

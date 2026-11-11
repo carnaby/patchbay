@@ -1,4 +1,5 @@
 /** Wire types shared by the server and the web client. */
+import type { CalendarWindow } from './parameters.ts';
 import type { DashboardDoc } from './schema.ts';
 import type { DataTable } from './table.ts';
 import type { PipelineResult } from './transforms.ts';
@@ -37,6 +38,11 @@ export interface DashboardAccess {
   isOwner: boolean;
   /** Created without an account; always public, editable with its edit key. */
   anonymous: boolean;
+  /**
+   * Editors only: the dashboard's sources may reach the operator's private hosts (ALLOW_PRIVATE_HOSTS), decided by its
+   * owner. False for everyone else; absent from older servers.
+   */
+  privateHosts?: boolean;
 }
 
 export interface DashboardEnvelope {
@@ -62,6 +68,19 @@ export interface DatasetResult {
   error?: string;
   /** The failure is this server's own limit, not the source: ask again after this many seconds. */
   retryAfterSec?: number;
+  /**
+   * The error cannot pass by asking again: only an edit of the dashboard, a secret or a server setting fixes it. The
+   * page asks again only rarely (every 15 minutes), so a fix made while a wall screen stays open still shows up.
+   * Never set together with `retryAfterSec`; absent means it may pass.
+   */
+  lasting?: true;
+  /**
+   * Set by the data route for a dataset whose lineage uses a date filter at a relative period: the window the rows
+   * were computed for and how long it stays valid. The page refetches when it expires and starts a new sound baseline
+   * when the window changes, so a wall screen follows the server's midnight, not its own clock. Never stored in a
+   * cache; absent from older servers.
+   */
+  calendar?: CalendarWindow;
   /**
    * Rows were served but with a caveat (a capped source, a cached copy after a failed refresh, a long parent cut):
    * shown next to the data, never treated as a failure.

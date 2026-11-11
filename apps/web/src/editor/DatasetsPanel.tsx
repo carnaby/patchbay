@@ -73,7 +73,6 @@ import {
   CredentialsField,
   issuesFor,
   UrlKeyWarning,
-  urlHint,
   useCredentialContext,
 } from './CredentialsField.tsx';
 import {
@@ -98,6 +97,7 @@ import {
 import { previewDelay, previewState } from './preview-state.ts';
 import { askPublicSecrets } from './public-secrets.tsx';
 import { TransformEditor } from './TransformEditor.tsx';
+import { urlFieldLabel, urlHint } from './url-hint.ts';
 
 const REFRESH_OPTIONS = [
   { value: 0, label: 'Off (on load)' },
@@ -795,7 +795,7 @@ function SourceEditor({
                 ]}
               />
             </fieldset>
-            <Field label="HTTPS URL" hint={urlHint(credentials)}>
+            <Field label={urlFieldLabel(credentials.privateHosts)} hint={urlHint(credentials)}>
               {(fid) => (
                 <div className="flex gap-2">
                   <Input

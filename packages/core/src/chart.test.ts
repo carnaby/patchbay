@@ -96,6 +96,62 @@ describe('labels near the value axis end', () => {
   });
 });
 
+describe('x labels at the ends of a category axis without a gap', () => {
+  const stations = inferTable([
+    { station: 'Chopok', temp: 3.4 },
+    { station: 'Poprad', temp: 9.8 },
+    { station: 'Bratislava', temp: 14.9 },
+  ]);
+  type Label = { color?: string; hideOverlap?: boolean; alignMinLabel?: string; alignMaxLabel?: string };
+  const label = (config: Record<string, unknown>, table = stations) =>
+    (
+      buildChartOption(
+        ChartConfigSchema.parse({ x: 'station', y: ['temp'], ...config }),
+        table,
+        THEMES.light,
+        {
+          static: true,
+        },
+      ) as unknown as { xAxis: { axisLabel: Label }; yAxis: { axisLabel: Label } }
+    ).xAxis.axisLabel;
+
+  it('aligns the first and last label inward on line, area and scatter charts', () => {
+    for (const kind of ['line', 'area', 'scatter']) {
+      expect(label({ kind })).toMatchObject({
+        alignMinLabel: 'left',
+        alignMaxLabel: 'right',
+        color: THEMES.light.muted,
+        hideOverlap: true,
+      });
+    }
+  });
+
+  it('keeps centred labels on bars, vertical and horizontal', () => {
+    expect(label({ kind: 'bar' }).alignMaxLabel).toBeUndefined();
+    expect(label({ kind: 'bar' }).alignMinLabel).toBeUndefined();
+    const horizontal = buildChartOption(
+      ChartConfigSchema.parse({ kind: 'bar', x: 'station', y: ['temp'], horizontal: true }),
+      stations,
+      THEMES.light,
+      { static: true },
+    ) as unknown as { yAxis: { axisLabel: Label } };
+    expect(horizontal.yAxis.axisLabel.alignMaxLabel).toBeUndefined();
+    expect(horizontal.yAxis.axisLabel.alignMinLabel).toBeUndefined();
+  });
+
+  it('leaves time axes as they were', () => {
+    const dated = inferTable(
+      [
+        { at: Date.UTC(2026, 0, 1), temp: 1 },
+        { at: Date.UTC(2026, 0, 2), temp: 2 },
+      ],
+      { types: { at: 'time' } },
+    );
+    const axis = label({ kind: 'line', x: 'at' }, dated);
+    expect(axis).toEqual({ color: THEMES.light.muted, hideOverlap: true });
+  });
+});
+
 describe('time axis of dated buckets', () => {
   const DAY = 86_400_000;
   const days = (from: string, values: number[]) =>

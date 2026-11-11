@@ -118,7 +118,8 @@ const ECHARTS_TYPES = new Set<Widget['type']>(['chart', 'map', 'gauge']);
 const clamp = (value: number | undefined, fallback: number, min: number, max: number) =>
   value === undefined || !Number.isFinite(value) ? fallback : Math.min(max, Math.max(min, Math.round(value)));
 
-function echartsSvg(option: Record<string, unknown>, width: number, height: number): string {
+/** Draws an ECharts option as an SVG document. Exported for tests. */
+export function echartsSvg(option: Record<string, unknown>, width: number, height: number): string {
   const chart = echarts.init(null, null, { renderer: 'svg', ssr: true, width, height });
   try {
     chart.setOption({

@@ -624,6 +624,8 @@ describe('fetching with secrets', () => {
       expect(r.error).toBe(
         `The API redirected to another address. Credentials are only sent to ${API}/v1/, so the request was stopped.`,
       );
+      // The upstream chose that address and may choose another: asking again may help.
+      expect(r).not.toHaveProperty('lasting');
       // The second host received nothing at all, not even an anonymous request.
       expect(upstream.since(mark).map((x) => x.host)).toEqual(['api.example.com']);
       expect(JSON.stringify(r)).not.toContain(v);
@@ -650,6 +652,7 @@ describe('fetching with secrets', () => {
     // A redirect that sets the parameter to another value is still refused.
     const other = await env.data(dash, 'other-key', cookie);
     expect(other.error).toMatch(/The API redirected to another address/);
+    expect(other).not.toHaveProperty('lasting');
   });
 
   it('keeps upstream bodies out of errors and resolves nothing it should not', async () => {
@@ -1012,9 +1015,12 @@ describe('who can use which secret', () => {
     await env.call(`/api/secrets/${s.id}`, { method: 'DELETE', cookie });
     const restored = await env.call(`/api/dashboards/${dash}/versions/2/restore`, { body: {}, cookie });
     expect(restored.status).toBe(200);
-    expect((await env.data(dash, 'orders', cookie)).error).toBe(
-      'Credentials for this source are not available.',
-    );
+    // Refused before the http cache on every read, so the second read is marked the same way.
+    for (let i = 0; i < 2; i++) {
+      const orders = await env.data(dash, 'orders', cookie);
+      expect(orders.error).toBe('Credentials for this source are not available.');
+      expect(orders.lasting).toBe(true);
+    }
     // Deleting a secret never blocks unrelated edits.
     expect((await env.ops(dash, cookie, [{ op: 'setMeta', title: 'Still editable' }])).status).toBe(200);
 

@@ -256,9 +256,14 @@ share a dataset refresh together, one round at a time, so a viewer never sees a 
 its parent: a slow member paces the chains of its own group, while unrelated live chains refresh independently. Results
 are hashed and pushed only when the hash changed. N viewers share one refresh loop and an unwatched dashboard costs
 nothing. Datasets that use filters have one result per view, so the hub leaves them out of its loops and chains;
-browsers poll them at the dataset's interval, with their filter values in the query. SSE was chosen over WebSockets
-because traffic is one-directional (writes go through normal HTTP requests), it works through every proxy, and
-reconnection is built into `EventSource`.
+browsers poll them at the dataset's interval, with their filter values in the query. A data answer for a relative period
+(last 7 days, yesterday, …) names the window its rows were computed for and how long that window stays valid, and the
+browser asks again when it expires, so a wall screen follows the server's midnight, not its own clock. An answer whose
+error cannot pass by asking again (a deleted secret, a refused address) says so and is asked again only every 15
+minutes, so a fix still shows up without a reload; other errors are retried every minute, also for datasets that never
+refresh (a dataset with a regular interval keeps it). Both retries are spread over a few seconds so the widgets of a
+wall screen do not ask at the same instant. SSE was chosen over WebSockets because traffic is one-directional (writes go
+through normal HTTP requests), it works through every proxy, and reconnection is built into `EventSource`.
 
 ## 5. The editor: undo/redo and live collaboration with agents
 
