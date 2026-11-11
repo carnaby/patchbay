@@ -129,11 +129,12 @@ export function useUnattendedClose(open: boolean, close: () => void) {
     if (!armed) return;
     const timer = unattendedTimer(() => latestClose.current());
     const poke = () => timer.poke();
-    for (const type of ['pointerdown', 'pointermove', 'keydown'] as const)
-      window.addEventListener(type, poke);
+    // The wheel counts: a mouse user scrolling a long status panel is reading it.
+    for (const type of ['pointerdown', 'pointermove', 'keydown', 'wheel'] as const)
+      window.addEventListener(type, poke, { passive: true });
     return () => {
       timer.stop();
-      for (const type of ['pointerdown', 'pointermove', 'keydown'] as const)
+      for (const type of ['pointerdown', 'pointermove', 'keydown', 'wheel'] as const)
         window.removeEventListener(type, poke);
     };
   }, [armed]);

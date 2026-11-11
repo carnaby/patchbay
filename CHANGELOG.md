@@ -14,8 +14,9 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   that arrives just after midnight with the old day's rows is no longer taken as the baseline for the new day.
 - A widget whose error only an edit or a setting can fix (a deleted secret, an address the server refuses, a missing
   upload, an invalid definition) is asked again every 15 minutes instead of every minute, so a fixed secret or setting
-  shows up on an open wall screen without a reload. Other errors are still retried every minute.
-- A dataset that reads another dataset whose source is still loading at the 20 second limit now says that it is still
+  shows up on an open wall screen without a reload. This applies to a widget that does not refresh on its own; a
+  dataset with a regular refresh interval keeps its interval. Other errors are still retried every minute.
+- A dataset whose own source, or a source it reads, is still loading at the 20 second limit now says that it is still
   loading and is retried after 10 seconds, instead of showing an error asking to shorten the chain.
 - In presentation mode, a status panel or a maximised widget opened by a tap closes after 30 seconds without input, so
   a stray tap cannot cover a wall screen for good. Overlays opened before presentation stay. Screen readers announce

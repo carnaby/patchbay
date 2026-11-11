@@ -7,7 +7,8 @@ export class HttpError extends Error {
   readonly details: unknown;
   /**
    * An error that only an edit, a secret or a server setting can fix. In-band results carry it so the page asks only
-   * rarely (DatasetResult.lasting); a refusal of this server's own limits is never lasting.
+   * rarely (DatasetResult.lasting); a refusal of this server's own limits is never lasting in a result. The one
+   * exception is RenderFailedError, which uses the flag only for the snapshot cache and never reaches a result.
    */
   readonly lasting: boolean;
   constructor(

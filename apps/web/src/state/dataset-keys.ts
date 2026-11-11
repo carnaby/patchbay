@@ -212,6 +212,7 @@ const LASTING_RETRY_MS = 15 * 60_000;
 const SPREAD_MS = 10_000;
 /** Never sooner than this after a refusal or a spent window, whatever the server says: a wall must not hammer it. */
 const MIN_RETRY_MS = 5_000;
+const MAX_DELAY_MS = 2 * DAY_MS;
 
 interface LastFetch {
   updatedAt: number;
@@ -230,7 +231,8 @@ interface LastFetch {
 const spreads = new WeakMap<object, number>();
 
 /**
- * What `behindCalendar` reads from a dataset's query. A failing upstream arrives as a 200 whose result carries
+ * What `behindCalendar` and `calendarRefetch` read from a dataset's query: the end of the server's window, a lasting
+ * mark and the retry spread, next to the last fetch time. A failing upstream arrives as a 200 whose result carries
  * `error`, which query-core counts as a success: it is a failure all the same, or the error would stay up for a day.
  */
 export function lastFetch(
@@ -296,9 +298,13 @@ export function nextRefetch(
 ): number | false {
   const next = calendarRefetch(interval, calendar, now, last);
   // A refused result is asked for again after the server's hint, and never later than the dataset would anyway.
-  if (!last?.retryAfterSec) return next;
-  const retry = Math.max(MIN_RETRY_MS, last.retryAfterSec * 1000);
-  return next === false ? retry : Math.min(next, retry);
+  const wanted = (() => {
+    if (!last?.retryAfterSec) return next;
+    const retry = Math.max(MIN_RETRY_MS, last.retryAfterSec * 1000);
+    return next === false ? retry : Math.min(next, retry);
+  })();
+  // Browsers run a timer longer than 2^31-1 ms at once, which would turn a huge stated hint into a request loop.
+  return wanted === false ? false : Math.min(wanted, MAX_DELAY_MS);
 }
 
 function calendarRefetch(

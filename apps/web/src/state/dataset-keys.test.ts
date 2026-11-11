@@ -472,6 +472,16 @@ describe("the server's calendar window", () => {
     );
   });
 
+  it('never waits longer than two days, so a huge hint cannot overflow the browser timer', () => {
+    const now = at('2026-11-11T12:00:00Z');
+    const twoDays = 172_800_000;
+    expect(nextRefetch(false, true, now, stated(now, 1e9))).toBe(twoDays); // a huge validForSec
+    expect(nextRefetch(false, false, now, stated(now, 1e9))).toBe(twoDays);
+    // A hint on its own (nothing else would ask again): the only way the retry delay is not already capped by a minute.
+    const refused = { updatedAt: now, failed: false, retryAfterSec: 1e9 };
+    expect(nextRefetch(false, false, now, refused)).toBe(twoDays); // a huge retryAfterSec
+  });
+
   it('keeps a regular interval, and never waits longer than the window', () => {
     const s = stated(at('2026-11-10T23:59:00Z'), 60);
     expect(nextRefetch(30_000, true, at('2026-11-10T23:59:00Z'), s)).toBe(30_000);
