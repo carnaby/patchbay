@@ -15,6 +15,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   dashboards.
 - In presentation mode, a filter value that a list which never refreshes no longer offers is reset at once, without
   first showing that it waits for the list.
+- In presentation mode on a touch screen, the tap that wakes the hidden top bar no longer presses Exit or Full screen
+  under the finger: the bar's buttons take taps only after the bar has been visible for a moment.
 - In presentation mode on a touch screen, the Maximise button of a widget in the top row can be tapped again while the
   top bar shows.
 - A track map's newest positions and a map shown as a table now set the map's filter when clicked, and newest positions

@@ -24,6 +24,18 @@ export function nextOrigin(prev: OverlayOrigin, open: boolean, presenting: boole
 }
 
 /**
+ * A tap that wakes the hidden top bar is followed by its click on the same spot. The buttons must not take that click:
+ * the viewer could not see them when they tapped, and a stray tap must not exit the presentation of an unattended
+ * screen. A deliberate second tap comes later than this.
+ */
+export const CONTROLS_DELAY_MS = 400;
+
+/** True once the bar has been visible long enough for its buttons to take pointer input. */
+export function controlsLive(visibleSince: number | null, now: number, delay = CONTROLS_DELAY_MS): boolean {
+  return visibleSince !== null && now - visibleSince >= delay;
+}
+
+/**
  * The address shows the mode: a reload keeps it, and a link copied after Exit does not start a kiosk. Only `present`
  * changes; filter values (`p.<id>`) and anything else stay.
  */
