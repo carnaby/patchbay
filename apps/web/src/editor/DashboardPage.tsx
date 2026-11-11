@@ -158,8 +158,10 @@ function Editor({ id }: { id: string }) {
   useEffect(() => {
     if (search.get('edit') === '1') {
       if (access.canEdit) setEditing(true);
-      search.delete('edit');
-      setSearch(search, { replace: true });
+      // From the location, like the other URL writers: the hook's object may predate a filter or present=1 write.
+      const next = new URLSearchParams(window.location.search);
+      next.delete('edit');
+      setSearch(next, { replace: true });
     }
   }, [search, setSearch, access.canEdit, setEditing]);
   useDocumentTitle(doc.title);

@@ -13,6 +13,16 @@ export function closesUnattended(openedWhilePresenting: boolean, presenting: boo
   return openedWhilePresenting && presenting;
 }
 
+export interface OverlayOrigin {
+  open: boolean;
+  whilePresenting: boolean;
+}
+
+/** The origin after a render: it changes only when the overlay opens or closes, and an opening records the mode. */
+export function nextOrigin(prev: OverlayOrigin, open: boolean, presenting: boolean): OverlayOrigin {
+  return open === prev.open ? prev : { open, whilePresenting: open ? presenting : prev.whilePresenting };
+}
+
 /**
  * The address shows the mode: a reload keeps it, and a link copied after Exit does not start a kiosk. Only `present`
  * changes; filter values (`p.<id>`) and anything else stay.

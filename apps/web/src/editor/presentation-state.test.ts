@@ -1,5 +1,21 @@
 import { describe, expect, it, vi } from 'vitest';
-import { closesUnattended, unattendedTimer, withPresent } from './presentation-state.ts';
+import { closesUnattended, nextOrigin, unattendedTimer, withPresent } from './presentation-state.ts';
+
+describe('nextOrigin', () => {
+  const closed = { open: false, whilePresenting: false };
+  it('records the mode when the overlay opens, and keeps it while it stays open', () => {
+    const opened = nextOrigin(closed, true, true);
+    expect(opened).toEqual({ open: true, whilePresenting: true });
+    expect(nextOrigin(opened, true, false)).toBe(opened); // same object: no state update
+  });
+  it('remembers an overlay opened before the presentation as not closing', () => {
+    const opened = nextOrigin(closed, true, false);
+    expect(closesUnattended(nextOrigin(opened, true, true).whilePresenting, true)).toBe(false);
+  });
+  it('is the same object for a render that changes nothing', () => {
+    expect(nextOrigin(closed, false, true)).toBe(closed);
+  });
+});
 
 describe('unattendedTimer', () => {
   it('closes 30 s after it was armed, and 30 s after the last input', () => {
