@@ -13,6 +13,8 @@ import {
 } from './types.ts';
 
 const ATTRIBUTION = 'Weather data by Open-Meteo.com (CC BY 4.0)';
+/** Keyed by city text, which a filter can set to anything: bounded, oldest insertion out first. */
+const GEOCODE_CACHE_MAX = 1000;
 const geocodeCache = new Map<string, { latitude: number; longitude: number; name: string }>();
 
 const locationParams = [
@@ -56,6 +58,7 @@ async function resolveLocation(params: Params, ctx: ConnectorContext): Promise<P
   const hit = res.results?.[0];
   if (!hit) throw new HttpError(400, `Unknown city "${city}"`);
   geocodeCache.set(key, hit);
+  if (geocodeCache.size > GEOCODE_CACHE_MAX) geocodeCache.delete(geocodeCache.keys().next().value!);
   return { city: hit.name, latitude: hit.latitude, longitude: hit.longitude };
 }
 

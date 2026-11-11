@@ -300,6 +300,59 @@ describe('ConnectorService cache', () => {
     const second = await service.load('demo.signal', { points: 10 });
     expect(second.fetchedAt).toBe(first.fetchedAt);
   });
+
+  it('evicts the least recently used results once their bytes pass the budget', async () => {
+    // demo.signal's TTL is 1 s: a frozen clock makes sure a new object below means eviction, not expiry.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const service = new ConnectorService({ offline: true, cacheBytes: 2_000_000 });
+    const a = await service.load('demo.signal', { points: 2000, series: 1 }); // ~0.2 MB each
+    let last = a;
+    for (let s = 0; s < 12; s++)
+      last = await service.load('demo.signal', { points: 2000 - s - 1, series: 1 });
+    // A hit returns the cached table object itself; a new sample is a new object.
+    expect((await service.load('demo.signal', { points: 1988, series: 1 })).table).toBe(last.table); // newest: hit
+    expect((await service.load('demo.signal', { points: 2000, series: 1 })).table).not.toBe(a.table); // oldest: evicted
+    expect(service.cacheStats().bytes).toBeLessThanOrEqual(2_000_000);
+    expect(service.cacheStats().entries).toBeLessThan(13);
+  });
+
+  it('keeps an expired entry as the stale fallback within the hour, and not after it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const outbound = new OutboundLimiter({
+      connector: { perHostConcurrency: 1, perHostPerMinute: 60, maxWaitMs: 30 },
+    });
+    const service = new ConnectorService({ offline: false, outbound });
+    fetchMock.mockResolvedValue({ features: [] });
+    const params = { period: 'day', minMagnitude: '4.5' };
+    const fresh = await service.load('earthquakes', params);
+    const hold = await outbound.acquireConnectorSlot('x', 'earthquake.usgs.gov');
+    // Expired (60 s TTL) but within the hour: the refresh is refused, the old copy is served.
+    vi.setSystemTime(new Date('2026-01-01T00:30:00Z'));
+    const stale = service.load('earthquakes', params);
+    await vi.advanceTimersByTimeAsync(50);
+    expect((await stale).table).toBe(fresh.table);
+    expect((await stale).stale).toBeDefined();
+    // Past the hour the entry has left the cache: nothing to fall back to.
+    vi.setSystemTime(new Date('2026-01-01T01:30:00Z'));
+    const gone = service.load('earthquakes', params);
+    const outcome = expect(gone).rejects.toBeInstanceOf(RetryLaterError);
+    await vi.advanceTimersByTimeAsync(50);
+    await outcome;
+    hold();
+  });
+
+  it('drops the cache on request (memory relief)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    const service = new ConnectorService({ offline: true });
+    const first = await service.load('demo.signal', { points: 10 });
+    expect((await service.load('demo.signal', { points: 10 })).table).toBe(first.table);
+    service.dropCache();
+    expect(service.cacheStats()).toEqual({ bytes: 0, entries: 0 });
+    expect((await service.load('demo.signal', { points: 10 })).table).not.toBe(first.table);
+  });
 });
 
 describe('offline samples', () => {

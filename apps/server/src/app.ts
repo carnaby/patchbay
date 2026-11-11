@@ -134,6 +134,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   memoryGuard.setRelief('caches', (deep) => {
     if (!deep) return;
     data.dropCaches();
+    // Drops the stale fallback too, which is why only an idle server does this.
+    connectors.dropCache();
     wire.dropCaches();
     // Up to LIMITS.datasetInputs full tables per watched room, outside the byte-bounded caches.
     hub.dropSeeds();

@@ -1,5 +1,6 @@
 import type { ConnectorInfo, DataTable } from '@patchbay/core';
 import { HttpError } from '../util/errors.ts';
+import { approxTableBytes, ByteLru } from '../util/lru.ts';
 import { OutboundLimiter } from '../util/outbound.ts';
 import { currentClient } from '../util/request-context.ts';
 import { fetchJson } from '../util/safe-fetch.ts';
@@ -33,6 +34,14 @@ export const CONNECTORS: Connector[] = [
 export const unknownConnectorMessage = (id: string) =>
   `Unknown connector "${id}". Use list_connectors to see what is available.`;
 
+/**
+ * Memory the cached results may take together. One large result is several MB (a big demo.sales is about 4 MB), so
+ * counting entries bounded nothing. A result larger than the whole budget is simply not kept.
+ */
+export const CONNECTOR_CACHE_BYTES = 16 * 1024 * 1024;
+/** How long an expired entry stays as the fallback for a failing refresh. */
+const STALE_WINDOW_MS = 3_600_000;
+
 interface CacheEntry {
   table: DataTable;
   fetchedAt: number;
@@ -52,7 +61,7 @@ export interface ConnectorResult {
  * which keeps us well inside the free tiers' rate limits.
  */
 export class ConnectorService {
-  private readonly cache = new Map<string, CacheEntry>();
+  private readonly cache: ByteLru<CacheEntry>;
   private readonly inflight = new Map<string, Promise<ConnectorResult>>();
   private readonly offline: boolean;
   private readonly outbound: OutboundLimiter;
@@ -64,8 +73,14 @@ export class ConnectorService {
    * `outbound` is the server's one limiter (app.ts), whose connector buckets count these loads per upstream host.
    * `connectors` replaces the built-in list in tests only.
    */
-  constructor(options: { offline: boolean; outbound?: OutboundLimiter; connectors?: readonly Connector[] }) {
+  constructor(options: {
+    offline: boolean;
+    outbound?: OutboundLimiter;
+    connectors?: readonly Connector[];
+    cacheBytes?: number;
+  }) {
     this.offline = options.offline;
+    this.cache = new ByteLru(options.cacheBytes ?? CONNECTOR_CACHE_BYTES);
     this.outbound = options.outbound ?? new OutboundLimiter();
     this.connectors = options.connectors ?? CONNECTORS;
     this.byId = new Map(this.connectors.map((c) => [c.info.id, c]));
@@ -149,13 +164,19 @@ export class ConnectorService {
           ? connector.sample(params)
           : await connector.fetch(params, { fetchJson: limited });
         const fetchedAt = Date.now();
-        this.cache.set(key, { table, fetchedAt, expiresAt: fetchedAt + connector.info.minRefreshSec * 1000 });
-        this.evict();
+        // Freshness is expiresAt; the LRU's own TTL is the stale window, so an expired entry still backs a failing
+        // refresh for an hour and then leaves on its own.
+        this.cache.set(
+          key,
+          { table, fetchedAt, expiresAt: fetchedAt + connector.info.minRefreshSec * 1000 },
+          approxTableBytes(table) + key.length * 2,
+          STALE_WINDOW_MS,
+        );
         return { table, fetchedAt };
       } catch (e) {
         // Serve a recent copy rather than an empty widget when upstream hiccups. Also when our own limit refused the
         // refresh: no error, so no retry hint, and the page asks again at its normal interval.
-        if (hit && now - hit.fetchedAt < 3_600_000) {
+        if (hit && now - hit.fetchedAt < STALE_WINDOW_MS) {
           return {
             table: hit.table,
             fetchedAt: hit.fetchedAt,
@@ -178,9 +199,12 @@ export class ConnectorService {
     return run;
   }
 
-  private evict() {
-    if (this.cache.size <= 500) return;
-    const oldest = [...this.cache.entries()].sort((a, b) => a[1].fetchedAt - b[1].fetchedAt).slice(0, 100);
-    for (const [k] of oldest) this.cache.delete(k);
+  /** Memory relief: also drops the stale fallback, so only an idle server should call it. */
+  dropCache() {
+    this.cache.clear();
+  }
+
+  cacheStats(): { bytes: number; entries: number } {
+    return { bytes: this.cache.bytes, entries: this.cache.size };
   }
 }
