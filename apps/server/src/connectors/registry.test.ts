@@ -384,6 +384,8 @@ describe('connector params', () => {
     expect(service.validateParams('demo.sales', { live: 'true' }).live).toBe(true);
     expect(service.validateParams('demo.sales', { live: '0' }).live).toBe(false);
     expect(service.validateParams('demo.sales', { live: true }).live).toBe(true);
+    expect(service.validateParams('demo.sales', { live: 1 }).live).toBe(true);
+    expect(service.validateParams('demo.sales', { live: 0 }).live).toBe(false);
     expect(() => service.validateParams('demo.sales', { live: 'yes' })).toThrow(
       /Invalid params for demo.sales/,
     );

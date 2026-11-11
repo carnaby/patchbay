@@ -27,6 +27,8 @@ export function paramsSchema(specs: ParamSpec[]) {
         // A filter binds text: "false" must read false, which z.coerce.boolean() turns into true.
         s = z.union([
           z.boolean(),
+          z.literal(1).transform(() => true),
+          z.literal(0).transform(() => false),
           z.enum(['true', 'false', '1', '0']).transform((t) => t === 'true' || t === '1'),
         ]);
         break;
