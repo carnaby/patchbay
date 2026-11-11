@@ -3,8 +3,10 @@
  * is an operation through the editor store (applyOps), so it is versioned, undoable and rebased like any other edit.
  */
 import {
+  applyOps,
   DATE_PRESET_LABELS,
   DATE_PRESETS,
+  type DashboardDoc,
   type DatePreset,
   lineageParameters,
   type OpInput,
@@ -28,9 +30,11 @@ import {
   Toggle,
   toast,
 } from '../components/ui.tsx';
+import { parameterSecretProblem } from '../lib/secrets.ts';
 import { useEditor } from '../state/editor.ts';
 import { summaryOf, useParameters } from '../state/parameters.ts';
 import { useDatasetColumns } from '../state/sync.ts';
+import { issuesFor, useCredentialContext } from './CredentialsField.tsx';
 import {
   addFilterBlocker,
   checkParameter,
@@ -60,6 +64,8 @@ export function ParametersPanel({
   dashboardId: string;
 }) {
   const doc = useEditor((s) => s.doc);
+  const saved = useEditor((s) => s.saved);
+  const credentials = useCredentialContext();
   const apply = useEditor((s) => s.apply);
   const raw = useParameters((s) => s.raw);
   const [editing, setEditing] = useState<Editing>(null);
@@ -97,6 +103,21 @@ export function ParametersPanel({
             const ops: OpInput[] = editing.isNew
               ? [{ op: 'addParameter', parameter }]
               : updateOps(editing.parameter, parameter);
+            // The server re-checks the secrets of datasets whose filter request shape changes; say so here instead
+            // of letting the autosave be refused. Only a hint: applyOps computes a candidate and `run` stays the
+            // one path that changes the document.
+            let next: DashboardDoc | null = null;
+            try {
+              if (doc) next = applyOps(doc, ops).doc;
+            } catch {
+              // run reports it
+            }
+            const problem =
+              doc && next && parameterSecretProblem(saved ?? doc, next, (s) => issuesFor(s, credentials));
+            if (problem) {
+              toast(problem, 'bad');
+              return;
+            }
             if (
               run(
                 ops,

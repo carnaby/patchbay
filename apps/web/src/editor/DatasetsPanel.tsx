@@ -63,7 +63,12 @@ import { api, errorMessage } from '../lib/api.ts';
 import { countLabel } from '../lib/count-label.ts';
 import { useConnectors } from '../lib/hooks.ts';
 import { withRetry } from '../lib/retry.ts';
-import { credentialErrorHint, introducedSecretIds, introducedSecretRefs } from '../lib/secrets.ts';
+import {
+  credentialErrorHint,
+  draftRefsChanged,
+  introducedSecretIds,
+  introducedSecretRefs,
+} from '../lib/secrets.ts';
 import { draftView } from '../state/dataset-keys.ts';
 import { useEditor } from '../state/editor.ts';
 import { type RawValues, useParameters } from '../state/parameters.ts';
@@ -1014,22 +1019,17 @@ function DatasetEditor({
   const previewBlocked = issuesFor(debounced.source, credentials).length > 0;
   const issues = issuesFor(draft.source, credentials);
   const draftIds = sourceSecretIds(draft.source);
-  const initialIds = initial ? sourceSecretIds(initial.source) : [];
   // Only new or re-pointed references are checked on save (as on the server), so a deleted secret never blocks
   // renaming the dataset or editing its pipeline.
+  const saved = useEditor((s) => s.saved);
   const refsChanged =
-    draftIds.length > 0 &&
-    (initial?.source.kind !== 'http' ||
-      draft.source.kind !== 'http' ||
-      initial.source.url !== draft.source.url ||
-      draftIds.some((id) => !initialIds.includes(id)));
+    draftIds.length > 0 && doc !== null && draftRefsChanged(saved ?? doc, doc, initial?.id, draft.source);
   const blockedByCredentials = refsChanged && issues.length > 0;
 
   // The name travels too: the server needs the draft as it will be saved. `editing` is the saved dataset it replaces.
   const editingId = initial?.id;
   const previewBody = { name: debounced.name, source: debounced.source, transforms: debounced.transforms };
   const viewRaw = useParameters((s) => s.raw);
-  const saved = useEditor((s) => s.saved);
   const view = useMemo(() => draftView(saved, doc, debounced, viewRaw), [saved, doc, debounced, viewRaw]);
   const sourceView = useMemo(
     () => draftView(saved, doc, { source: debounced.source, transforms: [] }, viewRaw),
