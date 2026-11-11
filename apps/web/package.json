@@ -1,7 +1,7 @@
 {
   "name": "@patchbay/web",
   "description": "Patchbay web app: landing page, dashboard editor and viewer.",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "license": "MIT",
   "homepage": "https://github.com/carnaby/patchbay#readme",

@@ -11,10 +11,11 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConnectorService } from '../connectors/registry.ts';
 import { FolderStore } from '../store/folder-store.ts';
-import { HttpError } from '../util/errors.ts';
+import { HttpError, lastingError } from '../util/errors.ts';
 import { BusyError, Gate } from '../util/gate.ts';
 import { OutboundLimiter } from '../util/outbound.ts';
 import { parsePrivateHosts } from '../util/private-hosts.ts';
+import { URL_MESSAGES } from '../util/safe-fetch.ts';
 
 const fetchMock = vi.hoisted(() => vi.fn<(url: string, options?: unknown) => Promise<unknown>>());
 vi.mock('../util/safe-fetch.ts', async (original) => ({
@@ -155,7 +156,11 @@ describe('uploaded files', () => {
     expect(first.error).toMatch(/more than 500 columns/);
     expect(first.table.rows).toEqual([]);
     expect(Date.now() - startedAt).toBeLessThan(3000);
-    expect((await data.resolve(target, ds)).error).toBe(first.error);
+    // Inline rows are part of the document: only an edit changes the answer, also when it comes from the cache.
+    expect(first.lasting).toBe(true);
+    const again = await data.resolve(target, ds);
+    expect(again.error).toBe(first.error);
+    expect(again.lasting).toBe(true);
     // Narrower stored rows still load, cut to the source cell limit with a warning.
     const narrow = dataset({
       kind: 'inline',
@@ -315,6 +320,41 @@ describe('http sources', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('remembers whether a failing address can pass without an edit', async () => {
+    // Once each: the second read of an address comes from the error cache.
+    fetchMock.mockRejectedValueOnce(lastingError(400, URL_MESSAGES.privateOff));
+    const data = new DataService(connectors, store);
+    const ds = http('https://refused.example/x');
+    for (let i = 0; i < 2; i++) {
+      const r = await data.resolve(target, ds);
+      expect(r.error).toBe(URL_MESSAGES.privateOff);
+      expect(r.lasting).toBe(true);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // An upstream 4xx is the upstream's answer of the moment: transient, from the cache too.
+    fetchMock.mockRejectedValueOnce(new HttpError(502, 'Upstream responded 404'));
+    const gone = http('https://gone.example/x');
+    for (let i = 0; i < 2; i++) {
+      const r = await data.resolve(target, gone);
+      expect(r.error).toBe('Upstream responded 404');
+      expect(r).not.toHaveProperty('lasting');
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('marks invalid connector params, an unknown connector and a missing upload as lasting', async () => {
+    const data = new DataService(connectors, store);
+    for (const source of [
+      { kind: 'connector', connector: 'earthquakes', params: { period: 'century' } },
+      { kind: 'connector', connector: 'no-such-connector', params: {} },
+      { kind: 'upload', fileId: 'f_missing' },
+    ]) {
+      const r = await data.resolve(target, dataset(source));
+      expect(r.error, source.kind).toBeTruthy();
+      expect(r.lasting, JSON.stringify(source)).toBe(true);
+    }
+  });
+
   it('does not serve the cached error of one POST body to another body on the same URL', async () => {
     const url = 'https://api.example/q';
     fetchMock.mockImplementation(async (_url, options) => {
@@ -407,10 +447,12 @@ describe('http sources', () => {
 
   it('applies the URL policy before fetching, for http and feed sources', async () => {
     const policy = vi.fn(() => {
-      throw new HttpError(403, 'No URLs here');
+      throw lastingError(403, 'No URLs here');
     });
     const data = new DataService(connectors, store, new InlineRunner(), { urlPolicy: policy, offline: true });
-    expect((await data.resolve(target, http('https://a.example/x'))).error).toBe('No URLs here');
+    const refused = await data.resolve(target, http('https://a.example/x'));
+    expect(refused.error).toBe('No URLs here');
+    expect(refused.lasting).toBe(true);
     expect((await data.resolve(target, dataset({ kind: 'feed', url: 'https://a.example/f' }))).error).toBe(
       'No URLs here',
     );

@@ -1,10 +1,12 @@
 import {
+  calendarOf,
   type DatasetResult,
   DatasetSchema,
   exportFileName,
   FileIdSchema,
   IdSchema,
   type LiveEvent,
+  lineageParameters,
   profileTable,
   SECRET_PLACEMENTS,
   suggestWidgets,
@@ -373,9 +375,16 @@ export function apiRoutes(deps: Deps) {
     if (!dataset) throw notFound('Dataset not found');
     const raw = rawFromQuery(c.req.url);
     const target = { id, ownerId: meta.ownerId };
-    const parameters = viewValues(doc, raw, Date.now(), await loadDataOptions(data, target, doc, raw));
+    // One instant for the view and for its stated window: what the rows were computed for is what the page is told.
+    const now = Date.now();
+    const parameters = viewValues(doc, raw, now, await loadDataOptions(data, target, doc, raw));
     const result = await data.scope(target, doc, { parameters }).resolve(dataset);
-    return sendBody(c, await wire.dataBody(result, rowsFormat(c.req.query('rows'))));
+    // Per request and outside every cache: the shared result is copied, never changed (another request may hold it).
+    const calendar = calendarOf(doc.parameters, lineageParameters(doc, dataset.id), parameters, now);
+    return sendBody(
+      c,
+      await wire.dataBody(calendar ? { ...result, calendar } : result, rowsFormat(c.req.query('rows'))),
+    );
   });
 
   /** Runs an unsaved dataset definition and returns rows, a profile and widget suggestions. */
@@ -549,13 +558,21 @@ export function apiRoutes(deps: Deps) {
     const widget = widgetId ? doc.widgets.find((w) => w.id === widgetId) : undefined;
     if (widgetId && !widget) throw notFound('Widget not found');
     const raw = rawFromQuery(c.req.url);
-    const parameters = viewValues(doc, raw, Date.now(), await loadDataOptions(data, target, doc, raw));
+    const now = Date.now();
+    const parameters = viewValues(doc, raw, now, await loadDataOptions(data, target, doc, raw));
+    // The window of every relative period joins the key, so a picture never outlives the day it was drawn for.
+    const windowOf = calendarOf(
+      doc.parameters,
+      (doc.parameters ?? []).map((p) => p.id),
+      parameters,
+      now,
+    )?.window;
     const key = SnapshotCache.key({
       id,
       version: meta.version,
       theme,
       widget: widgetId,
-      view: viewQuery(doc.parameters, parameters),
+      view: [viewQuery(doc.parameters, parameters), windowOf].filter(Boolean).join('#'),
     });
     // Permission was checked above, for this request; the cache only saves the drawing. Busy, rate limited or out of
     // time, the error says when to come back (Retry-After, set by the app's error handler).

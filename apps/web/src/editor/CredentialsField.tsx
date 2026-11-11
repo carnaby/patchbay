@@ -37,6 +37,8 @@ export interface CredentialContext {
   /** Anonymous dashboards can never hold references. */
   anonymous: boolean;
   owner: boolean;
+  /** The dashboard's owner may use the operator's private hosts; false from an older server. */
+  privateHosts: boolean;
   /** The owner's secrets; null while loading or when not the owner. */
   secrets: SecretListItem[] | null;
 }
@@ -51,6 +53,7 @@ export function useCredentialContext(): CredentialContext {
     canUseSecrets: owner && Boolean(status?.canUseSecrets),
     anonymous: Boolean(access?.anonymous),
     owner,
+    privateHosts: Boolean(access?.privateHosts),
     secrets: list.data?.secrets ?? null,
   };
 }
@@ -76,13 +79,6 @@ function mismatchLabel(secret: SecretListItem, url: string): string {
   if (match.reason === 'param') return `the URL already has a "${secret.paramName}" parameter`;
   if (match.reason === 'encoding') return 'refuses encoded characters in this URL';
   return `only sent to ${bindingLabel(secret)}`;
-}
-
-/** The hint under the URL field. */
-export function urlHint(context: CredentialContext) {
-  return context.canUseSecrets
-    ? 'Don’t put keys into the URL; use Credentials instead. Private network addresses are blocked.'
-    : 'A public JSON endpoint without credentials. Private network addresses are blocked.';
 }
 
 /** Warns about keys pasted into the URL and offers to move one into a secret. */

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  calendarOf,
   DATE_PRESETS,
   DashboardDocSchema,
   DocumentError,
@@ -23,6 +24,7 @@ import {
   readParameterValues,
   readRef,
   refProblem,
+  soundWindow,
   viewQuery,
   writeParameterValues,
 } from './index.ts';
@@ -463,5 +465,55 @@ describe('options from a dataset column', () => {
     expect(optionsFromIssues({ parameters: [country], datasets: [] })).toEqual([
       'Filter "country" takes its choices from unknown dataset "countries"',
     ]);
+  });
+});
+
+describe('calendarOf', () => {
+  const period = {
+    id: 'period',
+    label: 'Period',
+    type: 'dateRange',
+    presets: ['yesterday', 'last7d'],
+    custom: true,
+    default: 'last7d',
+  };
+  const since = {
+    id: 'since',
+    label: 'Since',
+    type: 'dateRange',
+    presets: ['thisMonth'],
+    custom: true,
+    default: 'thisMonth',
+  };
+  const params = [period, since].map((p) => ParameterSchema.parse(p));
+  const when = (iso: string) => Date.parse(iso);
+  const values = (now: number, raw: Record<string, string> = {}) =>
+    readParameterValues(params, (id) => raw[id], now).values;
+
+  it('names the resolved window in the format of soundWindow', () => {
+    const now = when('2026-11-10T12:00:00Z');
+    expect(calendarOf(params, ['period'], values(now), now)?.window).toBe(soundWindow(['last7d'], now));
+    expect(calendarOf(params, ['period'], values(now), now)?.window).toBe('2026-11-04..2026-11-10');
+  });
+  it('is valid until the next UTC midnight, in whole seconds rounded up', () => {
+    const late = when('2026-11-10T23:59:30.200Z');
+    expect(calendarOf(params, ['period'], values(late), late)?.validForSec).toBe(30);
+    const midnight = when('2026-11-11T00:00:00Z');
+    expect(calendarOf(params, ['period'], values(midnight), midnight)?.validForSec).toBe(86_400);
+  });
+  it('is null for a custom range, and for a dataset without a date filter', () => {
+    const now = when('2026-11-10T12:00:00Z');
+    expect(calendarOf(params, ['period'], values(now, { period: '2026-01-01..2026-01-31' }), now)).toBeNull();
+    expect(calendarOf(params, [], values(now), now)).toBeNull();
+    expect(calendarOf(undefined, ['period'], {}, now)).toBeNull();
+  });
+  it('joins two relative filters in the order of the ids it is given, and skips a custom one', () => {
+    const now = when('2026-11-10T12:00:00Z');
+    expect(calendarOf(params, ['period', 'since'], values(now), now)?.window).toBe(
+      soundWindow(['last7d', 'thisMonth'], now),
+    );
+    expect(
+      calendarOf(params, ['period', 'since'], values(now, { since: '2026-01-01..2026-01-31' }), now)?.window,
+    ).toBe('2026-11-04..2026-11-10');
   });
 });

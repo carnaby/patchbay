@@ -50,6 +50,13 @@ const parseOnWorker: ParseFn = (body, contentType, base) => {
   return sharedParser.parse(body, contentType, base);
 };
 
+/**
+ * A refusal of a feed address that a page announced: the page chose it and may announce another, so, like a
+ * redirect, it is transient even where the same address written by the user would be lasting.
+ */
+const pageChose = (e: unknown) =>
+  e instanceof HttpError && e.lasting ? new HttpError(e.status, e.message) : e;
+
 /** Map insertion order doubles as age: the oldest entry goes first when a map is full. */
 function remember<V>(map: Map<string, V>, key: string, value: V) {
   map.delete(key);
@@ -134,7 +141,9 @@ export class FeedService {
   private async fetch(url: string, key: string, privateHosts: PrivateHosts | null): Promise<LoadedFeed> {
     const known = this.discovered.get(key);
     const start = known && Date.now() - known.at < DISCOVERY_TTL_MS ? known.feedUrl : url;
-    let res = await this.get(start, privateHosts);
+    let res = await this.get(start, privateHosts).catch((e: unknown) => {
+      throw start === url ? e : pageChose(e);
+    });
     if (looksLikeHtml(res.text, res.contentType)) {
       const feedUrl = discoverFeed(res.text, res.url);
       if (!feedUrl) {
@@ -144,7 +153,9 @@ export class FeedService {
         );
       }
       remember(this.discovered, key, { feedUrl, at: Date.now() });
-      res = await this.get(feedUrl, privateHosts);
+      res = await this.get(feedUrl, privateHosts).catch((e: unknown) => {
+        throw pageChose(e);
+      });
       if (looksLikeHtml(res.text, res.contentType))
         throw new HttpError(502, `${feedUrl} is a web page, not a feed`);
     }

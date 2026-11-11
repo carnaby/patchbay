@@ -7,7 +7,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { DatasetResult } from '@patchbay/core';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
@@ -494,5 +495,117 @@ describe('filters over MCP', () => {
     });
     expect(r.isError).toBe(true);
     expect(text(r)).toMatch(/Previewing a POST source needs the dashboards:write scope/);
+  });
+});
+
+/** Lets every request through: a clock set back would leave the real limiter's buckets empty. */
+class Unlimited extends RateLimiter {
+  override take() {
+    return true;
+  }
+}
+
+describe('calendar window of a data answer', () => {
+  const ORDERS = {
+    id: 'orders',
+    name: 'Orders',
+    source: { kind: 'inline', rows: [{ at: '2026-11-09', n: 1 }] },
+    // A column of ISO days is read as a time column (milliseconds), so it is compared with the range's start.
+    transforms: [{ type: 'filter', expr: 'at >= $param.period.start' }],
+  };
+  let id: string;
+  let api: RateLimiter;
+
+  // Created under the real clock: one set back in time would also empty the create budget of this address.
+  beforeAll(async () => {
+    ({ id } = await filtered([
+      {
+        op: 'addParameter',
+        parameter: {
+          id: 'period',
+          label: 'Period',
+          type: 'dateRange',
+          presets: ['yesterday', 'last7d'],
+          custom: true,
+          default: 'last7d',
+        },
+      },
+      { op: 'addDataset', dataset: ORDERS },
+      {
+        op: 'addDataset',
+        dataset: { id: 'plain', name: 'Plain', source: { kind: 'inline', rows: [{ a: 1 }] } },
+      },
+      {
+        op: 'addDataset',
+        dataset: { id: 'recent', name: 'Recent', source: { kind: 'dataset', id: 'orders' } },
+      },
+      {
+        op: 'addDataset',
+        dataset: {
+          id: 'broken',
+          name: 'Broken',
+          source: { kind: 'dataset', id: 'orders' },
+          transforms: [{ type: 'rename', map: { n: 'at' } }],
+        },
+      },
+    ]));
+  });
+
+  beforeEach(() => {
+    api = deps.limits.api;
+    deps.limits.api = new Unlimited(1, 1);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // Half a minute before the server's midnight.
+    vi.setSystemTime(new Date('2026-11-10T23:59:30.200Z'));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    deps.limits.api = api;
+  });
+
+  it('states the window of a relative period and the seconds until midnight', async () => {
+    const res = await call(`/api/dashboards/${id}/data/orders`);
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect(res.json.table.rows).toEqual([{ at: Date.UTC(2026, 10, 9), n: 1 }]);
+    expect(res.json.calendar).toEqual({ window: '2026-11-04..2026-11-10', validForSec: 30 });
+  });
+
+  it('states no window for a fixed period or for a dataset without date filters', async () => {
+    const fixed = await call(`/api/dashboards/${id}/data/orders?p.period=2026-11-01..2026-11-05`);
+    expect(fixed.status, JSON.stringify(fixed.json)).toBe(200);
+    expect(fixed.json).not.toHaveProperty('calendar');
+    const plain = await call(`/api/dashboards/${id}/data/plain`);
+    expect(plain.status, JSON.stringify(plain.json)).toBe(200);
+    expect(plain.json).not.toHaveProperty('calendar');
+  });
+
+  it('counts the validity per request and never writes it into the shared result', async () => {
+    const original = deps.data.sharedFinal.bind(deps.data);
+    const shared: DatasetResult[] = [];
+    const spy = vi.spyOn(deps.data, 'sharedFinal').mockImplementation(async (key, build) => {
+      const r = await original(key, build);
+      shared.push(r);
+      return r;
+    });
+    try {
+      const first = await call(`/api/dashboards/${id}/data/recent`);
+      vi.setSystemTime(new Date('2026-11-10T23:59:32.200Z'));
+      const second = await call(`/api/dashboards/${id}/data/recent`);
+      expect(first.json.calendar).toEqual({ window: '2026-11-04..2026-11-10', validForSec: 30 });
+      expect(second.json.calendar).toEqual({ window: '2026-11-04..2026-11-10', validForSec: 28 });
+      // The second read is served the object the first one built.
+      expect(shared).toHaveLength(2);
+      expect(shared[1]).toBe(shared[0]);
+      for (const r of shared) expect(r).not.toHaveProperty('calendar');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('states the window on an error result too', async () => {
+    const res = await call(`/api/dashboards/${id}/data/broken`);
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect(res.json.error).toBeTruthy();
+    expect(res.json.calendar).toEqual({ window: '2026-11-04..2026-11-10', validForSec: 30 });
   });
 });

@@ -64,7 +64,7 @@ import type { UseCase } from '../showcase/load.ts';
 import type { DashboardIndex } from '../store/dashboard-index.ts';
 import type { FolderStore, StoredMeta } from '../store/folder-store.ts';
 import { newDashboardId, newId, randomToken, safeEqual, sha256 } from '../util/crypto.ts';
-import { badRequest, forbidden, HttpError, notFound, unauthorized } from '../util/errors.ts';
+import { badRequest, forbidden, HttpError, lastingError, notFound, unauthorized } from '../util/errors.ts';
 import { Gate } from '../util/gate.ts';
 import { heavyWork } from '../util/heavy.ts';
 import type { NetworkAccess, PrivateHosts, PrivateHostsFor } from '../util/private-hosts.ts';
@@ -611,15 +611,16 @@ export class DashboardService {
    * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
    * exception is a GET of a URL that appears verbatim in the repository's showcase, so anonymous copies of a use case
    * work (`isTrustedSource`). Returns the private hosts the dashboard's sources may reach (null: public addresses
-   * only), decided by its owner, never by the viewer.
+   * only), decided by its owner, never by the viewer. Its refusals are lasting: only the owner or the operator can
+   * change them.
    */
   assertMayFetchUrl(target: DashboardTarget, url: string, method: HttpMethod = 'GET'): PrivateHosts | null {
     if (this.urlSources === 'signed-in' && target.ownerId === null && !this.isTrustedSource(url, method))
-      throw forbidden(URL_SOURCES_SIGNED_IN);
+      throw lastingError(403, URL_SOURCES_SIGNED_IN);
     const hosts = target.publicOnly ? null : this.privateHostsFor(target.ownerId);
     // Without this, the dashboard would get the public instance's answer, which tells it to ask the operator.
     if (!hosts && this.privateHosts && needsList(url))
-      throw forbidden(target.publicOnly ? PREVIEW_PRIVATE_READ_ONLY : this.privateHostsRefusal());
+      throw lastingError(403, target.publicOnly ? PREVIEW_PRIVATE_READ_ONLY : this.privateHostsRefusal());
     return hosts;
   }
 
@@ -751,13 +752,17 @@ export class DashboardService {
   }
 
   private envelope(meta: StoredMeta, doc: DashboardDoc, p: Principal): DashboardEnvelope {
+    const canEdit = this.canEdit(meta, p);
     return {
       meta: this.publicMeta(meta, doc.title),
       doc,
       access: {
-        canEdit: this.canEdit(meta, p),
+        canEdit,
         isOwner: p.user !== null && meta.ownerId === p.user.id,
         anonymous: meta.ownerId === null,
+        // Editors only, from the rule the fetch applies (assertMayFetchUrl): the dashboard's owner decides, never
+        // the viewer.
+        privateHosts: canEdit && this.privateHostsFor(meta.ownerId) !== null,
       },
     };
   }
@@ -1669,28 +1674,29 @@ export class DashboardService {
   /**
    * The decrypted credentials of a dataset, resolved against the dashboard's owner: never against the viewer, the
    * editor or the agent asking. Throws an HttpError with a generic message, and a dataset whose secrets cannot all
-   * be resolved is never fetched without them.
+   * be resolved is never fetched without them. Every refusal is lasting: the owner or the operator must change a
+   * secret or a setting first.
    */
   async credentialsFor(target: DashboardTarget, dataset: Dataset): Promise<Credential[]> {
     const ids = sourceSecretIds(dataset.source);
     if (ids.length === 0 || dataset.source.kind !== 'http') return [];
     const ownerId = target.ownerId;
-    if (ownerId === null) throw new HttpError(403, CREDENTIAL_ERRORS.unavailable);
-    if (!this.mayUseSecrets(ownerId)) throw new HttpError(403, CREDENTIAL_ERRORS.off);
+    if (ownerId === null) throw lastingError(403, CREDENTIAL_ERRORS.unavailable);
+    if (!this.mayUseSecrets(ownerId)) throw lastingError(403, CREDENTIAL_ERRORS.off);
     const unsealed = ids.map((id) => this.secrets.unseal(ownerId, id));
     const found = unsealed.filter((u) => u !== null);
-    if (found.length !== ids.length) throw new HttpError(403, CREDENTIAL_ERRORS.unavailable);
+    if (found.length !== ids.length) throw lastingError(403, CREDENTIAL_ERRORS.unavailable);
     const url = dataset.source.url;
-    if (found.some((u) => !bindingMatches(u.info, url).ok)) throw new HttpError(403, CREDENTIAL_ERRORS.bound);
+    if (found.some((u) => !bindingMatches(u.info, url).ok)) throw lastingError(403, CREDENTIAL_ERRORS.bound);
     for (const u of found) {
       if (u.value !== null) continue;
       if (!this.undecryptableLogged.has(u.info.id)) {
         this.undecryptableLogged.add(u.info.id);
         console.warn(`[patchbay] secret ${u.info.id} cannot be decrypted with the configured SECRETS_KEY`);
       }
-      throw new HttpError(403, CREDENTIAL_ERRORS.undecryptable);
+      throw lastingError(403, CREDENTIAL_ERRORS.undecryptable);
     }
-    if (placementConflict(found.map((u) => u.info))) throw new HttpError(403, CREDENTIAL_ERRORS.conflict);
+    if (placementConflict(found.map((u) => u.info))) throw lastingError(403, CREDENTIAL_ERRORS.conflict);
     for (const u of found) this.secrets.markUsed(u.info);
     return found.map((u) => ({
       id: u.info.id,

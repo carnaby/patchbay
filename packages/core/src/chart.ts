@@ -276,6 +276,11 @@ function cartesianOption(
     splitLine: { show: false },
     ...(categories ? { data: categories } : {}),
     ...(isTime ? { axisLabel: { color: theme.muted, hideOverlap: true } } : {}),
+    // Without a gap the first and last labels sit on the grid's edges and half of each would fall outside the card;
+    // aligned inward they stay whole.
+    ...(axisKind === 'category' && markType !== 'bar'
+      ? { axisLabel: { ...axisStyle(theme).axisLabel, alignMinLabel: 'left', alignMaxLabel: 'right' } }
+      : {}),
     // ECharts reads a boolean boundaryGap only on a category axis; elsewhere it warns and ignores it.
     boundaryGap: axisKind === 'category' && markType === 'bar',
     // Fixed bounds keep a lat/lon scatter "map" from rescaling every time the data moves.

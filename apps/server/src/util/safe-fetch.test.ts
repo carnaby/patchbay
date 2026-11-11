@@ -255,9 +255,11 @@ describe('POST', () => {
     const post = { method: 'POST' as const, body: { q: 1 }, credentials: [credential], test: { dispatcher } };
     const mark = received.length;
     await expect(safeFetchJson('https://api.example.com/v1/graphql', post)).resolves.toEqual(ANSWER);
-    await expect(safeFetchJson('https://api.example.com/v2/graphql', post)).rejects.toThrow(
-      'Credentials for this source are bound to another address.',
-    );
+    await expect(safeFetchJson('https://api.example.com/v2/graphql', post)).rejects.toMatchObject({
+      message: 'Credentials for this source are bound to another address.',
+      // The address the user wrote: only an edit can change it.
+      lasting: true,
+    });
     await expect(safeFetchJson('https://api.example.com/v1/moved-307', post)).rejects.toThrow(
       URL_MESSAGES.postRedirect,
     );

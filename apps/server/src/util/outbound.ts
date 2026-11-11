@@ -4,7 +4,7 @@
  * host, and a per-host budget over time. Distinct URLs on one host share the budget, so a list of query strings
  * cannot be used to hammer someone else's server.
  */
-import { HttpError, RetryLaterError } from './errors.ts';
+import { lastingError, RetryLaterError } from './errors.ts';
 import { Gate } from './gate.ts';
 
 export interface OutboundOptions {
@@ -27,8 +27,9 @@ export interface ConnectorOptions {
   /** Loads one host may receive per minute (burst = the same number). */
   perHostPerMinute?: number;
   /**
-   * How long a load waits for its turn before it is refused. Below the scope deadline (20 s) minus safe-fetch's
-   * 10 s timeout, so a load that got its place late can still finish in time.
+   * How long a load waits for its turn before it is refused. A single-host load that waited the full 8 s still fits
+   * the scope deadline (20 s) with its 10 s fetch; a two-host load (geocoder, then forecast) may not, and a scope then
+   * reports its source as still loading and the page asks again.
    */
   maxWaitMs?: number;
   /** Loads waiting for one host beyond this are refused at once. */
@@ -115,7 +116,7 @@ export class OutboundLimiter {
     try {
       host = new URL(url).hostname.toLowerCase();
     } catch {
-      throw new HttpError(400, 'Invalid URL');
+      throw lastingError(400, 'Invalid URL');
     }
     const b = this.bucket(host);
     if (b.active >= this.perHostConcurrency || b.tokens < 1) throw busyHost(host);

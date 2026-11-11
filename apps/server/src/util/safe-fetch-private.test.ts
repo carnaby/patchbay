@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
 import { isIP } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { HttpError } from './errors.ts';
 import { type PrivateHosts, parsePrivateHosts } from './private-hosts.ts';
 import {
   checkUrl,
@@ -116,6 +117,35 @@ describe('URL checks', () => {
       /not covered/,
     );
     expect(checkUrl('http://169.254.169.254/', parsePrivateHosts('169.254.169.254')).mode).toBe('lan');
+  });
+
+  it('marks a refusal of the URL as written as lasting, and one the upstream or its DNS chose as transient', async () => {
+    const thrown = (f: () => unknown) => {
+      try {
+        f();
+      } catch (e) {
+        return e as HttpError;
+      }
+      throw new Error('did not throw');
+    };
+    for (const url of ['http://example.com/x', 'https://10.0.0.1/x', 'https://example.com:8443/x']) {
+      expect(thrown(() => checkUrl(url)).lasting, url).toBe(true);
+    }
+    const from = new URL('https://a.example/');
+    const toPrivate = thrown(() => redirectTarget(from, 'https://10.0.0.1/x'));
+    expect(toPrivate.message).toBe(URL_MESSAGES.privateOff);
+    expect(toPrivate.lasting).toBe(false);
+    // Without a list, checkUrl refuses plain http first (400); with one, the downgrade itself refuses it (502).
+    expect(thrown(() => redirectTarget(from, 'http://a.example/x')).lasting).toBe(false);
+    const downgrade = thrown(() => redirectTarget(from, 'http://a.example/x', hosts));
+    expect(downgrade.message).toBe(URL_MESSAGES.downgrade);
+    expect(downgrade.status).toBe(502);
+    expect(downgrade.lasting).toBe(false);
+    // The system resolver answers "localhost" with a loopback address, which the guard refuses: nothing is sent.
+    const blocked = await safeFetchJson('https://localhost/x').catch((e: HttpError) => e);
+    expect(blocked).toBeInstanceOf(HttpError);
+    expect((blocked as HttpError).message).toBe(URL_MESSAGES.privateOff);
+    expect((blocked as HttpError).lasting).toBe(false);
   });
 
   it('refuses a malformed redirect location with a 502', () => {
