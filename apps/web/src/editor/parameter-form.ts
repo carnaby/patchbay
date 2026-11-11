@@ -9,6 +9,7 @@ import {
   formatZodIssues,
   type OpInput,
   type OptionValue,
+  optionWriteIssues,
   type Parameter,
   ParameterSchema,
   PLACE_LABELS,
@@ -117,10 +118,14 @@ export function choiceSourcePatch(
 export function checkParameter(
   candidate: unknown,
   others: readonly Parameter[],
+  /** The saved declaration being edited, if any: option values it already holds stay allowed. */
+  previous?: Parameter,
 ): { parameter: Parameter } | { error: string } {
   const parsed = ParameterSchema.safeParse(candidate);
   if (!parsed.success) return { error: formatZodIssues(parsed.error)[0] ?? 'This filter is not valid' };
-  const issue = declarationIssues([...others, parsed.data]).find((i) => i.includes(`"${parsed.data.id}"`));
+  const issue =
+    declarationIssues([...others, parsed.data]).find((i) => i.includes(`"${parsed.data.id}"`)) ??
+    optionWriteIssues(parsed.data, previous)[0];
   return issue ? { error: issue } : { parameter: parsed.data };
 }
 

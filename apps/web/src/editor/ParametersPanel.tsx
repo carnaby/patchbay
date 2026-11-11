@@ -202,7 +202,7 @@ function ParameterForm({
     initial.type === 'select' ? optionsText(initial.options ?? []) : '',
   );
   const taken = useMemo(() => new Set(others.map((p) => p.id)), [others]);
-  const check = checkParameter(draft, others);
+  const check = checkParameter(draft, others, isNew ? undefined : initial);
   /** Merges a patch; undefined removes a field, as the save's updateParameter would. */
   const set = (patch: Record<string, unknown>) =>
     setDraft((d) => {
@@ -275,6 +275,7 @@ function ParameterForm({
                 value={text('default')}
                 maxLength={100}
                 onChange={(e) => set({ default: e.target.value })}
+                onBlur={(e) => set({ default: e.target.value.trim() })}
               />
             )}
           </Field>

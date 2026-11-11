@@ -100,7 +100,8 @@ export const ParameterSchema = z.discriminatedUnion('type', [
     ...base,
     type: z.literal('text'),
     placeholder: z.string().max(60).optional(),
-    default: z.string().max(MAX_TEXT_VALUE).default(''),
+    // Trimmed at parse so stored defaults with stray spaces read the same as links, snapshots and the page.
+    default: z.string().trim().max(MAX_TEXT_VALUE).default(''),
   }),
   z.strictObject({
     ...base,
@@ -608,6 +609,27 @@ function expressionUsesFilters(src: string): boolean {
 const brokenText = (text: string) => /\p{Cs}/u.test(text);
 const BROKEN = 'holds a broken character (a lone UTF-16 surrogate)';
 
+/**
+ * Option values that may not be written: "$param." anywhere inside one. A bound body or connector value holding it is
+ * refused as unbound by loadSource with a misleading message. Write-time only (addParameter, updateParameter, the
+ * editor), never part of declarationIssues: that runs on every stored read, and documents saved since 0.3.0 may hold
+ * such an option and must keep opening. Values `previous` already holds stay allowed, so a legacy filter can be
+ * relabelled. A leading "$param." is already a read-time issue and is not repeated.
+ */
+export function optionWriteIssues(param: Parameter, previous?: Parameter): string[] {
+  if (param.type !== 'select') return [];
+  const held = new Set(
+    previous?.type === 'select' ? (previous.options ?? []).map((o) => String(o.value)) : [],
+  );
+  const issues: string[] = [];
+  for (const o of param.options ?? []) {
+    const text = String(o.value);
+    if (text.includes(PARAM_PREFIX) && !text.startsWith(PARAM_PREFIX) && !held.has(text))
+      issues.push(`Filter "${param.id}": an option value cannot contain "${PARAM_PREFIX}"`);
+  }
+  return issues;
+}
+
 /** What the schema cannot say about declarations: duplicates, reserved values, defaults that are not choices. */
 export function declarationIssues(parameters: readonly Parameter[]): string[] {
   const issues: string[] = [];
@@ -758,7 +780,7 @@ export function distinctOptions(table: DataTable, field: string): OptionValue[] 
       text === '' ||
       text.length > MAX_TEXT_VALUE ||
       text === ALL_TEXT ||
-      text.startsWith(PARAM_PREFIX) ||
+      text.includes(PARAM_PREFIX) ||
       brokenText(text) ||
       seen.has(text)
     )
