@@ -287,7 +287,8 @@ live in the page URL (`?p.region=eu&p.period=last7d`) and are never saved.
 - Types: `select` (options, optionally "All" whose value is `null`), `text` (for search, steps only) and `dateRange`
   (presets such as `last30d`, optionally custom ranges). A date range is used through its parts: `.from`/`.to`
   (`YYYY-MM-DD`, inclusive) and `.start`/`.end` (epoch ms, UTC, end exclusive). Compare a time column with
-  `.start`/`.end`; `.from`/`.to` are text for URLs and bodies, and against a time column they keep no row.
+  `.start`/`.end`; `.from`/`.to` are text for URLs and bodies; compared with a time column they match wrongly (for
+  example `>=` keeps no row, `<=` every row).
 - Where: anywhere a value goes in filter and derive steps; a whole query value or path segment of an `http` or `feed`
   URL; a whole value of a POST body or of connector parameters. A query pair at "All" is left out. Never inside a
   host, a longer text or a query language: use the API's own parameters or GraphQL variables.

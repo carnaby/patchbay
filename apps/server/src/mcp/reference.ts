@@ -209,8 +209,8 @@ and widgets per value. Viewers set filters in the dashboard header; values are n
   filter { expr: "$param.region == null || region == $param.region" }  (null is the "all" choice)
   filter { expr: '$param.q == "" || contains(title, $param.q)' }
   filter { expr: "time >= $param.period.start && time < $param.period.end" }  (epoch ms, UTC, end exclusive)
-  Compare a time column with .start/.end (epoch ms); .from/.to are text (YYYY-MM-DD) for URLs and bodies, and against a
-  time column they keep no row.
+  Compare a time column with .start/.end (epoch ms); .from/.to are text (YYYY-MM-DD) for URLs and bodies, and compared
+  with a time column they give a meaningless result (>= keeps no row, <= keeps every row).
 - In http and feed URLs as a whole query value or a whole path segment; in a POST body and connector params as a whole value:
   https://api.example.com/v1/sales?region=$param.region&from=$param.period.from&to=$param.period.to
   (.from/.to are YYYY-MM-DD, inclusive). A query pair whose filter is at "all" is left out; in a body the value is null,
