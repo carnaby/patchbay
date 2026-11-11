@@ -1,5 +1,5 @@
 import type { ConnectorInfo, DataTable } from '@patchbay/core';
-import { HttpError } from '../util/errors.ts';
+import { lastingError } from '../util/errors.ts';
 import { approxTableBytes, ByteLru } from '../util/lru.ts';
 import { OutboundLimiter } from '../util/outbound.ts';
 import { currentClient } from '../util/request-context.ts';
@@ -106,10 +106,10 @@ export class ConnectorService {
 
   validateParams(id: string, raw: Record<string, unknown>): Params {
     const schema = this.schemas.get(id);
-    if (!schema) throw new HttpError(400, unknownConnectorMessage(id));
+    if (!schema) throw lastingError(400, unknownConnectorMessage(id));
     const parsed = schema.safeParse(raw);
     if (!parsed.success) {
-      throw new HttpError(
+      throw lastingError(
         400,
         `Invalid params for ${id}: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'params'}: ${i.message}`).join('; ')}`,
       );
@@ -119,7 +119,7 @@ export class ConnectorService {
 
   async load(id: string, rawParams: Record<string, unknown>): Promise<ConnectorResult> {
     const connector = this.get(id);
-    if (!connector) throw new HttpError(400, `Unknown connector "${id}"`);
+    if (!connector) throw lastingError(400, `Unknown connector "${id}"`);
     const params = this.validateParams(id, rawParams);
     const key = `${id}:${JSON.stringify(Object.entries(params).sort(([a], [b]) => a.localeCompare(b)))}`;
     const now = Date.now();

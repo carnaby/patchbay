@@ -13,7 +13,7 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConnectorService } from '../connectors/registry.ts';
 import { FolderStore } from '../store/folder-store.ts';
-import { HttpError, RetryLaterError } from '../util/errors.ts';
+import { HttpError, lastingError, RetryLaterError } from '../util/errors.ts';
 import { HEAVY_PIPELINE_CELLS, heavyWork } from '../util/heavy.ts';
 import { MemoryPressureError, memoryGuard } from '../util/memory-pressure.ts';
 
@@ -212,6 +212,49 @@ describe('resolution scopes', () => {
     expect(errorResult('d', new Error('x'))).not.toHaveProperty('retryAfterSec');
   });
 
+  it('marks a failure only an edit or a setting can fix as lasting, without a retry hint', () => {
+    const lasting = errorResult('d', lastingError(403, 'x'));
+    expect(lasting.lasting).toBe(true);
+    expect(lasting.retryAfterSec).toBeUndefined();
+    expect(errorResult('d', new HttpError(502, 'x')).lasting).toBeUndefined();
+    const busy = errorResult('d', new RetryLaterError(429, 'busy', 10));
+    expect(busy.retryAfterSec).toBe(10);
+    expect(busy).not.toHaveProperty('lasting');
+  });
+
+  it('passes a lasting failure on to the datasets that read it, and only a lasting one', async () => {
+    const wide = Object.fromEntries(Array.from({ length: 501 }, (_, i) => [`k${i}`, i]));
+    const refused = doc(inline('parent', [wide]), from('child', 'parent'));
+    const child = await new DataService(connectors, store)
+      .scope(target, refused)
+      .resolve(byId(refused, 'child'));
+    expect(child.error).toMatch(/^Source dataset "parent" failed: /);
+    expect(child.lasting).toBe(true);
+
+    const unknown = doc(inline('a', cities));
+    const draft = DatasetSchema.parse(from('draft', 'nope'));
+    const missing = await new DataService(connectors, store).scope(target, unknown).resolve(draft);
+    expect(missing.error).toBe('Source dataset "nope" failed: Unknown dataset "nope"');
+    expect(missing.lasting).toBe(true);
+
+    const fetched = doc(
+      { id: 'parent', name: 'Parent', source: { kind: 'http', url: 'https://up.example/x' } },
+      from('child', 'parent'),
+    );
+    fetchMock.mockRejectedValueOnce(new HttpError(502, 'Upstream responded 503'));
+    const down = await new DataService(connectors, store)
+      .scope(target, fetched)
+      .resolve(byId(fetched, 'child'));
+    expect(down.error).toBe('Source dataset "parent" failed: Upstream responded 503');
+    expect(down).not.toHaveProperty('lasting');
+    fetchMock.mockRejectedValueOnce(new RetryLaterError(429, 'busy', 10));
+    const busy = await new DataService(connectors, store)
+      .scope(target, fetched)
+      .resolve(byId(fetched, 'child'));
+    expect(busy).toMatchObject({ error: 'Source dataset "parent" failed: busy', retryAfterSec: 10 });
+    expect(busy).not.toHaveProperty('lasting');
+  });
+
   it('passes the retry hint of a refused connector load on to the datasets that read it', async () => {
     class Refusing extends ConnectorService {
       override async load(): Promise<never> {
@@ -365,9 +408,9 @@ describe('resolution scopes', () => {
     const data = new DataService(connectors, store);
     const valid = doc(inline('a', cities), from('b', 'a'));
     const cyclic = { ...valid, datasets: [DatasetSchema.parse(from('a', 'b')), byId(valid, 'b')] };
-    expect((await data.scope(target, cyclic).resolve(byId(cyclic, 'a'))).error).toBe(
-      'Datasets "a" → "b" → "a" form a cycle',
-    );
+    const failed = await data.scope(target, cyclic).resolve(byId(cyclic, 'a'));
+    expect(failed.error).toBe('Datasets "a" → "b" → "a" form a cycle');
+    expect(failed.lasting).toBe(true);
     const self = DatasetSchema.parse(inline('s', cities, { transforms: [{ type: 'union', with: ['s'] }] }));
     const own = { ...valid, datasets: [self] };
     expect((await data.scope(target, own).resolve(self)).error).toBe('Dataset "s" reads itself');

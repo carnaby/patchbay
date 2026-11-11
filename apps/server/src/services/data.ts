@@ -41,7 +41,7 @@ import {
 import type { ConnectorService } from '../connectors/registry.ts';
 import { FeedService } from '../feeds/service.ts';
 import type { FolderStore } from '../store/folder-store.ts';
-import { HttpError } from '../util/errors.ts';
+import { HttpError, lastingError } from '../util/errors.ts';
 import { BusyError, Gate } from '../util/gate.ts';
 import { HEAVY_FILE_BYTES, HEAVY_PIPELINE_CELLS, heavyWork } from '../util/heavy.ts';
 import { approxTableBytes, ByteLru } from '../util/lru.ts';
@@ -168,7 +168,7 @@ export interface DataServiceOptions {
 
 type CacheEntry =
   | { table: DataTable; at: number; stamp: string; capped?: boolean }
-  | { error: { status: number; message: string }; at: number };
+  | { error: { status: number; message: string; lasting?: boolean }; at: number };
 
 interface Loaded {
   table: DataTable;
@@ -269,7 +269,7 @@ export class DataService {
     this.credentialsFor =
       options.credentials ??
       (async () => {
-        throw new HttpError(403, 'Credentials are turned off on this server.');
+        throw lastingError(403, 'Credentials are turned off on this server.');
       });
     this.urlPolicy = options.urlPolicy ?? (() => null);
     this.upstreamTest = options.upstreamTest;
@@ -345,7 +345,7 @@ export class DataService {
    */
   private async loadUpload(target: DashboardTarget, fileId: string): Promise<Loaded> {
     const stamp = await this.store.fileStamp(target.id, fileId);
-    if (!stamp) throw new HttpError(404, `Uploaded file "${fileId}" not found`);
+    if (!stamp) throw lastingError(404, `Uploaded file "${fileId}" not found`);
     const key = `upload:${stamp.key}`;
     let entry = this.tables.get(key);
     if (!entry || !('table' in entry)) {
@@ -353,7 +353,7 @@ export class DataService {
       if (!pending) {
         const read = async (): Promise<CacheEntry> => {
           const table = await this.store.readFileTable(target.id, fileId);
-          if (!table) throw new HttpError(404, `Uploaded file "${fileId}" not found`);
+          if (!table) throw lastingError(404, `Uploaded file "${fileId}" not found`);
           return { table, at: stamp.mtimeMs, stamp: stamp.key };
         };
         pending = this.heavy
@@ -388,11 +388,15 @@ export class DataService {
         this.tables.set(stamp, entry, approxTableBytes(table));
       } catch (e) {
         if (!(e instanceof HttpError)) throw e;
-        entry = { error: { status: e.status, message: e.message }, at: Date.now() };
+        // Inline rows are part of the document: only an edit changes them, and the refusal with them.
+        entry = { error: { status: e.status, message: e.message, lasting: true }, at: Date.now() };
         this.tables.set(stamp, entry, 256 + e.message.length * 2);
       }
     }
-    if ('error' in entry) throw new HttpError(entry.error.status as 400, entry.error.message);
+    if ('error' in entry)
+      throw new HttpError(entry.error.status as 400, entry.error.message, undefined, {
+        lasting: entry.error.lasting,
+      });
     return {
       table: entry.table,
       fetchedAt: entry.at,
@@ -427,7 +431,10 @@ export class DataService {
       }
       entry = await pending;
     }
-    if ('error' in entry) throw new HttpError(entry.error.status as 400, entry.error.message);
+    if ('error' in entry)
+      throw new HttpError(entry.error.status as 400, entry.error.message, undefined, {
+        lasting: entry.error.lasting,
+      });
     return {
       table: entry.table,
       fetchedAt: entry.at,
@@ -464,7 +471,10 @@ export class DataService {
     } catch (e) {
       // Our own refusals (busy, over the host's budget) say nothing about the address, so they are not remembered.
       if (e instanceof HttpError && e.status !== 429 && e.status !== 503) {
-        const entry: CacheEntry = { error: { status: e.status, message: e.message }, at: Date.now() };
+        const entry: CacheEntry = {
+          error: { status: e.status, message: e.message, lasting: e.lasting },
+          at: Date.now(),
+        };
         this.tables.set(key, entry, 256 + e.message.length * 2, HTTP_ERROR_TTL_MS);
       }
       throw e;
@@ -475,7 +485,7 @@ export class DataService {
     const source = dataset.source;
     // Every upstream load passes here: a reference left unbound (a binding that failed upstream of the caller) would
     // otherwise be sent as text, with the owner's credentials when the source is secret-backed.
-    if (parameterRefs({ source, transforms: [] }).length) throw new HttpError(400, usesFilters(dataset.id));
+    if (parameterRefs({ source, transforms: [] }).length) throw lastingError(400, usesFilters(dataset.id));
     switch (source.kind) {
       case 'connector': {
         const r = await this.connectors.load(source.connector, source.params);
@@ -508,7 +518,7 @@ export class DataService {
         };
       }
       case 'dataset':
-        throw new HttpError(400, readsOtherDatasets(dataset.id));
+        throw lastingError(400, readsOtherDatasets(dataset.id));
     }
   }
 
@@ -712,9 +722,9 @@ export class DataService {
   ): Promise<DatasetResult> {
     const base = { datasetId: dataset.id };
     try {
-      if (upstreamOf(dataset).length) throw new HttpError(400, readsOtherDatasets(dataset.id));
+      if (upstreamOf(dataset).length) throw lastingError(400, readsOtherDatasets(dataset.id));
       // An unbound reference would reach a fetch or a step as text: refused, never guessed.
-      if (parameterRefs(dataset).length) throw new HttpError(400, usesFilters(dataset.id));
+      if (parameterRefs(dataset).length) throw lastingError(400, usesFilters(dataset.id));
       const loaded = await this.loadSource(target, dataset);
       const max = options.maxRows ?? MAX_ROWS_OUT;
       const computed =

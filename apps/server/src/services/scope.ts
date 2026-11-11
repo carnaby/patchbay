@@ -23,7 +23,7 @@ import {
   stepInputsOf,
   upstreamOf,
 } from '@patchbay/core';
-import { HttpError, RetryLaterError } from '../util/errors.ts';
+import { HttpError, lastingError, RetryLaterError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
 import { heavyWork } from '../util/heavy.ts';
 import type { DashboardTarget, DataService } from './data.ts';
@@ -58,20 +58,32 @@ export class UpstreamError extends Error {
   readonly datasetId: string;
   /** Set when that dataset was refused by this server's own limit, so its readers may ask again as soon as it may. */
   readonly retryAfterSec: number | undefined;
-  constructor(datasetId: string, message: string, retryAfterSec?: number) {
+  /** That dataset's failure needs an edit, a secret or a setting (HttpError.lasting), and so its readers' do too. */
+  readonly lasting: boolean;
+  constructor(
+    datasetId: string,
+    message: string,
+    hint: { retryAfterSec?: number | undefined; lasting?: boolean } = {},
+  ) {
     super(`Source dataset "${datasetId}" failed: ${message}`);
     this.name = 'UpstreamError';
     this.datasetId = datasetId;
-    this.retryAfterSec = retryAfterSec;
+    this.retryAfterSec = hint.retryAfterSec;
+    this.lasting = hint.lasting ?? false;
   }
 }
+
+const isLasting = (e: unknown) =>
+  (e instanceof HttpError || e instanceof UpstreamError || e instanceof CycleError) && e.lasting;
 
 /** The result a widget shows for a dataset that could not be resolved. Inner messages are already viewer-safe. */
 export function errorResult(datasetId: string, e: unknown): DatasetResult {
   const message = e instanceof Error ? e.message : 'Failed to load data';
+  // A lasting failure is asked for again only rarely (the page's slow cadence), so it carries no retry hint.
+  const lasting = isLasting(e);
   // A refusal is in-band (a 503 would fail every widget of the request), so the page learns when to ask again here.
   const retryAfterSec =
-    e instanceof RetryLaterError || e instanceof UpstreamError ? e.retryAfterSec : undefined;
+    !lasting && (e instanceof RetryLaterError || e instanceof UpstreamError) ? e.retryAfterSec : undefined;
   return {
     datasetId,
     table: { columns: [], rows: [] },
@@ -80,6 +92,7 @@ export function errorResult(datasetId: string, e: unknown): DatasetResult {
     truncated: false,
     error: message,
     ...(retryAfterSec ? { retryAfterSec } : {}),
+    ...(lasting ? { lasting: true as const } : {}),
   };
 }
 
@@ -105,6 +118,8 @@ function lastRows(table: DataTable): DataTable {
  * the validation names it, and passed on unwrapped: it is not a failure of one upstream dataset.
  */
 class CycleError extends Error {
+  /** Only an edit of the document breaks the cycle. */
+  readonly lasting = true;
   constructor(path: readonly string[]) {
     super(
       path.length === 2 && path[0] === path[1]
@@ -177,12 +192,12 @@ export class ResolveScope {
       const unbound = this.bindErrors.get(id);
       // The work starts on a later microtask, after the memo entry below is in place.
       pending = unbound
-        ? Promise.reject(new HttpError(400, unbound))
+        ? Promise.reject(lastingError(400, unbound))
         : seeded
           ? Promise.resolve(seeded)
           : dataset
             ? Promise.resolve().then(() => this.process(dataset, [...path, id]))
-            : Promise.reject(new HttpError(404, `Unknown dataset "${id}"`));
+            : Promise.reject(lastingError(404, `Unknown dataset "${id}"`));
       pending.then(
         (r) => this.done.set(id, r),
         () => {},
@@ -205,7 +220,7 @@ export class ResolveScope {
     let dataset: Dataset;
     try {
       const unbound = this.twins.has(input) ? this.bindErrors.get(input.id) : undefined;
-      if (unbound) throw new HttpError(400, unbound);
+      if (unbound) throw lastingError(400, unbound);
       // A stored dataset finds its bound twin; a draft (a preview) is bound with the same values.
       dataset = this.twins.get(input) ?? bindDataset(input, this.values);
     } catch (e) {
@@ -351,11 +366,10 @@ export class ResolveScope {
     } catch (e) {
       if (e instanceof BusyError || e instanceof UpstreamError || e instanceof CycleError) throw e;
       if (isTimeout(e)) throw e;
-      throw new UpstreamError(
-        id,
-        e instanceof Error ? e.message : 'Failed to load data',
-        e instanceof RetryLaterError ? e.retryAfterSec : undefined,
-      );
+      throw new UpstreamError(id, e instanceof Error ? e.message : 'Failed to load data', {
+        retryAfterSec: e instanceof RetryLaterError ? e.retryAfterSec : undefined,
+        lasting: isLasting(e),
+      });
     }
     if (r.warning) warnings.push(r.warning);
     if (r.cut) {

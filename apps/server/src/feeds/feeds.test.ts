@@ -591,10 +591,18 @@ describe('FeedService', () => {
   });
 
   it('keeps the SSRF guard on the page and on the discovered feed', async () => {
-    await expect(service().load('https://127.0.0.1/feed.xml')).rejects.toThrow(/private|local|not allowed/i);
-    await expect(service().load('https://site.example/private')).rejects.toThrow(
-      /private|local|not allowed/i,
-    );
+    // The address as written needs an edit; one the page announces is the page's choice, which may change.
+    await expect(service().load('https://127.0.0.1/feed.xml')).rejects.toMatchObject({
+      message: expect.stringMatching(/private|local|not allowed/i),
+      lasting: true,
+    });
+    const feeds = service();
+    for (let i = 0; i < 2; i++) {
+      await expect(feeds.load('https://site.example/private')).rejects.toMatchObject({
+        message: expect.stringMatching(/private|local|not allowed/i),
+        lasting: false,
+      });
+    }
     expect(hits).toEqual(['https://site.example/private']);
   });
 

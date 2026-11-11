@@ -47,7 +47,7 @@ export type RenderTask =
 /** A render the worker could not finish: it ran out of time or memory, or the worker died. */
 export class RenderFailedError extends BusyError {
   /** Trying the same render again would fail the same way (time, memory), so the snapshot cache remembers it. */
-  readonly lasting: boolean;
+  override readonly lasting: boolean;
   constructor(message: string, options: { retryAfterSec?: number; lasting?: boolean } = {}) {
     super(message, options.retryAfterSec ?? 30);
     this.lasting = options.lasting ?? false;

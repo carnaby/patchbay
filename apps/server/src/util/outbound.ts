@@ -4,7 +4,7 @@
  * host, and a per-host budget over time. Distinct URLs on one host share the budget, so a list of query strings
  * cannot be used to hammer someone else's server.
  */
-import { HttpError, RetryLaterError } from './errors.ts';
+import { lastingError, RetryLaterError } from './errors.ts';
 import { Gate } from './gate.ts';
 
 export interface OutboundOptions {
@@ -115,7 +115,7 @@ export class OutboundLimiter {
     try {
       host = new URL(url).hostname.toLowerCase();
     } catch {
-      throw new HttpError(400, 'Invalid URL');
+      throw lastingError(400, 'Invalid URL');
     }
     const b = this.bucket(host);
     if (b.active >= this.perHostConcurrency || b.tokens < 1) throw busyHost(host);

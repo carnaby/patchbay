@@ -143,6 +143,7 @@ describe('resolving a view', () => {
     ]);
     const result = await resolveIn(data, doc, { city: '..' }, 'path');
     expect(result.error).toBe('Filter "city" cannot be used as a path segment with the value ".."');
+    expect(result.lasting).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
     fetchMock.mockImplementation(async (url) => [{ url }]);
     const draft = DatasetSchema.parse({
@@ -172,6 +173,7 @@ describe('resolving a view', () => {
     expect(kid!.error).toBe(
       'Source dataset "root" failed: Filter "city" cannot be used as a path segment with the value ".."',
     );
+    expect(kid!.lasting).toBe(true);
     expect(sibling!.table.rows).toEqual([{ url: 'https://api.example.com/v1/all' }]);
     const seen = [...policy.mock.calls.map((c) => c[1]), ...fetchMock.mock.calls.map((c) => c[0])];
     expect(seen.filter((url) => url.includes('$param.'))).toEqual([]);
