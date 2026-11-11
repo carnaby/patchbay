@@ -3,6 +3,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, s
 import { join } from 'node:path';
 import {
   type DashboardDoc,
+  parameterRefs,
   parseCsv,
   parseDashboard,
   portability,
@@ -107,6 +108,17 @@ function assertPortable(doc: DashboardDoc) {
     );
   if (secrets.length)
     throw new Error('dashboard.json references a stored secret; a showcase cannot hold credentials');
+  // Anonymous copies are trusted to load the showcase's exact URLs (trustedSourceUrls); a bound URL never matches its
+  // template, and trusting the template would let a copy's holder fetch any value on that path.
+  const bound = doc.datasets.filter(
+    (d) =>
+      (d.source.kind === 'http' || d.source.kind === 'feed') &&
+      parameterRefs({ source: d.source, transforms: [] }).length,
+  );
+  if (bound.length)
+    throw new Error(
+      `dashboard.json: a showcase source cannot use filters ($param.) in its URL or body (${bound.map((d) => d.id).join(', ')})`,
+    );
 }
 
 /**
