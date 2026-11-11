@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { normalizeLayout, placeItem, reorderLayout } from './layout.ts';
 import { readersOf } from './lineage.ts';
 import {
+  optionWriteIssues,
   type Parameter,
   ParameterSchema,
   ParamIdSchema,
@@ -373,6 +374,8 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
     }
     case 'addParameter': {
       if (filters.some((p) => p.id === op.parameter.id)) fail(`Filter "${op.parameter.id}" already exists`);
+      const written = optionWriteIssues(op.parameter);
+      if (written.length) fail(written[0]!);
       const at = op.before === undefined ? filters.length : filters.findIndex((p) => p.id === op.before);
       if (at < 0) fail(`There is no filter "${op.before}" to insert before`);
       changes.push(`Added filter "${op.parameter.label}"`);
@@ -392,6 +395,8 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
         if (value === undefined || (value === null && key !== 'default')) delete merged[key];
       const next = ParameterSchema.safeParse(merged);
       if (!next.success) fail(formatZodIssues(next.error).join('; '));
+      const written = optionWriteIssues(next.data!, current);
+      if (written.length) fail(written[0]!);
       changes.push(`Updated filter "${next.data!.label}" (${Object.keys(op.set).join(', ')})`);
       return withParameters(
         doc,

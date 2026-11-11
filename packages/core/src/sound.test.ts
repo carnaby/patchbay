@@ -9,6 +9,7 @@ import {
   type SoundState,
   soundDecision,
   soundRuleMissingColumns,
+  soundWindow,
   WidgetSchema,
 } from './index.ts';
 
@@ -251,4 +252,24 @@ it('evaluates whole-table functions in a condition over the whole result', () =>
   const first = soundDecision(r, low, null, 0);
   expect(first.state.condition).toBe(false);
   expect(soundDecision(r, high, first.state, 60_000).play).toBe(true);
+});
+
+describe('soundWindow', () => {
+  const at = (iso: string) => Date.parse(iso);
+  it('names the calendar window of each relative period', () => {
+    expect(soundWindow(['yesterday'], at('2026-11-10T23:59:59Z'))).not.toBe(
+      soundWindow(['yesterday'], at('2026-11-11T00:00:01Z')),
+    );
+    expect(soundWindow(['yesterday'], at('2026-11-11T08:00:00Z'))).toBe(
+      soundWindow(['yesterday'], at('2026-11-11T20:00:00Z')),
+    );
+    expect(soundWindow(['lastMonth'], at('2026-11-11T00:00:01Z'))).toBe(
+      soundWindow(['lastMonth'], at('2026-11-30T23:59:59Z')),
+    );
+    expect(soundWindow(['lastMonth'], at('2026-11-30T23:59:59Z'))).not.toBe(
+      soundWindow(['lastMonth'], at('2026-12-01T00:00:01Z')),
+    );
+    expect(soundWindow(['2026-01-01..2026-01-31'], at('2026-11-11T00:00:00Z'))).toBe('');
+    expect(soundWindow([], 0)).toBe('');
+  });
 });

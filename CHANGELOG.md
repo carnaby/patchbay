@@ -6,6 +6,48 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Fixed
+
+- Every built-in connector load, with or without a filter, now has a per-host limit on what it asks the upstream API
+  (four loads at a time, 120 a minute per host). A dashboard that opens several cities or periods at once waits briefly
+  instead of showing an error, and the page asks again a few seconds after the server refused a dataset for its own
+  limits; HTTP sources and feeds are asked again after 10 seconds too. Demo connectors are not counted.
+- Results of built-in connectors are kept in a cache bounded by memory (16 MB) instead of by count, so many filter
+  values with large results can no longer fill the server's memory. The weather city lookup is bounded too.
+- Renaming a column to the name of another existing column is refused with a step error instead of producing two
+  columns of that name. A saved dataset that did this now shows that error until the rename is changed.
+- A choice value containing `$param.` anywhere is refused when a filter is saved, and such values are left out of
+  choices taken from data; before, the dataset using it failed with a misleading message. Existing dashboards keep
+  opening.
+- A search text filter's default is trimmed, so the page, links, snapshots and agents use the same value.
+- Filter values passed to the MCP tools have the same length limits as in the REST API.
+- A dashboard on a relative period no longer retries every minute after the server refuses its request outright (a
+  removed dashboard, lost access or a filter value that is no longer offered); it still retries after network errors,
+  server errors and errors from a source.
+- A click-to-filter value that matches no item (such as a partly typed search text) no longer dims every item.
+- A showcase whose source URL or body uses a filter is refused when the server starts, instead of failing later in
+  anonymous copies.
+- `preview_data` (with a dashboard) and `render_snapshot` now echo the filter values used and the link to that view, as
+  the reference says; unknown filter ids are named in a note.
+- The text `false` bound to a yes/no connector parameter now means false.
+- The filter editor keeps the default valid when the options or presets it pointed at change, so Save stays available.
+- "Make current values the default" is offered only when it would change something, and no longer creates an empty
+  version for filters that take their choices from data.
+- The editor shows the limit of 8 filters before saving: "Add filter" is disabled with the reason.
+- A dataset that a filter takes its choices from cannot be deleted from the editor, with the reason shown, instead of
+  being offered and then refused.
+
+### Changed
+
+- A sound no longer plays for the first result after a relative period (yesterday, last month, ...) moves to a new day
+  or month; that result is the new baseline, like the first result after loading the page.
+- On a wall screen in presentation mode, a value of a filter that takes its choices from a refreshing dataset is kept
+  when it disappears from the data: the affected widgets say they are waiting for it, and the view resumes on its own
+  when the value returns. Outside presentation it still falls back to "All".
+- Column-shaped JSON (an object of equally long lists such as `{ "labels": [...], "values": [...] }`) is read as
+  columns both without a path and through a path. Before 0.3.0 such an object gave one `value` column from its first
+  list, or one record, so saved HTTP datasets reading such responses show different columns since 0.3.0.
+
 ## [0.3.1] - 2026-11-10
 
 ### Fixed

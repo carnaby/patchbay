@@ -348,10 +348,13 @@ request gets `408` and the connection is closed, so a slow sender never holds th
 arriving or waiting hold at most 16 MB together, two per client. Node waits at most 20 s for a request's headers and 90
 s for a whole request. Every JSON request body and HTTP source response is refused before parsing when it nests deeper
 than 64 levels. HTTP sources are fetched at most three at a time, two at a time and 60 times a minute per host, and a
-failing address is not asked again for 30 s; the pipeline worker's queue takes jobs round-robin per client, one client
-holding at most a tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are drawn one at a time in a worker thread,
-at most four requests in flight and two per client; each client may have four drawn at once and then one every two
-seconds (images served from the 30 s cache do not count), beyond which the API answers `429 Too Many Requests` with
+failing address is not asked again for 30 s; an HTTP source or feed refused over these limits shows an error, and the
+page asks again after 10 s. Built-in connectors share a separate budget per upstream host (four loads at a time and 120
+a minute): a load over it waits up to 8 s for its turn, then shows an error that the page retries after 10 s; the demo
+connectors never leave the server and are not counted. The pipeline worker's queue takes jobs round-robin per client,
+one client holding at most a tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are drawn one at a time in a
+worker thread, at most four requests in flight and two per client; each client may have four drawn at once and then
+one every two seconds (images served from the 30 s cache do not count), beyond which the API answers `429 Too Many Requests` with
 `Retry-After`. When a queue is full the API answers `503 Service Unavailable` with `Retry-After`, and live refreshes
 skip a beat, instead of the process running out of memory. Live refresh never runs for uploads and inline rows (they
 change only when edited) and at most every 30 s for HTTP sources. A dataset's result is sent only up to 4 MB as JSON
@@ -394,8 +397,9 @@ across the process, so at most one worker is at its peak while the others sit at
 | Snapshot worker           | 50 MB (ECharts, the world map), while used | 96 + 8 MB heap, plus resvg's pixmap (at most 4 megapixels)                |
 | Feed worker               | 30 MB, while used                          | 48 + 8 MB                                                                 |
 
-The main thread's share is bounded by its caches and gates rather than by a heap flag: parsed tables (`DATA_CACHE_MB`,
-32), results reused for a few seconds (8 MB, and 8 MB for datasets that read others), serialised results (8 MB), snapshot images (8 MB), response bodies
+The main thread's peak was measured before the 16 MB connector cache was added and may now be up to that much higher.
+Its share is bounded by its caches and gates rather than by a heap flag: parsed tables (`DATA_CACHE_MB`,
+32), results reused for a few seconds (8 MB, and 8 MB for datasets that read others), serialised results (8 MB), connector results (16 MB), snapshot images (8 MB), response bodies
 (12 MB, 4 MB waiting), large request bodies arriving or waiting for their turn (16 MB) and one large request body and
 one upload processed at a time. V8 lets that heap grow to about twice what is live before it collects, which is where
 most of the gap between resting and peak comes from. The snapshot and feed workers stop after a minute without work;

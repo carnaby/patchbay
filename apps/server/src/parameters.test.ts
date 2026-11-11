@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createApp, createDeps } from './app.ts';
 import { loadConfig } from './config.ts';
 import type { Deps } from './context.ts';
@@ -282,6 +282,35 @@ describe('views over REST', () => {
     expect(bad.json.error).toBe('Filter "country" has no value "DE"; choose one of AT, SK, or * for all');
   });
 
+  it('refuses a preview to a viewer who may not edit, before the options dataset is read', async () => {
+    const { id } = await filtered(COUNTRY_OPS);
+    const scope = vi.spyOn(deps.data, 'scope');
+    const load = vi.spyOn(deps.data, 'loadSource');
+    try {
+      scope.mockClear();
+      load.mockClear();
+      // No edit key: the dashboard is public, so this principal may view it, but not edit it.
+      const refused = await call(`/api/dashboards/${id}/preview`, {
+        body: { dataset: { source: { kind: 'inline', rows: [{ a: 1 }] } }, parameters: { country: 'DE' } },
+      });
+      expect(refused.status, JSON.stringify(refused.json)).toBe(403);
+      expect(scope).not.toHaveBeenCalled();
+      expect(load).not.toHaveBeenCalled();
+    } finally {
+      scope.mockRestore();
+      load.mockRestore();
+    }
+  });
+
+  it('answers 400 for a refused filter value even when the widget drawn does not use that filter', async () => {
+    const { id } = await filtered();
+    // "bars" reads "sales", which uses "region" only; "days" is declared but unused there.
+    expect((await call(`/api/dashboards/${id}/snapshot.png?widget=bars&p.region=eu`)).status).toBe(200);
+    const bad = await call(`/api/dashboards/${id}/snapshot.png?widget=bars&p.days=bad`);
+    expect(bad.status).toBe(400);
+    expect(bad.json.error).toMatch(/^Filter "days" has no value "bad"/);
+  });
+
   it('sends no referrer, so a view link opened from a dashboard does not carry its values', async () => {
     const res = await app.request(`${BASE}/api/connectors`);
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
@@ -388,6 +417,64 @@ describe('filters over MCP', () => {
       const bad = await c.callTool({ name, arguments: { ...args, parameters: { country: 'DE' } } });
       expect(bad.isError, name).toBe(true);
       expect(text(bad), name).toBe(refused);
+    }
+  });
+
+  it('refuses a read-only preview_data with a bad filter value in the words get_data uses', async () => {
+    const { id } = await filtered([
+      ...COUNTRY_OPS.slice(0, 1),
+      {
+        op: 'addParameter',
+        parameter: {
+          id: 'reg',
+          label: 'Region',
+          type: 'select',
+          optionsFrom: { dataset: 'orders', field: 'country' },
+          all: 'All',
+          default: null,
+        },
+      },
+    ]);
+    const reader = await agent('filters-preview-reader@example.com', ['dashboards:read']);
+    const parameters = { reg: 'nope' };
+    const viaGet = await reader.callTool({
+      name: 'get_data',
+      arguments: { dashboardId: id, datasetId: 'orders', parameters },
+    });
+    const viaPreview = await reader.callTool({
+      name: 'preview_data',
+      arguments: {
+        dashboardId: id,
+        source: { kind: 'inline', rows: [{ country: 'SK' }] },
+        parameters,
+      },
+    });
+    expect(viaGet.isError, text(viaGet)).toBe(true);
+    expect(text(viaGet)).toBe('Filter "reg" has no value "nope"; choose one of AT, SK, or * for all');
+    expect(viaPreview.isError, text(viaPreview)).toBe(true);
+    expect(text(viaPreview)).toBe(text(viaGet));
+  });
+
+  it('names the filter when get_data and suggest_widgets get a value it does not offer', async () => {
+    const c = await agent('filters-bad-value-agent@example.com');
+    const { dashboardId } = await tool(c, 'create_dashboard', { title: 'Bad value' });
+    await tool(c, 'apply_operations', {
+      dashboardId,
+      operations: [
+        { op: 'addParameter', parameter: REGION },
+        { op: 'addParameter', parameter: DAYS },
+        { op: 'addDataset', dataset: SALES },
+        { op: 'addWidget', widget: BARS },
+      ],
+    });
+    // "days" is not used by "sales": a refused value is refused all the same.
+    for (const name of ['get_data', 'suggest_widgets']) {
+      const bad = await c.callTool({
+        name,
+        arguments: { dashboardId, datasetId: 'sales', parameters: { days: 'bad' } },
+      });
+      expect(bad.isError, name).toBe(true);
+      expect(text(bad), name).toMatch(/^Filter "days" has no value "bad"/);
     }
   });
 

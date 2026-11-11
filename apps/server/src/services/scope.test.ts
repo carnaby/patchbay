@@ -13,6 +13,7 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConnectorService } from '../connectors/registry.ts';
 import { FolderStore } from '../store/folder-store.ts';
+import { HttpError, RetryLaterError } from '../util/errors.ts';
 import { HEAVY_PIPELINE_CELLS, heavyWork } from '../util/heavy.ts';
 import { MemoryPressureError, memoryGuard } from '../util/memory-pressure.ts';
 
@@ -24,7 +25,7 @@ vi.mock('../util/safe-fetch.ts', async (original) => ({
 
 const { DataService } = await import('./data.ts');
 const { InlineRunner } = await import('./pipeline-pool.ts');
-const { SCOPE_TIMEOUT_MESSAGE } = await import('./scope.ts');
+const { SCOPE_TIMEOUT_MESSAGE, errorResult } = await import('./scope.ts');
 
 class CountingRunner extends InlineRunner {
   runs: string[] = [];
@@ -202,6 +203,37 @@ describe('resolution scopes', () => {
       const r = await scope.resolve(byId(d, id));
       expect(r.error).toBe(message);
       expect(r.table.rows).toEqual([]);
+    }
+  });
+
+  it('marks a failure that is our own limit with the time after which to ask again', () => {
+    expect(errorResult('d', new RetryLaterError(429, 'busy', 10)).retryAfterSec).toBe(10);
+    expect(errorResult('d', new HttpError(400, 'x')).retryAfterSec).toBeUndefined();
+    expect(errorResult('d', new Error('x'))).not.toHaveProperty('retryAfterSec');
+  });
+
+  it('passes the retry hint of a refused connector load on to the datasets that read it', async () => {
+    class Refusing extends ConnectorService {
+      override async load(): Promise<never> {
+        throw new RetryLaterError(429, 'busy', 10);
+      }
+    }
+    const data = new DataService(new Refusing({ offline: true }), store);
+    const d = doc(
+      {
+        id: 'parent',
+        name: 'Parent',
+        source: { kind: 'connector', connector: 'earthquakes', params: { period: 'day' } },
+      },
+      from('child', 'parent'),
+      from('grandchild', 'child'),
+    );
+    const scope = data.scope(target, d);
+    expect(await scope.resolve(byId(d, 'parent'))).toMatchObject({ error: 'busy', retryAfterSec: 10 });
+    for (const id of ['child', 'grandchild']) {
+      const r = await scope.resolve(byId(d, id));
+      expect(r.error).toBe('Source dataset "parent" failed: busy');
+      expect(r.retryAfterSec).toBe(10);
     }
   });
 

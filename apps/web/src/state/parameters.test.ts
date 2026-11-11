@@ -1,15 +1,26 @@
-import { type DatasetResult, inferTable, type Parameter, ParameterSchema } from '@patchbay/core';
+import {
+  type DashboardDoc,
+  DashboardDocSchema,
+  type DatasetResult,
+  inferTable,
+  type Parameter,
+  ParameterSchema,
+} from '@patchbay/core';
 import { describe, expect, it } from 'vitest';
 import {
   applyValue,
   choicesOfResult,
   dataPickProblem,
   dataValueReady,
+  guardAction,
   heldDataValue,
   normalizeRaw,
+  optionsRefresh,
+  pendingDataValue,
   pickRaw,
   rawFromSearch,
   rawQuery,
+  resumed,
   searchWith,
   staleDataValue,
   summaryOf,
@@ -214,5 +225,68 @@ describe('choices from data in the browser', () => {
     expect(dataValueReady(country, at, { options: [], failed: false })).toBe(true);
     expect(dataValueReady(country, {}, { options: null, failed: false })).toBe(true);
     expect(dataValueReady(region, { region: 'eu' }, { options: null, failed: false })).toBe(true);
+  });
+
+  describe('a pinned data-driven value on a wall screen', () => {
+    it('resets outside presentation, holds while presenting on a live list, resets on a static list', () => {
+      expect(guardAction(true, false, true)).toBe('reset');
+      expect(guardAction(true, true, true)).toBe('hold');
+      expect(guardAction(true, true, false)).toBe('reset');
+      expect(guardAction(false, true, true)).toBeNull();
+    });
+    it('never resets or holds for an empty list, also while presenting', () => {
+      expect(guardAction(staleDataValue(country, { country: 'AT' }, []), true, true)).toBeNull();
+      expect(guardAction(staleDataValue(country, { country: 'AT' }, []), false, true)).toBeNull();
+    });
+    it('names the pending value only once the loaded list lacks it', () => {
+      expect(pendingDataValue(country, { country: 'DE' }, { options: ['AT', 'SK'], failed: false })).toBe(
+        'DE',
+      );
+      expect(
+        pendingDataValue(country, { country: 'AT' }, { options: ['AT', 'SK'], failed: false }),
+      ).toBeNull();
+      expect(pendingDataValue(country, { country: 'DE' }, { options: null, failed: false })).toBeNull(); // loading
+      expect(pendingDataValue(country, { country: 'DE' }, { options: null, failed: true })).toBeNull(); // failed
+      expect(pendingDataValue(country, { country: 'DE' }, { options: [], failed: false })).toBeNull(); // empty
+    });
+    it('resumes: the same value is ready again once the list holds it', () => {
+      expect(dataValueReady(country, { country: 'DE' }, { options: ['AT'], failed: false })).toBe(false);
+      expect(dataValueReady(country, { country: 'DE' }, { options: ['AT', 'DE'], failed: false })).toBe(true);
+    });
+    it('refetches once, when a hold ends', () => {
+      expect(resumed(true, false)).toBe(true);
+      expect(resumed(true, true)).toBe(false);
+      expect(resumed(false, false)).toBe(false);
+      expect(resumed(false, true)).toBe(false);
+    });
+
+    const connector = { kind: 'connector', connector: 'weather.forecast', params: {} };
+    const inline = { kind: 'inline', rows: [{ code: 'AT' }] };
+    const docOf = (...datasets: Record<string, unknown>[]): DashboardDoc =>
+      DashboardDocSchema.parse({
+        schemaVersion: 1,
+        title: 't',
+        datasets: datasets.map((d) => ({ name: String(d.id), ...d })),
+      });
+    it('holds only for a list that refreshes from a source that can change', () => {
+      expect(optionsRefresh(docOf({ id: 'countries', source: connector, refreshSec: 60 }), 'countries')).toBe(
+        true,
+      );
+      expect(optionsRefresh(docOf({ id: 'countries', source: connector, refreshSec: 0 }), 'countries')).toBe(
+        false,
+      );
+      // Inline rows never change on a timer, whatever refreshSec says.
+      expect(optionsRefresh(docOf({ id: 'countries', source: inline, refreshSec: 60 }), 'countries')).toBe(
+        false,
+      );
+      const derived = { id: 'countries', source: { kind: 'dataset', id: 'raw' } };
+      expect(
+        optionsRefresh(docOf({ id: 'raw', source: connector, refreshSec: 60 }, derived), 'countries'),
+      ).toBe(true);
+      expect(optionsRefresh(docOf({ id: 'raw', source: inline, refreshSec: 60 }, derived), 'countries')).toBe(
+        false,
+      );
+      expect(optionsRefresh(docOf({ id: 'raw', source: connector, refreshSec: 60 }), 'gone')).toBe(false);
+    });
   });
 });

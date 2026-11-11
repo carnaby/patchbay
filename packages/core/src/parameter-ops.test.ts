@@ -103,6 +103,27 @@ describe('filter operations', () => {
     expect(JSON.stringify(parseDashboard(JSON.parse(text)))).toBe(text);
   });
 
+  it('refuses $param. inside an option in addParameter and in a new option of updateParameter', () => {
+    const bad = { ...region, options: [{ value: 'US$param.x' }], default: null };
+    expect(() => applyOps(base, [{ op: 'addParameter', parameter: bad }])).toThrow(
+      /cannot contain "\$param\."/,
+    );
+    // A document stored before the rule: parseDashboard accepts the option.
+    const stored = parseDashboard(JSON.parse(JSON.stringify({ ...base, parameters: [bad] })));
+    expect(
+      ids(applyOps(stored, [{ op: 'updateParameter', id: 'region', set: { label: 'Area' } }]).doc),
+    ).toEqual(['region']);
+    expect(() =>
+      applyOps(stored, [
+        {
+          op: 'updateParameter',
+          id: 'region',
+          set: { options: [...bad.options, { value: 'EU$param.y' }] },
+        },
+      ]),
+    ).toThrow(/cannot contain "\$param\."/);
+  });
+
   it('renames by adding, re-pointing and removing in one batch', () => {
     const r = applyOps(used, [
       { op: 'addParameter', parameter: { ...region, id: 'area', label: 'Area' } },

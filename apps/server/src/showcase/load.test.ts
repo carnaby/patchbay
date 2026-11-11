@@ -243,6 +243,41 @@ describe('loadUseCases', () => {
     expect(warnings.some((w) => /with-secret.*stored secret/.test(w))).toBe(true);
   });
 
+  it('skips use cases whose http or feed sources use filters, but keeps filtered connector params', () => {
+    const root = tempRoot();
+    const region = {
+      id: 'region',
+      label: 'Region',
+      type: 'select',
+      options: [{ value: 'eu' }, { value: 'us' }],
+      default: 'eu',
+    };
+    const cases: Record<string, object> = {
+      'bound-http': { kind: 'http', url: 'https://api.example.com/x?r=$param.region' },
+      'bound-feed': { kind: 'feed', url: 'https://example.org/rss?r=$param.region', limit: 30 },
+      'bound-body': {
+        kind: 'http',
+        url: 'https://api.example.com/x',
+        method: 'POST',
+        body: { r: '$param.region' },
+      },
+      connector: { kind: 'connector', connector: 'demo.sales', params: { region: '$param.region' } },
+    };
+    for (const [slug, source] of Object.entries(cases))
+      useCase(root, slug, {
+        'meta.json': meta(slug),
+        'prompt.md': 'x',
+        'dashboard.json': doc({ parameters: [region], datasets: ds(source) }),
+      });
+    const warnings: string[] = [];
+    const loaded = loadUseCases(root, (m) => warnings.push(m));
+    expect(loaded.map((u) => u.meta.id)).toEqual(['connector']);
+    for (const slug of ['bound-http', 'bound-feed', 'bound-body'])
+      expect(
+        warnings.some((w) => w.includes(slug) && w.includes('a showcase source cannot use filters')),
+      ).toBe(true);
+  });
+
   it('warns and returns nothing when the showcase path is a file', () => {
     const root = tempRoot();
     const file = join(root, 'not-a-dir');

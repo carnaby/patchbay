@@ -10,6 +10,7 @@ import {
   lineageParameters,
   parameterRefs,
   type SoundRule,
+  soundWindow,
   upstreamOf,
 } from '@patchbay/core';
 import { normalizeRaw, pickRaw, type RawValues } from './parameters.ts';
@@ -140,26 +141,40 @@ export function refreshTiming(refreshSec: number, live: boolean) {
   };
 }
 
-/** Rule, lineage and view: a change of any means the next result is only a baseline (CLAUDE.md). */
+/**
+ * Rule, lineage, view and the calendar window of its relative periods: a change of any means the next result is only
+ * a baseline (CLAUDE.md). The window is part of the sound identity only; data keys must not move at midnight.
+ */
 export function soundIdentity(
   doc: DashboardDoc | null | undefined,
   sound: SoundRule,
   datasetId: string,
   raw: RawValues = {},
+  now: number = Date.now(),
 ): string | null {
   if (!doc?.datasets.some((d) => d.id === datasetId)) return null;
-  return JSON.stringify([sound, lineageKey(doc, datasetId), viewKey(doc, datasetId, raw)]);
+  return JSON.stringify([
+    sound,
+    lineageKey(doc, datasetId),
+    viewKey(doc, datasetId, raw),
+    soundWindow(calendarTexts(doc, datasetId, raw), now),
+  ]);
+}
+
+/** The accepted values of the date range filters a dataset uses that are relative presets ("last7d"), not a range. */
+export function calendarTexts(doc: DashboardDoc, datasetId: string, raw: RawValues): string[] {
+  const accepted = acceptedRaw(doc, raw);
+  return datasetParameters(doc, datasetId).flatMap((id) => {
+    const p = doc.parameters?.find((x) => x.id === id);
+    if (p?.type !== 'dateRange') return [];
+    const text = Object.hasOwn(accepted, id) ? accepted[id]! : defaultText(p);
+    return text.includes('..') ? [] : [text];
+  });
 }
 
 /** Whether the data moves with the calendar: a date range filter it uses is at a relative preset ("last7d"). */
 export function followsCalendar(doc: DashboardDoc, datasetId: string, raw: RawValues): boolean {
-  const accepted = acceptedRaw(doc, raw);
-  return datasetParameters(doc, datasetId).some((id) => {
-    const p = doc.parameters?.find((x) => x.id === id);
-    if (p?.type !== 'dateRange') return false;
-    const text = Object.hasOwn(accepted, id) ? accepted[id]! : defaultText(p);
-    return !text.includes('..');
-  });
+  return calendarTexts(doc, datasetId, raw).length > 0;
 }
 
 const DAY_MS = 86_400_000;
@@ -176,16 +191,45 @@ export function behindCalendar(now: number, last: { updatedAt: number; failed: b
 }
 
 /**
+ * Whether a failed request may succeed when repeated: a network error (no status), a 5xx, 429 or 408. A permanent 4xx
+ * (a deleted secret, a missing dashboard) would only be asked again every minute for nothing. Structural, so this file
+ * stays free of the api module.
+ */
+function mayPass(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null | undefined)?.status;
+  return typeof status !== 'number' || status >= 500 || status === 429 || status === 408;
+}
+
+interface LastFetch {
+  updatedAt: number;
+  failed: boolean;
+  /** Set when the result is a refusal of this server's own limits: ask again after this many seconds. */
+  retryAfterSec?: number;
+}
+
+/**
  * What `behindCalendar` reads from a dataset's query. A failing upstream arrives as a 200 whose result carries
  * `error`, which query-core counts as a success: it is a failure all the same, or the error would stay up for a day.
  */
 export function lastFetch(state: {
   dataUpdatedAt: number;
   status: string;
-  data?: { error?: string | undefined } | undefined;
-}): { updatedAt: number; failed: boolean } {
-  return { updatedAt: state.dataUpdatedAt, failed: state.status === 'error' || Boolean(state.data?.error) };
+  error?: unknown;
+  data?: { error?: string | undefined; retryAfterSec?: number | undefined } | undefined;
+}): LastFetch {
+  const last: LastFetch = {
+    updatedAt: state.dataUpdatedAt,
+    failed: (state.status === 'error' && mayPass(state.error)) || Boolean(state.data?.error),
+  };
+  // The server refused the load for its own limits, not the source's: its turn comes soon, not at the next interval.
+  const retry = state.data?.retryAfterSec;
+  if (state.data?.error && typeof retry === 'number' && Number.isFinite(retry) && retry > 0)
+    last.retryAfterSec = retry;
+  return last;
 }
+
+/** Never sooner than this after a refusal, whatever the server says: a wall of widgets must not hammer it. */
+const MIN_RETRY_MS = 5_000;
 
 /**
  * The next refetch: the live fallback interval, and for a relative period also the coming 00:01 UTC. Without it a
@@ -198,7 +242,20 @@ export function nextRefetch(
   interval: number | false,
   calendar: boolean,
   now: number,
-  last?: { updatedAt: number; failed: boolean },
+  last?: LastFetch,
+): number | false {
+  const next = calendarRefetch(interval, calendar, now, last);
+  // A refused result is asked for again after the server's hint, and never later than the dataset would anyway.
+  if (!last?.retryAfterSec) return next;
+  const retry = Math.max(MIN_RETRY_MS, last.retryAfterSec * 1000);
+  return next === false ? retry : Math.min(next, retry);
+}
+
+function calendarRefetch(
+  interval: number | false,
+  calendar: boolean,
+  now: number,
+  last?: LastFetch,
 ): number | false {
   if (!calendar) return interval;
   const rollover = DAY_MS - ((now - ROLLOVER_MS) % DAY_MS);

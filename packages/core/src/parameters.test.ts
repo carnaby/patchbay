@@ -3,6 +3,7 @@ import {
   DATE_PRESETS,
   DashboardDocSchema,
   DocumentError,
+  declarationIssues,
   defaultText,
   describeParameterValue,
   distinctOptions,
@@ -11,6 +12,7 @@ import {
   isoDay,
   LIMITS,
   optionsFromIssues,
+  optionWriteIssues,
   type Parameter,
   ParameterSchema,
   parameterIssues,
@@ -298,6 +300,29 @@ describe('declaration checks', () => {
     expect(issues([{ ...period, min: '2026-02-01', max: '2026-01-01' }])).toContain(
       'Filter "period": min is after max',
     );
+  });
+});
+
+describe('write-time and text rules', () => {
+  const legacy = { ...region, options: [{ value: 'US$param.x' }], default: null };
+  it('refuses a new option value with a filter reference anywhere in it, on write only', () => {
+    expect(optionWriteIssues(legacy as Parameter)).toEqual([
+      'Filter "region": an option value cannot contain "$param."',
+    ]);
+    expect(optionWriteIssues(legacy as Parameter, legacy as Parameter)).toEqual([]);
+    // The read path is unchanged: a stored document with such an option keeps opening.
+    expect(declarationIssues([legacy as Parameter])).toEqual([]);
+    const doc = { ...emptyDashboard('t'), parameters: [legacy] };
+    expect(() => parseDashboard(JSON.parse(JSON.stringify(doc)))).not.toThrow();
+  });
+  it('leaves data values that hold a filter reference out of the choices', () => {
+    expect(distinctOptions(inferTable([{ c: 'US$param.x' }, { c: 'EU' }]), 'c')).toEqual(['EU']);
+  });
+  it('trims a text filter default, so links, snapshots and the page agree', () => {
+    const p = ParameterSchema.parse({ id: 'q', label: 'Q', type: 'text', default: ' error ' });
+    expect(p.default).toBe('error');
+    expect(writeParameterValues([p], readParameterValues([p], () => undefined, 0).values)).toEqual({});
+    expect(readParameterValues([p], () => 'error ', 0).values.q).toBe(p.default);
   });
 });
 

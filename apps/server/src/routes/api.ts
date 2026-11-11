@@ -31,7 +31,7 @@ import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import { exportBodies } from '../services/export-body.ts';
 import { type Body, rowsFormat, streamBodies, streamBody } from '../services/result-wire.ts';
 import { listTemplates } from '../services/templates.ts';
-import { loadDataOptions, rawFromQuery, viewValues } from '../services/view.ts';
+import { loadDataOptions, RawParametersSchema, rawFromQuery, viewValues } from '../services/view.ts';
 import { useCaseInfo } from '../showcase/info.ts';
 import { badRequest, HttpError, notFound, RetryLaterError } from '../util/errors.ts';
 import { memoryGuard } from '../util/memory-pressure.ts';
@@ -388,7 +388,7 @@ export function apiRoutes(deps: Deps) {
         dataset: z.unknown(),
         editing: IdSchema.optional(),
         // The view's values in their text form, as in a link: the draft is bound with them.
-        parameters: z.record(z.string().max(40), z.string().max(200)).optional(),
+        parameters: RawParametersSchema.optional(),
       })
       .parse(await c.req.json());
     const draft = DatasetSchema.parse({ id: 'preview', name: 'Preview', ...(body.dataset as object) });

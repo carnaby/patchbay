@@ -9,6 +9,7 @@ import {
   computeKpi,
   type DatasetResult,
   DIMMED_OPACITY,
+  effectiveSelection,
   formatNumber,
   formatRelative,
   formatValue,
@@ -23,7 +24,7 @@ import {
   tableColumns,
   type Widget,
 } from '@patchbay/core';
-import { AlertTriangle, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Minus } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Clock, Minus } from 'lucide-react';
 import { lazy, Suspense, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import { cx, Spinner } from '../components/ui.tsx';
@@ -41,6 +42,7 @@ export function WidgetBody({
   widget,
   result,
   loading,
+  waiting,
   errorHint,
   asTable = false,
   entityColors,
@@ -50,6 +52,8 @@ export function WidgetBody({
   widget: Widget;
   result: DatasetResult | undefined;
   loading?: boolean;
+  /** Why the data is held back (a wall screen waits for a filter value to return); shown instead of any result. */
+  waiting?: string | undefined;
   /** What to do about the error; only passed for the dashboard's owner, viewers see the generic message alone. */
   errorHint?: string | null;
   /** Maps only: show the accessible table alternative instead of the map. */
@@ -64,6 +68,14 @@ export function WidgetBody({
   if (widget.type === 'text') return <TextBody markdown={widget.config.markdown} />;
   if (widget.type === 'clock') return <ClockBody config={widget.config} />;
   if (widget.type === 'search') return <SearchBody config={widget.config} />;
+  if (waiting) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-sm text-muted">
+        <Clock className="size-5" aria-hidden="true" />
+        <span className="line-clamp-3">{waiting}</span>
+      </div>
+    );
+  }
   if (!result) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -80,6 +92,8 @@ export function WidgetBody({
       </div>
     );
   }
+  // A plain call, not a hook: it returns the same object while it keeps the selection.
+  const shown = effectiveSelection(selection ?? null, result.table.rows);
   switch (widget.type) {
     case 'chart':
       return (
@@ -87,7 +101,7 @@ export function WidgetBody({
           widget={widget}
           result={result}
           entityColors={entityColors}
-          selection={selection ?? null}
+          selection={shown}
           onPick={onPick}
         />
       );
@@ -96,7 +110,7 @@ export function WidgetBody({
     case 'gauge':
       return <GaugeBody widget={widget} result={result} />;
     case 'table':
-      return <TableBody widget={widget} result={result} selection={selection ?? null} onPick={onPick} />;
+      return <TableBody widget={widget} result={result} selection={shown} onPick={onPick} />;
     case 'status':
       return <StatusBody widget={widget} result={result} />;
     case 'map':
@@ -113,7 +127,7 @@ export function WidgetBody({
             result={result}
             asTable={asTable}
             entityColors={entityColors}
-            selection={selection ?? null}
+            selection={shown}
             onPick={onPick}
           />
         </Suspense>

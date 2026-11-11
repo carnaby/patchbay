@@ -63,6 +63,22 @@ describe('weather location columns', () => {
     expect(table.rows[0]).toMatchObject({ city: 'Prague', temperature_2m: 9.5, latitude: 50.08 });
   });
 
+  it('bounds the city lookup cache at 1,000 entries, dropping the oldest first', async () => {
+    const geocode = (name: string) => ({
+      'https://geocoding-api.open-meteo.com/': { results: [{ name, latitude: 1, longitude: 2 }] },
+      'https://api.open-meteo.com/': hourly,
+    });
+    const lookups = async (city: string) => {
+      const { ctx, urls } = upstream(geocode(city));
+      await weatherForecast.fetch({ city }, ctx);
+      return urls.filter((u) => u.startsWith('https://geocoding-api.open-meteo.com/')).length;
+    };
+    for (let i = 0; i <= 1000; i++) expect(await lookups(`bound-city-${i}`)).toBe(1);
+    // The 1,001st is still remembered; the first was dropped to make room.
+    expect(await lookups('bound-city-1000')).toBe(0);
+    expect(await lookups('bound-city-0')).toBe(1);
+  });
+
   it('has the same columns offline, and no single-point map suggestion', () => {
     const table = weatherForecast.sample({ city: 'Vienna' });
     expect(table.columns.map((c) => c.name)).toEqual([
