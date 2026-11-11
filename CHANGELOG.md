@@ -6,6 +6,45 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Fixed
+
+- A wall screen whose dashboard was made private or removed no longer asks for it again every minute, from the next
+  midnight on for good, or every 10 seconds after an earlier source error. It now asks every 15 minutes, so a dashboard
+  made public again shows up without a reload. A widget with a regular refresh interval keeps its interval.
+- In presentation mode on a touch screen, the Maximise button of a widget in the top row can be tapped again while the
+  top bar shows.
+- A track map's newest positions and a map shown as a table now set the map's filter when clicked, and newest positions
+  dim with the rest.
+- A widget that times out while another chart of the same image is still loading no longer names that other chart's
+  source; it names its own, or asks to shorten the chain.
+- "Showing cached data" now appears and clears on a live screen even when the rows stay the same.
+- The filter editor keeps the default on its option while that option's text is edited, keeps a label equal to its
+  value, and no longer offers to insert a filter after a second "=" in a query value.
+- "Insert filter" into a request body waits for a place in the body instead of adding the value after the closing
+  brace.
+- The editor refuses, in place, a change to a dataset or a filter that the server would refuse because a secret was
+  deleted, instead of failing on autosave.
+- The dataset preview asks again when a dataset it reads was saved meanwhile.
+- Disabled Remove filter, Add filter and Delete dataset buttons say why when they are tapped or focused, also on touch
+  screens and to screen readers.
+- In images, the ↗ of a status entity no longer touches its name; in the page it is easier to tap.
+- Agents get clearer answers:
+  - a filter id over 40 characters names the limit;
+  - filter values in a preview without a dashboard are reported as ignored;
+  - a click value over 100 characters is named as such;
+  - two renames onto one column name both columns;
+  - a refused option names its value;
+  - two suggestions no longer share a dataset id.
+- A read-only access token is no longer told that a dashboard may reach the server's private hosts.
+
+### Changed
+
+- At the end of a relative period's day, widgets ask for the new day over a few seconds instead of all in the same
+  second.
+- `updateParameter` with an empty `set` is refused instead of saving a version that changes nothing.
+- A widget that does not refresh on its own now asks again every 15 minutes after the server refused its request (a
+  dashboard made private or removed, a filter value no longer offered). Before, it never asked again until a reload.
+
 ## [0.3.3] - 2026-11-11
 
 ### Fixed
