@@ -6,30 +6,17 @@
  * decided exactly once, however many frames (grid, maximised overlay) show the
  * widget, and editor panes that read the same data never add a second decision.
  */
-import {
-  type DatasetResult,
-  type SoundRule,
-  type SoundState,
-  soundDecision,
-  type Widget,
-} from '@patchbay/core';
+import type { DatasetResult, SoundRule, Widget } from '@patchbay/core';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 import { armAutoUnlock, playCue } from '../lib/sounds.ts';
 import { datasetKey, lineageKey, soundIdentity, viewKey } from './dataset-keys.ts';
 import { useEditor } from './editor.ts';
 import { useParameters } from './parameters.ts';
+import { considerResult, type Tracked } from './sound-tracker.ts';
 import { liveReconnects } from './sync.ts';
 
 type SoundWidget = Extract<Widget, { datasetId: string }> & { sound: SoundRule };
-
-interface Tracked {
-  /** Rule, lineage and view of its dataset; a change means a new baseline. */
-  identity: string;
-  epoch: number;
-  hash: string | null;
-  state: SoundState | null;
-}
 
 export function soundWidgets(widgets: Widget[] | undefined): SoundWidget[] {
   return (widgets ?? []).filter((w): w is SoundWidget => 'datasetId' in w && Boolean(w.sound));
@@ -45,27 +32,11 @@ export function useSoundCues(dashboardId: string) {
     if (!hasSounds) return;
     const tracked = new Map<string, Tracked>();
 
-    const identityOf = (w: SoundWidget) =>
-      soundIdentity(useEditor.getState().doc, w.sound, w.datasetId, useParameters.getState().raw);
+    const identityOf = (w: SoundWidget, now: number) =>
+      soundIdentity(useEditor.getState().doc, w.sound, w.datasetId, useParameters.getState().raw, now);
 
-    const consider = (w: SoundWidget, result: DatasetResult, now: number): boolean => {
-      const identity = identityOf(w);
-      if (!identity) return false;
-      const epoch = liveReconnects();
-      let entry = tracked.get(w.id);
-      if (!entry || entry.identity !== identity || entry.epoch !== epoch) {
-        entry = { identity, epoch, hash: null, state: null };
-        tracked.set(w.id, entry);
-      }
-      // A failed result has no rows to judge. A warning still carries real rows: a capped source keeps its rules
-      // working, and a cached copy is the last real reading (the connector cache is shared across dashboards), so it
-      // rings only for rows this viewer has not seen yet.
-      if (result.error || result.hash === entry.hash) return false;
-      const decision = soundDecision(w.sound, result.table, entry.state, now);
-      entry.hash = result.hash;
-      entry.state = decision.state;
-      return decision.play;
-    };
+    const consider = (w: SoundWidget, result: DatasetResult, now: number): boolean =>
+      considerResult(tracked, w.id, w.sound, identityOf(w, now), liveReconnects(), result, now);
 
     const decide = (datasetId: string, result: DatasetResult) => {
       const widgets = soundWidgets(useEditor.getState().doc?.widgets).filter(
@@ -91,7 +62,8 @@ export function useSoundCues(dashboardId: string) {
           ? qc.getQueryData<DatasetResult>(datasetKey(dashboardId, doc, w.datasetId))
           : undefined;
         const entry = tracked.get(w.id);
-        if (cached && (!entry || entry.identity !== identityOf(w))) consider(w, cached, Date.now());
+        const now = Date.now();
+        if (cached && (!entry || entry.identity !== identityOf(w, now))) consider(w, cached, now);
       }
     };
     seed();

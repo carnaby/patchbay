@@ -321,7 +321,8 @@ An optional \`sound\` field makes browsers showing the dashboard play a short bu
 - trigger { kind: "condition", expr }: plays once when expr, evaluated on the LAST row (the newest reading), becomes
   true. It must become false again before it can play again.
 - sound: ${SOUND_IDS.join(', ')} (default bell). volume 0..1 (default 0.7). cooldownSec 0..3600 (default 10).
-- Never plays on page load, after a reconnect or after the dataset changed: the first result is the baseline.
+- Never plays on page load, after a reconnect, after the dataset changed, or for the first result after a relative
+  period (yesterday, last month, ...) moves to a new window: that first result is the baseline.
   Viewers can mute their own screen; browsers stay silent until the page is clicked once.
 Example: { "op": "updateWidget", "id": "orders", "set": { "sound": { "trigger": { "kind": "newRows", "key": "order_id" }, "sound": "bell" } } }
 To try it without real data, put the widget on a demo.sales dataset with params { "live": true } and refreshSec 5:

@@ -10,6 +10,7 @@ import {
   lineageParameters,
   parameterRefs,
   type SoundRule,
+  soundWindow,
   upstreamOf,
 } from '@patchbay/core';
 import { normalizeRaw, pickRaw, type RawValues } from './parameters.ts';
@@ -140,26 +141,40 @@ export function refreshTiming(refreshSec: number, live: boolean) {
   };
 }
 
-/** Rule, lineage and view: a change of any means the next result is only a baseline (CLAUDE.md). */
+/**
+ * Rule, lineage, view and the calendar window of its relative periods: a change of any means the next result is only
+ * a baseline (CLAUDE.md). The window is part of the sound identity only; data keys must not move at midnight.
+ */
 export function soundIdentity(
   doc: DashboardDoc | null | undefined,
   sound: SoundRule,
   datasetId: string,
   raw: RawValues = {},
+  now: number = Date.now(),
 ): string | null {
   if (!doc?.datasets.some((d) => d.id === datasetId)) return null;
-  return JSON.stringify([sound, lineageKey(doc, datasetId), viewKey(doc, datasetId, raw)]);
+  return JSON.stringify([
+    sound,
+    lineageKey(doc, datasetId),
+    viewKey(doc, datasetId, raw),
+    soundWindow(calendarTexts(doc, datasetId, raw), now),
+  ]);
+}
+
+/** The accepted values of the date range filters a dataset uses that are relative presets ("last7d"), not a range. */
+export function calendarTexts(doc: DashboardDoc, datasetId: string, raw: RawValues): string[] {
+  const accepted = acceptedRaw(doc, raw);
+  return datasetParameters(doc, datasetId).flatMap((id) => {
+    const p = doc.parameters?.find((x) => x.id === id);
+    if (p?.type !== 'dateRange') return [];
+    const text = Object.hasOwn(accepted, id) ? accepted[id]! : defaultText(p);
+    return text.includes('..') ? [] : [text];
+  });
 }
 
 /** Whether the data moves with the calendar: a date range filter it uses is at a relative preset ("last7d"). */
 export function followsCalendar(doc: DashboardDoc, datasetId: string, raw: RawValues): boolean {
-  const accepted = acceptedRaw(doc, raw);
-  return datasetParameters(doc, datasetId).some((id) => {
-    const p = doc.parameters?.find((x) => x.id === id);
-    if (p?.type !== 'dateRange') return false;
-    const text = Object.hasOwn(accepted, id) ? accepted[id]! : defaultText(p);
-    return !text.includes('..');
-  });
+  return calendarTexts(doc, datasetId, raw).length > 0;
 }
 
 const DAY_MS = 86_400_000;

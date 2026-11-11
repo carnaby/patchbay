@@ -168,15 +168,31 @@ describe('dataset keys by view', () => {
   describe('across midnight UTC', () => {
     afterEach(() => vi.useRealTimers());
 
-    it('keeps the sound identity and the view of a relative period: an ordinary refresh, no baseline', () => {
+    it('takes a new sound baseline when a relative period moves to a new day, and keeps the data key', () => {
       const rule = SoundRuleSchema.parse({ trigger: { kind: 'newRows' } });
+      const before = soundIdentity(filtered, rule, 'recent', {}, Date.parse('2026-11-10T23:59:59Z'));
+      const after = soundIdentity(filtered, rule, 'recent', {}, Date.parse('2026-11-11T00:01:00Z'));
+      const later = soundIdentity(filtered, rule, 'recent', {}, Date.parse('2026-11-11T18:00:00Z'));
+      expect(after).not.toBe(before);
+      expect(later).toBe(after);
       vi.useFakeTimers();
       vi.setSystemTime(new Date('2026-11-10T23:59:59Z'));
-      const before = soundIdentity(filtered, rule, 'recent', {});
       const viewBefore = viewKey(filtered, 'recent', {});
       vi.setSystemTime(new Date('2026-11-11T00:01:00Z'));
-      expect(soundIdentity(filtered, rule, 'recent', {})).toBe(before);
       expect(viewKey(filtered, 'recent', {})).toBe(viewBefore);
+    });
+
+    it('keeps the identity of a dataset without a relative period across midnight', () => {
+      const rule = SoundRuleSchema.parse({ trigger: { kind: 'newRows' } });
+      const night = Date.parse('2026-11-10T23:59:59Z');
+      const morning = Date.parse('2026-11-11T00:01:00Z');
+      expect(soundIdentity(filtered, rule, 'temps', {}, night)).toBe(
+        soundIdentity(filtered, rule, 'temps', {}, morning),
+      );
+      const fixed = { period: '2026-01-01..2026-01-31' };
+      expect(soundIdentity(filtered, rule, 'recent', fixed, night)).toBe(
+        soundIdentity(filtered, rule, 'recent', fixed, morning),
+      );
     });
   });
 
