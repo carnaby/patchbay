@@ -92,6 +92,10 @@ describe('the selection of a cross-filter', () => {
       default: null,
     });
     expect(crossFilterPick(country, 'SK')).toEqual({ text: 'SK' });
+    expect(crossFilterPick(country, 'eu')).toEqual({ text: 'eu' });
+    expect(crossFilterPick(country, 'x'.repeat(101))).toMatchObject({
+      problem: expect.stringMatching(/longer than 100 characters/),
+    });
   });
 });
 

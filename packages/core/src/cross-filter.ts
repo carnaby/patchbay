@@ -57,7 +57,13 @@ export function crossFilterPick(
   switch (param.type) {
     case 'select':
       // Choices from data are not at hand here: the server reads them and refuses a value they do not hold.
-      if (param.optionsFrom) return { text };
+      if (param.optionsFrom) {
+        if (text.length > MAX_TEXT_VALUE)
+          return {
+            problem: `This value is longer than ${MAX_TEXT_VALUE} characters, so it is not one of the ${param.label} choices`,
+          };
+        return { text };
+      }
       return (param.options ?? []).some((o) => String(o.value) === text)
         ? { text }
         : { problem: `${text} is not one of the ${param.label} choices` };

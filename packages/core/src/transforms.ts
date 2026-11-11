@@ -460,15 +460,20 @@ function applyStep(
       // Own entries only: a plain lookup turns a "__proto__" or "constructor" column into Object's members.
       const to = (n: string) => (Object.hasOwn(t.map, n) ? t.map[n]! : n);
       // Checked on the final names so a swap stays legal; a collision would silently merge two columns' values.
-      const finalNames = new Set<string>();
+      const finalNames = new Map<string, string>();
       for (const c of table.columns) {
         const name = to(c.name);
-        if (finalNames.has(name))
+        const first = finalNames.get(name);
+        if (first !== undefined) {
+          const both = Object.hasOwn(t.map, first) && Object.hasOwn(t.map, c.name);
           throw new TransformError(
-            `Column "${name}" already exists; rename it too or pick another name`,
+            both
+              ? `Columns "${first}" and "${c.name}" would both be named "${name}"; pick another name`
+              : `Column "${name}" already exists; rename it too or pick another name`,
             step,
           );
-        finalNames.add(name);
+        }
+        finalNames.set(name, c.name);
       }
       // Longer names lengthen every row of the JSON, but the rows themselves share the same values.
       return budget.measure({

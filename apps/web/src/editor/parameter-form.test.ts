@@ -99,7 +99,7 @@ describe('the Filters panel form', () => {
     expect(checkParameter(listDraft, [])).toEqual({ error: 'options: Give at least one option' });
     const nested = { ...region, options: [{ value: 'US$param.x' }], default: null };
     expect(checkParameter(nested, [])).toEqual({
-      error: 'Filter "region": an option value cannot contain "$param."',
+      error: 'Filter "region": an option value cannot contain "$param." ("US$param.x")',
     });
     expect('parameter' in checkParameter(nested, [], nested as Parameter)).toBe(true);
     const r = checkParameter({ id: 'q', label: 'Q', type: 'text', default: 'error ' }, []);

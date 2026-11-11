@@ -32,6 +32,11 @@ const values: ParameterValues = {
 };
 
 describe('binding expressions', () => {
+  it('refuses a value that is not a finite number', () => {
+    expect(() => bindExpression('a == $param.n', { n: Number.POSITIVE_INFINITY })).toThrow(BindError);
+    expect(() => bindExpression('a == $param.n', { n: Number.NaN })).toThrow(BindError);
+  });
+
   it('replaces references by literals and leaves strings and backticks alone', () => {
     expect(bindExpression('region == $param.region || $param.none == null', values)).toBe(
       'region == "eu" || null == null',
@@ -224,6 +229,14 @@ describe('binding URLs', () => {
 });
 
 describe('binding datasets and documents', () => {
+  it('refuses a connector parameter name that is a filter', () => {
+    const d = {
+      source: { kind: 'connector', connector: 'demo.sales', params: { '$param.x': 1 } },
+      transforms: [],
+    };
+    expect(() => bindDataset(d as never, {})).toThrow(/cannot be a filter/);
+  });
+
   const posted = DatasetSchema.parse({
     id: 'd',
     name: 'D',

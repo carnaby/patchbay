@@ -87,6 +87,9 @@ describe('filter operations', () => {
     expect(() => applyOps(doc, [{ op: 'updateParameter', id: 'nope', set: {} }])).toThrow(
       'Operation 1: Unknown filter "nope"',
     );
+    expect(() => applyOps(doc, [{ op: 'updateParameter', id: 'region', set: {} }])).toThrow(
+      /Operation 1: set is empty/,
+    );
   });
 
   it('removes a filter only once nothing uses it, and the last one leaves no field', () => {
@@ -106,7 +109,7 @@ describe('filter operations', () => {
   it('refuses $param. inside an option in addParameter and in a new option of updateParameter', () => {
     const bad = { ...region, options: [{ value: 'US$param.x' }], default: null };
     expect(() => applyOps(base, [{ op: 'addParameter', parameter: bad }])).toThrow(
-      /cannot contain "\$param\."/,
+      /cannot contain "\$param\." \("US\$param\.x"\)/,
     );
     // A document stored before the rule: parseDashboard accepts the option.
     const stored = parseDashboard(JSON.parse(JSON.stringify({ ...base, parameters: [bad] })));

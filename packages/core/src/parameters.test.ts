@@ -3,8 +3,10 @@ import {
   calendarOf,
   DATE_PRESETS,
   DashboardDocSchema,
+  DatasetSchema,
   DocumentError,
   declarationIssues,
+  defaultParameterValues,
   defaultText,
   describeParameterValue,
   distinctOptions,
@@ -241,6 +243,39 @@ describe('filter values', () => {
   });
 });
 
+describe('reading and defaults', () => {
+  it('reports a reference once per dataset, however often the steps repeat it', () => {
+    const doc = {
+      parameters: [],
+      widgets: [],
+      datasets: [
+        DatasetSchema.parse({
+          id: 'd',
+          name: 'D',
+          source: { kind: 'inline', rows: [{ a: 1 }] },
+          transforms: [{ id: 's1', type: 'filter', expr: '$param.x == null || a == $param.x' }],
+        }),
+      ],
+    };
+    expect(parameterIssues(doc)).toHaveLength(1);
+  });
+
+  it('takes a filter named like an Object member at its own value', () => {
+    const text = ParameterSchema.parse({ id: 'constructor', label: 'C', type: 'text' });
+    const read = readParameterValues([text], (id) => ({})[id as never], at('2026-11-10'));
+    expect(read.values.constructor).toBe('');
+    expect(read.problems).toEqual([]);
+  });
+
+  it('gives every filter its default when nothing is chosen', () => {
+    const now = at('2026-11-10');
+    expect(defaultParameterValues(parameters, now)).toEqual(
+      readParameterValues(parameters, () => undefined, now).values,
+    );
+    expect(defaultParameterValues(undefined, now)).toEqual({});
+  });
+});
+
 describe('declaration checks', () => {
   const issues = (list: unknown[]) => {
     try {
@@ -309,7 +344,7 @@ describe('write-time and text rules', () => {
   const legacy = { ...region, options: [{ value: 'US$param.x' }], default: null };
   it('refuses a new option value with a filter reference anywhere in it, on write only', () => {
     expect(optionWriteIssues(legacy as Parameter)).toEqual([
-      'Filter "region": an option value cannot contain "$param."',
+      'Filter "region": an option value cannot contain "$param." ("US$param.x")',
     ]);
     expect(optionWriteIssues(legacy as Parameter, legacy as Parameter)).toEqual([]);
     // The read path is unchanged: a stored document with such an option keeps opening.
@@ -359,6 +394,17 @@ describe('options from a dataset column', () => {
     expect(readOne('AT', { lenientData: true }).values.country).toBe('AT');
     expect(describeParameterValue(country, 'AT')).toBe('AT');
     expect(describeParameterValue(country, null)).toBe('All countries');
+  });
+
+  it('says an empty or over-long value is not a choice when the browser defers', () => {
+    const lenient = (text: string) =>
+      readParameterValues([country], () => text, at('2026-11-10'), { lenientData: true });
+    for (const text of ['', 'x'.repeat(101)]) {
+      const message = lenient(text).problems[0]!.message;
+      expect(message).not.toMatch(/could not be read/);
+      expect(message).toMatch(/has no value/);
+    }
+    expect(lenient('x'.repeat(10)).values.country).toBe('x'.repeat(10));
   });
 
   it('says so when the data offers no choices at all', () => {

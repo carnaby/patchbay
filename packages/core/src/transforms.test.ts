@@ -35,7 +35,10 @@ describe('rename', () => {
   });
   it('refuses two columns renamed to one name', () => {
     expect(() => runPipeline(t, steps([{ type: 'rename', map: { a: 'x', b: 'x' } }]))).toThrow(
-      /"x" already exists/,
+      'Columns "a" and "b" would both be named "x"; pick another name',
+    );
+    expect(() => runPipeline(t, steps([{ type: 'rename', map: { a: 'b' } }]))).toThrow(
+      'Column "b" already exists; rename it too or pick another name',
     );
   });
   it('allows a swap', () => {

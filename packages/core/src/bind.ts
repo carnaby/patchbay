@@ -5,7 +5,7 @@
  * without a key built by hand, and a dataset without references comes back as the same object with its one entry.
  */
 import { ExprError, MAX_BOUND_EXPRESSION, paramSpans, parse } from './expr.ts';
-import { PARAM_PREFIX, type RefName, readRef } from './param-ref.ts';
+import { PARAM_PREFIX, type RefName, readRef, WHOLE_REF } from './param-ref.ts';
 import { type DateRange, type ParameterValue, type ParameterValues, splitUrl } from './parameters.ts';
 import type { DashboardDoc, Dataset, Source } from './schema.ts';
 
@@ -15,8 +15,6 @@ export class BindError extends Error {
     this.name = 'BindError';
   }
 }
-
-const WHOLE_REF = /^\$param\.[A-Za-z0-9_.]*$/;
 
 /** The reference a value consists of, or null. Validation refused every other shape; this only re-checks. */
 function refIn(text: string): RefName | null {
@@ -45,7 +43,11 @@ function valueFor(values: ParameterValues, ref: RefName): string | number | null
 /** A value as an expression literal. Negative numbers are parenthesised, so `$param.n ^ 2` keeps its meaning. */
 function literal(value: string | number | null): string {
   if (value === null) return 'null';
-  if (typeof value === 'number') return value < 0 ? `(${value})` : String(value);
+  if (typeof value === 'number') {
+    // The schema refuses these today; a literal "Infinity" would parse as a column name.
+    if (!Number.isFinite(value)) throw new BindError('A filter value is not a finite number');
+    return value < 0 ? `(${value})` : String(value);
+  }
   return `"${value.replace(/[\\"]/g, '\\$&')}"`;
 }
 
@@ -171,6 +173,9 @@ function bindSource(source: Source, values: ParameterValues): Source {
       return url === source.url ? source : { ...source, url };
     }
     case 'connector': {
+      // The save check refuses these; a parameter name is never bound, so one that slips through must not reach a connector.
+      if (Object.keys(source.params).some((k) => k.includes(PARAM_PREFIX)))
+        throw new BindError('A connector parameter name cannot be a filter');
       const entries = Object.entries(source.params).map(([key, v]) => [key, v, bindJson(v, values)] as const);
       if (entries.every(([, v, b]) => v === b)) return source;
       // A connector takes no null: "All" leaves the parameter out, so the connector's own default applies.
