@@ -40,7 +40,7 @@ export function buttonClass(
   className?: string,
 ) {
   return clsx(
-    'inline-flex shrink-0 items-center justify-center gap-2 rounded-lg font-medium transition select-none disabled:pointer-events-none disabled:opacity-50',
+    'inline-flex shrink-0 items-center justify-center gap-2 rounded-lg font-medium transition select-none disabled:pointer-events-none disabled:opacity-50 aria-disabled:opacity-50',
     size === 'sm' && 'h-8 px-2.5 text-[13px]',
     size === 'md' && 'h-9 px-3.5 text-sm',
     size === 'lg' && 'h-12 px-5 text-base',
@@ -93,7 +93,7 @@ export function IconButton({
       aria-label={label}
       title={label}
       className={clsx(
-        'inline-flex items-center justify-center rounded-lg text-ink-2 transition hover:bg-surface-2 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent',
+        'inline-flex items-center justify-center rounded-lg text-ink-2 transition hover:bg-surface-2 hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent aria-disabled:opacity-40 aria-disabled:hover:bg-transparent',
         touch ? 'size-10' : 'size-8',
         active && 'bg-surface-2 text-ink',
         className,

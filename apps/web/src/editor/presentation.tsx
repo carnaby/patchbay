@@ -8,7 +8,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Button, cx, Popover, toast } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
 import { rawQuery, summaryOf, useParameters } from '../state/parameters.ts';
-import { closesUnattended, unattendedTimer } from './presentation-state.ts';
+import {
+  CONTROLS_DELAY_MS,
+  closesUnattended,
+  controlsLive,
+  nextOrigin,
+  type OverlayOrigin,
+  unattendedTimer,
+} from './presentation-state.ts';
 import { EnableSoundButton, MuteButton } from './sound-controls.tsx';
 
 const IDLE_MS = 2500;
@@ -118,13 +125,13 @@ export function useIdle(active: boolean) {
  */
 export function useUnattendedClose(open: boolean, close: () => void) {
   const presenting = useContext(PresentingContext);
-  const openedWhilePresenting = useRef(false);
-  const wasOpen = useRef(false);
-  if (open && !wasOpen.current) openedWhilePresenting.current = presenting;
-  wasOpen.current = open;
+  // State, not refs, so a render React discards cannot record the wrong origin.
+  const [origin, setOrigin] = useState<OverlayOrigin>({ open: false, whilePresenting: false });
+  const current = nextOrigin(origin, open, presenting);
+  if (current !== origin) setOrigin(current);
   const latestClose = useRef(close);
   latestClose.current = close;
-  const armed = open && closesUnattended(openedWhilePresenting.current, presenting);
+  const armed = open && closesUnattended(current.whilePresenting, presenting);
   useEffect(() => {
     if (!armed) return;
     const timer = unattendedTimer(() => latestClose.current());
@@ -160,11 +167,34 @@ export function PresentationControls({
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
+  // The bar's buttons take pointer input only after it has been visible for a moment, so the tap that woke it cannot
+  // also press a button it hid. The timer re-renders once the delay has passed.
+  const [visibleSince, setVisibleSince] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (idle) {
+      setVisibleSince(null);
+      return;
+    }
+    const since = Date.now();
+    setVisibleSince(since);
+    // A timeout may fire a millisecond before the clock says the delay passed; the floor keeps the bar from
+    // staying dead with nothing left to re-render it.
+    const timer = setTimeout(
+      () => setNow(Math.max(Date.now(), since + CONTROLS_DELAY_MS)),
+      CONTROLS_DELAY_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [idle]);
+  const live = !idle && controlsLive(visibleSince, now);
   return (
     <div
       className={cx(
-        'fixed inset-x-0 top-0 z-40 flex items-center gap-3 bg-gradient-to-b from-page/95 to-transparent px-4 pt-3 pb-6 transition-opacity duration-300',
-        idle ? 'pointer-events-none opacity-0' : 'opacity-100',
+        'pointer-events-none fixed inset-x-0 top-0 z-40 flex items-center gap-3 bg-gradient-to-b from-page/95 to-transparent px-4 pt-3 pb-6 transition-opacity duration-300',
+        // The bar covers the top row of widgets: only its buttons take taps. The title and the flex-1 spacer stay
+        // pointer-events-none, so a tap there reaches a widget's Maximise.
+        idle ? 'opacity-0' : 'opacity-100',
+        live && '[&>button]:pointer-events-auto',
       )}
     >
       <span className="truncate text-sm font-semibold">{title}</span>

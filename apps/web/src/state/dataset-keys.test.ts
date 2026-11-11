@@ -290,6 +290,8 @@ describe('dataset keys by view', () => {
     const err = (error: unknown) => lastFetch({ dataUpdatedAt: at, status: 'error', error }, () => 0);
     expect(err(new ApiError(404, 'gone', {})).failed).toBe(false);
     expect(err(new ApiError(403, 'secret deleted', {})).failed).toBe(false);
+    expect(err(new ApiError(400, 'bad', {})).failed).toBe(false);
+    expect(err(new ApiError(401, 'login', {})).failed).toBe(false);
     expect(err(new ApiError(503, 'busy', {})).failed).toBe(true);
     expect(err(new ApiError(429, 'slow down', {})).failed).toBe(true);
     expect(err(new ApiError(408, 'timeout', {})).failed).toBe(true);
@@ -325,7 +327,7 @@ describe('dataset keys by view', () => {
     ).toBe(false);
   });
 
-  it('retries a dataset that never refreshes every minute after a transient failure, every quarter hour after a lasting one', () => {
+  it('retries a never-refreshing dataset: transient failures each minute, lasting ones each quarter hour', () => {
     const now = Date.parse('2026-11-11T12:00:00Z');
     const inBand = (data: Record<string, unknown>, random = () => 0) =>
       lastFetch({ dataUpdatedAt: now, status: 'success', data }, random);
@@ -334,7 +336,7 @@ describe('dataset keys by view', () => {
     expect(nextRefetch(false, false, now, inBand({ error: 'gone', lasting: true }))).toBe(900_000);
     expect(nextRefetch(false, false, now, thrown(new ApiError(503, 'busy', {})))).toBe(60_000);
     expect(nextRefetch(false, false, now, thrown(new TypeError('Failed to fetch')))).toBe(60_000);
-    expect(nextRefetch(false, false, now, thrown(new ApiError(404, 'gone', {})))).toBe(false);
+    expect(nextRefetch(false, false, now, thrown(new ApiError(404, 'gone', {})))).toBe(900_000); // a refusal
     expect(nextRefetch(false, false, now, inBand({}))).toBe(false); // a good result: as before
     expect(nextRefetch(false, false, now)).toBe(false); // nothing fetched yet
     expect(nextRefetch(30_000, false, now, inBand({ error: 'x' }))).toBe(30_000); // a regular refresh comes back anyway
@@ -451,11 +453,13 @@ describe("the server's calendar window", () => {
     // Client 90 s ahead: received at client 23:59:00 = server 23:57:30, 150 s before the server's midnight.
     const ahead = stated(at('2026-11-10T23:59:00Z'), 150);
     expect(ahead.validUntil).toBe(at('2026-11-11T00:01:30Z'));
-    expect(nextRefetch(false, true, at('2026-11-10T23:59:00Z'), ahead)).toBe(151_000); // client 00:01:31 = server 00:00:01
+    // Client 00:01:31 = server 00:00:01.
+    expect(nextRefetch(false, true, at('2026-11-10T23:59:00Z'), ahead)).toBe(151_000);
     expect(nextRefetch(false, true, at('2026-11-10T23:59:30Z'), ahead)).toBe(121_000); // re-asked later: same instant
     // Client 5 min behind: received at client 23:52:30 = server 23:57:30.
     const behind = stated(at('2026-11-10T23:52:30Z'), 150);
-    expect(nextRefetch(false, true, at('2026-11-10T23:52:30Z'), behind)).toBe(151_000); // client 23:55:01 = server 00:00:01
+    // Client 23:55:01 = server 00:00:01.
+    expect(nextRefetch(false, true, at('2026-11-10T23:52:30Z'), behind)).toBe(151_000);
     // The client's own 00:01 plays no part: 2 min after its midnight it still waits for the server's.
     expect(
       nextRefetch(false, true, at('2026-11-11T00:02:00Z'), stated(at('2026-11-11T00:01:00Z'), 600)),
@@ -513,7 +517,8 @@ describe("the server's calendar window", () => {
       lastFetch({ dataUpdatedAt: at('2026-11-11T08:00:00Z'), status: 'error', error, data: old }, () => 0);
     expect(thrown(new ApiError(503, 'busy', {})).validUntil).toBeUndefined();
     expect(nextRefetch(false, true, now, thrown(new ApiError(503, 'busy', {})))).toBe(60_000); // as in 0.3.2
-    expect(nextRefetch(false, true, now, thrown(new ApiError(404, 'gone', {})))).toBe(54_060_000); // next 00:01, as in 0.3.2
+    // A refusal: every quarter hour, never past 00:01.
+    expect(nextRefetch(false, true, now, thrown(new ApiError(404, 'gone', {})))).toBe(900_000);
     expect(nextRefetch(30_000, true, now, thrown(new ApiError(503, 'busy', {})))).toBe(30_000);
     // Not the 5 s floor of an expired window, which would poll a down server three requests every 5 s.
     const lastingThenThrown = lastFetch(
@@ -526,6 +531,126 @@ describe("the server's calendar window", () => {
       () => 0,
     );
     expect(lastingThenThrown.lasting).toBeUndefined(); // read only from a delivered result, like the window
+    expect(lastingThenThrown.failed).toBe(false);
+    expect(lastingThenThrown.refused).toBe(true);
+  });
+
+  it('reads the error mark and hint only from a delivered result', () => {
+    const now = at('2026-11-11T09:00:00Z');
+    const kept = (error: unknown, data: Record<string, unknown>) =>
+      lastFetch({ dataUpdatedAt: at('2026-11-11T08:00:00Z'), status: 'error', error, data }, () => 0);
+    const refused = kept(new ApiError(403, 'private', {}), { error: 'busy', retryAfterSec: 10 });
+    expect(refused.failed).toBe(false);
+    expect(refused.refused).toBe(true);
+    expect(refused.retryAfterSec).toBeUndefined();
+    // A refusal: the quarter-hour cadence, not 10 s.
+    expect(nextRefetch(false, false, now, refused)).toBe(900_000);
+    expect(kept(new ApiError(403, 'private', {}), { error: 'Upstream responded 503' }).failed).toBe(false);
+    expect(kept(new ApiError(503, 'down', {}), { error: 'Upstream responded 503' }).failed).toBe(true);
+    expect(
+      nextRefetch(
+        false,
+        false,
+        now,
+        kept(new ApiError(503, 'down', {}), { error: 'busy', retryAfterSec: 10 }),
+      ),
+    ).toBe(60_000);
+    // A delivered result keeps its marks.
+    const delivered = lastFetch(
+      { dataUpdatedAt: now, status: 'success', data: { error: 'busy', retryAfterSec: 10 } },
+      () => 0,
+    );
+    expect(delivered).toMatchObject({ failed: true, retryAfterSec: 10 });
+  });
+
+  it('asks again every quarter hour after the server refused the request, also past midnight', () => {
+    const thrown = (status: number, received: string, random = () => 0) =>
+      lastFetch(
+        { dataUpdatedAt: at(received), status: 'error', error: new ApiError(status, 'x', {}) },
+        random,
+      );
+    // Last good result yesterday: before, behindCalendar turned this into a 60 s poll for good.
+    expect(nextRefetch(false, true, at('2026-11-11T09:00:00Z'), thrown(403, '2026-11-10T20:00:00Z'))).toBe(
+      900_000,
+    );
+    // Capped by 00:01.
+    expect(nextRefetch(false, true, at('2026-11-11T23:55:00Z'), thrown(403, '2026-11-11T20:00:00Z'))).toBe(
+      360_000,
+    );
+    expect(
+      nextRefetch(
+        false,
+        true,
+        at('2026-11-11T09:00:00Z'),
+        thrown(404, '2026-11-10T20:00:00Z', () => 0.5),
+      ),
+    ).toBe(905_000);
+    // A dataset that never refreshes asks again rarely too; one with an interval keeps it.
+    expect(nextRefetch(false, false, at('2026-11-11T09:00:00Z'), thrown(403, '2026-11-11T08:00:00Z'))).toBe(
+      900_000,
+    );
+    expect(nextRefetch(30_000, true, at('2026-11-11T09:00:00Z'), thrown(403, '2026-11-10T20:00:00Z'))).toBe(
+      30_000,
+    );
+    // A transient failure keeps the minute catch-up; 408 and 429 count as transient.
+    expect(nextRefetch(false, true, at('2026-11-11T09:00:00Z'), thrown(503, '2026-11-10T20:00:00Z'))).toBe(
+      60_000,
+    );
+    expect(thrown(429, '2026-11-11T08:00:00Z').refused).toBeUndefined();
+    expect(thrown(408, '2026-11-11T08:00:00Z').refused).toBeUndefined();
+  });
+
+  it('spreads the refetch at the end of a stated window over ten seconds, drawn once per result', () => {
+    const t = at('2026-11-10T23:57:30Z');
+    expect(
+      nextRefetch(
+        false,
+        true,
+        t,
+        stated(t, 150, {}, () => 0.5),
+      ),
+    ).toBe(156_000);
+    expect(nextRefetch(false, true, t, stated(t, 150))).toBe(151_000); // random 0: as in 0.3.3
+    const state = {
+      dataUpdatedAt: t,
+      status: 'success',
+      data: { calendar: { window: 'w', validForSec: 150 } },
+    };
+    let draws = 0;
+    const random = () => {
+      draws++;
+      return 0.3;
+    };
+    expect(lastFetch(state, random).spreadMs).toBe(lastFetch(state, random).spreadMs);
+    expect(draws).toBe(1);
+  });
+
+  it('retries a lasting error on the client clock when the answer states no window', () => {
+    const inBand = (iso: string, random = () => 0) =>
+      lastFetch(
+        { dataUpdatedAt: at(iso), status: 'success', data: { error: 'gone', lasting: true } },
+        random,
+      );
+    expect(inBand('2026-11-11T09:00:00Z')).toEqual({
+      updatedAt: at('2026-11-11T09:00:00Z'),
+      failed: false,
+      lasting: true,
+    });
+    expect(nextRefetch(false, true, at('2026-11-11T09:00:00Z'), inBand('2026-11-11T09:00:00Z'))).toBe(
+      900_000,
+    );
+    // Capped by 00:01.
+    expect(nextRefetch(false, true, at('2026-11-11T23:55:00Z'), inBand('2026-11-11T23:55:00Z'))).toBe(
+      360_000,
+    );
+    expect(
+      nextRefetch(
+        false,
+        true,
+        at('2026-11-11T09:00:00Z'),
+        inBand('2026-11-11T09:00:00Z', () => 0.5),
+      ),
+    ).toBe(905_000);
   });
 
   it('spreads the minute and quarter-hour retries over ten seconds, drawn once per result', () => {

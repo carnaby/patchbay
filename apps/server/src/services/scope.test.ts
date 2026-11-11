@@ -510,6 +510,63 @@ describe('resolution scopes', () => {
       const next = await data.scope(target, d).resolve(byId(d, 'c'));
       expect(next.error).toMatch(/^Source dataset "w" failed: .*down/);
     });
+
+    it('names a pending source of the widget’s own lineage, never another chain’s', async () => {
+      const calls = { n: 0 };
+      const w = gate();
+      const v = gate();
+      const second = slowConnector(calls, v.p);
+      const data = new DataService(
+        new ConnectorService({
+          offline: false,
+          connectors: [slowConnector(calls, w.p), { ...second, info: { ...second.info, id: 'test.slow2' } }],
+        }),
+        store,
+      );
+      const d = doc(
+        { id: 'w', name: 'W', source: { kind: 'connector', connector: 'test.slow', params: {} } },
+        from('c', 'w'),
+        { id: 'v', name: 'V', source: { kind: 'connector', connector: 'test.slow2', params: {} } },
+        from('e', 'v'),
+      );
+      const scope = data.scope(target, d, { deadlineMs: 50 });
+      const [c, e] = await Promise.all([scope.resolve(byId(d, 'c')), scope.resolve(byId(d, 'e'))]);
+      expect(c.error).toBe(stillLoadingMessage('w'));
+      expect(e.error).toBe(stillLoadingMessage('v'));
+      expect(e.retryAfterSec).toBe(10);
+      w.open();
+      v.open();
+    });
+
+    it('gives a widget whose own chain is just slow the shorten-the-chain text and no retry hint', async () => {
+      const calls = { n: 0 };
+      const w = gate();
+      const step = gate();
+      const data = new DataService(
+        new ConnectorService({ offline: false, connectors: [slowConnector(calls, w.p)] }),
+        store,
+      );
+      const run = data.processShared.bind(data);
+      // The derived dataset's step outlasts the deadline while another chain's source is still loading.
+      vi.spyOn(data, 'processShared').mockImplementation(async (...args: Parameters<typeof run>) => {
+        if (args[1].some((t) => t.type === 'filter')) await step.p;
+        return run(...args);
+      });
+      const d = doc(
+        { id: 'w', name: 'W', source: { kind: 'connector', connector: 'test.slow', params: {} } },
+        from('c', 'w'),
+        inline('x', cities),
+        from('y', 'x', { transforms: [{ type: 'filter', expr: 'temp > 2' }] }),
+      );
+      const scope = data.scope(target, d, { deadlineMs: 50 });
+      const [c, y] = await Promise.all([scope.resolve(byId(d, 'c')), scope.resolve(byId(d, 'y'))]);
+      expect(y.error).toBe(SCOPE_TIMEOUT_MESSAGE);
+      expect(y.retryAfterSec).toBeUndefined();
+      expect(c.error).toBe(stillLoadingMessage('w'));
+      expect(c.retryAfterSec).toBe(10);
+      step.open();
+      w.open();
+    });
   });
 
   it('names a cycle that slipped past validation instead of overflowing the stack', async () => {

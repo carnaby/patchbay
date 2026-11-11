@@ -82,9 +82,15 @@ export default function MapBody({
               id: widget.id,
               type: 'table',
               datasetId: widget.datasetId,
-              config: { columns: mapTableColumns(config, result.table), pageSize: 25 },
+              config: {
+                columns: mapTableColumns(config, result.table),
+                pageSize: 25,
+                ...(config.crossFilter ? { crossFilter: config.crossFilter } : {}),
+              },
             }}
             result={{ ...result, table }}
+            selection={selection}
+            onPick={onPick}
           />
         </div>
       </div>

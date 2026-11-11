@@ -58,10 +58,9 @@ describe('upstream limits', () => {
       if (url.includes('current=')) return { current: { time: 0, temperature_2m: 1 } };
       return { features: [] };
     });
-    const service = new ConnectorService({
-      offline: false,
-      outbound: new OutboundLimiter({ connector: { perHostConcurrency: 1, perHostPerMinute: 60 } }),
-    });
+    const outbound = new OutboundLimiter({ connector: { perHostConcurrency: 1, perHostPerMinute: 60 } });
+    const acquire = vi.spyOn(outbound, 'acquireConnectorSlot');
+    const service = new ConnectorService({ offline: false, outbound });
     const at = { latitude: 48.1, longitude: 17.1 };
     const forecast = service.load('weather.forecast', at);
     await vi.waitFor(() => expect(finishForecast).toBeTypeOf('function'));
@@ -70,7 +69,9 @@ describe('upstream limits', () => {
     expect((await service.load('earthquakes', { period: 'day', minMagnitude: '4.5' })).table.rows).toEqual(
       [],
     );
-    await sleep(20);
+    await vi.waitFor(() =>
+      expect(acquire.mock.calls.filter(([, h]) => h === 'api.open-meteo.com')).toHaveLength(2),
+    );
     // ...while the same host is: current waits for the forecast load to end.
     const asked = () => fetchMock.mock.calls.map(([url]) => url);
     expect(asked().filter((url) => url.includes('current='))).toEqual([]);
@@ -78,6 +79,7 @@ describe('upstream limits', () => {
     await forecast;
     expect((await current).table.rows).toHaveLength(1);
     expect(asked().filter((url) => hostOf(url) === 'api.open-meteo.com')).toHaveLength(2);
+    acquire.mockRestore();
   });
 
   it('never delays demo connectors or offline samples, even with every bucket full', async () => {
@@ -138,9 +140,48 @@ describe('upstream limits', () => {
     ).resolves.toBeTypeOf('function');
   });
 
+  it('gives back the queue place of a load that ended, so its turn costs no token', async () => {
+    const twoHosts: Connector = {
+      info: {
+        id: 'test.two',
+        name: 'Two hosts',
+        category: 'Test',
+        description: '',
+        params: [],
+        minRefreshSec: 60,
+        docsUrl: 'https://example.com',
+        attribution: '',
+      },
+      async fetch(_params, ctx) {
+        await Promise.all([ctx.fetchJson('https://a.example/x'), ctx.fetchJson('https://b.example/y')]);
+        return { columns: [], rows: [] };
+      },
+      sample: () => ({ columns: [], rows: [] }),
+    };
+    fetchMock.mockImplementation(async (url: string) => {
+      throw new Error(`down: ${url}`);
+    });
+    const outbound = new OutboundLimiter({
+      connector: { perHostConcurrency: 1, perHostPerMinute: 2, maxWaitMs: 8000 },
+    });
+    const holder = await outbound.acquireConnectorSlot('x', 'b.example'); // one of b.example's two tokens
+    const service = new ConnectorService({ offline: false, outbound, connectors: [twoHosts] });
+    await expect(service.load('test.two', {})).rejects.toThrow(/down: https:\/\/a\.example/);
+    holder();
+    // The ended load's waiter left the queue, so the last token is still there for the next load.
+    await expect(
+      Promise.race([
+        outbound.acquireConnectorSlot('y', 'b.example'),
+        new Promise((r) => setTimeout(() => r('blocked'), 50)),
+      ]),
+    ).resolves.toBeTypeOf('function');
+    expect(fetchMock.mock.calls.map(([url]) => url)).not.toContainEqual(expect.stringContaining('b.example'));
+  });
+
   it('sends no later request on a host it already held once the load has ended', async () => {
     // One branch fails while the other is between two requests to a host whose place was granted earlier: the second
     // request would go out with no place held, beside whoever holds that host's only place by then.
+    vi.useFakeTimers();
     let secondAsked: () => void = () => {};
     const asked = new Promise<void>((r) => (secondAsked = r));
     const lateBranch: Connector = {
@@ -180,11 +221,14 @@ describe('upstream limits', () => {
       connector: { perHostConcurrency: 1, perHostPerMinute: 60, maxWaitMs: 8000 },
     });
     const service = new ConnectorService({ offline: false, outbound, connectors: [lateBranch] });
-    await expect(service.load('test.late', {})).rejects.toThrow(/down: https:\/\/b\.example/);
+    const failed = expect(service.load('test.late', {})).rejects.toThrow(/down: https:\/\/b\.example/);
+    await vi.advanceTimersByTimeAsync(5);
+    await failed;
     // a.example's only place went back when the load ended; someone else takes it now.
     const holder = await outbound.acquireConnectorSlot('y', 'a.example');
+    await vi.advanceTimersByTimeAsync(25);
     await asked;
-    await sleep(10);
+    await vi.advanceTimersByTimeAsync(10);
     expect(fetchMock.mock.calls.map(([url]) => url)).not.toContain('https://a.example/2');
     holder();
   });
@@ -222,6 +266,8 @@ describe('upstream limits', () => {
     hold2();
   });
 
+  // Counts across vitest repeats too, which run the test body again with the module (and its geocodeCache) kept.
+  let coldRuns = 0;
   it('cold-loads the compare-cities param sets without any error, also at the limit that failed in 0.3.1', async () => {
     const doc = JSON.parse(
       readFileSync(new URL('../../../../showcase/compare-cities/dashboard.json', import.meta.url), 'utf8'),
@@ -232,7 +278,8 @@ describe('upstream limits', () => {
       .map((s) => ({ connector: s.connector!, params: s.params ?? {} }));
     expect(sources.length).toBeGreaterThanOrEqual(4);
 
-    const coldLoad = async (outbound: OutboundLimiter, suffix: string) => {
+    const coldLoad = async (outbound: OutboundLimiter) => {
+      const suffix = ` ${++coldRuns}`;
       fetchMock.mockReset();
       const open = new Map<string, number>();
       const peak = new Map<string, number>();
@@ -272,9 +319,9 @@ describe('upstream limits', () => {
       return { peak, geocoded: geocoded.length };
     };
 
-    await coldLoad(new OutboundLimiter(), '');
+    await coldLoad(new OutboundLimiter());
     // The limit of 66da12c: four distinct loads geocode at once, so two of them have to wait their turn.
-    const tightRun = await coldLoad(new OutboundLimiter({ connector: { perHostConcurrency: 2 } }), ' 2');
+    const tightRun = await coldLoad(new OutboundLimiter({ connector: { perHostConcurrency: 2 } }));
     expect(tightRun.geocoded).toBe(4);
     expect(Math.max(...tightRun.peak.values())).toBe(2);
   });
@@ -315,6 +362,17 @@ describe('ConnectorService cache', () => {
     expect((await service.load('demo.signal', { points: 2000, series: 1 })).table).not.toBe(a.table); // oldest: evicted
     expect(service.cacheStats().bytes).toBeLessThanOrEqual(2_000_000);
     expect(service.cacheStats().entries).toBeLessThan(13);
+  });
+
+  it('never keeps a result larger than the whole cache, and keeps the small ones', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-11T12:00:00Z'));
+    const service = new ConnectorService({ offline: true, cacheBytes: 50_000 });
+    const small = await service.load('demo.signal', { points: 10, series: 1 });
+    const big = await service.load('demo.signal', { points: 2000, series: 1 });
+    expect((await service.load('demo.signal', { points: 2000, series: 1 })).table).not.toBe(big.table);
+    expect((await service.load('demo.signal', { points: 10, series: 1 })).table).toBe(small.table);
+    expect(service.cacheStats().entries).toBe(1);
   });
 
   it('keeps an expired entry as the stale fallback within the hour, and not after it', async () => {

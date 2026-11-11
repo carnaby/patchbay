@@ -19,7 +19,10 @@ import type { DashboardTarget, DataService } from './data.ts';
 export type RawParameters = Readonly<Record<string, string>>;
 
 /** The view's values in text form as REST and MCP accept them; bounded so neither can be fed unbounded text. */
-export const RawParametersSchema = z.record(z.string().max(40), z.string().max(200));
+export const RawParametersSchema = z.record(z.string().max(40), z.string().max(200), {
+  // The record's own message ("Invalid key in record") hides the limit; the JSON Schema stays the same.
+  error: (issue) => (issue.code === 'invalid_key' ? 'A filter id has at most 40 characters' : undefined),
+});
 
 /** Ids a request names that the dashboard does not declare (own keys only), in the order given. */
 export function unknownIds(doc: Pick<DashboardDoc, 'parameters'>, raw: RawParameters | undefined): string[] {
@@ -52,6 +55,22 @@ export function viewValues(
   if (problems.length) throw badRequest(problems.map((p) => p.message).join('; '));
   return values;
 }
+
+/** The values of a request's view: its data-fed choices are loaded first, so a value they lack is a 400. */
+export async function readView(
+  data: DataService,
+  target: DashboardTarget,
+  doc: DashboardDoc,
+  raw: RawParameters | undefined,
+  now = Date.now(),
+): Promise<ParameterValues> {
+  return viewValues(doc, raw, now, await loadDataOptions(data, target, doc, raw));
+}
+
+/** The `loadOptions` of a preview: the same choices a read of the saved view would load. */
+export const optionsLoader =
+  (data: DataService, raw: RawParameters | undefined) => (saved: DashboardDoc, target: DashboardTarget) =>
+    loadDataOptions(data, target, saved, raw);
 
 /**
  * Choices per result table and column. A cached result keeps its table object until a new reading replaces it, so

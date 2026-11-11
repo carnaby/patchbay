@@ -211,11 +211,17 @@ export function guardAction(
 }
 
 /**
- * The value a request waits for while it is held: only once loaded, non-empty choices lack it. Loading, failed and
- * empty lists let the request go (`dataValueReady`), so nothing waits on them.
+ * The value a request waits for while it is held: only once loaded, non-empty choices lack it and the list can bring
+ * it back (`guardAction` holds only then). Loading, failed and empty lists let the request go (`dataValueReady`), and
+ * a static list's stale value is reset, so nothing waits on them.
  */
-export function pendingDataValue(param: Parameter, raw: RawValues, choices: DataChoices): string | null {
-  return staleDataValue(param, raw, choices.options) ? raw[param.id]! : null;
+export function pendingDataValue(
+  param: Parameter,
+  raw: RawValues,
+  choices: DataChoices,
+  optionsLive: boolean,
+): string | null {
+  return optionsLive && staleDataValue(param, raw, choices.options) ? raw[param.id]! : null;
 }
 
 /**

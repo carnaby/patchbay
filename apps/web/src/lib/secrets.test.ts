@@ -13,10 +13,12 @@ import {
   confirmedForSave,
   credentialErrorHint,
   credentialIssues,
+  draftRefsChanged,
   extractQueryParam,
   introducedSecretIds,
   introducedSecretRefs,
   joinNames,
+  parameterSecretProblem,
   plainHttpWarning,
   publicSecretsRequest,
   type SecretListItem,
@@ -241,6 +243,106 @@ describe('moving a key out of the URL', () => {
       value: 'abcdefgh',
     });
     expect(extractQueryParam('https://api.example.com/v1/x', 'token')).toBeNull();
+  });
+});
+
+describe('the editor pre-check follows the server rule', () => {
+  const url = 'https://api.example.com/v1/orders';
+  const base = docWith(http(url, [A]));
+  const same = base.datasets[0]!.source;
+  const withBody = (extra: Record<string, unknown>): Source => ({ ...same, ...extra }) as Source;
+
+  it('re-checks another body or method, a new dataset with a secret and a source that sends a filter', () => {
+    expect(draftRefsChanged(base, base, 'orders', withBody({ body: { q: 1 } }))).toBe(true);
+    expect(draftRefsChanged(base, base, 'orders', withBody({ method: 'POST' }))).toBe(true);
+    expect(draftRefsChanged(base, base, undefined, same)).toBe(true);
+    expect(
+      draftRefsChanged(base, base, 'orders', withBody({ method: 'POST', body: { r: '$param.region' } })),
+    ).toBe(true);
+  });
+
+  it('leaves the same source, a source without secrets and a rename alone', () => {
+    expect(draftRefsChanged(base, base, 'orders', same)).toBe(false);
+    expect(draftRefsChanged(base, base, 'orders', http(url))).toBe(false);
+    expect(draftRefsChanged(base, base, undefined, http(url))).toBe(false);
+  });
+
+  it('counts an unsaved filter edit that the saved document lacks, as the server will see it', () => {
+    const region = {
+      id: 'region',
+      label: 'Region',
+      type: 'select' as const,
+      options: [{ value: 'eu' }],
+      all: 'All',
+      default: null,
+    };
+    const sending = http(`${url}?region=$param.region`, [A]);
+    const saved = applyOps(emptyDashboard('t'), [
+      { op: 'addParameter', parameter: region },
+      {
+        op: 'addDataset',
+        dataset: {
+          id: 'orders',
+          name: 'Orders',
+          source: sending,
+          transforms: [],
+          refreshSec: 0,
+          accumulate: 0,
+        },
+      },
+    ]).doc;
+    const local = applyOps(saved, [
+      { op: 'updateParameter', id: 'region', set: { options: [{ value: 'eu' }, { value: 'us' }] } },
+    ]).doc;
+    expect(draftRefsChanged(saved, saved, 'orders', sending)).toBe(false);
+    expect(draftRefsChanged(saved, local, 'orders', sending)).toBe(true);
+  });
+});
+
+describe('parameterSecretProblem', () => {
+  const region = {
+    id: 'region',
+    label: 'Region',
+    type: 'select' as const,
+    options: [{ value: 'eu' }, { value: 'us' }],
+    all: 'All',
+    default: null,
+  };
+  const other = { ...region, id: 'other', label: 'Other' };
+  const saved = applyOps(emptyDashboard('t'), [
+    { op: 'addParameter', parameter: region },
+    { op: 'addParameter', parameter: other },
+    {
+      op: 'addDataset',
+      dataset: {
+        id: 'o',
+        name: 'Orders',
+        source: http('https://api.example.com/v1/orders?region=$param.region', [A]),
+        transforms: [],
+        refreshSec: 0,
+        accumulate: 0,
+      },
+    },
+  ]).doc;
+  const missing = () => [{ message: 'no secret "k"' }];
+  const edit = (id: string, set: Record<string, unknown>) =>
+    applyOps(saved, [{ op: 'updateParameter', id, set } as never]).doc;
+
+  it('names the dataset and the credential problem when a sent filter gets other choices', () => {
+    const next = edit('region', { options: [{ value: 'eu' }, { value: 'asia' }] });
+    expect(parameterSecretProblem(saved, next, missing)).toBe('Dataset "Orders": no secret "k"');
+  });
+
+  it('lets a label change, a move and a filter the dataset does not send through', () => {
+    expect(parameterSecretProblem(saved, edit('region', { label: 'Area' }), missing)).toBeNull();
+    const moved = applyOps(saved, [{ op: 'moveParameter', id: 'region', before: null }]).doc;
+    expect(parameterSecretProblem(saved, moved, missing)).toBeNull();
+    expect(parameterSecretProblem(saved, edit('other', { options: [{ value: 'x' }] }), missing)).toBeNull();
+  });
+
+  it('says nothing when the credentials are fine', () => {
+    const next = edit('region', { options: [{ value: 'eu' }] });
+    expect(parameterSecretProblem(saved, next, () => [])).toBeNull();
   });
 });
 

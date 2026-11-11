@@ -135,7 +135,9 @@ export class OutboundLimiter {
    * place per load and host, held until the load ends, because one load may ask its host for 50 URLs at once.
    * Not through the global gate: connectors call a fixed set of public APIs, not addresses a stranger chose.
    */
-  async acquireConnectorSlot(client: string, host: string): Promise<() => void> {
+  async acquireConnectorSlot(client: string, host: string, signal?: AbortSignal): Promise<() => void> {
+    // The load this place is for has ended (it failed on another host): no place, no token, no queue entry.
+    if (signal?.aborted) throw new Error('The load ended before its turn came');
     const { perHostConcurrency, maxWaitMs, maxQueuePerHost, maxQueuedPerClient } = this.connector;
     const b = this.connectorBucket(host);
     // Only with nobody waiting: a new load never takes the place a waiter is about to get.
@@ -147,10 +149,25 @@ export class OutboundLimiter {
       throw busyHost(host);
     }
     return new Promise((resolve, reject) => {
+      // A waiter leaves the queue exactly once: granted by pump, timed out, or here when its load ends first.
+      const leave = () => {
+        const index = b.waiting.indexOf(waiter);
+        if (index < 0) return;
+        b.waiting.splice(index, 1);
+        clearTimeout(waiter.timer);
+        waiter.fail(new Error('The load ended before its turn came'));
+        this.pump(host, b);
+      };
       const waiter: Waiter = {
         client,
-        grant: resolve,
-        fail: reject,
+        grant: (release) => {
+          signal?.removeEventListener('abort', leave);
+          resolve(release);
+        },
+        fail: (e) => {
+          signal?.removeEventListener('abort', leave);
+          reject(e);
+        },
         timer: setTimeout(() => {
           const index = b.waiting.indexOf(waiter);
           if (index < 0) return;
@@ -160,6 +177,7 @@ export class OutboundLimiter {
         }, maxWaitMs),
       };
       waiter.timer.unref();
+      signal?.addEventListener('abort', leave, { once: true });
       b.waiting.push(waiter);
       this.pump(host, b);
     });

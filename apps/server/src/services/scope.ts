@@ -11,6 +11,7 @@ import {
   type Dataset,
   type DatasetResult,
   type DataTable,
+  defaultParameterValues,
   hasLineage,
   lineageCycles,
   lineageDatasets,
@@ -19,7 +20,6 @@ import {
   PIPELINE_LIMITS,
   type PipelineInputs,
   type PipelineResult,
-  readParameterValues,
   stepInputsOf,
   upstreamOf,
 } from '@patchbay/core';
@@ -187,8 +187,7 @@ export class ResolveScope {
     this.target = target;
     // Bound once, before anything is resolved: every cache below is keyed by the bound definitions, which is what
     // gives each view its own entries without a key built by hand (proposal 0010).
-    this.values =
-      options.parameters ?? readParameterValues(doc.parameters, () => undefined, Date.now()).values;
+    this.values = options.parameters ?? defaultParameterValues(doc.parameters);
     const bound = bindDoc(doc, this.values);
     this.doc = bound.doc;
     this.bindErrors = bound.errors;
@@ -286,11 +285,24 @@ export class ResolveScope {
     } catch (e) {
       // The server, not the dataset, is the problem: callers answer 503 or skip a refresh.
       if (e instanceof BusyError) throw e;
+      let timedOut = e;
+      if (e instanceof ScopeTimeoutError && e.source !== undefined) {
+        // The deadline is the scope's; the source it names must be one this dataset reads, or the widget would wait on
+        // another chain's load with a retry hint it does not need.
+        const lineage = new Set([
+          dataset.id,
+          ...upstreamOf(dataset).flatMap((u) => lineageDatasets(this.doc, u).map((d) => d.id)),
+        ]);
+        if (!lineage.has(e.source)) timedOut = this.timeoutError(lineage);
+      }
       // The widget's own source is the slow one: naming itself as a "source dataset" would read as another dataset.
       const shown =
-        e instanceof ScopeTimeoutError && e.source === dataset.id
-          ? new ScopeTimeoutError(STILL_LOADING_OWN, { retryAfterSec: e.retryAfterSec, source: e.source })
-          : e;
+        timedOut instanceof ScopeTimeoutError && timedOut.source === dataset.id
+          ? new ScopeTimeoutError(STILL_LOADING_OWN, {
+              retryAfterSec: timedOut.retryAfterSec,
+              source: timedOut.source,
+            })
+          : timedOut;
       return errorResult(dataset.id, shown);
     }
   }
@@ -360,10 +372,14 @@ export class ResolveScope {
 
   /**
    * The error for running out of time, built when it happens. The first pending load in the document's order (drafts
-   * after it) is named, so a wall screen keeps showing the same text however the loads interleave.
+   * after it) is named, so a wall screen keeps showing the same text however the loads interleave. `within` limits it
+   * to one dataset's lineage: a widget names only what it waits for.
    */
-  private timeoutError(): ScopeTimeoutError {
-    const id = this.doc.datasets.find((d) => this.pending.has(d.id))?.id ?? this.pending.keys().next().value;
+  private timeoutError(within?: ReadonlySet<string>): ScopeTimeoutError {
+    const mine = (id: string) => !within || within.has(id);
+    const id =
+      this.doc.datasets.find((d) => this.pending.has(d.id) && mine(d.id))?.id ??
+      [...this.pending.keys()].find(mine);
     return id === undefined
       ? new ScopeTimeoutError(SCOPE_TIMEOUT_MESSAGE)
       : new ScopeTimeoutError(stillLoadingMessage(id), {

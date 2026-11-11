@@ -90,8 +90,11 @@ export function parseOptions(text: string, previous: readonly OptionInput[] = []
     if (!value) return [];
     const label = rest.join('|').trim();
     // A number an agent declared stays a number while its text is unchanged; the editor itself writes text.
-    const kept = previous.find((o) => String(o.value) === value)?.value ?? value;
-    return [{ value: kept, ...(label && label !== value ? { label } : {}) }];
+    const prev = previous.find((o) => String(o.value) === value);
+    const kept = prev?.value ?? value;
+    // "eu | eu" saved by an agent shows as "eu"; typed back either way, it keeps its label.
+    const keepSame = prev?.label === value && (!label || label === value);
+    return [{ value: kept, ...(label && label !== value ? { label } : keepSame ? { label: value } : {}) }];
   });
 }
 
@@ -135,12 +138,19 @@ export function checkParameter(
  * The patch that keeps `default` valid after the options or the ticked presets changed, so the Default list never
  * shows a value the saved filter would not accept; {} when it already is. Data-fed choices always start at All.
  */
-export function reseatDefault(draft: Record<string, unknown>): Record<string, unknown> {
+export function reseatDefault(
+  draft: Record<string, unknown>,
+  /** The options before this edit: typing in the default's own line moves the default with it. */
+  previousOptions?: readonly OptionInput[],
+): Record<string, unknown> {
   if (draft.type === 'select' && !draft.optionsFrom) {
     const options = (draft.options as OptionInput[] | undefined) ?? [];
     const hasAll = draft.all !== undefined;
     if (draft.default === null) return hasAll ? {} : { default: options[0]?.value ?? null };
     if (options.some((o) => String(o.value) === String(draft.default))) return {};
+    // Typing in the default's own line changes its value; follow the line, not the first option.
+    const was = previousOptions?.findIndex((o) => String(o.value) === String(draft.default)) ?? -1;
+    if (was >= 0 && previousOptions?.length === options.length) return { default: options[was]?.value };
     return { default: hasAll ? null : (options[0]?.value ?? null) };
   }
   if (draft.type === 'dateRange' && typeof draft.default === 'string') {

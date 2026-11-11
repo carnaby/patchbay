@@ -378,18 +378,31 @@ export function buildMapOption(
         type: 'scatter',
         coordinateSystem: 'geo',
         z: 4,
-        data: newest.flatMap((r) => [
-          {
-            value: [r[config.lon], r[config.lat]],
-            symbolSize: 20,
-            itemStyle: { color: 'transparent', borderColor: color, borderWidth: 1.5, opacity: 0.7 },
-          },
-          {
-            value: [r[config.lon], r[config.lat]],
-            symbolSize: 10,
-            itemStyle: { color, borderColor: theme.surface, borderWidth: 2 },
-          },
-        ]),
+        data: newest.flatMap((r) => {
+          const selected = rowSelected(r, opts.selection ?? null);
+          // Same as the plain dots: the value travels with the dot, and other entities dim.
+          const pick = opts.pickField ? { pick: r[opts.pickField] ?? null } : {};
+          const dim = selected === false ? { opacity: DIMMED_OPACITY } : {};
+          return [
+            {
+              value: [r[config.lon], r[config.lat]],
+              symbolSize: 20,
+              ...pick,
+              itemStyle: {
+                color: 'transparent',
+                borderColor: color,
+                borderWidth: 1.5,
+                opacity: selected === false ? DIMMED_OPACITY : 0.7,
+              },
+            },
+            {
+              value: [r[config.lon], r[config.lat]],
+              symbolSize: 10,
+              ...pick,
+              itemStyle: { color, borderColor: theme.surface, borderWidth: 2, ...dim },
+            },
+          ];
+        }),
       });
     }
   }

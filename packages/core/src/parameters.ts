@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { MAX_BOUND_EXPRESSION, paramNodes, parse } from './expr.ts';
 import { IdSchema } from './ids.ts';
 import { type LineageDataset, type LineageDoc, lineageDatasets } from './lineage.ts';
-import { PARAM_ID, PARAM_PREFIX, type RefName, readRef } from './param-ref.ts';
+import { PARAM_ID, PARAM_PREFIX, type RefName, readRef, WHOLE_REF } from './param-ref.ts';
 import type { DashboardDoc } from './schema.ts';
 import type { DataTable } from './table.ts';
 
@@ -127,6 +127,7 @@ export interface DateRange {
   end: number;
   preset?: DatePreset;
 }
+
 /** What a data answer for a relative period states (types.ts `DatasetResult.calendar`). */
 export interface CalendarWindow {
   /** The resolved windows, "from..to" per filter at a relative preset, joined with "|" (the format of soundWindow). */
@@ -277,7 +278,12 @@ function readValue(
       if (text === ALL_TEXT && p.all) return { value: null };
       const choices = choicesOf(p, options);
       if (choices === null) {
-        if (options.lenientData && text.length > 0 && text.length <= MAX_TEXT_VALUE) return { value: text };
+        if (options.lenientData) {
+          // Data never offers an empty or over-long choice: say so instead of blaming the options dataset.
+          if (text.length === 0 || text.length > MAX_TEXT_VALUE)
+            return { message: `Filter "${p.id}" has no value ${quoted(text)}` };
+          return { value: text };
+        }
         return {
           message: `Filter "${p.id}" takes its choices from dataset "${p.optionsFrom!.dataset}", which could not be read`,
         };
@@ -321,7 +327,8 @@ function readValue(
 /**
  * The values of a view. A missing value takes the default; an invalid one takes the default and is named in
  * `problems` with what may be chosen. Ids that are not declared are ignored, so a link survives the removal of a
- * filter. `raw` is asked only for declared ids, which never include prototype names.
+ * filter. `raw` should read own properties only: "constructor" is a valid id, and a non-string answer counts as
+ * absent.
  */
 export function readParameterValues(
   parameters: readonly Parameter[] | undefined,
@@ -332,7 +339,8 @@ export function readParameterValues(
   const values: Record<string, ParameterValue> = {};
   const problems: ValueProblem[] = [];
   for (const p of parameters ?? []) {
-    const text = raw(p.id);
+    const given = raw(p.id);
+    const text = typeof given === 'string' ? given : undefined;
     if (text === undefined) {
       values[p.id] = defaultValue(p, now);
       continue;
@@ -344,6 +352,14 @@ export function readParameterValues(
     } else values[p.id] = read.value;
   }
   return { values, problems };
+}
+
+/** The values of a view with nothing chosen: every filter at its default. */
+export function defaultParameterValues(
+  parameters: readonly Parameter[] | undefined,
+  now: number = Date.now(),
+): ParameterValues {
+  return readParameterValues(parameters, () => undefined, now).values;
 }
 
 /** The `p.<id>` entries of a link to this view: only values that differ from their default, in declared order. */
@@ -428,7 +444,6 @@ export interface ParameterRef extends RefName {
 
 /** A reference and what may follow its id: the class decides where an embedded one ends, for messages only. */
 const REF_TEXT = /\$param\.[A-Za-z0-9_.]*/g;
-const WHOLE_REF = /^\$param\.[A-Za-z0-9_.]*$/;
 const shortQuote = (text: string) => `"${text.length > 60 ? `${text.slice(0, 59)}…` : text}"`;
 
 /**
@@ -657,7 +672,7 @@ export function optionWriteIssues(param: Parameter, previous?: Parameter): strin
   for (const o of param.options ?? []) {
     const text = String(o.value);
     if (text.includes(PARAM_PREFIX) && !text.startsWith(PARAM_PREFIX) && !held.has(text))
-      issues.push(`Filter "${param.id}": an option value cannot contain "${PARAM_PREFIX}"`);
+      issues.push(`Filter "${param.id}": an option value cannot contain "${PARAM_PREFIX}" (${quoted(text)})`);
   }
   return issues;
 }
@@ -729,11 +744,16 @@ export function parameterIssues(doc: Pick<DashboardDoc, 'parameters' | 'datasets
   for (const d of doc.datasets) {
     const secrets = d.source.kind === 'http' && (d.source.secrets?.length ?? 0) > 0;
     const refs = parameterRefs(d);
+    const said = new Set<string>();
     for (const r of refs) {
       const param = byId.get(r.id);
       const problem =
         r.problem ?? (param ? refProblem(param, r, { secrets }) : `unknown filter "${r.id}"; ${declared}`);
-      if (problem) issues.push(`Dataset "${d.id}" (${PLACE_LABELS[r.place]}): ${problem}`);
+      if (!problem) continue;
+      const line = `Dataset "${d.id}" (${PLACE_LABELS[r.place]}): ${problem}`;
+      if (said.has(line)) continue;
+      said.add(line);
+      issues.push(line);
     }
     // The history holds the source's rows, keyed by dashboard and dataset, and restarts when the source text
     // changes: a source that differs per view would restart it on every load. Steps run after it and are harmless.

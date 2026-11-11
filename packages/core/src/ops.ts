@@ -383,6 +383,7 @@ function applyOne(doc: DashboardDoc, op: Op, index: number, changes: string[]): 
     }
     case 'updateParameter': {
       const current = filter(op.id);
+      if (Object.keys(op.set).length === 0) fail('set is empty; give at least one field to change');
       // A new id would orphan every reference silently: renaming is add, re-point, remove, in one batch.
       for (const key of ['id', 'type'] as const)
         if (Object.hasOwn(op.set, key) && op.set[key] !== current[key])

@@ -255,6 +255,9 @@ describe('loadUseCases', () => {
     const cases: Record<string, object> = {
       'bound-http': { kind: 'http', url: 'https://api.example.com/x?r=$param.region' },
       'bound-feed': { kind: 'feed', url: 'https://example.org/rss?r=$param.region', limit: 30 },
+      'bound-path': { kind: 'http', url: 'https://api.example.com/$param.region/x' },
+      'bound-name': { kind: 'http', url: 'https://api.example.com/x?$param.region=1' },
+      'bound-host': { kind: 'http', url: 'https://$param.region.example.com/x' },
       'bound-body': {
         kind: 'http',
         url: 'https://api.example.com/x',
@@ -272,10 +275,23 @@ describe('loadUseCases', () => {
     const warnings: string[] = [];
     const loaded = loadUseCases(root, (m) => warnings.push(m));
     expect(loaded.map((u) => u.meta.id)).toEqual(['connector']);
-    for (const slug of ['bound-http', 'bound-feed', 'bound-body'])
+    for (const slug of ['bound-http', 'bound-feed', 'bound-path', 'bound-body'])
       expect(
         warnings.some((w) => w.includes(slug) && w.includes('a showcase source cannot use filters')),
       ).toBe(true);
+    // parseDashboard refuses these two before the portability check; they must still never load.
+    expect(
+      warnings.some(
+        (w) => w.includes('bound-name') && w.includes('A query parameter name cannot be a filter'),
+      ),
+    ).toBe(true);
+    expect(
+      warnings.some(
+        (w) =>
+          w.includes('bound-host') &&
+          w.includes('Filters cannot be part of the scheme, host, port or user name'),
+      ),
+    ).toBe(true);
   });
 
   it('warns and returns nothing when the showcase path is a file', () => {

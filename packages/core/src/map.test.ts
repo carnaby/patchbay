@@ -2,6 +2,7 @@
 import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { DIMMED_OPACITY, type Selection } from './cross-filter.ts';
 import {
   buildChartOption,
   ChartConfigSchema,
@@ -467,6 +468,44 @@ describe('buildMapOption', () => {
       [-160, 30],
     ]);
     expect(latest[0]!.symbolSize).toBeGreaterThan(latest[1]!.symbolSize);
+  });
+
+  it("lets a track's newest positions carry their pick and dim with the selection", () => {
+    const fleet = inferTable(
+      [
+        { time: 1, name: 'A', latitude: 10, longitude: 10 },
+        { time: 2, name: 'B', latitude: 20, longitude: 20 },
+        { time: 3, name: 'A', latitude: 11, longitude: 11 },
+        { time: 4, name: 'B', latitude: 21, longitude: 21 },
+      ],
+      { types: { time: 'time' } },
+    );
+    const cfg = config({
+      mode: 'track',
+      series: 'name',
+      crossFilter: { parameter: 'n', field: 'name' },
+    });
+    const latestOf = (selection: Selection | null, key: string) => {
+      const option = buildMapOption(cfg, fleet, theme, { pickField: 'name', selection });
+      const s = seriesOf(option).find((x) => x.id === `latest:${key}`)!;
+      return s.data as { pick?: unknown; itemStyle: Record<string, unknown> }[];
+    };
+    for (const key of ['A', 'B']) {
+      const items = latestOf(null, key);
+      expect(items).toHaveLength(2);
+      expect(items.map((d) => d.pick)).toEqual([key, key]);
+      expect(items[0]!.itemStyle.opacity).toBe(0.7);
+      expect(items[1]!.itemStyle.opacity).toBeUndefined();
+    }
+    const dimmed = latestOf({ field: 'name', value: 'B' }, 'A');
+    const [ring, dot] = dimmed as [(typeof dimmed)[number], (typeof dimmed)[number]];
+    expect(ring.itemStyle).toMatchObject({ color: 'transparent', borderWidth: 1.5, opacity: DIMMED_OPACITY });
+    expect(dot.itemStyle).toMatchObject({
+      borderColor: theme.surface,
+      borderWidth: 2,
+      opacity: DIMMED_OPACITY,
+    });
+    expect(latestOf({ field: 'name', value: 'B' }, 'B')[1]!.itemStyle.opacity).toBeUndefined();
   });
 
   it('shades the night under the data for the time of the data', () => {

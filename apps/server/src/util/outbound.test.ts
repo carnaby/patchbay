@@ -67,6 +67,72 @@ describe('connector budget', () => {
     expect(order).toEqual(['b', 'c']);
   });
 
+  it('drops a waiter whose load ended, without spending a token on it', async () => {
+    const l = limiter({ perHostConcurrency: 1, perHostPerMinute: 2, maxWaitMs: 8000 });
+    const holder = await l.acquireConnectorSlot('x', 'h.example'); // 1 token left
+    const ended = new AbortController();
+    const waiting = l.acquireConnectorSlot('y', 'h.example', ended.signal);
+    ended.abort();
+    await expect(waiting).rejects.toThrow('The load ended before its turn came');
+    holder();
+    // The token the abandoned waiter would have taken is still there.
+    await expect(
+      Promise.race([
+        l.acquireConnectorSlot('z', 'h.example'),
+        new Promise((r) => setTimeout(() => r('blocked'), 50)),
+      ]),
+    ).resolves.toBeTypeOf('function');
+  });
+
+  it('refuses at once when the load already ended, and takes no place', async () => {
+    const l = limiter({ perHostConcurrency: 1, perHostPerMinute: 60, maxWaitMs: 8000 });
+    const ended = new AbortController();
+    ended.abort();
+    await expect(l.acquireConnectorSlot('x', 'h.example', ended.signal)).rejects.toThrow(
+      'The load ended before its turn came',
+    );
+    const release = await l.acquireConnectorSlot('y', 'h.example'); // the only place is still free
+    release();
+  });
+
+  it('keeps the order of the others when a waiter in the middle leaves', async () => {
+    const l = limiter({ perHostConcurrency: 1, perHostPerMinute: 60, maxWaitMs: 8000 });
+    const holder = await l.acquireConnectorSlot('x', 'h.example');
+    const order: string[] = [];
+    const queue = (client: string, signal?: AbortSignal) =>
+      l.acquireConnectorSlot(client, 'h.example', signal).then((release) => {
+        order.push(client);
+        return release;
+      });
+    const endedB = new AbortController();
+    const a = queue('a');
+    const b = queue('b', endedB.signal);
+    const c = queue('c');
+    endedB.abort();
+    await expect(b).rejects.toThrow('The load ended before its turn came');
+    holder();
+    const releaseA = await a;
+    await Promise.resolve();
+    expect(order).toEqual(['a']); // c still waits for a's place
+    releaseA();
+    (await c)();
+    expect(order).toEqual(['a', 'c']);
+  });
+
+  it('clears the wait timeout of a waiter whose load ended, so it fails once', async () => {
+    vi.useFakeTimers();
+    const l = limiter({ perHostConcurrency: 1, perHostPerMinute: 60, maxWaitMs: 1000 });
+    const holder = await l.acquireConnectorSlot('x', 'h.example');
+    const ended = new AbortController();
+    const waiting = l.acquireConnectorSlot('y', 'h.example', ended.signal);
+    ended.abort();
+    await expect(waiting).rejects.toThrow('The load ended before its turn came');
+    expect(vi.getTimerCount()).toBe(0); // its timeout went with it
+    vi.advanceTimersByTime(1001);
+    holder();
+    await expect(l.acquireConnectorSlot('z', 'h.example')).resolves.toBeTypeOf('function');
+  });
+
   it('never arms a busy wake timer when the minute budget is zero', async () => {
     vi.useFakeTimers();
     const l = limiter({ perHostConcurrency: 1, perHostPerMinute: 0, maxWaitMs: 1000 });

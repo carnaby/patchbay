@@ -133,7 +133,7 @@ export class ConnectorService {
       const client = currentClient();
       const places = new Map<string, Promise<void>>();
       const releases: (() => void)[] = [];
-      let ended = false;
+      const ended = new AbortController();
       // Every filter value is a new set of params and so a new upstream load: the budget is taken on the first request
       // to each host, which the demo connectors never send. One place per host for the whole load, as Hacker News asks
       // its host for up to 50 items at once. The place is held until the load settles, not until every request it sent
@@ -142,10 +142,11 @@ export class ConnectorService {
         const host = new URL(url).hostname.toLowerCase();
         let place = places.get(host);
         if (!place) {
-          place = this.outbound.acquireConnectorSlot(client, host).then((release) => {
+          place = this.outbound.acquireConnectorSlot(client, host, ended.signal).then((release) => {
             // A place granted after the load ended (it failed on another host meanwhile) goes straight back, and no
-            // request follows it: fetchJson is never called without a held place.
-            if (ended) {
+            // request follows it: fetchJson is never called without a held place. Ending the load also takes its
+            // waiters out of the queue, so a turn that comes too late spends nothing.
+            if (ended.signal.aborted) {
               release();
               throw new Error('The load ended before its turn came');
             }
@@ -156,7 +157,7 @@ export class ConnectorService {
         await place;
         // The place may have been granted long ago and given back since: a branch that asks again after a sibling
         // failed would otherwise send its request with no place held.
-        if (ended) throw new Error('The load ended before its turn came');
+        if (ended.signal.aborted) throw new Error('The load ended before its turn came');
         return fetchJson<T>(url, headers ? { headers } : {});
       };
       try {
@@ -185,7 +186,7 @@ export class ConnectorService {
         }
         throw e;
       } finally {
-        ended = true;
+        ended.abort();
         for (const release of releases.splice(0)) release();
       }
     })();

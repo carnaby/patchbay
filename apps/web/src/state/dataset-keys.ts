@@ -117,6 +117,9 @@ export const datasetKeyFor = (dashboardId: string, datasetId: string, lineage: s
 export const datasetKey = (dashboardId: string, doc: DashboardDoc, datasetId: string, raw: RawValues = {}) =>
   datasetKeyFor(dashboardId, datasetId, lineageKey(doc, datasetId), viewKey(doc, datasetId, raw));
 
+/** One object, so the accepted-values memo (keyed by it) hits. */
+export const NO_VALUES: RawValues = {};
+
 /**
  * The server only knows saved definitions. A child whose parent has unsaved edits would come back computed from the
  * old parent and land under the new key, so it waits for the save like the parent does.
@@ -131,7 +134,7 @@ export function datasetInSync(
   // The server reads filter values against the saved declarations: a value of a new option waits for the save.
   return (
     lineageKey(saved, datasetId) === lineageKey(doc, datasetId) &&
-    viewKey(saved, datasetId, {}) === viewKey(doc, datasetId, {})
+    viewKey(saved, datasetId, NO_VALUES) === viewKey(doc, datasetId, NO_VALUES)
   );
 }
 
@@ -161,8 +164,7 @@ export function soundIdentity(
     sound,
     lineageKey(doc, datasetId),
     viewKey(doc, datasetId, raw),
-    // The window the rows were computed for, as the server states it; the client clock only when an older server did
-    // not.
+    // The window the rows were computed for, as the server states it; the client clock only for an older server.
     result?.calendar?.window ?? soundWindow(calendarTexts(doc, datasetId, raw), now),
   ]);
 }
@@ -208,7 +210,7 @@ function mayPass(error: unknown): boolean {
 
 /** A failure only an edit or a setting can fix: asked again rarely, so a fix that changes no key still shows up. */
 const LASTING_RETRY_MS = 15 * 60_000;
-/** The widest spread of the minute and quarter-hour retries. */
+/** The widest spread of the minute and quarter-hour retries and of the refetch at a stated window's end. */
 const SPREAD_MS = 10_000;
 /** Never sooner than this after a refusal or a spent window, whatever the server says: a wall must not hammer it. */
 const MIN_RETRY_MS = 5_000;
@@ -223,7 +225,15 @@ interface LastFetch {
   validUntil?: number;
   /** Set when the result carries an error that asking again cannot fix. */
   lasting?: true;
-  /** Added to the minute and quarter-hour retries of a failed or lasting result, so a wall does not retry at once. */
+  /**
+   * Set when the server refused the request itself (a thrown 4xx other than 408 and 429): asked again on the lasting
+   * cadence.
+   */
+  refused?: true;
+  /**
+   * Added to the minute and quarter-hour retries of a failed, lasting or refused result, and to the refetch at the end
+   * of a stated window, so the widgets of a wall do not all ask at once.
+   */
   spreadMs?: number;
 }
 
@@ -232,8 +242,9 @@ const spreads = new WeakMap<object, number>();
 
 /**
  * What `behindCalendar` and `calendarRefetch` read from a dataset's query: the end of the server's window, a lasting
- * mark and the retry spread, next to the last fetch time. A failing upstream arrives as a 200 whose result carries
- * `error`, which query-core counts as a success: it is a failure all the same, or the error would stay up for a day.
+ * or refused mark and the retry spread, next to the last fetch time. A failing upstream arrives as a 200 whose result
+ * carries `error`, which query-core counts as a success: it is a failure all the same, or the error would stay up for
+ * a day.
  */
 export function lastFetch(
   state: {
@@ -252,19 +263,25 @@ export function lastFetch(
   random: () => number = Math.random,
 ): LastFetch {
   const delivered = state.status === 'success';
-  const lasting = delivered && Boolean(state.data?.error) && state.data?.lasting === true;
+  // After a thrown failure query-core keeps the last data: its error, hint and window say nothing about this attempt,
+  // which `mayPass` alone judges.
+  const inBand = delivered ? state.data : undefined;
+  const lasting = Boolean(inBand?.error) && inBand?.lasting === true;
   const last: LastFetch = {
     updatedAt: state.dataUpdatedAt,
-    failed: (state.status === 'error' && mayPass(state.error)) || (Boolean(state.data?.error) && !lasting),
+    failed: (state.status === 'error' && mayPass(state.error)) || (Boolean(inBand?.error) && !lasting),
   };
   if (lasting) last.lasting = true;
-  // After a thrown failure query-core keeps the last good data: its window says nothing about this attempt.
-  const valid = state.data?.calendar?.validForSec;
-  if (delivered && typeof valid === 'number' && Number.isFinite(valid) && valid >= 0)
+  // The server refused the request itself (a removed or private dashboard, a value it no longer accepts): only a fix
+  // helps, like a lasting error, so it is asked again rarely, not never and not every minute.
+  if (state.status === 'error' && !mayPass(state.error)) last.refused = true;
+  const valid = inBand?.calendar?.validForSec;
+  if (typeof valid === 'number' && Number.isFinite(valid) && valid >= 0)
     // Measured from this tab's receipt, so its clock offset cancels out; latency only makes it later.
     last.validUntil = state.dataUpdatedAt + valid * 1000;
-  // Failing widgets of a wall screen failed together (a restart, an upstream outage): spread their retries.
-  if (last.failed || lasting) {
+  // Failing widgets of a wall failed together, and every wall's window ends at the same instant: spread their retries
+  // and the refetch at the window's end.
+  if (last.failed || lasting || last.refused || last.validUntil !== undefined) {
     let spread = spreads.get(state);
     if (spread === undefined) {
       spread = Math.floor(random() * SPREAD_MS);
@@ -273,8 +290,8 @@ export function lastFetch(
     if (spread > 0) last.spreadMs = spread;
   }
   // The server refused the load for its own limits, not the source's: its turn comes soon, not at the next interval.
-  const retry = state.data?.retryAfterSec;
-  if (state.data?.error && typeof retry === 'number' && Number.isFinite(retry) && retry > 0)
+  const retry = inBand?.retryAfterSec;
+  if (inBand?.error && typeof retry === 'number' && Number.isFinite(retry) && retry > 0)
     last.retryAfterSec = retry;
   return last;
 }
@@ -286,9 +303,10 @@ export function lastFetch(
  * pinned to "last 7 days" on a dataset that never refreshes would show the old week forever. Query-core asks again on
  * every render and update and restarts its timer, so the delay must aim at a fixed instant (inside the first minute
  * the fallback's 00:01 is today's, not tomorrow's). A transient failure, or a result that has not caught up with the
- * fallback's boundary, is asked for again every minute, and a lasting one every 15 minutes, each with a spread of up
- * to 10 s; neither ever waits past the window. A dataset off the calendar that never refreshes retries its failures
- * the same way and otherwise is not asked again; one with an interval keeps its interval.
+ * fallback's boundary, is asked for again every minute, and a lasting one or a request the server refused every 15
+ * minutes, each with a spread of up to 10 s; neither ever waits past the window. The refetch at the end of a stated
+ * window gets the same spread. A dataset off the calendar that never refreshes retries its failures and refusals the
+ * same way and otherwise is not asked again; one with an interval keeps its interval.
  */
 export function nextRefetch(
   interval: number | false,
@@ -318,7 +336,7 @@ function calendarRefetch(
   // The server said how long this answer's window stays valid: aim one second past that, never at this clock's 00:01.
   // It runs before the calendar check: the server knows best, also while an edit makes this tab think otherwise.
   if (last?.validUntil !== undefined) {
-    const expiresIn = Math.max(MIN_RETRY_MS, last.validUntil + 1000 - now);
+    const expiresIn = Math.max(MIN_RETRY_MS, last.validUntil + 1000 + (last.spreadMs ?? 0) - now);
     if (interval !== false) return Math.min(interval, expiresIn);
     if (last.failed) return Math.min(catchUp, expiresIn);
     // Rarely, not never: a secret restored under its id or a server setting fixed changes no key this page sees.
@@ -327,14 +345,17 @@ function calendarRefetch(
   }
   if (!calendar) {
     // A dataset that never refreshes would keep a failure until someone reloads the wall screen: a transient one is
-    // asked again every minute, a lasting one rarely (a fix that changes no key must still show up).
+    // asked again every minute, a lasting one or a refusal rarely (a fix that changes no key must still show up).
     if (interval !== false) return interval;
     if (last?.failed) return catchUp;
-    return last?.lasting ? lastingRetry : false;
+    return last?.lasting || last?.refused ? lastingRetry : false;
   }
   const rollover = DAY_MS - ((now - ROLLOVER_MS) % DAY_MS);
   // A regular refresh comes back on its own; only a dataset that never refreshes needs catching up.
   if (interval !== false) return Math.min(interval, rollover);
+  // A thrown failure does not move `updatedAt`, so `behindCalendar` would read the last delivered result's time and
+  // poll every minute from the next 00:01 on.
+  if (last?.refused) return Math.min(lastingRetry, rollover);
   if (last && behindCalendar(now, last)) return Math.min(catchUp, rollover);
   return last?.lasting ? Math.min(lastingRetry, rollover) : rollover;
 }
