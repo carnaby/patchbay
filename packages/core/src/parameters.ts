@@ -127,6 +127,38 @@ export interface DateRange {
   end: number;
   preset?: DatePreset;
 }
+/** What a data answer for a relative period states (types.ts `DatasetResult.calendar`). */
+export interface CalendarWindow {
+  /** The resolved windows, "from..to" per filter at a relative preset, joined with "|" (the format of soundWindow). */
+  window: string;
+  /** Whole seconds, rounded up, from the moment the server resolved the view to the next 00:00 UTC. */
+  validForSec: number;
+}
+
+/** One formatter for the server's stated window and the web's own fallback, so the two never differ in form. */
+export const windowText = (range: Pick<DateRange, 'from' | 'to'>) => `${range.from}..${range.to}`;
+
+/**
+ * The calendar window of the filters `ids` at a relative preset, and how long it stays valid. Every preset may change
+ * at midnight UTC (lastMonth then simply gives the same window again), so validity always ends there. Null when none
+ * of them is at a relative preset.
+ */
+export function calendarOf(
+  parameters: readonly Parameter[] | undefined,
+  ids: readonly string[],
+  values: ParameterValues,
+  now: number,
+): CalendarWindow | null {
+  const windows = ids.flatMap((id) => {
+    const p = parameters?.find((x) => x.id === id);
+    const v = values[id];
+    return p?.type === 'dateRange' && v && typeof v === 'object' && v.preset ? [windowText(v)] : [];
+  });
+  if (windows.length === 0) return null;
+  const midnight = Math.floor(now / DAY_MS) * DAY_MS + DAY_MS;
+  return { window: windows.join('|'), validForSec: Math.ceil((midnight - now) / 1000) };
+}
+
 export type ParameterValue = string | number | null | DateRange;
 export type ParameterValues = Readonly<Record<string, ParameterValue>>;
 

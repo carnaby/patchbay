@@ -7,7 +7,7 @@
  */
 import { z } from 'zod';
 import { compileFor, ExprError, isTruthy, parse, referencedFields } from './expr.ts';
-import { DATE_PRESETS, type DatePreset, presetRange } from './parameters.ts';
+import { DATE_PRESETS, type DatePreset, presetRange, windowText } from './parameters.ts';
 import type { DataTable, Scalar } from './table.ts';
 
 export const SOUND_IDS = ['bell', 'chime', 'ding', 'cash', 'pop', 'alert'] as const;
@@ -107,10 +107,7 @@ function conditionHolds(expr: string, table: DataTable): boolean {
 export function soundWindow(texts: readonly string[], now: number): string {
   return texts
     .filter((t): t is DatePreset => (DATE_PRESETS as readonly string[]).includes(t))
-    .map((t) => {
-      const r = presetRange(t, now);
-      return `${r.from}..${r.to}`;
-    })
+    .map((t) => windowText(presetRange(t, now)))
     .join('|');
 }
 
