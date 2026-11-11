@@ -175,6 +175,13 @@ export function behindCalendar(now: number, last: { updatedAt: number; failed: b
   return last.failed || last.updatedAt < now - ((now - ROLLOVER_MS) % DAY_MS);
 }
 
+interface LastFetch {
+  updatedAt: number;
+  failed: boolean;
+  /** Set when the result is a refusal of this server's own limits: ask again after this many seconds. */
+  retryAfterSec?: number;
+}
+
 /**
  * What `behindCalendar` reads from a dataset's query. A failing upstream arrives as a 200 whose result carries
  * `error`, which query-core counts as a success: it is a failure all the same, or the error would stay up for a day.
@@ -182,10 +189,21 @@ export function behindCalendar(now: number, last: { updatedAt: number; failed: b
 export function lastFetch(state: {
   dataUpdatedAt: number;
   status: string;
-  data?: { error?: string | undefined } | undefined;
-}): { updatedAt: number; failed: boolean } {
-  return { updatedAt: state.dataUpdatedAt, failed: state.status === 'error' || Boolean(state.data?.error) };
+  data?: { error?: string | undefined; retryAfterSec?: number | undefined } | undefined;
+}): LastFetch {
+  const last: LastFetch = {
+    updatedAt: state.dataUpdatedAt,
+    failed: state.status === 'error' || Boolean(state.data?.error),
+  };
+  // The server refused the load for its own limits, not the source's: its turn comes soon, not at the next interval.
+  const retry = state.data?.retryAfterSec;
+  if (state.data?.error && typeof retry === 'number' && Number.isFinite(retry) && retry > 0)
+    last.retryAfterSec = retry;
+  return last;
 }
+
+/** Never sooner than this after a refusal, whatever the server says: a wall of widgets must not hammer it. */
+const MIN_RETRY_MS = 5_000;
 
 /**
  * The next refetch: the live fallback interval, and for a relative period also the coming 00:01 UTC. Without it a
@@ -198,7 +216,20 @@ export function nextRefetch(
   interval: number | false,
   calendar: boolean,
   now: number,
-  last?: { updatedAt: number; failed: boolean },
+  last?: LastFetch,
+): number | false {
+  const next = calendarRefetch(interval, calendar, now, last);
+  // A refused result is asked for again after the server's hint, and never later than the dataset would anyway.
+  if (!last?.retryAfterSec) return next;
+  const retry = Math.max(MIN_RETRY_MS, last.retryAfterSec * 1000);
+  return next === false ? retry : Math.min(next, retry);
+}
+
+function calendarRefetch(
+  interval: number | false,
+  calendar: boolean,
+  now: number,
+  last?: LastFetch,
 ): number | false {
   if (!calendar) return interval;
   const rollover = DAY_MS - ((now - ROLLOVER_MS) % DAY_MS);

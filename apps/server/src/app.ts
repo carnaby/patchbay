@@ -69,7 +69,10 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   const store = new FolderStore(config.dataDir === ':memory:' ? '/tmp/patchbay-memory' : config.dataDir);
   await store.init();
   const index = new DashboardIndex(db);
-  const connectors = new ConnectorService({ offline: config.offline });
+  // One limiter for every request this server sends upstream: http sources, feeds, OAuth and connectors. Connectors
+  // count in buckets of their own inside it, so an anonymous http source cannot use up their hosts' budget.
+  const outbound = new OutboundLimiter();
+  const connectors = new ConnectorService({ offline: config.offline, outbound });
   const pipeline: PipelineRunner =
     config.pipelineWorkers === 0
       ? new InlineRunner()
@@ -90,7 +93,6 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   }
   // DataService is built before DashboardService, which decides about credentials, so the resolver is bound late.
   let dashboards: DashboardService | undefined;
-  const outbound = new OutboundLimiter();
   const data = new DataService(connectors, store, pipeline, {
     outbound,
     credentials: (target, dataset) => dashboards!.credentialsFor(target, dataset),

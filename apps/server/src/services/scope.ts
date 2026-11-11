@@ -23,7 +23,7 @@ import {
   stepInputsOf,
   upstreamOf,
 } from '@patchbay/core';
-import { HttpError } from '../util/errors.ts';
+import { HttpError, RetryLaterError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
 import { heavyWork } from '../util/heavy.ts';
 import type { DashboardTarget, DataService } from './data.ts';
@@ -56,16 +56,22 @@ export interface ScopeOptions {
 /** A failure upstream, named once after the dataset that actually failed, however deep the chain. */
 export class UpstreamError extends Error {
   readonly datasetId: string;
-  constructor(datasetId: string, message: string) {
+  /** Set when that dataset was refused by this server's own limit, so its readers may ask again as soon as it may. */
+  readonly retryAfterSec: number | undefined;
+  constructor(datasetId: string, message: string, retryAfterSec?: number) {
     super(`Source dataset "${datasetId}" failed: ${message}`);
     this.name = 'UpstreamError';
     this.datasetId = datasetId;
+    this.retryAfterSec = retryAfterSec;
   }
 }
 
 /** The result a widget shows for a dataset that could not be resolved. Inner messages are already viewer-safe. */
 export function errorResult(datasetId: string, e: unknown): DatasetResult {
   const message = e instanceof Error ? e.message : 'Failed to load data';
+  // A refusal is in-band (a 503 would fail every widget of the request), so the page learns when to ask again here.
+  const retryAfterSec =
+    e instanceof RetryLaterError || e instanceof UpstreamError ? e.retryAfterSec : undefined;
   return {
     datasetId,
     table: { columns: [], rows: [] },
@@ -73,6 +79,7 @@ export function errorResult(datasetId: string, e: unknown): DatasetResult {
     hash: `error:${message}`,
     truncated: false,
     error: message,
+    ...(retryAfterSec ? { retryAfterSec } : {}),
   };
 }
 
@@ -344,7 +351,11 @@ export class ResolveScope {
     } catch (e) {
       if (e instanceof BusyError || e instanceof UpstreamError || e instanceof CycleError) throw e;
       if (isTimeout(e)) throw e;
-      throw new UpstreamError(id, e instanceof Error ? e.message : 'Failed to load data');
+      throw new UpstreamError(
+        id,
+        e instanceof Error ? e.message : 'Failed to load data',
+        e instanceof RetryLaterError ? e.retryAfterSec : undefined,
+      );
     }
     if (r.warning) warnings.push(r.warning);
     if (r.cut) {

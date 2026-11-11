@@ -243,6 +243,24 @@ describe('dataset keys by view', () => {
     expect(lastFetch({ dataUpdatedAt: 0, status: 'pending' }).failed).toBe(false);
   });
 
+  it('asks again soon after a result the server refused for its own limits', () => {
+    const now = Date.parse('2026-11-11T12:00:00Z');
+    const refused = lastFetch({
+      dataUpdatedAt: now,
+      status: 'success',
+      data: { error: 'busy', retryAfterSec: 10 },
+    });
+    expect(refused).toEqual({ updatedAt: now, failed: true, retryAfterSec: 10 });
+    expect(nextRefetch(false, false, now, refused)).toBe(10_000); // a dataset that never refreshes
+    expect(nextRefetch(60_000, false, now, refused)).toBe(10_000); // sooner than its interval
+    expect(nextRefetch(5_000, false, now, refused)).toBe(5_000); // never later than its interval
+    expect(nextRefetch(false, true, now, refused)).toBe(10_000); // a relative period too
+    expect(nextRefetch(false, false, now, { ...refused, retryAfterSec: 1 })).toBe(5_000); // floor 5 s
+    expect(
+      nextRefetch(false, false, now, lastFetch({ dataUpdatedAt: now, status: 'success', data: {} })),
+    ).toBe(false);
+  });
+
   it('lists the filters a draft reads, its own and through its source', () => {
     expect(
       draftParameterIds(filtered, {
