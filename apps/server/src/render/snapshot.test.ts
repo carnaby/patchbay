@@ -1,6 +1,8 @@
 import { fileURLToPath } from 'node:url';
 import { inflateSync } from 'node:zlib';
 import {
+  buildChartOption,
+  ChartConfigSchema,
   type DatasetResult,
   emptyDashboard,
   inferTable,
@@ -20,6 +22,7 @@ import { buildTemplate, listTemplates } from '../services/templates.ts';
 import {
   DRAW_TIME_MS,
   drawLimits,
+  echartsSvg,
   MARK_BUDGET,
   MAX_PIXELS,
   POINT_BUDGET,
@@ -153,6 +156,40 @@ describe('snapshot text', () => {
     expect(inkColumns(chart, TITLE).length).toBeGreaterThan(40);
     // Category labels under the x axis: a strip that holds no marks, only text.
     expect(inkColumns(chart, { x: 14, y: 326, w: 612, h: 18 }).length).toBeGreaterThan(20);
+  });
+
+  it('keeps the last x label of a line chart whole instead of clipping it at the card edge', () => {
+    const regions: DatasetResult = {
+      ...result,
+      table: inferTable([
+        { region: 'Europe', sales: 10 },
+        { region: 'Asia', sales: 14 },
+        { region: 'North America', sales: 12 },
+      ]),
+    };
+    const line = widget({
+      id: 'l',
+      type: 'chart',
+      title: 'Sales by region',
+      datasetId: 'sales',
+      config: { kind: 'line', x: 'region', y: ['sales'] },
+    });
+    const svg = echartsSvg(
+      buildChartOption(
+        ChartConfigSchema.parse({ kind: 'line', x: 'region', y: ['sales'] }),
+        regions.table,
+        THEMES.light,
+        { animation: false, static: true },
+      ),
+      612,
+      310,
+    );
+    expect(svg).toContain('North America');
+    expect(svg).not.toContain('…');
+    const img = decodePng(renderWidgetPng(line, regions));
+    // The last two pixel columns of the card's content box, in the strip of x labels.
+    expect(inkColumns(img, { x: 624, y: 326, w: 2, h: 18 }).length).toBe(0);
+    expect(inkColumns(img, { x: 14, y: 326, w: 612, h: 18 }).length).toBeGreaterThan(20);
   });
 
   it('uses the bundled Inter, whatever fonts the machine has', () => {
