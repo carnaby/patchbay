@@ -25,6 +25,7 @@ import {
   followsCalendar,
   lastFetch,
   lineageKey,
+  NO_VALUES,
   nextRefetch,
   queryOfView,
   refreshTiming,
@@ -139,7 +140,7 @@ export function useLiveEvents(id: string | undefined) {
         const datasetId = event.result.datasetId;
         // Pushed results are computed from the saved document, at no view: the hub pushes only datasets that use no
         // filter, and a push for one that does (an older server) is not this viewer's view.
-        if (saved?.datasets.some((d) => d.id === datasetId) && viewKey(saved, datasetId, {}) === '')
+        if (saved?.datasets.some((d) => d.id === datasetId) && viewKey(saved, datasetId, NO_VALUES) === '')
           qc.setQueryData(datasetKey(id, saved, datasetId), fromWire(event.result));
       } else if (event.type === 'doc') {
         void pullRemote(event);
