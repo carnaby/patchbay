@@ -910,6 +910,8 @@ describe('status snapshots', () => {
     expect(svg).toMatch(/>cue<tspan[^>]*> ↗<\/tspan><\/text>/);
     expect(svg).toMatch(/>patchbay<tspan[^>]*> ↗<\/tspan><\/text>/);
     expect(svg).toContain('>immich</text>');
+    // A small gap, so the arrow does not touch the name.
+    expect(svg).toMatch(/<tspan dx="2"[^>]*> ↗/);
     expect(svg.match(/↗/g)).toHaveLength(6);
     expect(body()).not.toContain('↗');
     // The arrow stays inside the tile: the name gives way to it, and user text is escaped as before.
