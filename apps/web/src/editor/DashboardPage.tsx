@@ -61,6 +61,7 @@ import {
   TvInfoContent,
   useIdle,
   usePresentation,
+  useUnattendedClose,
 } from './presentation.tsx';
 import { PublicSecretsDialogs, SecretsSaveBanner } from './public-secrets.tsx';
 import { SharePanel } from './SharePanel.tsx';
@@ -613,6 +614,8 @@ function ToolbarMenu({
 function ExpandedWidget({ dashboardId, live }: { dashboardId: string; live: boolean }) {
   const expanded = useEditor((s) => s.expanded);
   const widget = useEditor((s) => s.doc?.widgets.find((w) => w.id === s.expanded));
+  const setExpanded = useEditor((s) => s.setExpanded);
+  useUnattendedClose(Boolean(expanded && widget), () => setExpanded(null));
   if (!expanded || !widget) return null;
   return (
     <div
