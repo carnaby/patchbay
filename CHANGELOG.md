@@ -8,7 +8,7 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ### Fixed
 
-- Built-in connectors whose parameters follow a filter now have a per-host limit on what they ask the upstream API
+- Every built-in connector load, with or without a filter, now has a per-host limit on what it asks the upstream API
   (four loads at a time, 120 a minute per host). A dashboard that opens several cities or periods at once waits briefly
   instead of showing an error, and the page asks again a few seconds after the server refused a dataset for its own
   limits; HTTP sources and feeds are asked again after 10 seconds too. Demo connectors are not counted.
@@ -21,8 +21,9 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   opening.
 - A search text filter's default is trimmed, so the page, links, snapshots and agents use the same value.
 - Filter values passed to the MCP tools have the same length limits as in the REST API.
-- A dashboard on a relative period no longer retries every minute after a lasting error such as a deleted secret; it
-  still retries after network errors and server errors.
+- A dashboard on a relative period no longer retries every minute after the server refuses its request outright (a
+  removed dashboard, lost access or a filter value that is no longer offered); it still retries after network errors,
+  server errors and errors from a source.
 - A click-to-filter value that matches no item (such as a partly typed search text) no longer dims every item.
 - A showcase whose source URL or body uses a filter is refused when the server starts, instead of failing later in
   anonymous copies.

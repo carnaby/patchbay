@@ -52,7 +52,7 @@ describe('dataset editor helpers', () => {
     expect(deleteBlocker(doc, 'deep')).toBeNull();
   });
 
-  it('blocks deleting a dataset a filter takes its choices from (E4)', () => {
+  it('blocks deleting a dataset a filter takes its choices from', () => {
     const filter = {
       id: 'reg',
       label: 'Region',

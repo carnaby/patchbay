@@ -189,7 +189,7 @@ describe('reseatDefault', () => {
     expect(reseatDefault({ type: 'dateRange', presets: [], default: 'today' })).toEqual({});
     expect(reseatDefault({ type: 'text', default: '' })).toEqual({});
   });
-  it('lets the edited filter be saved again (E1)', () => {
+  it('lets the edited filter be saved again', () => {
     const draft = { ...region, options: [{ value: 'europe' }], all: undefined, default: 'eu' };
     expect('error' in checkParameter(draft, [], region)).toBe(true);
     expect('error' in checkParameter({ ...draft, ...reseatDefault(draft) }, [], region)).toBe(false);
@@ -199,7 +199,7 @@ describe('reseatDefault', () => {
   });
 });
 
-describe('defaultOps for data-fed filters and unchanged values (E2)', () => {
+describe('defaultOps for data-fed filters and unchanged values', () => {
   it('writes nothing when there is nothing to change', () => {
     const fed = ParameterSchema.parse({
       id: 'reg',
@@ -221,8 +221,8 @@ describe('defaultOps for data-fed filters and unchanged values (E2)', () => {
 
 describe('addFilterBlocker', () => {
   const many = (n: number): Parameter[] =>
-    Array.from({ length: n }, (_, i) => ({ id: 'f' + i, label: 'F' + i, type: 'text', default: '' }));
-  it('blocks a ninth filter with a reason (E3)', () => {
+    Array.from({ length: n }, (_, i) => ({ id: `f${i}`, label: `F${i}`, type: 'text', default: '' }));
+  it('blocks a ninth filter with a reason', () => {
     expect(addFilterBlocker(many(MAX_PARAMETERS))).toBe('A dashboard has at most 8 filters');
     expect(addFilterBlocker(many(MAX_PARAMETERS - 1))).toBeNull();
     expect(addFilterBlocker(undefined)).toBeNull();
