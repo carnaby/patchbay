@@ -6,7 +6,14 @@ import type { OptionValue, Parameter } from '@patchbay/core';
 import { useEffect, useMemo } from 'react';
 import { toast } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
-import { choicesOfResult, type DataChoices, staleDataValue, useParameters } from '../state/parameters.ts';
+import {
+  choicesOfResult,
+  type DataChoices,
+  guardAction,
+  optionsRefresh,
+  staleDataValue,
+  useParameters,
+} from '../state/parameters.ts';
 import { useDatasetResult } from '../state/sync.ts';
 
 /**
@@ -43,8 +50,10 @@ export function useDataOptions(
 }
 
 /**
- * Renders nothing. Resets a data-driven value the loaded choices do not hold, also while presenting: a wall screen
- * must not keep showing an error for a value the data dropped. The toast only outside presentation mode.
+ * Renders nothing. Resets a data-driven value the loaded choices do not hold, with a toast, outside presentation mode.
+ * While presenting, a value of choices that refresh is held instead (the URL keeps it, the widgets that need it wait)
+ * and the view resumes by itself once the choices hold it again: nobody is at a wall screen to pick it back. Choices
+ * that never refresh cannot bring it back, so there it is reset, without a toast.
  */
 export function DataOptionsGuard({
   dashboardId,
@@ -88,12 +97,14 @@ function GuardOne({
 }) {
   const options = useDataOptions(dashboardId, param, live);
   const raw = useParameters((s) => s.raw);
-  const stale = staleDataValue(param, raw, options);
+  const from = param.type === 'select' ? param.optionsFrom : undefined;
+  const optionsLive = useEditor((s) => (from && s.doc ? optionsRefresh(s.doc, from.dataset) : false));
+  const action = guardAction(staleDataValue(param, raw, options), presenting, optionsLive);
   useEffect(() => {
-    if (!stale) return;
+    if (action !== 'reset') return;
     if (!presenting)
       toast(`${param.label}: ${raw[param.id]} is no longer one of the choices. Showing all instead.`, 'bad');
     useParameters.getState().set(param.id, null, parameters);
-  }, [stale, presenting, param, parameters, raw]);
+  }, [action, presenting, param, parameters, raw]);
   return null;
 }

@@ -24,7 +24,7 @@ import {
   tableColumns,
   type Widget,
 } from '@patchbay/core';
-import { AlertTriangle, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Minus } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowUp, ChevronLeft, ChevronRight, Clock, Minus } from 'lucide-react';
 import { lazy, Suspense, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import { cx, Spinner } from '../components/ui.tsx';
@@ -42,6 +42,7 @@ export function WidgetBody({
   widget,
   result,
   loading,
+  waiting,
   errorHint,
   asTable = false,
   entityColors,
@@ -51,6 +52,8 @@ export function WidgetBody({
   widget: Widget;
   result: DatasetResult | undefined;
   loading?: boolean;
+  /** Why the data is held back (a wall screen waits for a filter value to return); shown instead of any result. */
+  waiting?: string | undefined;
   /** What to do about the error; only passed for the dashboard's owner, viewers see the generic message alone. */
   errorHint?: string | null;
   /** Maps only: show the accessible table alternative instead of the map. */
@@ -65,6 +68,14 @@ export function WidgetBody({
   if (widget.type === 'text') return <TextBody markdown={widget.config.markdown} />;
   if (widget.type === 'clock') return <ClockBody config={widget.config} />;
   if (widget.type === 'search') return <SearchBody config={widget.config} />;
+  if (waiting) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 px-4 text-center text-sm text-muted">
+        <Clock className="size-5" aria-hidden="true" />
+        <span className="line-clamp-3">{waiting}</span>
+      </div>
+    );
+  }
   if (!result) {
     return (
       <div className="flex h-full items-center justify-center">

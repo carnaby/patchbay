@@ -38,9 +38,9 @@ import { credentialErrorHint } from '../lib/secrets.ts';
 import { SOUND_LABELS, useSoundSettings } from '../lib/sounds.ts';
 import { crossFilterClick } from '../state/cross-filter.ts';
 import { useEditor } from '../state/editor.ts';
-import { dataPickProblem, rawQuery, useParameters } from '../state/parameters.ts';
+import { dataPickProblem, rawQuery, resumed, useParameters } from '../state/parameters.ts';
 import { MOVE_LABELS, type MoveDirection, reorderOp } from '../state/reorder.ts';
-import { useDatasetResult } from '../state/sync.ts';
+import { useDatasetResult, usePendingDataValue } from '../state/sync.ts';
 import { WidgetBody } from '../widgets/WidgetBody.tsx';
 import { useDataChoices } from './DataOptions.tsx';
 import { PresentingContext } from './presentation.tsx';
@@ -126,6 +126,18 @@ export const WidgetFrame = memo(function WidgetFrame({
   const { data: secretsStatus } = useSecretsStatus();
   const apply = useEditor((s) => s.apply);
   const query = useDatasetResult(dashboardId, dataset, live);
+  // A wall screen holds a data-driven value its choices dropped (DataOptions.tsx). The cache still has this view's
+  // result from before, so nothing in the frame reads it while held: a TV must not show old numbers as current.
+  const pending = usePendingDataValue(dashboardId, dataset);
+  const held = presenting && pending !== null;
+  const shown = held ? undefined : query.data;
+  const wasHeld = useRef(held);
+  useEffect(() => {
+    // Back from a hold, that old result may still be younger than staleTime and would be served as it is: ask for a
+    // current one, once. Without cancelRefetch a fetch the re-enabled query already started is reused, not doubled.
+    if (resumed(wasHeld.current, held)) void query.refetch({ cancelRefetch: false });
+    wasHeld.current = held;
+  }, [held, query.refetch]);
   // A derived dataset has no refreshSec of its own: it is live when a dataset it reads is (a primitive, like sync.ts).
   const refreshSec = useEditor((s) => (dataset && s.doc ? effectiveRefreshSec(s.doc, dataset.id) : 0));
   const attributions = useAttributions();
@@ -150,7 +162,6 @@ export const WidgetFrame = memo(function WidgetFrame({
   }, [flashAt]);
 
   const isLive = refreshSec > 0;
-  const result = query.data;
 
   const duplicate = () => {
     const doc = useEditor.getState().doc!;
@@ -246,7 +257,7 @@ export const WidgetFrame = memo(function WidgetFrame({
         {isLive ? (
           <span
             className="flex shrink-0 items-center gap-1 text-[11px] text-muted"
-            title={result ? `Updated ${relativeTime(result.fetchedAt)}` : 'Live'}
+            title={shown ? `Updated ${relativeTime(shown.fetchedAt)}` : 'Live'}
           >
             <span className={cx('size-1.5 rounded-full', live ? 'animate-pulse bg-good' : 'bg-muted')} />
             live
@@ -255,14 +266,14 @@ export const WidgetFrame = memo(function WidgetFrame({
         {'sound' in widget && widget.sound ? (
           <SoundBadge
             sound={widget.sound}
-            missing={result ? soundRuleMissingColumns(widget.sound, result.table) : []}
+            missing={shown ? soundRuleMissingColumns(widget.sound, shown.table) : []}
           />
         ) : null}
-        {result && !result.error && result.warning ? (
-          <span className="shrink-0 text-[11px] text-warn" title={result.warning}>
+        {shown && !shown.error && shown.warning ? (
+          <span className="shrink-0 text-[11px] text-warn" title={shown.warning}>
             {/* A capped source or a cut parent is current but incomplete; only a cached copy is stale. Inherited
                 warnings are joined, so a mix with a cached copy reads stale. */}
-            {result.warning.includes(CACHED_DATA_WARNING) ? 'stale' : 'partial'}
+            {shown.warning.includes(CACHED_DATA_WARNING) ? 'stale' : 'partial'}
           </span>
         ) : null}
         <span className="flex-1" />
@@ -346,15 +357,20 @@ export const WidgetFrame = memo(function WidgetFrame({
       <div className={cx('pb-no-drag min-h-0 flex-1 px-3', credit ? 'pb-1.5' : 'pb-3', headless && 'pt-3')}>
         <WidgetBody
           widget={widget}
-          result={result}
+          result={shown}
           entityColors={entityColors}
           selection={selection}
           onPick={onPick}
-          loading={query.isFetching || !query.isFetched}
+          loading={held ? false : query.isFetching || !query.isFetched}
+          waiting={
+            pending && held
+              ? `Waiting for ${pending.label}: ${pending.value} is not in the data right now`
+              : undefined
+          }
           asTable={asTable}
           errorHint={
-            isOwner && result?.error && dataset
-              ? credentialErrorHint(result.error, {
+            isOwner && shown?.error && dataset
+              ? credentialErrorHint(shown.error, {
                   hasSecrets: sourceSecretIds(dataset.source).length > 0,
                   canAddSecrets: Boolean(secretsStatus?.canUseSecrets) && dataset.source.kind === 'http',
                 })
