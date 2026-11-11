@@ -50,6 +50,33 @@ describe.each(['UTC', 'Europe/Bratislava', 'Asia/Tokyo', 'America/Los_Angeles'])
     ]);
   });
 
+  it('labels every daily point of a line, the first and the last included', () => {
+    process.env.TZ = tz;
+    const series = days('2026-10-25', [41, 38, 52, 47, 35, 44]);
+    expect(xLabels({ kind: 'line', x: 'day', y: ['v'] }, series)).toEqual([
+      '25',
+      '26',
+      '27',
+      '28',
+      '29',
+      '30',
+    ]);
+  });
+
+  it('names the month where a daily line crosses into one', () => {
+    process.env.TZ = tz;
+    const rain = days('2026-10-31', [0.2, 3.1, 0, 1.4, 5.2, 0.6, 2]);
+    expect(xLabels({ kind: 'line', x: 'day', y: ['v'] }, rain)).toEqual([
+      '31',
+      'Nov',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+    ]);
+  });
+
   it('names the month where a daily bar starts one', () => {
     process.env.TZ = tz;
     const rain = days('2026-10-31', [0.2, 3.1, 0, 1.4, 5.2, 0.6, 2]);
