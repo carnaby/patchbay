@@ -9,6 +9,7 @@ import {
   computeKpi,
   type DatasetResult,
   DIMMED_OPACITY,
+  effectiveSelection,
   formatNumber,
   formatRelative,
   formatValue,
@@ -80,6 +81,8 @@ export function WidgetBody({
       </div>
     );
   }
+  // A plain call, not a hook: it returns the same object while it keeps the selection.
+  const shown = effectiveSelection(selection ?? null, result.table.rows);
   switch (widget.type) {
     case 'chart':
       return (
@@ -87,7 +90,7 @@ export function WidgetBody({
           widget={widget}
           result={result}
           entityColors={entityColors}
-          selection={selection ?? null}
+          selection={shown}
           onPick={onPick}
         />
       );
@@ -96,7 +99,7 @@ export function WidgetBody({
     case 'gauge':
       return <GaugeBody widget={widget} result={result} />;
     case 'table':
-      return <TableBody widget={widget} result={result} selection={selection ?? null} onPick={onPick} />;
+      return <TableBody widget={widget} result={result} selection={shown} onPick={onPick} />;
     case 'status':
       return <StatusBody widget={widget} result={result} />;
     case 'map':
@@ -113,7 +116,7 @@ export function WidgetBody({
             result={result}
             asTable={asTable}
             entityColors={entityColors}
-            selection={selection ?? null}
+            selection={shown}
             onPick={onPick}
           />
         </Suspense>

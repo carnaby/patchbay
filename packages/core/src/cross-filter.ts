@@ -37,6 +37,15 @@ export function rowSelected(row: Row, selection: Selection | null): boolean | nu
   return v !== null && v !== undefined && String(v) === selection.value;
 }
 
+/**
+ * The selection to draw: null when no row holds the value. A typed text, or a value this widget's data does not hold,
+ * would otherwise dim every item. Returns the same object when it keeps it (chart options memoize on it).
+ */
+export function effectiveSelection(selection: Selection | null, rows: readonly Row[]): Selection | null {
+  if (!selection) return null;
+  return rows.some((r) => rowSelected(r, selection) === true) ? selection : null;
+}
+
 /** The filter text a click on an item with this value gives, or why it cannot set the filter. */
 export function crossFilterPick(
   param: Parameter,
