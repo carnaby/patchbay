@@ -285,7 +285,8 @@ export function lastFetch(
  * every render and update and restarts its timer, so the delay must aim at a fixed instant (inside the first minute
  * the fallback's 00:01 is today's, not tomorrow's). A transient failure, or a result that has not caught up with the
  * fallback's boundary, is asked for again every minute, and a lasting one every 15 minutes, each with a spread of up
- * to 10 s; neither ever waits past the window.
+ * to 10 s; neither ever waits past the window. A dataset off the calendar that never refreshes retries its failures
+ * the same way and otherwise is not asked again; one with an interval keeps its interval.
  */
 export function nextRefetch(
   interval: number | false,
@@ -318,7 +319,13 @@ function calendarRefetch(
     if (last.lasting) return Math.min(lastingRetry, expiresIn);
     return expiresIn;
   }
-  if (!calendar) return interval;
+  if (!calendar) {
+    // A dataset that never refreshes would keep a failure until someone reloads the wall screen: a transient one is
+    // asked again every minute, a lasting one rarely (a fix that changes no key must still show up).
+    if (interval !== false) return interval;
+    if (last?.failed) return catchUp;
+    return last?.lasting ? lastingRetry : false;
+  }
   const rollover = DAY_MS - ((now - ROLLOVER_MS) % DAY_MS);
   // A regular refresh comes back on its own; only a dataset that never refreshes needs catching up.
   if (interval !== false) return Math.min(interval, rollover);

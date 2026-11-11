@@ -254,9 +254,10 @@ describe('dataset keys by view', () => {
     expect(nextRefetch(false, true, after, { updatedAt: yesterday, failed: true })).toBe(60_000);
     expect(nextRefetch(false, true, after, { updatedAt: yesterday, failed: false })).toBe(60_000);
     expect(nextRefetch(false, true, after, { updatedAt: fetched, failed: false })).toBe(86_397_000);
-    // A regular refresh already comes back on its own, and nothing else moves with the calendar.
+    // A regular refresh already comes back on its own. A dataset off the calendar that never refreshes retries its
+    // failure too, though not because of the calendar (no spread: this literal has none).
     expect(nextRefetch(300_000, true, after, { updatedAt: yesterday, failed: true })).toBe(300_000);
-    expect(nextRefetch(false, false, after, { updatedAt: yesterday, failed: true })).toBe(false);
+    expect(nextRefetch(false, false, after, { updatedAt: yesterday, failed: true })).toBe(60_000);
   });
 
   it('counts a result that carries an upstream error as a failed refetch', () => {
@@ -322,6 +323,39 @@ describe('dataset keys by view', () => {
         lastFetch({ dataUpdatedAt: now, status: 'success', data: {} }, () => 0),
       ),
     ).toBe(false);
+  });
+
+  it('retries a dataset that never refreshes every minute after a transient failure, every quarter hour after a lasting one', () => {
+    const now = Date.parse('2026-11-11T12:00:00Z');
+    const inBand = (data: Record<string, unknown>, random = () => 0) =>
+      lastFetch({ dataUpdatedAt: now, status: 'success', data }, random);
+    const thrown = (error: unknown) => lastFetch({ dataUpdatedAt: now, status: 'error', error }, () => 0);
+    expect(nextRefetch(false, false, now, inBand({ error: 'Upstream responded 503' }))).toBe(60_000);
+    expect(nextRefetch(false, false, now, inBand({ error: 'gone', lasting: true }))).toBe(900_000);
+    expect(nextRefetch(false, false, now, thrown(new ApiError(503, 'busy', {})))).toBe(60_000);
+    expect(nextRefetch(false, false, now, thrown(new TypeError('Failed to fetch')))).toBe(60_000);
+    expect(nextRefetch(false, false, now, thrown(new ApiError(404, 'gone', {})))).toBe(false);
+    expect(nextRefetch(false, false, now, inBand({}))).toBe(false); // a good result: as before
+    expect(nextRefetch(false, false, now)).toBe(false); // nothing fetched yet
+    expect(nextRefetch(30_000, false, now, inBand({ error: 'x' }))).toBe(30_000); // a regular refresh comes back anyway
+    expect(nextRefetch(false, false, now, inBand({ error: 'busy', retryAfterSec: 10 }))).toBe(10_000); // the hint first
+    // Spread like the calendar retries.
+    expect(
+      nextRefetch(
+        false,
+        false,
+        now,
+        inBand({ error: 'x' }, () => 0.5),
+      ),
+    ).toBe(65_000);
+    expect(
+      nextRefetch(
+        false,
+        false,
+        now,
+        inBand({ error: 'gone', lasting: true }, () => 0.5),
+      ),
+    ).toBe(905_000);
   });
 
   it('lists the filters a draft reads, its own and through its source', () => {
