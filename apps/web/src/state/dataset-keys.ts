@@ -6,6 +6,7 @@ import {
   type CalendarWindow,
   lineageKey as computeLineageKey,
   type DashboardDoc,
+  type DatasetResult,
   defaultText,
   type LineageDataset,
   lineageParameters,
@@ -144,7 +145,8 @@ export function refreshTiming(refreshSec: number, live: boolean) {
 
 /**
  * Rule, lineage, view and the calendar window of its relative periods: a change of any means the next result is only
- * a baseline (CLAUDE.md). The window is part of the sound identity only; data keys must not move at midnight.
+ * a baseline (CLAUDE.md). The window is part of the sound identity only; data keys must not move at midnight. Pass the
+ * result being decided: its stated window, not the moment it arrived, says which day its rows belong to.
  */
 export function soundIdentity(
   doc: DashboardDoc | null | undefined,
@@ -152,13 +154,16 @@ export function soundIdentity(
   datasetId: string,
   raw: RawValues = {},
   now: number = Date.now(),
+  result?: Pick<DatasetResult, 'calendar'>,
 ): string | null {
   if (!doc?.datasets.some((d) => d.id === datasetId)) return null;
   return JSON.stringify([
     sound,
     lineageKey(doc, datasetId),
     viewKey(doc, datasetId, raw),
-    soundWindow(calendarTexts(doc, datasetId, raw), now),
+    // The window the rows were computed for, as the server states it; the client clock only when an older server did
+    // not.
+    result?.calendar?.window ?? soundWindow(calendarTexts(doc, datasetId, raw), now),
   ]);
 }
 

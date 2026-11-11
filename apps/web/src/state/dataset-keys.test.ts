@@ -1,4 +1,4 @@
-import { applyOps, type DashboardDoc, emptyDashboard, SoundRuleSchema } from '@patchbay/core';
+import { applyOps, type DashboardDoc, emptyDashboard, SoundRuleSchema, soundWindow } from '@patchbay/core';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../lib/api.ts';
 import {
@@ -180,6 +180,24 @@ describe('dataset keys by view', () => {
       const viewBefore = viewKey(filtered, 'recent', {});
       vi.setSystemTime(new Date('2026-11-11T00:01:00Z'));
       expect(viewKey(filtered, 'recent', {})).toBe(viewBefore);
+    });
+
+    it("takes the sound window from the server's answer, and from the client clock only without one", () => {
+      const rule = SoundRuleSchema.parse({ trigger: { kind: 'newRows' } });
+      const now = Date.parse('2026-11-11T09:00:00Z');
+      const stated = (at: number) => ({ calendar: { window: soundWindow(['last7d'], at), validForSec: 1 } });
+      // A newer server's answer after an older one's, mid-deploy: the same window is no new baseline.
+      expect(soundIdentity(filtered, rule, 'recent', {}, now, stated(now))).toBe(
+        soundIdentity(filtered, rule, 'recent', {}, now),
+      );
+      expect(soundIdentity(filtered, rule, 'recent', {}, now, {})).toBe(
+        soundIdentity(filtered, rule, 'recent', {}, now),
+      );
+      // A client clock a day off still follows the window the rows were computed for.
+      const server = Date.parse('2026-11-10T09:00:00Z');
+      expect(soundIdentity(filtered, rule, 'recent', {}, now, stated(server))).toBe(
+        soundIdentity(filtered, rule, 'recent', {}, server),
+      );
     });
 
     it('keeps the identity of a dataset without a relative period across midnight', () => {
