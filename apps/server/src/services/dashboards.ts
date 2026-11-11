@@ -752,13 +752,17 @@ export class DashboardService {
   }
 
   private envelope(meta: StoredMeta, doc: DashboardDoc, p: Principal): DashboardEnvelope {
+    const canEdit = this.canEdit(meta, p);
     return {
       meta: this.publicMeta(meta, doc.title),
       doc,
       access: {
-        canEdit: this.canEdit(meta, p),
+        canEdit,
         isOwner: p.user !== null && meta.ownerId === p.user.id,
         anonymous: meta.ownerId === null,
+        // Editors only, from the rule the fetch applies (assertMayFetchUrl): the dashboard's owner decides, never
+        // the viewer.
+        privateHosts: canEdit && this.privateHostsFor(meta.ownerId) !== null,
       },
     };
   }
