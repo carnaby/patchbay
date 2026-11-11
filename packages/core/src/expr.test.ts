@@ -191,6 +191,14 @@ describe('filter references in expressions', () => {
     expect(TransformSchema.safeParse({ type: 'filter', expr: 'x == $param.Region' }).success).toBe(false);
   });
 
+  it('refuses malformed reference syntax and finds references in nested positions', () => {
+    expect(() => parse('$param.x(')).toThrow('Unexpected trailing input');
+    expect(() => parse('$param.x .y')).toThrow('Unexpected character "."');
+    expect(paramNodes(parse('-$param.a > 0 ? round($param.b, 1) : !$param.c.from')).map((n) => n.id)).toEqual(
+      ['a', 'b', 'c'],
+    );
+  });
+
   it('never evaluates an unbound reference', () => {
     expect(() => compile('$param.region == "eu"')({})).toThrow('Filter "region" has no value here');
   });

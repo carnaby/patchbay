@@ -374,6 +374,34 @@ describe('cross-filter rules', () => {
     ).toEqual([]);
   });
 
+  it('lets a table and a map set a text filter, and refuses unknown or date-range ones', () => {
+    const one = (w: unknown) => issues(widgetDoc([w]));
+    const table = (crossFilter: unknown) => ({
+      id: 't',
+      type: 'table',
+      datasetId: 's',
+      config: { crossFilter },
+    });
+    const map = (crossFilter: unknown) => ({
+      id: 'm',
+      type: 'map',
+      datasetId: 's',
+      config: { lat: 'lat', lon: 'lon', crossFilter },
+    });
+    expect(one(table({ parameter: 'q', field: 'region' }))).toEqual([]);
+    expect(one(map({ parameter: 'q', field: 'name' }))).toEqual([]);
+    const declared = 'declared filters: region, city, q, period';
+    expect(one(table({ parameter: 'nope', field: 'region' }))).toEqual([
+      `Widget "t": a click sets unknown filter "nope"; ${declared}`,
+    ]);
+    expect(one(map({ parameter: 'nope', field: 'name' }))).toEqual([
+      `Widget "m": a click sets unknown filter "nope"; ${declared}`,
+    ]);
+    expect(one(table({ parameter: 'period', field: 'region' }))).toEqual([
+      'Widget "t": a click can set a choice or a text filter, not the date range "period"',
+    ]);
+  });
+
   it('refuses clicks a filter cannot take', () => {
     const one = (w: unknown) => issues(widgetDoc([w]));
     expect(

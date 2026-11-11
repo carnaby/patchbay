@@ -240,6 +240,8 @@ describe('filter values', () => {
     expect(parameterSummary(parameters, read({ q: 'shoes' }).values)).toBe(
       'Region: All regions · Search: "shoes" · Period: Last 30 days',
     );
+    expect(parameterSummary(undefined, {})).toBe('');
+    expect(parameterSummary([q], { q: '' })).toBe('');
   });
 });
 
@@ -561,5 +563,21 @@ describe('calendarOf', () => {
     expect(
       calendarOf(params, ['period', 'since'], values(now, { since: '2026-01-01..2026-01-31' }), now)?.window,
     ).toBe('2026-11-04..2026-11-10');
+  });
+  it('names the window of lastMonth and last12m, also on a leap day', () => {
+    const p = ParameterSchema.parse({
+      id: 'period',
+      label: 'P',
+      type: 'dateRange',
+      presets: ['lastMonth', 'last12m'],
+      default: 'lastMonth',
+    });
+    const at = (iso: string, raw: Record<string, string>) => {
+      const now = when(iso);
+      return calendarOf([p], ['period'], readParameterValues([p], (id) => raw[id], now).values, now);
+    };
+    expect(at('2026-11-10T12:00:00Z', {})).toEqual({ window: '2026-10-01..2026-10-31', validForSec: 43_200 });
+    expect(at('2026-11-10T12:00:00Z', { period: 'last12m' })?.window).toBe('2025-11-11..2026-11-10');
+    expect(at('2028-02-29T12:00:00Z', { period: 'last12m' })?.window).toBe('2027-03-01..2028-02-29');
   });
 });

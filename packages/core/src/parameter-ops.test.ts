@@ -125,6 +125,25 @@ describe('filter operations', () => {
         },
       ]),
     ).toThrow(/cannot contain "\$param\."/);
+    // Reordering the options of such a stored filter adds no new option, so it passes.
+    const two = parseDashboard(
+      JSON.parse(
+        JSON.stringify({
+          ...base,
+          parameters: [{ ...bad, options: [{ value: 'US$param.x' }, { value: 'eu' }] }],
+        }),
+      ),
+    );
+    const moved = applyOps(two, [
+      {
+        op: 'updateParameter',
+        id: bad.id,
+        set: { options: [{ value: 'eu' }, { value: 'US$param.x' }] },
+      },
+    ]);
+    expect(
+      (moved.doc.parameters![0] as { options: { value: string }[] }).options.map((o) => o.value),
+    ).toEqual(['eu', 'US$param.x']);
   });
 
   it('renames by adding, re-pointing and removing in one batch', () => {
@@ -139,6 +158,10 @@ describe('filter operations', () => {
       { op: 'removeParameter', id: 'region' },
     ]);
     expect(ids(r.doc)).toEqual(['area']);
+    expect(r.doc.datasets[0]!.transforms[0]).toMatchObject({
+      id: 'f',
+      expr: '$param.area == null || region == $param.area',
+    });
   });
 
   it('moves filters before another or to the end', () => {
@@ -157,6 +180,15 @@ describe('filter operations', () => {
     expect(last.changes).toEqual(['Moved filter "Region"']);
     expect(() => applyOps(doc, [{ op: 'moveParameter', id: 'region', before: 'region' }])).toThrow(
       'A filter cannot be placed before itself',
+    );
+    expect(() => applyOps(doc, [{ op: 'moveParameter', id: 'region', before: 'nope' }])).toThrow(
+      'Operation 1: There is no filter "nope"',
+    );
+    expect(() => applyOps(doc, [{ op: 'moveParameter', id: 'nope', before: null }])).toThrow(
+      'Operation 1: Unknown filter "nope"',
+    );
+    expect(() => applyOps(doc, [{ op: 'removeParameter', id: 'nope' }])).toThrow(
+      'Operation 1: Unknown filter "nope"',
     );
   });
 
