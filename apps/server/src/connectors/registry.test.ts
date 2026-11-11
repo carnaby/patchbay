@@ -10,7 +10,7 @@ vi.mock('../util/safe-fetch.ts', async (original) => ({
   fetchJson: (url: string) => fetchMock(url),
 }));
 
-const { ConnectorService } = await import('./registry.ts');
+const { ConnectorService, CONNECTORS } = await import('./registry.ts');
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const hostOf = (url: string) => new URL(url).hostname;
@@ -374,5 +374,25 @@ describe('offline samples', () => {
     expect(await rows('crypto.history', { coin: 'bitcoin', days: 1e9 })).toBeLessThanOrEqual(366);
     expect(await rows('fx.rates', { symbols: 'USD', days: 1e9 })).toBeLessThanOrEqual(3651);
     expect(Date.now() - startedAt).toBeLessThan(5000);
+  });
+});
+
+describe('connector params', () => {
+  const service = new ConnectorService({ offline: true });
+  it('reads a bound boolean by its text', () => {
+    expect(service.validateParams('demo.sales', { live: 'false' }).live).toBe(false);
+    expect(service.validateParams('demo.sales', { live: 'true' }).live).toBe(true);
+    expect(service.validateParams('demo.sales', { live: '0' }).live).toBe(false);
+    expect(service.validateParams('demo.sales', { live: true }).live).toBe(true);
+    expect(() => service.validateParams('demo.sales', { live: 'yes' })).toThrow(
+      /Invalid params for demo.sales/,
+    );
+  });
+  it('gives every required parameter a default, so a filter at "All" still loads', () => {
+    // bindSource leaves a parameter out at "All" (core bind.ts); paramsSchema then applies its default.
+    const missing = CONNECTORS.flatMap((c) =>
+      c.info.params.filter((p) => p.required && p.default === undefined).map((p) => `${c.info.id}.${p.name}`),
+    );
+    expect(missing).toEqual([]);
   });
 });
