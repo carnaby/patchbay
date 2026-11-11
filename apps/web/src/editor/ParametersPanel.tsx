@@ -11,7 +11,7 @@ import {
   type Parameter,
 } from '@patchbay/core';
 import { ArrowDown, ArrowUp, Pencil, Plus, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import {
   Badge,
   Button,
@@ -74,6 +74,7 @@ export function ParametersPanel({
     return !error;
   };
   const taken = new Set(parameters.map((p) => p.id));
+  const blockerId = useId();
   const addBlocker = addFilterBlocker(parameters);
   const defaultsToSave = defaultOps(parameters, raw);
   const add = (type: ParameterType) => setEditing({ parameter: newParameter(type, taken), isNew: true });
@@ -151,10 +152,15 @@ export function ParametersPanel({
                   <Pencil className="size-3.5" />
                 </IconButton>
                 <IconButton
-                  label="Remove filter"
-                  disabled={used !== null}
-                  title={used ? `${used}. Remove those references first.` : 'Remove filter'}
-                  onClick={() => run([{ op: 'removeParameter', id: p.id }], `Removed filter "${p.label}"`)}
+                  label={used ? `Remove filter (${used})` : 'Remove filter'}
+                  aria-disabled={used !== null || undefined}
+                  onClick={() => {
+                    if (used) {
+                      toast(`${used}. Remove those references first.`, 'bad');
+                      return;
+                    }
+                    run([{ op: 'removeParameter', id: p.id }], `Removed filter "${p.label}"`);
+                  }}
                 >
                   <Trash2 className="size-3.5" />
                 </IconButton>
@@ -164,11 +170,18 @@ export function ParametersPanel({
           <div className="flex flex-wrap items-center gap-2">
             {addBlocker ? (
               <>
-                <Button size="sm" disabled title={addBlocker}>
+                <Button
+                  size="sm"
+                  aria-disabled="true"
+                  aria-describedby={blockerId}
+                  onClick={() => toast(addBlocker, 'bad')}
+                >
                   <Plus className="size-4" />
                   Add filter
                 </Button>
-                <p className="w-full text-xs text-muted">{addBlocker}</p>
+                <p id={blockerId} className="w-full text-xs text-muted">
+                  {addBlocker}
+                </p>
               </>
             ) : (
               <Menu label="Add filter" icon={<Plus className="size-4" />}>
@@ -215,7 +228,7 @@ function ParameterForm({
   const [optionsDraft, setOptionsDraft] = useState(() =>
     initial.type === 'select' ? optionsText(initial.options ?? []) : '',
   );
-  const taken = useMemo(() => new Set(others.map((p) => p.id)), [others]);
+  const taken = new Set(others.map((p) => p.id));
   const check = checkParameter(draft, others, isNew ? undefined : initial);
   /** Merges a patch; undefined removes a field, as the save's updateParameter would. */
   const set = (patch: Record<string, unknown>) =>
@@ -407,7 +420,7 @@ function SelectFields({
               onChange={(e) => {
                 setOptionsDraft(e.target.value);
                 const next = { ...draft, options: parseOptions(e.target.value, options) };
-                set({ options: next.options, ...reseatDefault(next) });
+                set({ options: next.options, ...reseatDefault(next, options) });
               }}
             />
           )}
@@ -469,6 +482,7 @@ function DateFields({
     typeof draft.default === 'object' && draft.default !== null
       ? (draft.default as { from: string; to: string })
       : null;
+  // UTC, like the relative periods: the seeded custom range must agree with them.
   const today = new Date().toISOString().slice(0, 10);
   return (
     <>

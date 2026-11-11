@@ -5,7 +5,7 @@
  */
 import { DATE_PRESET_LABELS, defaultText, type OptionValue, type Parameter } from '@patchbay/core';
 import { SlidersHorizontal, X } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Button, Drawer, IconButton, Input, Select, toast, useNarrowScreen } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
 import { heldDataValue, type RawValues, summaryOf, useParameters } from '../state/parameters.ts';
@@ -36,7 +36,12 @@ export function FilterBar({ dashboardId, live }: { dashboardId: string; live: bo
   if (narrow) {
     return (
       <div className="mb-3">
-        <Button size="sm" icon={<SlidersHorizontal className="size-4" />} onClick={() => setOpen(true)}>
+        <Button
+          size="sm"
+          aria-label={changed ? `Filters, ${changed} set` : 'Filters'}
+          icon={<SlidersHorizontal className="size-4" />}
+          onClick={() => setOpen(true)}
+        >
           {changed ? `Filters (${changed})` : 'Filters'}
         </Button>
         <Drawer
@@ -90,10 +95,14 @@ function FilterControl({
   const { options: dataOptions, failed } = useDataChoices(dashboardId, p, live);
   const changed = Object.hasOwn(raw, p.id);
   const text = changed ? raw[p.id]! : defaultText(p);
-  const apply = (next: string | null) => {
-    const problem = useParameters.getState().set(p.id, next, parameters);
-    if (problem) toast(problem, 'bad');
-  };
+  // Stable, so the text control's debounce restarts only when the filter changes, not on every parent render.
+  const apply = useCallback(
+    (next: string | null) => {
+      const problem = useParameters.getState().set(p.id, next, parameters);
+      if (problem) toast(problem, 'bad');
+    },
+    [p.id, parameters],
+  );
   const loading = p.type === 'select' && Boolean(p.optionsFrom) && dataOptions === null && !failed;
   // A link's value the choices do not list stays visible, so the bar never reads "All" for a filtered view. It is
   // only selectable while the choices load; after a failure no value can be checked, so All is the only choice.

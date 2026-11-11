@@ -199,6 +199,54 @@ describe('reseatDefault', () => {
   });
 });
 
+describe('editing the default option line', () => {
+  it('keeps the default on its line while that line is edited', () => {
+    const before = [{ value: 'eu' }, { value: 'us' }];
+    expect(
+      reseatDefault({ type: 'select', options: [{ value: 'e' }, { value: 'us' }], default: 'eu' }, before),
+    ).toEqual({ default: 'e' });
+    // Not the first line: the default follows its own line, not the first option.
+    expect(
+      reseatDefault({ type: 'select', options: [{ value: 'us' }, { value: 'e' }], default: 'eu' }, [
+        { value: 'us' },
+        { value: 'eu' },
+      ]),
+    ).toEqual({ default: 'e' });
+    // A line removed: the count changed, so the first-option rule applies.
+    expect(reseatDefault({ type: 'select', options: [{ value: 'us' }], default: 'eu' }, before)).toEqual({
+      default: 'us',
+    });
+    // With "All" offered and the line gone, null as before.
+    expect(
+      reseatDefault({ type: 'select', all: 'All', options: [{ value: 'us' }], default: 'eu' }, before),
+    ).toEqual({ default: null });
+    // Lines reordered: the default is still offered, so it stays.
+    expect(
+      reseatDefault({ type: 'select', options: [{ value: 'us' }, { value: 'eu' }], default: 'eu' }, before),
+    ).toEqual({});
+  });
+  it('keeps a label equal to its value that the option already had', () => {
+    const same = [{ value: 'eu', label: 'eu' }];
+    expect(optionsText(same)).toBe('eu');
+    expect(parseOptions(optionsText(same), same)).toEqual(same);
+    expect(parseOptions('eu | eu', same)).toEqual(same);
+    expect(parseOptions('eu | eu', [])).toEqual([{ value: 'eu' }]);
+  });
+  it('lets a legacy option stay when the options are only reordered', () => {
+    // A saved select whose option holds "$param." inside (allowed before 0.3.2): reordering is not writing it.
+    const legacy = ParameterSchema.parse({
+      id: 'c',
+      label: 'C',
+      type: 'select',
+      options: [{ value: 'US$param.x' }, { value: 'eu' }],
+      default: 'eu',
+    });
+    const reordered = { ...legacy, options: [{ value: 'eu' }, { value: 'US$param.x' }] };
+    expect(checkParameter(reordered, [], legacy)).toHaveProperty('parameter');
+    expect(checkParameter(reordered, [])).toHaveProperty('error');
+  });
+});
+
 describe('defaultOps for data-fed filters and unchanged values', () => {
   it('writes nothing when there is nothing to change', () => {
     const fed = ParameterSchema.parse({
