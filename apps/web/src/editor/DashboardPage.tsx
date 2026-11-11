@@ -63,6 +63,7 @@ import {
   usePresentation,
   useUnattendedClose,
 } from './presentation.tsx';
+import { withPresent } from './presentation-state.ts';
 import { PublicSecretsDialogs, SecretsSaveBanner } from './public-secrets.tsx';
 import { SharePanel } from './SharePanel.tsx';
 import { MuteButton } from './sound-controls.tsx';
@@ -168,6 +169,14 @@ function Editor({ id }: { id: string }) {
   const { presenting } = presentation;
   // Filter values live in the URL (p.<id>), next to present=1: a link opens a view, a wall screen is pinned to one.
   useParameterUrl(id, presenting);
+  // The address shows the mode, whichever way it changed (F, the button, Exit, Esc out of full screen): a reload keeps
+  // it, and a link copied after Exit does not start a kiosk. Read from the location, as useParameterUrl does, so a
+  // filter change in the same tick is not undone.
+  useEffect(() => {
+    const current = new URLSearchParams(window.location.search);
+    const next = withPresent(current, presenting);
+    if (next.toString() !== current.toString()) setSearch(next, { replace: true });
+  }, [presenting, setSearch]);
   const idle = useIdle(presenting);
   useEffect(() => {
     if (presenting) setEditing(false);

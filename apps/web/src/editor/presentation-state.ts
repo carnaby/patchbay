@@ -13,6 +13,17 @@ export function closesUnattended(openedWhilePresenting: boolean, presenting: boo
   return openedWhilePresenting && presenting;
 }
 
+/**
+ * The address shows the mode: a reload keeps it, and a link copied after Exit does not start a kiosk. Only `present`
+ * changes; filter values (`p.<id>`) and anything else stay.
+ */
+export function withPresent(search: URLSearchParams, presenting: boolean): URLSearchParams {
+  const next = new URLSearchParams(search);
+  if (!presenting) next.delete('present');
+  else if (next.get('present') !== '1') next.set('present', '1');
+  return next;
+}
+
 /** One pending close; `poke` restarts the count (input), `stop` cancels it. */
 export function unattendedTimer(close: () => void, ms = UNATTENDED_CLOSE_MS) {
   let timer = setTimeout(close, ms);
