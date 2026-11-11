@@ -552,6 +552,22 @@ describe('a self-hosted instance with ALLOW_PRIVATE_HOSTS=127.0.0.1', () => {
     expect(anonRead.access.privateHosts).toBe(false);
   });
 
+  it('tells a read-only token that private hosts are out of reach, though its owner may use them', async () => {
+    const admin = await lan.dashboard(ADMIN);
+    const token = (
+      await lan.call('/api/tokens', {
+        body: { name: 'reader', scopes: ['dashboards:read'] },
+        headers: await lan.login(ADMIN),
+      })
+    ).json.token as string;
+    const read = async (headers: Record<string, string>) =>
+      (await lan.call(`/api/dashboards/${admin.id}`, { headers })).json.access;
+    const asToken = await read({ authorization: `Bearer ${token}` });
+    // It previews public hosts only, so it is not told the dashboard may reach private ones.
+    expect(asToken.privateHosts).toBe(false);
+    expect((await read(admin.headers)).privateHosts).toBe(true);
+  });
+
   it('opens the list to anonymous dashboards with PRIVATE_HOSTS_FOR=everyone', async () => {
     const open = await instance({ ALLOW_PRIVATE_HOSTS: '127.0.0.1', PRIVATE_HOSTS_FOR: 'everyone' });
     try {

@@ -119,18 +119,27 @@ const slug = (s: string) =>
  * Turns engine suggestions into ready-to-apply operations. A saved dataset is derived from (source kind "dataset"),
  * never copied; a preview has nothing saved to derive from, so its suggestions copy the source.
  */
-function suggestionOps(
-  doc: LineageDoc<SuggestionParent>,
+/** @internal for tests */
+export function suggestionOps(
+  doc: LineageDoc<SuggestionParent> & { readonly widgets?: readonly { id: string }[] },
   dataset: Dataset,
   suggestions: Suggestion[],
   mode: 'derive' | 'copy',
 ) {
+  // Ids the document has plus those handed out in this answer: addWidget and addDataset would refuse a collision.
+  const taken = new Set([...doc.datasets.map((d) => d.id), ...(doc.widgets ?? []).map((w) => w.id)]);
+  // `base` is at most 31 characters (slug 28, a dash, two counter digits), so 8 or more of the parent's id stay.
+  const derivedId = (base: string) => `${dataset.id.slice(0, 40 - base.length - 1)}-${base}`;
   return suggestions.map((s) => {
-    const base = `${slug(s.title)}-${(++idCounter % 1000).toString(36)}`;
+    let base: string;
+    do base = `${slug(s.title)}-${(++idCounter % 1000).toString(36)}`;
+    while (taken.has(base) || taken.has(derivedId(base)));
+    taken.add(base);
     const ops: unknown[] = [];
     let datasetId = dataset.id;
     if (s.transforms.length) {
-      datasetId = `${dataset.id.slice(0, 20)}-${base}`.slice(0, 40);
+      datasetId = derivedId(base);
+      taken.add(datasetId);
       ops.push({
         op: 'addDataset',
         dataset:
@@ -540,7 +549,13 @@ export function createMcp(deps: Deps) {
               suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
               'copy',
             ),
-            ...noteOf(unknownNote(target.doc, args.parameters)),
+            ...noteOf(
+              args.dashboardId
+                ? unknownNote(target.doc, args.parameters)
+                : Object.keys(args.parameters ?? {}).length
+                  ? `Filter values need dashboardId (the filters are declared in a dashboard); ignored: ${Object.keys(args.parameters ?? {}).join(', ')}`
+                  : undefined,
+            ),
             ...(args.dashboardId ? viewEcho(args.dashboardId, target.doc, target.parameters) : {}),
             suggestionsNote:
               'These suggestions copy the previewed source because it is not saved yet. Once the dataset is saved, suggest_widgets returns suggestions that derive from it (source kind "dataset") instead.',
