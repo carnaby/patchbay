@@ -139,6 +139,9 @@ export class ConnectorService {
           places.set(host, place);
         }
         await place;
+        // The place may have been granted long ago and given back since: a branch that asks again after a sibling
+        // failed would otherwise send its request with no place held.
+        if (ended) throw new Error('The load ended before its turn came');
         return fetchJson<T>(url, headers ? { headers } : {});
       };
       try {

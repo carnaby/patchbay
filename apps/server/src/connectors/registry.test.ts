@@ -138,6 +138,57 @@ describe('upstream limits', () => {
     ).resolves.toBeTypeOf('function');
   });
 
+  it('sends no later request on a host it already held once the load has ended', async () => {
+    // One branch fails while the other is between two requests to a host whose place was granted earlier: the second
+    // request would go out with no place held, beside whoever holds that host's only place by then.
+    let secondAsked: () => void = () => {};
+    const asked = new Promise<void>((r) => (secondAsked = r));
+    const lateBranch: Connector = {
+      info: {
+        id: 'test.late',
+        name: 'Late branch',
+        category: 'Test',
+        description: '',
+        params: [],
+        minRefreshSec: 60,
+        docsUrl: 'https://example.com',
+        attribution: '',
+      },
+      async fetch(_params, ctx) {
+        await Promise.all([
+          (async () => {
+            await ctx.fetchJson('https://a.example/1');
+            await sleep(30);
+            const second = ctx.fetchJson('https://a.example/2');
+            secondAsked();
+            await second;
+          })(),
+          (async () => {
+            await sleep(5);
+            await ctx.fetchJson('https://b.example/x');
+          })(),
+        ]);
+        return { columns: [], rows: [] };
+      },
+      sample: () => ({ columns: [], rows: [] }),
+    };
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.startsWith('https://b.example')) throw new Error(`down: ${url}`);
+      return {};
+    });
+    const outbound = new OutboundLimiter({
+      connector: { perHostConcurrency: 1, perHostPerMinute: 60, maxWaitMs: 8000 },
+    });
+    const service = new ConnectorService({ offline: false, outbound, connectors: [lateBranch] });
+    await expect(service.load('test.late', {})).rejects.toThrow(/down: https:\/\/b\.example/);
+    // a.example's only place went back when the load ended; someone else takes it now.
+    const holder = await outbound.acquireConnectorSlot('y', 'a.example');
+    await asked;
+    await sleep(10);
+    expect(fetchMock.mock.calls.map(([url]) => url)).not.toContain('https://a.example/2');
+    holder();
+  });
+
   it('turns a wait timeout into a RetryLaterError, serves a recent copy if there is one, and does not cache it', async () => {
     const outbound = new OutboundLimiter({
       connector: { perHostConcurrency: 1, perHostPerMinute: 60, maxWaitMs: 30 },
