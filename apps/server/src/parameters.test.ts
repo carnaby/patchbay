@@ -479,6 +479,113 @@ describe('filters over MCP', () => {
     }
   });
 
+  it('reads and draws a view of a date range and a text filter', async () => {
+    const c = await agent('filters-dates-agent@example.com');
+    const { dashboardId } = await tool(c, 'create_dashboard', { title: 'Dates and text' });
+    await tool(c, 'apply_operations', {
+      dashboardId,
+      operations: [
+        {
+          op: 'addParameter',
+          parameter: {
+            id: 'period',
+            label: 'Period',
+            type: 'dateRange',
+            presets: ['last7d'],
+            custom: true,
+            default: 'last7d',
+          },
+        },
+        { op: 'addParameter', parameter: { id: 'q', label: 'Search', type: 'text' } },
+        {
+          op: 'addDataset',
+          dataset: {
+            id: 'orders',
+            name: 'Orders',
+            source: {
+              kind: 'inline',
+              rows: [
+                { at: '2026-01-05', name: 'shoes' },
+                { at: '2026-02-05', name: 'shirts' },
+                { at: '2026-01-20', name: 'hats' },
+              ],
+            },
+            transforms: [
+              {
+                type: 'filter',
+                expr: 'at >= $param.period.start && at < $param.period.end && ($param.q == "" || contains(name, $param.q))',
+              },
+            ],
+          },
+        },
+        { op: 'addWidget', widget: { id: 'table', type: 'table', datasetId: 'orders', config: {} } },
+      ],
+    });
+    const period = '2026-01-01..2026-01-31';
+
+    const both = await tool(c, 'get_data', {
+      dashboardId,
+      datasetId: 'orders',
+      parameters: { period, q: 'sh' },
+    });
+    expect(both.rowCount).toBe(1);
+    expect(both.parameters).toEqual({ period, q: 'sh' });
+    expect(both.viewUrl).toBe(`${BASE}/d/${dashboardId}?p.period=2026-01-01..2026-01-31&p.q=sh`);
+
+    const periodOnly = await tool(c, 'get_data', {
+      dashboardId,
+      datasetId: 'orders',
+      parameters: { period },
+    });
+    expect(periodOnly.rowCount).toBe(2);
+
+    const shot = await c.callTool({
+      name: 'render_snapshot',
+      arguments: { dashboardId, parameters: { period, q: 'sh' } },
+    });
+    expect(shot.isError, text(shot)).toBeFalsy();
+    expect(text(shot)).toContain('Filters: Period: 2026-01-01 – 2026-01-31 · Search: "sh"');
+
+    const refusals: [Record<string, string>, string][] = [
+      [
+        { period: '2026-02-01..2026-01-01' },
+        'Filter "period": the range 2026-02-01..2026-01-01 ends before it starts',
+      ],
+      [
+        { period: 'last30d' },
+        'Filter "period" has no value "last30d"; choose one of last7d, or a range like 2026-01-01..2026-01-31',
+      ],
+      [{ q: 'x'.repeat(101) }, 'Filter "q" takes at most 100 characters'],
+    ];
+    for (const [parameters, message] of refusals) {
+      const bad = await c.callTool({
+        name: 'get_data',
+        arguments: { dashboardId, datasetId: 'orders', parameters },
+      });
+      expect(bad.isError, message).toBe(true);
+      expect(text(bad)).toBe(message);
+    }
+  });
+
+  it('previews a connector parameter bound to a filter', async () => {
+    const c = await agent('filters-preview-days@example.com');
+    const { dashboardId } = await tool(c, 'create_dashboard', { title: 'Preview days' });
+    await tool(c, 'apply_operations', { dashboardId, operations: [{ op: 'addParameter', parameter: DAYS }] });
+    const source = { kind: 'connector', connector: 'demo.sales', params: { days: '$param.days' } };
+
+    const base = await tool(c, 'preview_data', { dashboardId, source });
+    const ninety = await tool(c, 'preview_data', { dashboardId, source, parameters: { days: '90' } });
+    expect(ninety.rowCount).toBeGreaterThan(base.rowCount);
+    expect(ninety.parameters).toEqual({ days: '90' });
+
+    const bad = await c.callTool({
+      name: 'preview_data',
+      arguments: { dashboardId, source, parameters: { days: '7' } },
+    });
+    expect(bad.isError).toBe(true);
+    expect(text(bad)).toBe('Filter "days" has no value "7"; choose one of 30, 90');
+  });
+
   it('keeps a read-only token from previewing a POST, with filter values or without', async () => {
     const reader = await agent('filters-reader@example.com', ['dashboards:read']);
     const r = await reader.callTool({
@@ -599,6 +706,30 @@ describe('calendar window of a data answer', () => {
       for (const r of shared) expect(r).not.toHaveProperty('calendar');
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it('keys cached snapshots by the calendar window', async () => {
+    const snapshots = deps.limits.snapshots;
+    deps.limits.snapshots = new Unlimited(1, 1);
+    const scope = vi.spyOn(deps.data, 'scope');
+    try {
+      for (let i = 0; i < 2; i++) {
+        const res = await app.request(`${BASE}/api/dashboards/${id}/snapshot.png`, {
+          headers: { origin: BASE },
+        });
+        expect(res.status, `request ${i}`).toBe(200);
+      }
+      expect(scope).toHaveBeenCalledTimes(1);
+      vi.setSystemTime(new Date('2026-11-11T00:00:30Z'));
+      const next = await app.request(`${BASE}/api/dashboards/${id}/snapshot.png`, {
+        headers: { origin: BASE },
+      });
+      expect(next.status).toBe(200);
+      expect(scope).toHaveBeenCalledTimes(2);
+    } finally {
+      scope.mockRestore();
+      deps.limits.snapshots = snapshots;
     }
   });
 
