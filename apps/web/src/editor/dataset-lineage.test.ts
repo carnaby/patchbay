@@ -52,6 +52,25 @@ describe('dataset editor helpers', () => {
     expect(deleteBlocker(doc, 'deep')).toBeNull();
   });
 
+  it('blocks deleting a dataset a filter takes its choices from (E4)', () => {
+    const filter = {
+      id: 'reg',
+      label: 'Region',
+      type: 'select',
+      optionsFrom: { dataset: 'deep', field: 'r' },
+      all: 'All',
+      default: null,
+    } as const;
+    const withFilter = applyOps(doc, [{ op: 'addParameter', parameter: filter }]).doc;
+    expect(deleteBlocker(withFilter, 'deep')).toBe('Used by filter Region. Delete or re-point those first.');
+    const both = applyOps(doc, [
+      { op: 'addParameter', parameter: { ...filter, optionsFrom: { dataset: 'ba', field: 'r' } } },
+    ]).doc;
+    expect(deleteBlocker(both, 'ba')).toBe(
+      'Used by Temps (both cities), Humidity, filter Region. Delete or re-point those first.',
+    );
+  });
+
   it('says where secrets come from and when derived data refreshes', () => {
     expect(secretsTooltip(doc, 'orders')).toBe('Uses secrets');
     expect(secretsTooltip(doc, 'both')).toBe('Uses secrets via Orders API');

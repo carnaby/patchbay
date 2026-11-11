@@ -4,9 +4,11 @@
  */
 import {
   type DashboardDoc,
+  type DatePreset,
   type DateRange,
   declarationIssues,
   formatZodIssues,
+  MAX_PARAMETERS,
   type OpInput,
   type OptionValue,
   optionWriteIssues,
@@ -129,6 +131,33 @@ export function checkParameter(
   return issue ? { error: issue } : { parameter: parsed.data };
 }
 
+/**
+ * The patch that keeps `default` valid after the options or the ticked presets changed, so the Default list never
+ * shows a value the saved filter would not accept; {} when it already is. Data-fed choices always start at All.
+ */
+export function reseatDefault(draft: Record<string, unknown>): Record<string, unknown> {
+  if (draft.type === 'select' && !draft.optionsFrom) {
+    const options = (draft.options as OptionInput[] | undefined) ?? [];
+    const hasAll = draft.all !== undefined;
+    if (draft.default === null) return hasAll ? {} : { default: options[0]?.value ?? null };
+    if (options.some((o) => String(o.value) === String(draft.default))) return {};
+    return { default: hasAll ? null : (options[0]?.value ?? null) };
+  }
+  if (draft.type === 'dateRange' && typeof draft.default === 'string') {
+    const presets = (draft.presets as DatePreset[] | undefined) ?? [];
+    if (presets.length === 0 || presets.includes(draft.default as DatePreset)) return {};
+    return { default: presets[0] };
+  }
+  return {};
+}
+
+/** Why no filter can be added (shown beside the disabled button, where touch users see it); null when one can. */
+export function addFilterBlocker(parameters: readonly Parameter[] | undefined): string | null {
+  return (parameters?.length ?? 0) >= MAX_PARAMETERS
+    ? `A dashboard has at most ${MAX_PARAMETERS} filters`
+    : null;
+}
+
 /** What changed between two declarations of one filter, as one updateParameter; null removes a field. */
 export function updateOps(before: Parameter, after: Parameter): OpInput[] {
   const set: Record<string, unknown> = {};
@@ -153,13 +182,16 @@ export function defaultOps(
     now,
   );
   return (parameters ?? []).flatMap((p): OpInput[] => {
-    if (!Object.hasOwn(raw, p.id)) return [];
+    // A data-fed choice always starts at All, and a value equal to the default would only add an empty version.
+    if (!Object.hasOwn(raw, p.id) || (p.type === 'select' && p.optionsFrom)) return [];
     const value = values[p.id];
     const next =
       p.type === 'dateRange'
         ? ((value as DateRange).preset ?? { from: (value as DateRange).from, to: (value as DateRange).to })
         : value;
-    return [{ op: 'updateParameter', id: p.id, set: { default: next } }];
+    return JSON.stringify(next) === JSON.stringify(p.default)
+      ? []
+      : [{ op: 'updateParameter', id: p.id, set: { default: next } }];
   });
 }
 

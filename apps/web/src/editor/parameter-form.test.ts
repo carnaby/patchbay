@@ -1,6 +1,14 @@
-import { applyOps, emptyDashboard, type Parameter, ParameterSchema, ParamIdSchema } from '@patchbay/core';
+import {
+  applyOps,
+  emptyDashboard,
+  MAX_PARAMETERS,
+  type Parameter,
+  ParameterSchema,
+  ParamIdSchema,
+} from '@patchbay/core';
 import { describe, expect, it } from 'vitest';
 import {
+  addFilterBlocker,
   checkParameter,
   choiceSourcePatch,
   defaultOps,
@@ -8,6 +16,7 @@ import {
   newParameter,
   optionsText,
   parseOptions,
+  reseatDefault,
   updateOps,
   usageText,
 } from './parameter-form.ts';
@@ -117,7 +126,8 @@ describe('the Filters panel form', () => {
     expect(defaultOps([period], { period: 'last30d' })).toEqual([
       { op: 'updateParameter', id: 'period', set: { default: 'last30d' } },
     ]);
-    expect(defaultOps([region], { region: '*' })).toEqual([
+    expect(defaultOps([region], { region: '*' })).toEqual([]);
+    expect(defaultOps([{ ...region, default: 'eu' }], { region: '*' })).toEqual([
       { op: 'updateParameter', id: 'region', set: { default: null } },
     ]);
     expect(defaultOps([region], {})).toEqual([]);
@@ -146,5 +156,75 @@ describe('the Filters panel form', () => {
     ]).doc;
     expect(usageText(doc, 'region')).toBe('Used by Sales (filter step), Orders (URL query)');
     expect(usageText(doc, 'other')).toBeNull();
+  });
+});
+
+describe('reseatDefault', () => {
+  it('moves a select default that is no longer an option to what the Default list shows', () => {
+    expect(reseatDefault({ type: 'select', options: [{ value: 'us' }], default: 'eu' })).toEqual({
+      default: 'us',
+    });
+    expect(reseatDefault({ type: 'select', options: [{ value: 'us' }], all: 'All', default: 'eu' })).toEqual({
+      default: null,
+    });
+    expect(reseatDefault({ type: 'select', options: [{ value: 'eu' }], default: 'eu' })).toEqual({});
+    expect(reseatDefault({ type: 'select', options: [{ value: 'eu' }], all: 'All', default: null })).toEqual(
+      {},
+    );
+    expect(
+      reseatDefault({ type: 'select', optionsFrom: { dataset: 'd', field: 'f' }, all: 'All', default: null }),
+    ).toEqual({});
+  });
+  it('moves a date default preset that was unticked to the first ticked one', () => {
+    expect(reseatDefault({ type: 'dateRange', presets: ['last7d', 'last30d'], default: 'today' })).toEqual({
+      default: 'last7d',
+    });
+    expect(
+      reseatDefault({
+        type: 'dateRange',
+        presets: ['last7d'],
+        default: { from: '2026-01-01', to: '2026-01-02' },
+      }),
+    ).toEqual({});
+    expect(reseatDefault({ type: 'dateRange', presets: [], default: 'today' })).toEqual({});
+    expect(reseatDefault({ type: 'text', default: '' })).toEqual({});
+  });
+  it('lets the edited filter be saved again (E1)', () => {
+    const draft = { ...region, options: [{ value: 'europe' }], all: undefined, default: 'eu' };
+    expect('error' in checkParameter(draft, [], region)).toBe(true);
+    expect('error' in checkParameter({ ...draft, ...reseatDefault(draft) }, [], region)).toBe(false);
+    const dates = { ...period, presets: ['last30d'], custom: false };
+    expect('error' in checkParameter(dates, [], period)).toBe(true);
+    expect('error' in checkParameter({ ...dates, ...reseatDefault(dates) }, [], period)).toBe(false);
+  });
+});
+
+describe('defaultOps for data-fed filters and unchanged values (E2)', () => {
+  it('writes nothing when there is nothing to change', () => {
+    const fed = ParameterSchema.parse({
+      id: 'reg',
+      label: 'Region',
+      type: 'select',
+      optionsFrom: { dataset: 'src', field: 'r' },
+      all: 'All',
+      default: null,
+    });
+    const search = ParameterSchema.parse({ id: 'q', label: 'Search', type: 'text', default: 'abc' });
+    expect(defaultOps([fed], { reg: 'AT' })).toEqual([]);
+    expect(defaultOps([search], { q: 'abc' })).toEqual([]);
+    expect(defaultOps([search], { q: 'xyz' })).toEqual([
+      { op: 'updateParameter', id: 'q', set: { default: 'xyz' } },
+    ]);
+    expect(defaultOps([{ ...region, default: 'eu' }], { region: 'us' })).toHaveLength(1);
+  });
+});
+
+describe('addFilterBlocker', () => {
+  const many = (n: number): Parameter[] =>
+    Array.from({ length: n }, (_, i) => ({ id: 'f' + i, label: 'F' + i, type: 'text', default: '' }));
+  it('blocks a ninth filter with a reason (E3)', () => {
+    expect(addFilterBlocker(many(MAX_PARAMETERS))).toBe('A dashboard has at most 8 filters');
+    expect(addFilterBlocker(many(MAX_PARAMETERS - 1))).toBeNull();
+    expect(addFilterBlocker(undefined)).toBeNull();
   });
 });
