@@ -12,10 +12,20 @@ import {
   type ParameterValues,
   readParameterValues,
 } from '@patchbay/core';
+import { z } from 'zod';
 import { badRequest } from '../util/errors.ts';
 import type { DashboardTarget, DataService } from './data.ts';
 
 export type RawParameters = Readonly<Record<string, string>>;
+
+/** The view's values in text form as REST and MCP accept them; bounded so neither can be fed unbounded text. */
+export const RawParametersSchema = z.record(z.string().max(40), z.string().max(200));
+
+/** Ids a request names that the dashboard does not declare (own keys only), in the order given. */
+export function unknownIds(doc: Pick<DashboardDoc, 'parameters'>, raw: RawParameters | undefined): string[] {
+  const declared = new Set((doc.parameters ?? []).map((p) => p.id));
+  return Object.keys(raw ?? {}).filter((id) => !declared.has(id));
+}
 
 /** `?p.region=eu&p.period=last7d` as { region: "eu", period: "last7d" }; the first of a repeated one counts. */
 export function rawFromQuery(url: string): RawParameters {

@@ -952,6 +952,134 @@ describe('MCP tools', () => {
     }
   });
 
+  it('bounds filter ids and values of the view tools and echoes the view on preview_data and render_snapshot', async () => {
+    const agent = await ownClient('view-echo@example.com');
+    const { dashboardId } = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'Echo' } })),
+    );
+    const applied = await agent.callTool({
+      name: 'apply_operations',
+      arguments: {
+        dashboardId,
+        operations: [
+          {
+            op: 'addParameter',
+            parameter: {
+              id: 'region',
+              label: 'Region',
+              type: 'select',
+              options: [
+                { value: 'eu', label: 'EU' },
+                { value: 'us', label: 'US' },
+              ],
+              all: 'All regions',
+              default: null,
+            },
+          },
+          {
+            op: 'addDataset',
+            dataset: {
+              id: 'sales',
+              name: 'Sales',
+              source: {
+                kind: 'inline',
+                rows: [
+                  { region: 'eu', v: 1 },
+                  { region: 'us', v: 2 },
+                ],
+              },
+              transforms: [{ type: 'filter', expr: '$param.region == null || region == $param.region' }],
+            },
+          },
+          { op: 'addWidget', widget: { id: 'w', type: 'table', datasetId: 'sales', config: {} } },
+        ],
+      },
+    });
+    expect(applied.isError).toBeFalsy();
+    // Validation may answer as a tool error or as a protocol error; both refuse the call.
+    const refused = async (name: string, args: Record<string, unknown>) => {
+      try {
+        const res = await agent.callTool({ name, arguments: args });
+        return res.isError ? text(res) : null;
+      } catch (error) {
+        return String(error);
+      }
+    };
+    const source = { kind: 'inline', rows: [{ a: 1 }] };
+    for (const [name, base] of [
+      ['get_data', { dashboardId, datasetId: 'sales' }],
+      ['preview_data', { dashboardId, source }],
+    ] as const) {
+      expect(await refused(name, { ...base, parameters: { region: 'x'.repeat(201) } }), name).toMatch(/200/);
+      expect(await refused(name, { ...base, parameters: { ['k'.repeat(41)]: 'eu' } }), name).toMatch(
+        /Invalid key/,
+      );
+    }
+
+    const preview = JSON.parse(
+      text(
+        await agent.callTool({
+          name: 'preview_data',
+          arguments: { dashboardId, source, parameters: { region: 'eu' } },
+        }),
+      ),
+    );
+    expect(preview.parameters).toEqual({ region: 'eu' });
+    expect(preview.viewUrl).toBe(`${deps.config.publicUrl}/d/${dashboardId}?p.region=eu`);
+    const bare = JSON.parse(
+      text(
+        await agent.callTool({
+          name: 'preview_data',
+          arguments: { source: { kind: 'inline', rows: [{ a: 1 }] } },
+        }),
+      ),
+    );
+    expect(bare.parameters).toBeUndefined();
+    expect(bare.viewUrl).toBeUndefined();
+
+    const shot = text(
+      await agent.callTool({
+        name: 'render_snapshot',
+        arguments: { dashboardId, parameters: { region: 'eu' } },
+      }),
+    );
+    expect(shot).toContain('Filters: ');
+    expect(shot).toContain(`Link: ${deps.config.publicUrl}/d/${dashboardId}?p.region=eu`);
+    expect(shot).not.toContain('Unknown filter ids');
+
+    const note = 'Unknown filter ids ignored: regoin';
+    const typo = { regoin: 'eu' };
+    const got = JSON.parse(
+      text(
+        await agent.callTool({
+          name: 'get_data',
+          arguments: { dashboardId, datasetId: 'sales', parameters: typo },
+        }),
+      ),
+    );
+    expect(got.note).toBe(note);
+    const suggested = JSON.parse(
+      text(
+        await agent.callTool({
+          name: 'suggest_widgets',
+          arguments: { dashboardId, datasetId: 'sales', parameters: typo },
+        }),
+      ),
+    );
+    expect(suggested.note).toBe(note);
+    const previewTypo = JSON.parse(
+      text(
+        await agent.callTool({ name: 'preview_data', arguments: { dashboardId, source, parameters: typo } }),
+      ),
+    );
+    expect(previewTypo.note).toBe(note);
+    const shotTypo = text(
+      await agent.callTool({ name: 'render_snapshot', arguments: { dashboardId, parameters: typo } }),
+    );
+    expect(shotTypo.split('\n')).toContain(note);
+    expect(got.parameters).toEqual({ region: '*' });
+  });
+
   it('answers a busy data check after the save without telling the agent to retry the saved batch', async () => {
     const agent = await ownClient('busy-check@example.com');
     const { dashboardId } = JSON.parse(
@@ -1058,7 +1186,8 @@ describe('MCP tools', () => {
     // get_reference; -> 47,800: parameters on get_data, render_snapshot, suggest_widgets and preview_data (filter
     // values of a view), descriptions in get_reference; -> 48,500: crossFilter on chart, table and map configs
     // (proposal 0010, phase 2), descriptions in get_reference; -> 48,800: a select's optionsFrom (choices from a dataset
-    // column), descriptions in get_reference).
+    // column), descriptions in get_reference; -> 48,800 (measured 48,602 -> 48,726, the budget already covered it): length limits
+    // on filter ids and values in the four view tools (they matched REST's preview limits)).
     expect(JSON.stringify(list).length).toBeLessThanOrEqual(48_800);
 
     const ops = list.tools.find((t) => t.name === 'apply_operations')!.inputSchema as any;
