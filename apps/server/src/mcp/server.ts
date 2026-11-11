@@ -119,8 +119,9 @@ const slug = (s: string) =>
 /**
  * Turns engine suggestions into ready-to-apply operations. A saved dataset is derived from (source kind "dataset"),
  * never copied; a preview has nothing saved to derive from, so its suggestions copy the source.
+ *
+ * @internal for tests
  */
-/** @internal for tests */
 export function suggestionOps(
   doc: LineageDoc<SuggestionParent> & { readonly widgets?: readonly { id: string }[] },
   dataset: Dataset,

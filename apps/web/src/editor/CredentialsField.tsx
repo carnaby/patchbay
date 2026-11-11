@@ -43,11 +43,12 @@ export interface CredentialContext {
   secrets: SecretListItem[] | null;
 }
 
-export function useCredentialContext(): CredentialContext {
+/** `active` false keeps the secrets list from loading (a panel that is closed must not send a request). */
+export function useCredentialContext(active = true): CredentialContext {
   const access = useEditor((s) => s.access);
   const { data: status } = useSecretsStatus();
   const owner = Boolean(access?.isOwner);
-  const list = useSecrets(owner);
+  const list = useSecrets(owner && active);
   return {
     mode: status?.mode ?? 'off',
     canUseSecrets: owner && Boolean(status?.canUseSecrets),

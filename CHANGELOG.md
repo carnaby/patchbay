@@ -8,9 +8,13 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ### Fixed
 
-- A wall screen whose dashboard was made private or removed no longer asks for it again every minute, from the next
-  midnight on for good, or every 10 seconds after an earlier source error. It now asks every 15 minutes, so a dashboard
-  made public again shows up without a reload. A widget with a regular refresh interval keeps its interval.
+- A wall screen whose dashboard was made private or removed kept asking for it: every minute from the next midnight
+  on, or every few seconds when its last answer had asked it to come back soon. It now asks every 15 minutes, so a
+  dashboard made public again shows up without a reload. A widget with a regular refresh interval keeps its interval.
+- A connector load that ended no longer keeps its place in the queue, where it took places and minute budget from other
+  dashboards.
+- In presentation mode, a filter value that a list which never refreshes no longer offers is reset at once, without
+  first showing that it waits for the list.
 - In presentation mode on a touch screen, the Maximise button of a widget in the top row can be tapped again while the
   top bar shows.
 - A track map's newest positions and a map shown as a table now set the map's filter when clicked, and newest positions

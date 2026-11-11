@@ -119,7 +119,7 @@ describe('connector budget', () => {
     expect(order).toEqual(['a', 'c']);
   });
 
-  it('never fails a waiter twice when its wait timeout fires after the load ended', async () => {
+  it('clears the wait timeout of a waiter whose load ended, so it fails once', async () => {
     vi.useFakeTimers();
     const l = limiter({ perHostConcurrency: 1, perHostPerMinute: 60, maxWaitMs: 1000 });
     const holder = await l.acquireConnectorSlot('x', 'h.example');

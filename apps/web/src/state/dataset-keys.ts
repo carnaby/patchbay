@@ -279,7 +279,8 @@ export function lastFetch(
   if (typeof valid === 'number' && Number.isFinite(valid) && valid >= 0)
     // Measured from this tab's receipt, so its clock offset cancels out; latency only makes it later.
     last.validUntil = state.dataUpdatedAt + valid * 1000;
-  // Failing widgets of a wall failed together, and every wall's window ends at the same midnight: spread all three.
+  // Failing widgets of a wall failed together, and every wall's window ends at the same instant: spread their retries
+  // and the refetch at the window's end.
   if (last.failed || lasting || last.refused || last.validUntil !== undefined) {
     let spread = spreads.get(state);
     if (spread === undefined) {

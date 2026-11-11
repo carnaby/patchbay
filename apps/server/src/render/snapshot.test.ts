@@ -207,6 +207,8 @@ describe('snapshot text', () => {
     const strip = inkColumns(img, { x: 14, y: 326, w: 612, h: 18 });
     expect(inkColumns(img, { x: 624, y: 326, w: 2, h: 18 }).length).toBe(0);
     expect(Math.max(...strip) / SCALE).toBeGreaterThan(600);
+    // Only the last label inks this span (the one before ends near x 501): 18 columns in each of three runs, so a dropped label gives 0.
+    expect(inkColumns(img, { x: 580, y: 326, w: 44, h: 18 }).length).toBeGreaterThan(14);
   });
 
   it('uses the bundled Inter, whatever fonts the machine has', () => {

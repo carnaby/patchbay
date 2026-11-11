@@ -65,7 +65,9 @@ export function ParametersPanel({
 }) {
   const doc = useEditor((s) => s.doc);
   const saved = useEditor((s) => s.saved);
-  const credentials = useCredentialContext();
+  // Only while open: a page load (a wall screen, a reconnect) sends no request, and each opening refetches a list
+  // older than its stale time, so the pre-check never judges against a list from page load.
+  const credentials = useCredentialContext(open);
   const apply = useEditor((s) => s.apply);
   const raw = useParameters((s) => s.raw);
   const [editing, setEditing] = useState<Editing>(null);
