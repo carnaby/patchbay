@@ -6,6 +6,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-11
+
 ### Fixed
 
 - A dashboard on a relative period (yesterday, last 7 days, last month, ...) now asks again when the server says its
@@ -256,7 +258,8 @@ The server was reviewed adversarially before release, and every finding has a re
 - Hostile feeds are parsed in linear time off the main thread; snapshot drawing is bounded per render.
 - `URL_SOURCES=signed-in` keeps strangers from making a public instance fetch arbitrary addresses.
 
-[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/carnaby/patchbay/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/carnaby/patchbay/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/carnaby/patchbay/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/carnaby/patchbay/compare/v0.2.1...v0.3.0
