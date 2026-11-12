@@ -24,6 +24,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 - With `URL_SOURCES=signed-in`, copies of a showcase use case also load its POST sources, such as a GraphQL query, as
   long as the address, the body and the `path` stay exactly as in the showcase. A changed body or path still needs a
   signed-in owner.
+- The agent reference and the editor say that the percent format takes 0-100, so a ratio such as 0.86 is multiplied
+  by 100 first instead of showing "0.9%"; the reference also says that `date(t * 1000)` turns epoch seconds into a time.
 - The landing page names filters and clicks, wall screens, GraphQL sources and joined datasets among the features.
 
 ### Fixed

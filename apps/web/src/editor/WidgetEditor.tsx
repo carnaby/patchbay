@@ -1212,7 +1212,7 @@ function FormatFields({ format, setConfig }: { format: Format | undefined; setCo
             >
               <option value="number">Number</option>
               <option value="compact">Compact (1.2K)</option>
-              <option value="percent">Percent</option>
+              <option value="percent">Percent (0-100)</option>
               <option value="currency">Currency</option>
             </Select>
           )}

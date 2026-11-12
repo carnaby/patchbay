@@ -247,7 +247,7 @@ everything built on it stays in sync.
 - `join { with, on, how, fields? }` adds columns where keys match: `on: ["country"]` when both sides use the name,
   `[{ "left": "code", "right": "iso" }]` otherwise, up to 4 keys. `how: "left"` (default) keeps every row, `"inner"`
   only rows with a match. Keys must have the same type; a time matches a number (both epoch ms), and text dates
-  become times with `derive date(column)`. A repeated key gives one row per match; a null key matches nothing.
+  and epoch numbers become times with `derive date(column)` (epoch seconds: `date(t * 1000)`). A repeated key gives one row per match; a null key matches nothing.
   Columns this dataset already has get `_<dataset id>`.
 - `union { with, origin?, labels? }` appends the rows of up to 4 datasets, columns matched by name (missing ones are
   null, conflicting types become text). `origin` adds a column naming where each row came from; chart it with

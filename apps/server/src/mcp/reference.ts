@@ -183,7 +183,7 @@ as JSON; a larger one comes back as an error with its columns and no rows: add l
   refreshSec or accumulate of their own: they refresh when their source does.
 - join { with, on: ["key"] | [{ left, right }], how: "left"|"inner", fields? }: add columns from another dataset.
   "left" (default) keeps every row. Keys must have the same type on both sides (a time matches a number, both are
-  epoch ms; turn text dates into times with derive date(column)). A key that repeats on the other side gives one row
+  epoch ms; turn text dates and epoch numbers into times with derive date(column); epoch seconds: date(t * 1000)). A key that repeats on the other side gives one row
   per match; a null key matches nothing. fields: the columns to bring (default all but the keys); a name this
   dataset already has gets "_<dataset id>".
 - union { with: [ids], origin?: "column", labels?: { id: "label" } }: append rows of other datasets, columns matched
@@ -242,7 +242,7 @@ and widgets per value. Viewers set filters in the dashboard header; values are n
 
 ## Expressions
 Operators: + - * / % ^, == != < <= > >=, && || ! (or: and, or, not), cond ? a : b. Strings in "double" or 'single'
-quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Trigonometry works in radians (convert
+quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Epoch seconds become a time with date(t * 1000). Arithmetic on a time (t + 3600000, floor(t / 3600000)) gives a number, not a time: round times with timeBucket. Trigonometry works in radians (convert
 with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed point. Text built with concat or +
 is at most ${MAX_STRING.toLocaleString('en')} characters (use substr to shorten). Functions:
 ${fns}
@@ -298,7 +298,7 @@ ${tableFns}
   cut to two lines and the rest counted in "+N more problems" (a section left without problem tiles folds into it).
   At most ${STATUS_LIMITS.rows} rows, ${STATUS_LIMITS.sections} sections and ${STATUS_LIMITS.tiles} tiles are read.
   Example: { "id": "infra", "type": "status", "datasetId": "checks", "config": { "entity": "service", "status": "status", "group": "machine", "label": "name", "kind": "kind", "detail": "detail", "since": "since", "link": "url" } }
-format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }
+format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }   percent takes 0-100 (86.1 shows "86.1%"); a ratio (0-1), such as an average of 0/1 values, needs derive x * 100 first.
 
 ## Colours
 Colours are named tokens that adapt to light and dark mode: ${COLOR_TOKENS.slice(0, 8).join(', ')} (the chart palette, in

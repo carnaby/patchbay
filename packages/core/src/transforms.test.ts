@@ -426,6 +426,37 @@ describe('derive and time columns', () => {
     });
   });
 
+  it('makes a time column from epoch seconds with date(t * 1000), and a number from t * 1000 alone', () => {
+    const { table } = runPipeline(
+      inferTable([{ t: 1794407530 }]),
+      steps([
+        { type: 'derive', as: 'at', expr: 'date(t * 1000)' },
+        { type: 'derive', as: 'ms', expr: 't * 1000' },
+      ]),
+    );
+    expect(Object.fromEntries(table.columns.map((c) => [c.name, c.type]))).toMatchObject({
+      at: 'time',
+      ms: 'number',
+    });
+    expect(table.rows[0]!.at).toBe(Date.parse('2026-11-11T14:32:10Z'));
+  });
+
+  it('keeps a number for an age, a conditional with a date branch and a rounded value', () => {
+    const { table } = runPipeline(
+      src,
+      steps([
+        { type: 'derive', as: 'age', expr: 'now() - updated_at' },
+        { type: 'derive', as: 'maybe', expr: 'name == "API" ? date(day) : 0' },
+        { type: 'derive', as: 'rounded', expr: 'round(updated_at / 1000)' },
+      ]),
+    );
+    expect(Object.fromEntries(table.columns.map((c) => [c.name, c.type]))).toMatchObject({
+      age: 'number',
+      maybe: 'number',
+      rounded: 'number',
+    });
+  });
+
   it('lets a status widget show how long a problem from a derived column has lasted', () => {
     const { table } = runPipeline(
       src,
