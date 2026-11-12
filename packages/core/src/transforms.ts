@@ -511,7 +511,8 @@ function applyStep(
       });
     }
     case 'derive': {
-      requireFields(table, [...referencedFields(parse(t.expr, BOUND))], step, check);
+      const ast = parse(t.expr, BOUND);
+      requireFields(table, [...referencedFields(ast)], step, check);
       const fn = compileFor(t.expr, table, () => budget.tick(), BOUND);
       const replaces = order.includes(t.as);
       // Charged row by row: text built by an expression is new memory, and 40 derive steps of long text over a
@@ -523,6 +524,12 @@ function applyStep(
       });
       const nextOrder = replaces ? order : [...order, t.as];
       const { [t.as]: _replaced, ...rest } = known;
+      // A time stays a time through derive: the status widget reads "since" and charts use a time axis only from a
+      // time column, and the reference tells agents to make times with date().
+      const makesTime =
+        (ast.k === 'field' && Object.hasOwn(known, ast.name) && known[ast.name] === 'time') ||
+        (ast.k === 'call' && (ast.fn === 'date' || ast.fn === 'now'));
+      if (makesTime) setCell(rest, t.as, 'time');
       return retype(rows, nextOrder, rest);
     }
     case 'sort': {

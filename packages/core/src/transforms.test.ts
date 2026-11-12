@@ -8,6 +8,8 @@ import {
   PIPELINE_LIMITS,
   type PipelineInputs,
   runPipeline,
+  StatusConfigSchema,
+  statusModel,
   TransformError,
   type TransformInput,
   TransformSchema,
@@ -396,5 +398,62 @@ describe('a source that returned no rows', () => {
     const { table } = runPipeline(components, steps([{ type: 'union', with: ['open'] }]), inputs({ open }));
     expect(table.columns.find((c) => c.name === 'since')?.type).toBe('time');
     expect(table.rows[0]!.since).toBe(Date.parse('2026-11-12T10:00:00Z'));
+  });
+});
+
+describe('derive and time columns', () => {
+  const src = inferTable([{ name: 'API', updated_at: '2026-11-12T10:00:00Z', day: '2026-11-12' }]);
+
+  it('makes a time column from a time column, date() or now(), and a number from arithmetic', () => {
+    const { table } = runPipeline(
+      src,
+      steps([
+        { type: 'derive', as: 'since', expr: 'updated_at' },
+        { type: 'derive', as: 'parsed', expr: 'date(day)' },
+        { type: 'derive', as: 'at', expr: 'now()' },
+        { type: 'derive', as: 'updated_at', expr: 'updated_at' },
+        { type: 'derive', as: 'year', expr: 'year(updated_at)' },
+        { type: 'derive', as: 'later', expr: 'updated_at + 1000' },
+      ]),
+    );
+    expect(Object.fromEntries(table.columns.map((c) => [c.name, c.type]))).toMatchObject({
+      since: 'time',
+      parsed: 'time',
+      at: 'time',
+      updated_at: 'time',
+      year: 'number',
+      later: 'number',
+    });
+  });
+
+  it('lets a status widget show how long a problem from a derived column has lasted', () => {
+    const { table } = runPipeline(
+      src,
+      steps([
+        { type: 'derive', as: 'since', expr: 'updated_at' },
+        { type: 'derive', as: 'state', expr: '"warn"' },
+      ]),
+    );
+    const model = statusModel(
+      table,
+      StatusConfigSchema.parse({ entity: 'name', status: 'state', since: 'since' }),
+    );
+    expect(model.sections[0]!.tiles[0]!.problems[0]!.since).toBe(Date.parse('2026-11-12T10:00:00Z'));
+  });
+
+  it('types date() of a number as a time and keeps the type on a source without rows', () => {
+    const numbers = inferTable([{ t: 1_700_000_000 }]);
+    const a = runPipeline(numbers, steps([{ type: 'derive', as: 'ms', expr: 'date(t * 1000)' }])).table;
+    expect(a.columns.find((c) => c.name === 'ms')?.type).toBe('time');
+    const empty = { columns: src.columns, rows: [] };
+    const b = runPipeline(
+      empty,
+      steps([
+        { type: 'derive', as: 'since', expr: 'updated_at' },
+        { type: 'derive', as: 'parsed', expr: 'date(day)' },
+      ]),
+    ).table;
+    expect(b.columns.find((c) => c.name === 'since')?.type).toBe('time');
+    expect(b.columns.find((c) => c.name === 'parsed')?.type).toBe('time');
   });
 });

@@ -19,6 +19,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ### Changed
 
+- A column made with `derive` from a time column, `date()` or `now()` is now a time column, so a status widget shows
+  how long a problem has lasted, tables show relative times and charts get a time axis; before, it was a plain number.
 - With `URL_SOURCES=signed-in`, copies of a showcase use case also load its POST sources, such as a GraphQL query, as
   long as the address, the body and the `path` stay exactly as in the showcase. A changed body or path still needs a
   signed-in owner.
