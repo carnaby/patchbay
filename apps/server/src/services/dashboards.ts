@@ -611,7 +611,7 @@ export class DashboardService {
    * on its operator's connection must not fetch arbitrary addresses for strangers. Checked at use time (DataService
    * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
    * exception is a request that the repository's showcase sends itself: a GET of one of its URLs or one of its POSTs
-   * with exactly the same body (`isTrustedSource`), so anonymous copies of a use case work. Returns the private hosts
+   * with exactly the same body and path (`isTrustedSource`), so anonymous copies of a use case work. Returns the private hosts
    * the dashboard's sources may reach (null: public addresses only), decided by its owner, never by the viewer. Its
    * refusals are lasting: only the owner or the operator can change them.
    */
@@ -620,11 +620,12 @@ export class DashboardService {
     url: string,
     method: HttpMethod = 'GET',
     body?: unknown,
+    path?: string,
   ): PrivateHosts | null {
     if (
       this.urlSources === 'signed-in' &&
       target.ownerId === null &&
-      !this.isTrustedSource({ url, method, body })
+      !this.isTrustedSource({ url, method, body, path })
     )
       throw lastingError(403, URL_SOURCES_SIGNED_IN);
     const hosts = target.publicOnly ? null : this.privateHostsFor(target.ownerId);
@@ -637,7 +638,7 @@ export class DashboardService {
   /**
    * A request an anonymous dashboard may send under URL_SOURCES=signed-in: one the repository's showcase sends itself,
    * matched exactly (sourceTrustKey: no normalising, so a variant is refused). A POST is trusted only with the
-   * showcase's own body, so a stranger can repeat the showcase's query on the operator's connection but never send
+   * showcase's own body, and any request only with its path, so a stranger can repeat the showcase's query on the operator's connection but never send
    * another.
    */
   private isTrustedSource(request: SourceRequest): boolean {
@@ -706,8 +707,19 @@ export class DashboardService {
               id: d.id,
               request:
                 d.source.kind === 'http' && d.source.method === 'POST'
-                  ? { url: d.source.url, method: 'POST' as const, body: d.source.body }
-                  : { url: d.source.url, method: 'GET' as const },
+                  ? {
+                      url: d.source.url,
+                      method: 'POST' as const,
+                      body: d.source.body,
+                      ...(d.source.path !== undefined ? { path: d.source.path } : {}),
+                    }
+                  : {
+                      url: d.source.url,
+                      method: 'GET' as const,
+                      ...(d.source.kind === 'http' && d.source.path !== undefined
+                        ? { path: d.source.path }
+                        : {}),
+                    },
             },
           ]
         : [],

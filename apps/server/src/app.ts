@@ -96,7 +96,8 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   const data = new DataService(connectors, store, pipeline, {
     outbound,
     credentials: (target, dataset) => dashboards!.credentialsFor(target, dataset),
-    urlPolicy: (target, url, method, body) => dashboards!.assertMayFetchUrl(target, url, method, body),
+    urlPolicy: (target, url, method, body, path) =>
+      dashboards!.assertMayFetchUrl(target, url, method, body, path),
     offline: config.offline,
     cacheBytes: config.dataCacheBytes,
     maxSourceCells: config.uploadMaxCells,

@@ -394,15 +394,17 @@ describe('http sources', () => {
     expect(fetchMock.mock.calls[1]![1]).not.toHaveProperty('privateHosts');
   });
 
-  it('hands the policy the method and body of a POST, and no body for a GET', async () => {
+  it('hands the policy the method, path and body of a POST, and no body for a GET', async () => {
     const policy = vi.fn(() => null);
     fetchMock.mockResolvedValue([{ ok: 1 }]);
     const data = new DataService(connectors, store, new InlineRunner(), { urlPolicy: policy });
     await data.resolve(target, post('https://api.example/q', { q: 'a' }));
     await data.resolve(target, http('https://api.example/g'));
+    await data.resolve(target, dataset({ kind: 'http', url: 'https://api.example/p', path: 'items' }));
     expect(policy.mock.calls.map((c) => c.slice(1))).toEqual([
-      ['https://api.example/q', 'POST', { q: 'a' }],
-      ['https://api.example/g', 'GET', undefined],
+      ['https://api.example/q', 'POST', { q: 'a' }, undefined],
+      ['https://api.example/g', 'GET', undefined, undefined],
+      ['https://api.example/p', 'GET', undefined, 'items'],
     ]);
   });
 

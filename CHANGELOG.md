@@ -20,7 +20,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 ### Changed
 
 - With `URL_SOURCES=signed-in`, copies of a showcase use case also load its POST sources, such as a GraphQL query, as
-  long as the address and the body stay exactly as in the showcase. A changed body still needs a signed-in owner.
+  long as the address, the body and the `path` stay exactly as in the showcase. A changed body or path still needs a
+  signed-in owner.
 - The landing page names filters and clicks, wall screens, GraphQL sources and joined datasets among the features.
 
 ### Fixed
@@ -39,7 +40,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 - Datasets that read different parts of one response, such as the aliases of one GraphQL query or a status page's
   components and incidents, now share one request instead of sending it once each. Before, a dashboard that split one
   GraphQL query into several datasets sent it several times at once and lost the requests over the per-host limit.
-  A copy of a showcase can no longer send the trusted query again by varying only `path`, while another is loading.
+  A copy of a showcase can no longer send the trusted query again by varying only `path`: the `path` is now part
+  of what a copy may not change (and, while one is loading, datasets that differ only in it share one request).
 
 ## [0.3.4] - 2026-11-12
 

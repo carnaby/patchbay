@@ -238,6 +238,35 @@ describe('trusted showcase URLs', () => {
     ).rejects.toThrow(/sign/i);
   });
 
+  it('refuses a copy that changes only the path of a trusted GET source, at save and at fetch', async () => {
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: FEED, method: 'GET', path: 'data.items' }),
+    });
+    const { envelope, editKey } = await svc.create(anonymous(), {});
+    const id = envelope.meta.id;
+    const p = anonymous(editKey);
+    const source = (path?: string) => ({
+      kind: 'http',
+      url: FEED,
+      ...(path !== undefined ? { path } : {}),
+    });
+    const dataset = (path?: string) => ({ id: 'rows', name: 'Rows', transforms: [], source: source(path) });
+    await expect(
+      svc.applyOps(id, p, [{ op: 'addDataset', dataset: dataset('data.items') }]),
+    ).resolves.toBeDefined();
+    for (const path of [undefined, 'data.other', 'data.items ', '']) {
+      await expect(
+        svc.applyOps(id, p, [{ op: 'updateDataset', id: 'rows', set: { source: source(path) } }]),
+      ).rejects.toThrow(/sign/i);
+    }
+    const target = { id: 'abcdef123456', ownerId: null };
+    expect(() => svc.assertMayFetchUrl(target, FEED, 'GET', undefined, 'data.items')).not.toThrow();
+    for (const path of [undefined, 'data.other', '']) {
+      expect(() => svc.assertMayFetchUrl(target, FEED, 'GET', undefined, path)).toThrow(/sign/i);
+    }
+  });
+
   it('leaves signed-in owners and URL_SOURCES=everyone unaffected', async () => {
     const strict = makeService({
       urlSources: 'signed-in',
@@ -795,62 +824,50 @@ describe('a trusted showcase POST through the whole app', () => {
     expect(result.table.rows.length).toBeGreaterThan(0);
   });
 
-  // `path` is read from the response and never sent, so a copy that varies it must not send the trusted query again.
-  const slowUpstream = () =>
-    upstreamJson.mockImplementation(async () => {
-      await new Promise((r) => setTimeout(r, 20));
-      return [{ a: 1 }];
-    });
-
-  it('sends the trusted POST once for anonymous previews that differ only in path', async () => {
-    const copies = await Promise.all(
-      [0, 1].map(() => postDeps.dashboards.duplicate('scgraphdemo', anonymous())),
-    );
-    const preview = (copy: (typeof copies)[number], path: string) =>
-      postApp.request(`/api/dashboards/${copy.envelope.meta.id}/preview`, {
-        method: 'POST',
-        headers: { 'x-edit-key': copy.editKey!, 'content-type': 'application/json' },
-        body: JSON.stringify({
-          dataset: { source: { kind: 'http', url: GQL, method: 'POST', body: QUERY, path } },
-        }),
-      });
-    upstreamJson.mockClear();
-    slowUpstream();
-    try {
-      const answers = await Promise.all([preview(copies[0]!, 'x.one'), preview(copies[1]!, 'x.two')]);
-      expect(answers.map((r) => r.status)).toEqual([200, 200]);
-      expect(upstreamJson).toHaveBeenCalledTimes(1);
-    } finally {
-      upstreamJson.mockImplementation(async () => [{ a: 1 }]);
-    }
-  });
-
-  it('sends the trusted POST once for saved datasets that differ only in path', async () => {
-    const copy = await postDeps.dashboards.duplicate('scgraphdemo', anonymous());
-    const id = copy.envelope.meta.id;
-    const key = { 'x-edit-key': copy.editKey! };
-    const dataset = (n: number) => ({
-      ...postDataset(QUERY),
-      id: `gql${n}`,
-      source: { kind: 'http', url: GQL, method: 'POST', body: QUERY, path: `y.${n}` },
-    });
-    const added = await postApp.request(`/api/dashboards/${id}/ops`, {
+  // `path` is read from the response and never sent, but it is part of the cache key: a copy that varied it would
+  // send the trusted request again for every value, so it is part of what a copy may not change.
+  const previewWith = (copy: { envelope: { meta: { id: string } }; editKey?: string }, path: string) =>
+    postApp.request(`/api/dashboards/${copy.envelope.meta.id}/preview`, {
       method: 'POST',
-      headers: { ...key, 'content-type': 'application/json' },
+      headers: { 'x-edit-key': copy.editKey!, 'content-type': 'application/json' },
       body: JSON.stringify({
-        ops: [1, 2, 3].map((n) => ({ op: 'addDataset', dataset: dataset(n) })),
+        dataset: { source: { kind: 'http', url: GQL, method: 'POST', body: QUERY, path } },
       }),
     });
-    expect(added.status).toBe(200);
+
+  it('refuses anonymous previews of the trusted POST that add a path, one after the other, unsent', async () => {
+    const copy = await postDeps.dashboards.duplicate('scgraphdemo', anonymous());
     upstreamJson.mockClear();
-    slowUpstream();
-    try {
-      await Promise.all(
-        [1, 2, 3].map((n) => postApp.request(`/api/dashboards/${id}/data/gql${n}`, { headers: key })),
-      );
-      expect(upstreamJson).toHaveBeenCalledTimes(1);
-    } finally {
-      upstreamJson.mockImplementation(async () => [{ a: 1 }]);
+    for (const path of ['x.one', 'x.two', 'x.three']) {
+      const res = await previewWith(copy, path);
+      expect(JSON.stringify(await res.json())).toMatch(/Sign in/);
     }
+    expect(upstreamJson).not.toHaveBeenCalled();
+  });
+
+  it('refuses a saved dataset that changes only the path of the trusted POST, and does not fetch one', async () => {
+    const copy = await postDeps.dashboards.duplicate('scgraphdemo', anonymous());
+    const id = copy.envelope.meta.id;
+    const key = { 'x-edit-key': copy.editKey!, 'content-type': 'application/json' };
+    upstreamJson.mockClear();
+    const save = await postApp.request(`/api/dashboards/${id}/ops`, {
+      method: 'POST',
+      headers: key,
+      body: JSON.stringify({
+        ops: [
+          {
+            op: 'updateDataset',
+            id: 'gql',
+            set: { source: { kind: 'http', url: GQL, method: 'POST', body: QUERY, path: 'y.1' } },
+          },
+        ],
+      }),
+    });
+    expect(save.status).toBe(400);
+    // The same dataset reaching the fetch some other way (an imported document) is refused there too.
+    const target = { id, ownerId: null };
+    expect(() => postDeps.dashboards.assertMayFetchUrl(target, GQL, 'POST', QUERY, 'y.1')).toThrow(/sign/i);
+    expect(() => postDeps.dashboards.assertMayFetchUrl(target, GQL, 'POST', QUERY)).not.toThrow();
+    expect(upstreamJson).not.toHaveBeenCalled();
   });
 });

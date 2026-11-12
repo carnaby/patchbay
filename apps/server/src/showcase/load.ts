@@ -190,11 +190,12 @@ export function trustedSourceKeys(useCases: readonly UseCase[]): Set<string> {
       if (s.kind === 'feed') keys.add(sourceTrustKey({ url: s.url, method: 'GET' }));
       else if (s.kind === 'http')
         keys.add(
-          sourceTrustKey(
-            s.method === 'POST'
-              ? { url: s.url, method: 'POST', body: s.body }
-              : { url: s.url, method: 'GET' },
-          ),
+          sourceTrustKey({
+            url: s.url,
+            method: s.method === 'POST' ? 'POST' : 'GET',
+            ...(s.method === 'POST' ? { body: s.body } : {}),
+            ...(s.path !== undefined ? { path: s.path } : {}),
+          }),
         );
     }
   return keys;

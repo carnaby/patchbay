@@ -149,14 +149,15 @@ export interface DataServiceOptions {
   /**
    * Called before every http or feed load: throws when this instance does not fetch the URL for the dashboard,
    * otherwise returns the private hosts (ALLOW_PRIVATE_HOSTS) its sources may reach, or null for public addresses
-   * only. DashboardService decides, by the dashboard's owner. http sources pass their method and, for a POST, their
-   * body (a trusted showcase request is matched with both); feeds pass neither.
+   * only. DashboardService decides, by the dashboard's owner. http sources pass their method, path and, for a POST, their
+   * body (a trusted showcase request is matched with all of them); feeds pass neither.
    */
   urlPolicy?: (
     target: DashboardTarget,
     url: string,
     method?: HttpMethod,
     body?: unknown,
+    path?: string,
   ) => PrivateHosts | null;
   /** OFFLINE=1: feeds return their deterministic sample instead of fetching. */
   offline?: boolean;
@@ -264,6 +265,7 @@ export class DataService {
     url: string,
     method?: HttpMethod,
     body?: unknown,
+    path?: string,
   ) => PrivateHosts | null;
   private readonly upstreamTest: UpstreamTestSeam | undefined;
   private readonly feeds: FeedService;
@@ -542,7 +544,13 @@ export class DataService {
           target,
           dataset,
           source,
-          this.urlPolicy(target, source.url, method, method === 'POST' ? source.body : undefined),
+          this.urlPolicy(
+            target,
+            source.url,
+            method,
+            method === 'POST' ? source.body : undefined,
+            source.path,
+          ),
         );
       }
       case 'feed': {

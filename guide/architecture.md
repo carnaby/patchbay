@@ -227,7 +227,8 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
   `DashboardService` refuses to preview a POST source for a read-only caller, since a preview sends a body of the
   caller's choosing; saved POST sources load for every viewer. Under `URL_SOURCES=signed-in` an anonymous dashboard may
   still send the showcase's own requests: a GET of one of its URLs, or one of its POSTs with exactly the same body
-  (compared by a SHA-256 of the JSON text that is sent).
+  (compared by a SHA-256 of the JSON text that is sent). The key is the address, method, body and `path`: `path` is
+  never sent, but each value is its own cache entry, so a copy that varied it could repeat the query at will.
 - **Filters (dashboard parameters).** A dashboard may declare filters (`parameters`) that viewers set in the header; the
   values live in the page URL (`p.<id>`), never in the document. Every scope binds them before anything is resolved
   (`bindDoc` in core): `$param.<id>` in a step becomes a literal token, in a URL a percent-encoded whole path segment or
@@ -405,8 +406,8 @@ At startup the server reads `SHOWCASE_DIR` and syncs one public dashboard per us
 pruned and not counted in the anonymous storage limit. A changed `dashboard.json` becomes a new version; an id owned
 by anyone else is never touched. Anyone can make an editable copy. With `URL_SOURCES=signed-in`, the showcase's own
 requests are trusted, so anonymous copies keep working: a GET of an http or feed URL it uses, matched exactly (no
-prefixes), and a POST only with the same URL and exactly the same body. A copy that changes the body, the URL or the
-method needs a signed-in owner. A use case whose sync fails (a corrupt stored dashboard, an id owned by someone else)
+prefixes), and a POST only with the same URL and exactly the same body. A copy that changes the body, the URL, the
+method or the `path` needs a signed-in owner. A use case whose sync fails (a corrupt stored dashboard, an id owned by someone else)
 is left out of the list and the routes; a failed sync never keeps the server from starting. An admin can delete a
 showcase dashboard, but it comes back at the next restart.
 
