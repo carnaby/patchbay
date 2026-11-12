@@ -3,7 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ByteBudget } from '../util/byte-budget.ts';
 import { BusyError } from '../util/gate.ts';
 import { runAsClient } from '../util/request-context.ts';
-import { type Body, MAX_RESULT_BYTES, ResultWire, streamBodies, streamBody } from './result-wire.ts';
+import {
+  type Body,
+  MAX_RESULT_BYTES,
+  ResultWire,
+  streamBodies,
+  streamBody,
+  tooLargeResult,
+} from './result-wire.ts';
 
 const result = (table: DataTable, datasetId = 'd'): DatasetResult => ({
   datasetId,
@@ -114,6 +121,27 @@ describe('ResultWire', () => {
     expect(JSON.parse(frame.toString().slice('event: message\ndata: '.length)).result.error).toMatch(
       /too large/,
     );
+  });
+
+  it('marks a result too large to send as lasting and keeps its stated window', async () => {
+    const wire = new ResultWire();
+    const calendar = { window: '2026-11-05..2026-11-11', validForSec: 3600 };
+    const big = { ...result(table(10_000, 20, 100)), calendar };
+    const refused = JSON.parse(text((await wire.dataBody(big, 'objects')).chunks));
+    expect(refused).toMatchObject({ lasting: true, calendar });
+    expect(refused).not.toHaveProperty('retryAfterSec');
+    // The same rows fit as arrays: no error, so no mark.
+    const arrays = await wire.dataBody(big, 'arrays');
+    expect(JSON.parse(text(arrays.chunks))).not.toHaveProperty('lasting');
+    arrays.release();
+    const frame = Buffer.from(wire.frame({ type: 'data', result: big }, 'objects')).toString();
+    const pushed = JSON.parse(frame.slice('event: message\ndata: '.length));
+    expect(pushed.result).toMatchObject({ lasting: true, calendar });
+    const empty: Pick<DatasetResult, 'table' | 'hash' | 'error' | 'lasting'> = {
+      table: { columns: [], rows: [] },
+      hash: '',
+    };
+    expect(tooLargeResult(empty, 5_000_000).lasting).toBe(true);
   });
 
   it('holds the budget until the body has been read, or the reader went away', async () => {

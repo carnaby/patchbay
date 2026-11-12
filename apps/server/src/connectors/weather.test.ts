@@ -1,5 +1,6 @@
 import { inferTable, profileTable, suggestWidgets } from '@patchbay/core';
 import { describe, expect, it } from 'vitest';
+import { HttpError } from '../util/errors.ts';
 import { upstream } from './fake-upstream.ts';
 import { weatherCurrent, weatherForecast } from './weather.ts';
 
@@ -77,6 +78,21 @@ describe('weather location columns', () => {
     // The 1,001st is still remembered; the first was dropped to make room.
     expect(await lookups('bound-city-1000')).toBe(0);
     expect(await lookups('bound-city-0')).toBe(1);
+  });
+
+  it('says an unknown city is lasting: only another city fixes it', async () => {
+    const { ctx } = upstream({ 'https://geocoding-api.open-meteo.com/': {} });
+    const err = await weatherForecast.fetch({ city: 'nowhere-test-5' }, ctx).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(HttpError);
+    expect(err).toMatchObject({ status: 400, message: 'Unknown city "nowhere-test-5"', lasting: true });
+    // The geocoder failing is not an answer about the city: it stays transient.
+    const down = {
+      fetchJson: async () => {
+        throw new HttpError(502, 'Upstream responded 503');
+      },
+    };
+    const failed = await weatherForecast.fetch({ city: 'nowhere-test-6' }, down).catch((e: unknown) => e);
+    expect(failed).toMatchObject({ status: 502, lasting: false });
   });
 
   it('has the same columns offline, and no single-point map suggestion', () => {
