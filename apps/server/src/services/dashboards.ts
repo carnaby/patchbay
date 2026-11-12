@@ -612,8 +612,8 @@ export class DashboardService {
    * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
    * exception is a request that the repository's showcase sends itself: a GET of one of its URLs or one of its POSTs
    * with exactly the same body and path (`isTrustedSource`), so anonymous copies of a use case work. Returns the
-   * private hosts the dashboard's sources may reach (null: public addresses only), decided by its owner, never by the viewer. Its
-   * refusals are lasting: only the owner or the operator can change them.
+   * private hosts the dashboard's sources may reach (null: public addresses only), decided by its owner, never by
+   * the viewer. Its refusals are lasting: only the owner or the operator can change them.
    */
   assertMayFetchUrl(
     target: DashboardTarget,

@@ -1,7 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { Resvg } from '@resvg/resvg-js';
 import { describe, expect, it } from 'vitest';
-import { interTextWidth } from './measure.ts';
+import { interTextWidth, truncateToWidth } from './measure.ts';
 
 const fontFiles = ['Inter-Regular.ttf', 'Inter-SemiBold.ttf'].map((f) =>
   fileURLToPath(new URL(`./fonts/${f}`, import.meta.url)),
@@ -40,5 +40,38 @@ describe('text measure for snapshots', () => {
       interTextWidth('Zlutoucky', '12px Inter') * 0.9,
     );
     expect(interTextWidth('\u0001', '12px Inter')).toBe(0);
+  });
+
+  describe('truncateToWidth', () => {
+    const font = '400 13px Inter';
+    // The longest prefix whose width with the ellipsis fits, but at least one character: the definition to match.
+    const reference = (value: string, max: number) => {
+      if (interTextWidth(value, font) <= max) return value;
+      const chars = [...value];
+      let keep = chars.length - 1;
+      while (keep > 1 && interTextWidth(`${chars.slice(0, keep).join('')}…`, font) > max) keep--;
+      return `${chars.slice(0, Math.max(1, keep)).join('')}…`;
+    };
+
+    it('gives the same cut as measuring every prefix, for short strings', () => {
+      for (const value of [
+        '',
+        'abc',
+        'WWWWWWWWWWWWWWWW',
+        '0123456789 0123456789',
+        'Žluťoučký kůň',
+        '😀😀😀😀😀😀😀😀',
+      ])
+        for (const max of [0, 5, 20, 60, 110, 400])
+          expect(truncateToWidth(value, max, font), `${value}@${max}`).toBe(reference(value, max));
+    });
+
+    it('measures only the characters up to the cut, so a huge cell is cheap', () => {
+      const started = performance.now();
+      const cut = truncateToWidth('W'.repeat(50_000), 120, font);
+      expect(performance.now() - started).toBeLessThan(200);
+      expect(cut.endsWith('…')).toBe(true);
+      expect(cut.length).toBeLessThan(20);
+    });
   });
 });

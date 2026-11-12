@@ -928,9 +928,16 @@ describe('a trusted showcase POST through the whole app', () => {
       postDeps.index.upsert(meta, { title: doc.title, widgets: 0 });
     };
 
+    // The bodies must be valid documents: the store re-parses them on read, and an embedded `$param.` (inside a larger
+    // string) is refused on purpose, so a whole-value reference or a variables object is the way to test them.
     it.each([
       ['a body that is not a showcase', 'ownermadeone', { query: '{ x }' }],
       ['a $param. in the body', 'ownermadetwo', { query: '$param.q' }],
+      [
+        'GraphQL variables with a $param.',
+        'ownermadethree',
+        { query: 'query($q: String){ x(q:$q) }', variables: { q: '$param.q' } },
+      ],
     ])('refuses to send %s, unsent', async (_name, id, body) => {
       await ownerDashboard(id, body);
       const copy = await postDeps.dashboards.duplicate(id, anonymous());

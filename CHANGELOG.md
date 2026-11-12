@@ -26,7 +26,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   signed-in owner. The same now holds for the `path` of their GET sources: a copy that changes it needs a signed-in
   owner, so a copy cannot make the server repeat a request by varying it.
 - The agent reference and the editor say that the percent format takes 0-100, so agents multiply a ratio such as
-  0.86 by 100 first instead of showing "0.9%"; the reference also says that `date(t * 1000)` turns epoch seconds into a time.
+  0.86 by 100 first instead of showing "0.9%"; the reference also says that `date(t * 1000)` turns epoch seconds
+  into a time.
 - The landing page names filters and clicks, wall screens, GraphQL sources and joined datasets among the features.
 
 ### Fixed
@@ -55,8 +56,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   "Nov 2 5"): ECharts kept the step after a month's last label as a label of its own. Patchbay ships a one-line fix
   to ECharts until it is fixed upstream.
 - A KPI's sparkline now takes the colour of the item its data is filtered to, such as the package picked in a select
-  filter or by a click on one. Before, it always kept the first palette colour, which on a dashboard with entity colours belongs to one of
-  the entities. With nothing focused on such a dashboard it is neutral grey, because the total of all items is no
+  filter or by a click on one. Before, it always kept the first palette colour, which on a dashboard with entity
+  colours belongs to one of the entities. With nothing focused on such a dashboard it is neutral grey, because the total of all items is no
   item; dashboards without entity colours are unchanged.
 - Snapshots measure text in the font they draw it with, so a long axis label (such as `@modelcontextprotocol/sdk`) is no
   longer cut off at the card's edge and legend entries no longer run into each other.

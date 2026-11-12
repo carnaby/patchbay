@@ -53,11 +53,15 @@ function advanceOf(ch: string, weight: Weight): number {
   return width;
 }
 
+function weightOf(font: string): Weight {
+  const numeric = Number(/\b([1-9]00)\b/.exec(font)?.[1] ?? 400);
+  return /\bbold\b/.test(font) || numeric >= 700 ? 700 : numeric >= 500 ? 600 : 400;
+}
+
 /** Width in px of `text` in the bundled Inter; size and weight come from a CSS font shorthand. */
 export function interTextWidth(text: string, font: string): number {
   const size = Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] ?? 12);
-  const numeric = Number(/\b([1-9]00)\b/.exec(font)?.[1] ?? 400);
-  const weight: Weight = /\bbold\b/.test(font) || numeric >= 700 ? 700 : numeric >= 500 ? 600 : 400;
+  const weight = weightOf(font);
   let em = 0;
   for (const ch of text) em += advanceOf(ch, weight);
   return em * size;
@@ -71,10 +75,23 @@ export function installTextMeasure(): void {
 
 /** Cuts `value` with an ellipsis so it draws no wider than `maxWidth` px in `font`. */
 export function truncateToWidth(value: string, maxWidth: number, font: string): string {
-  if (interTextWidth(value, font) <= maxWidth) return value;
-  const chars = [...value];
-  // Keep at least one character, as truncate() does.
-  let keep = chars.length - 1;
-  while (keep > 1 && interTextWidth(`${chars.slice(0, keep).join('')}…`, font) > maxWidth) keep--;
-  return `${chars.slice(0, Math.max(1, keep)).join('')}…`;
+  const size = Number(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] ?? 12);
+  const weight = weightOf(font);
+  const room = maxWidth - advanceOf('…', weight) * size;
+  // One pass over the characters up to the cut: the cost follows the cut, not the length of the text.
+  let width = 0;
+  let at = 0;
+  let cut = 0;
+  let first = 0;
+  for (const ch of value) {
+    width += advanceOf(ch, weight) * size;
+    if (first === 0) first = ch.length;
+    if (width > maxWidth) {
+      // At least one character stays, as truncate() does.
+      return `${value.slice(0, cut || first)}…`;
+    }
+    at += ch.length;
+    if (width <= room) cut = at;
+  }
+  return value;
 }

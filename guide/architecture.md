@@ -381,8 +381,8 @@ the wire but a runtime dependency on both sides for a file that is cached anyway
 The landing page can present ready-made use cases. Each one is a folder `showcase/<id>/` with `meta.json` (strict:
 `id` equal to the folder name, lowercase words joined by single hyphens and at least 4 letters or digits, `order`,
 `title` up to 60 characters, `tab` up to 24, `description` up to 200, optional `attachment` and `featured`),
-`prompt.md` (1-4000 characters) and `dashboard.json` (a `DashboardDoc` within the 1 MB document limit, `LIMITS.documentBytes`, measured
-as `DashboardService` measures every write, since every visitor's copy is such a write). Optional files:
+`prompt.md` (1-4000 characters) and `dashboard.json` (a `DashboardDoc` within the 1 MB document limit,
+`LIMITS.documentBytes`, measured as `DashboardService` measures every write, since every visitor's copy is such a write). Optional files:
 
 - `video.mp4` (16:9 H.264, at most 5 MB) and `poster.jpg` (at most 150 KB), shown before the first frame of either
   video.
@@ -417,8 +417,8 @@ showcase dashboard, but it comes back at the next restart.
 
 Routes:
 
-- `GET /api/use-cases` lists the featured ones (`public, max-age=300`), with media and attachment URLs that carry the content
-  hash as `?v=`, so a deploy that changes a file changes its URL.
+- `GET /api/use-cases` lists the featured ones (`public, max-age=300`), with media and attachment URLs that carry the
+  content hash as `?v=`, so a deploy that changes a file changes its URL.
 - `GET /showcase/<id>` redirects (302) to the dashboard.
 - `/showcase/<id>/video.mp4`, `/video-square.mp4`, `/poster.jpg` and `/<name>.csv` (the declared attachment only,
   matched by name and never used as a path, sent as `text/csv` with `Content-Disposition: attachment`) answer GET and
