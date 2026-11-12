@@ -1,8 +1,26 @@
 /** SVG text pieces shared by the snapshot renderer and the widgets it draws by hand. */
+import { fileURLToPath } from 'node:url';
 import { stripAnsi } from '@patchbay/core';
+import type { ResvgRenderOptions } from '@resvg/resvg-js';
 
-/** The bundled family (see FONT_OPTIONS in snapshot.ts); unquoted, so it is safe inside attributes. */
+/** The bundled family (see FONT_OPTIONS below); unquoted, so it is safe inside attributes. */
 export const FONT = 'Inter, sans-serif';
+
+/**
+ * The renderer brings its own fonts instead of asking the OS. resvg finds system fonts through
+ * fontconfig, and the slim runtime image has no fonts.conf, so it found none and every text node
+ * rendered empty while shapes still drew. On a desktop it picks whatever happens to be installed.
+ * Inter covers Latin, Greek, Cyrillic and the symbols used below (▲ ▼ ■ ⚠ …); scripts it lacks
+ * (CJK, Arabic) render as boxes, a fair price for snapshots that look the same on every host.
+ */
+export const FONT_OPTIONS: ResvgRenderOptions['font'] = {
+  loadSystemFonts: false,
+  fontFiles: ['Inter-Regular.ttf', 'Inter-SemiBold.ttf', 'Inter-Bold.ttf'].map((file) =>
+    fileURLToPath(new URL(`./fonts/${file}`, import.meta.url)),
+  ),
+  defaultFontFamily: 'Inter',
+  sansSerifFamily: 'Inter',
+};
 
 /** What XML 1.0 does not allow in text: C0 controls but tab, LF and CR, U+FFFE/FFFF and lone surrogates. */
 const NOT_XML =

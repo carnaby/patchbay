@@ -54,6 +54,10 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   focused. Before, it always kept the first palette colour, which on a dashboard with entity colours belongs to one of
   the entities. With nothing focused on such a dashboard it is neutral grey, because the total of all items is no
   item; dashboards without entity colours are unchanged.
+- Snapshots measure text in the font they draw it with, so a long axis label (such as `@modelcontextprotocol/sdk`) is no
+  longer cut off at the card's edge and legend entries no longer run into each other.
+- Tables in snapshots have the browser's row height and page size, and say when rows would scroll or page, so a table
+  that fits in a snapshot also fits on screen.
 
 ## [0.3.4] - 2026-11-12
 

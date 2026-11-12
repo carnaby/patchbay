@@ -19,6 +19,7 @@ import { INFRA_NOW, INFRA_STATUS_CONFIG, infraLinkedChecks, infraTable } from '@
 import { Resvg } from '@resvg/resvg-js';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { buildTemplate, listTemplates } from '../services/templates.ts';
+import { interTextWidth } from './measure.ts';
 import {
   DRAW_TIME_MS,
   drawLimits,
@@ -29,6 +30,7 @@ import {
   renderDashboardPng,
   renderWidgetPng,
   shareMarks,
+  tableFit,
 } from './snapshot.ts';
 import { statusSvg } from './status-svg.ts';
 
@@ -136,7 +138,7 @@ describe('snapshot text', () => {
     const table = render({ id: 't', type: 'table', title: 'Orders', datasetId: 'sales', config: {} });
     expect(inkColumns(table, TITLE).length).toBeGreaterThan(20);
     // First data row, below the header rule; the rule itself is too light to count as ink.
-    expect(inkColumns(table, { x: 14, y: 60, w: 600, h: 18 }).length).toBeGreaterThan(30);
+    expect(inkColumns(table, { x: 14, y: 75, w: 600, h: 18 }).length).toBeGreaterThan(30);
 
     const text = render({
       id: 'x',
@@ -441,8 +443,8 @@ describe('snapshot colours', () => {
       });
       // Only the February row (the second) is tinted.
       const fill = resolveColor('positive', theme, 'fill');
-      expect(pixelsOf(img, fill, { x: 10, y: 78, w: 600, h: 18 })).toBeGreaterThan(3000);
-      expect(pixelsOf(img, fill, { x: 10, y: 58, w: 600, h: 18 })).toBe(0);
+      expect(pixelsOf(img, fill, { x: 10, y: 102, w: 600, h: 18 })).toBeGreaterThan(3000);
+      expect(pixelsOf(img, fill, { x: 10, y: 70, w: 600, h: 18 })).toBe(0);
     });
   }
 });
@@ -515,6 +517,44 @@ describe('list-style table snapshots', () => {
     expect(inkColumns(img, { x: 14, y: 42 + 56, w: 200, h: 14 }).length).toBeGreaterThan(30);
     // No header row as in table style: the strip right under the title row is empty.
     expect(inkColumns(img, { x: 300, y: 36, w: 300, h: 16 }).length).toBe(0);
+  });
+});
+
+describe('snapshot layout like the browser', () => {
+  it('keeps a long category label of a horizontal bar chart inside the card', () => {
+    const packages: DatasetResult = {
+      ...result,
+      table: inferTable([
+        { package: '@modelcontextprotocol/sdk', total: 1.9e9 },
+        { package: 'openai', total: 1.24e9 },
+        { package: '@anthropic-ai/sdk', total: 1.11e9 },
+        { package: 'langchain', total: 0.12e9 },
+      ]),
+    };
+    const config = ChartConfigSchema.parse({
+      kind: 'bar',
+      x: 'package',
+      y: ['total'],
+      horizontal: true,
+      showLabels: true,
+    });
+    const svg = echartsSvg(
+      buildChartOption(config, packages.table, THEMES.light, { animation: false, static: true }),
+      488,
+      338,
+    );
+    const label = [
+      ...svg.matchAll(/transform="translate\(([\d.]+) [\d.]+\)"[^>]*>(@modelcontextprotocol\/sdk)</g),
+    ][0]!;
+    // Right-aligned at its x: it starts at x minus its drawn width, which must not be left of the card's content box.
+    expect(Number(label[1]) - interTextWidth(label[2]!, '12px Inter')).toBeGreaterThanOrEqual(0);
+  });
+
+  it('fits table rows the way the browser does and says what scrolls or pages', () => {
+    // The summary table of six packages: 3 grid rows leave 178 px, 4 rows 258 px.
+    expect(tableFit(6, 10, 178)).toEqual({ shown: 3, note: '3 more rows: the table scrolls here' });
+    expect(tableFit(6, 10, 258)).toEqual({ shown: 6, note: null });
+    expect(tableFit(25, 10, 500)).toEqual({ shown: 10, note: '1-10 of 25' });
   });
 });
 
