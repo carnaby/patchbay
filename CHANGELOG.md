@@ -6,6 +6,23 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Added
+
+- Four new use cases on the landing page, each built by an AI agent from the prompt shown and each with a short video
+  of the build and of what you can do with it: a status wall for the office TV (GitHub, Cloudflare, npm and OpenAI
+  status pages combined into one list, in presentation mode), AI SDK downloads with a period filter and click to
+  filter, wealth and life expectancy from World Bank data joined with the country list, and a day of GitLab merges read
+  over GraphQL.
+- A showcase use case can stay out of the landing page's tabs with `"featured": false` in its `meta.json`; its
+  dashboard, `/showcase/<id>` link and videos keep working. "Bratislava vs Vienna" and "Earthquakes" leave the tabs
+  this way.
+
+### Changed
+
+- With `URL_SOURCES=signed-in`, copies of a showcase use case also load its POST sources, such as a GraphQL query, as
+  long as the address and the body stay exactly as in the showcase. A changed body still needs a signed-in owner.
+- The landing page names filters and clicks, wall screens, GraphQL sources and joined datasets among the features.
+
 ## [0.3.4] - 2026-11-12
 
 ### Fixed
