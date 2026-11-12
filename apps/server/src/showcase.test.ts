@@ -61,7 +61,7 @@ const withToken = (): Principal => signedIn('agent@example.com', { viaToken: tru
 /** A use case built the way loadUseCases would, from a real template so the document is valid. */
 function fixtureUseCase(id: string): UseCase {
   return {
-    meta: { id, order: 1, title: id, tab: 'Fixture', description: 'Fixture use case' },
+    meta: { id, order: 1, title: id, tab: 'Fixture', description: 'Fixture use case', featured: true },
     prompt: 'Build a board',
     doc: buildTemplate('blank'),
     dashboardId: useCaseDashboardId(id),
@@ -359,6 +359,23 @@ describe('showcase routes', () => {
       writeFileSync(join(base, 'prompt.md'), 'Build a board');
       writeFileSync(join(base, 'dashboard.json'), JSON.stringify(buildTemplate('blank')));
     }
+    // Out of the tab row, still a working use case: its link, dashboard and media stay.
+    const aside = join(showcaseDir, 'aside-case');
+    mkdirSync(aside, { recursive: true });
+    writeFileSync(
+      join(aside, 'meta.json'),
+      JSON.stringify({
+        id: 'aside-case',
+        order: 0,
+        title: 'Aside',
+        tab: 'Aside',
+        description: 'Not in the tab row',
+        featured: false,
+      }),
+    );
+    writeFileSync(join(aside, 'prompt.md'), 'Build a board');
+    writeFileSync(join(aside, 'dashboard.json'), JSON.stringify(buildTemplate('blank')));
+    writeFileSync(join(aside, 'video.mp4'), Buffer.from('0123456789'));
     writeFileSync(join(showcaseDir, 'with-video', 'video.mp4'), Buffer.from('0123456789'));
     writeFileSync(join(showcaseDir, 'with-video', 'poster.jpg'), Buffer.from('jpegdata'));
     writeFileSync(join(showcaseDir, 'with-video', 'video-square.mp4'), Buffer.from('abcdefgh'));
@@ -381,6 +398,19 @@ describe('showcase routes', () => {
     await routeDeps.pipeline.close();
     routeDeps.db.close();
     rmSync(routeDir, { recursive: true, force: true });
+  });
+
+  it('keeps an unfeatured use case out of the list, and its dashboard, link and media working', async () => {
+    const list = (await (await app.request('/api/use-cases')).json()) as UseCaseInfo[];
+    expect(list.map((u) => u.id)).not.toContain('aside-case');
+    expect(routeDeps.useCases.map((u) => u.meta.id)).toContain('aside-case');
+    const link = await app.request('/showcase/aside-case');
+    expect(link.status).toBe(302);
+    expect(link.headers.get('location')).toBe('/d/scasidecase');
+    const video = await app.request('/showcase/aside-case/video.mp4', { headers: { range: 'bytes=0-1' } });
+    expect(video.status).toBe(206);
+    const dash = await app.request('/api/dashboards/scasidecase');
+    expect(dash.status).toBe(200);
   });
 
   it('lists use cases with media URLs carrying cache keys', async () => {

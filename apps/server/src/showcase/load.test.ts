@@ -27,6 +27,29 @@ const meta = (id: string, order = 1, extra: object = {}) =>
 const doc = (extra: object = {}) => JSON.stringify({ ...buildTemplate('blank', 'Showcase'), ...extra });
 
 describe('loadUseCases', () => {
+  it('reads featured, defaulting to true, and skips a folder whose featured is not a boolean', () => {
+    const root = tempRoot();
+    useCase(root, 'plain', { 'meta.json': meta('plain', 1), 'prompt.md': 'x', 'dashboard.json': doc() });
+    useCase(root, 'aside', {
+      'meta.json': meta('aside', 2, { featured: false }),
+      'prompt.md': 'x',
+      'dashboard.json': doc(),
+    });
+    useCase(root, 'odd-flag', {
+      'meta.json': meta('odd-flag', 3, { featured: 'no' }),
+      'prompt.md': 'x',
+      'dashboard.json': doc(),
+    });
+    const warnings: string[] = [];
+    const loaded = loadUseCases(root, (m) => warnings.push(m));
+    expect(loaded.map((u) => [u.meta.id, u.meta.featured])).toEqual([
+      ['plain', true],
+      ['aside', false],
+    ]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/odd-flag/);
+  });
+
   it('loads valid folders sorted by order and skips broken ones with one warning each', () => {
     const root = tempRoot();
     useCase(root, 'second', {

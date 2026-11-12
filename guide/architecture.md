@@ -374,7 +374,7 @@ the wire but a runtime dependency on both sides for a file that is cached anyway
 
 The landing page can present ready-made use cases. Each one is a folder `showcase/<id>/` with `meta.json` (strict:
 `id` equal to the folder name, lowercase words joined by single hyphens and at least 4 letters or digits, `order`,
-`title` up to 60 characters, `tab` up to 24, `description` up to 200, optional `attachment`), `prompt.md` (1-4000
+`title` up to 60 characters, `tab` up to 24, `description` up to 200, optional `attachment` and `featured`), `prompt.md` (1-4000
 characters) and `dashboard.json` (a `DashboardDoc` within the 1 MB document limit, `LIMITS.documentBytes`, measured
 as `DashboardService` measures every write, since every visitor's copy is such a write). Optional files:
 
@@ -385,6 +385,9 @@ as `DashboardService` measures every write, since every visitor's copy is such a
 - One CSV attachment, the file the prompt came with, declared in `meta.json` as `"attachment": "<name>.csv"`
   (lowercase, at most 60 characters, in the same folder). It must be at most 200 KB and a rectangular CSV with a
   header and at least one row; the landing page shows it as a table and offers it as a download.
+
+`featured` defaults to `true`. With `false` the use case is left out of `GET /api/use-cases`, so the landing page shows
+no tab for it, while its dashboard, `/showcase/<id>`, media and trusted sources stay as they are.
 
 `budget.test.ts` fails when committed media or attachments exceed those sizes. A broken folder (a missing or invalid
 `meta.json`, `prompt.md` or `dashboard.json`, or a document over the limit) is skipped with a warning; when two folders
@@ -407,7 +410,7 @@ back at the next restart.
 
 Routes:
 
-- `GET /api/use-cases` lists them (`public, max-age=300`), with media and attachment URLs that carry the content hash
+- `GET /api/use-cases` lists the featured ones (`public, max-age=300`), with media and attachment URLs that carry the content hash
   as `?v=`, so a deploy that changes a file changes its URL.
 - `GET /showcase/<id>` redirects (302) to the dashboard.
 - `/showcase/<id>/video.mp4`, `/video-square.mp4`, `/poster.jpg` and `/<name>.csv` (the declared attachment only,

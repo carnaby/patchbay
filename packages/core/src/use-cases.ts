@@ -23,6 +23,9 @@ export const UseCaseMetaSchema = z.strictObject({
     .max(60)
     .regex(/^[a-z0-9]+(?:[-_.][a-z0-9]+)*\.csv$/)
     .optional(),
+  // false keeps the use case out of the landing page's tab row (/api/use-cases) while its dashboard, /showcase/<id>
+  // link, media and trusted sources stay: old links keep working, and a later list of more examples can show it.
+  featured: z.boolean().default(true),
 });
 export type UseCaseMeta = z.infer<typeof UseCaseMetaSchema>;
 

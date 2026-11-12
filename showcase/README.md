@@ -12,6 +12,8 @@ optionally:
   `"attachment": "sales.csv"`; it must sit in the same folder, be a CSV with a header and at least one row (every
   row as wide as the header), use a lowercase name and stay within 200 KB. The landing page shows it as a table
   under the prompt and offers it as a download at `/showcase/<id>/<file>`. Keep the data out of `prompt.md`.
+- `"featured": false` keeps the use case out of the landing page's tab row. Its dashboard, `/showcase/<id>` link,
+  media and anonymous copies keep working; leave it out (default `true`) to show the use case as a tab.
 
 The server turns each use case into a read-only public dashboard at `/showcase/<id>`; visitors can make an
 editable copy.

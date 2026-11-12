@@ -3,5 +3,6 @@
   "order": 3,
   "title": "Bratislava vs Vienna this week",
   "tab": "Compare cities",
-  "description": "Temperature, rain and air quality for two cities side by side, each city in its own colour on every chart."
+  "description": "Temperature, rain and air quality for two cities side by side, each city in its own colour on every chart.",
+  "featured": false
 }

@@ -5,7 +5,7 @@ import type { UseCase } from './load.ts';
 const file = (etag: string, size = 100) => ({ path: `/x/${etag}`, size, etag });
 
 const base: UseCase = {
-  meta: { id: 'own-data', order: 1, title: 'Own data', tab: 'Data', description: 'D' },
+  meta: { id: 'own-data', order: 1, title: 'Own data', tab: 'Data', description: 'D', featured: true },
   prompt: 'Build it',
   doc: {} as UseCase['doc'],
   dashboardId: 'scowndata',

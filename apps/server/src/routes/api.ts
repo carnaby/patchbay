@@ -115,7 +115,8 @@ export function apiRoutes(deps: Deps) {
   const app = new Hono<Env>();
   const { dashboards, data, wire, hub, tokens, connectors, config } = deps;
 
-  const useCaseList: UseCaseInfo[] = deps.useCases.map(useCaseInfo);
+  // The tab row shows the featured use cases; the others keep their dashboards and links (routes/showcase.ts).
+  const useCaseList: UseCaseInfo[] = deps.useCases.filter((u) => u.meta.featured).map(useCaseInfo);
 
   // Per-IP budget for all API traffic, plus a tighter one for writes.
   app.use('*', async (c, next) => {
