@@ -109,8 +109,8 @@ function sampleTable(table: DataTable, limit: number, from: 'start' | 'end' = 's
 }
 
 /**
- * Steps that read columns an empty source does not have run without them (core runPipeline): the agent hears which,
- * because a typo there only shows once rows arrive.
+ * Steps that read columns an empty source or an empty joined dataset does not have run without them (core
+ * runPipeline): the agent hears which, because a typo there only shows once rows arrive.
  */
 function notCheckedNote(trace: DatasetResult['trace']): { notChecked?: string } {
   const steps = (trace ?? []).filter((s) => s.unchecked?.length);
@@ -118,7 +118,7 @@ function notCheckedNote(trace: DatasetResult['trace']): { notChecked?: string } 
   const names = [...new Set(steps.flatMap((s) => s.unchecked!))].join(', ');
   const which = steps.map((s) => s.step + 1).join(', ');
   return {
-    notChecked: `The source returned no rows, so step${steps.length > 1 ? 's' : ''} ${which} could not check ${names}; they are checked when rows arrive. To check the names now, preview a related source that has rows (for example all incidents instead of the open ones).`,
+    notChecked: `A dataset returned no rows, so step${steps.length > 1 ? 's' : ''} ${which} could not check ${names}; they are checked when rows arrive. To check the names now, preview a related source that has rows (for example all incidents instead of the open ones).`,
   };
 }
 

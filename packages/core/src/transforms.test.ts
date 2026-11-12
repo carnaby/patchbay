@@ -338,6 +338,43 @@ describe('a source that returned no rows', () => {
     ).toThrow('Step 2: Unknown column "nn"');
   });
 
+  it('keeps checking once the table had rows, also after a later step empties it again', () => {
+    const counted = runPipeline(
+      empty,
+      steps([
+        { type: 'aggregate', groupBy: [], metrics: [{ op: 'count', as: 'n' }] },
+        { type: 'filter', expr: 'n > 5' },
+      ]),
+    );
+    expect(counted.table.rows).toEqual([]);
+    expect(counted.open).toBeUndefined();
+    expect(() =>
+      runPipeline(
+        empty,
+        steps([
+          { type: 'aggregate', groupBy: [], metrics: [{ op: 'count', as: 'n' }] },
+          { type: 'filter', expr: 'n > 5' },
+          { type: 'derive', as: 'm', expr: 'nn' },
+        ]),
+      ),
+    ).toThrow('Step 3: Unknown column "nn"');
+    const components = inferTable([{ name: 'API', status: 'operational' }]);
+    const unionSteps = steps([
+      { type: 'union', with: ['components'] },
+      { type: 'filter', expr: 'status != "operational"' },
+    ]);
+    const united = runPipeline(empty, unionSteps, inputs({ components }));
+    expect(united.table.rows).toEqual([]);
+    expect(united.open).toBeUndefined();
+    expect(() =>
+      runPipeline(
+        empty,
+        [...unionSteps, ...steps([{ type: 'derive', as: 'detail', expr: 'nmae' }])],
+        inputs({ components }),
+      ),
+    ).toThrow('Step 3: Unknown column "nmae"');
+  });
+
   it('joins an empty table, and joins with an empty one, without checking the empty side', () => {
     const regions = inferTable([{ code: 'SK', region: 'Central' }]);
     expect(

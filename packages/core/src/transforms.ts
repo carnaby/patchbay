@@ -902,8 +902,9 @@ export function runPipeline(
 ): PipelineResult {
   let table = input;
   // A source with no rows has no columns to check; a table emptied by a step, here or in the dataset it reads, still
-  // has them, so the caller passes the lineage's openness down instead of it being read off this input.
-  const open = options.open ?? input.rows.length === 0;
+  // has them, so the caller passes the lineage's openness down instead of it being read off this input. Openness is
+  // lost for good once a table has rows (an aggregate count, a union): its columns are known from then on.
+  let open = (options.open ?? true) && input.rows.length === 0;
   const trace: PipelineResult['trace'] = [];
   const budget = new RunBudget(Date.now() + PIPELINE_LIMITS.maxMillis);
   // Only a run with steps is measured, matching the pool, which hands a table without steps back untouched.
@@ -923,13 +924,14 @@ export function runPipeline(
     if (table.rows.length * Math.max(table.columns.length, 1) > PIPELINE_LIMITS.maxCells) {
       throw new TransformError('Too much data to process; filter or aggregate earlier', i);
     }
-    const check: FieldCheck = { lenient: open && table.rows.length === 0, unchecked: [] };
+    const check: FieldCheck = { lenient: open, unchecked: [] };
     try {
       table = applyStep(table, t, i, budget, inputs, check);
     } catch (e) {
       if (e instanceof TransformError) throw e;
       throw new TransformError(e instanceof Error ? e.message : String(e), i);
     }
+    if (table.rows.length > 0) open = false;
     trace.push({
       step: i,
       type: t.type,
@@ -937,7 +939,7 @@ export function runPipeline(
       ...(check.unchecked.length ? { unchecked: check.unchecked } : {}),
     });
   });
-  return { table, trace, ...(open && table.rows.length === 0 ? { open: true } : {}) };
+  return { table, trace, ...(open ? { open: true } : {}) };
 }
 
 /** Gives every step without an id a deterministic one (`s1`, `s2`, ...), unique within the pipeline. */

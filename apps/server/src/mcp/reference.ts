@@ -170,6 +170,8 @@ operations below instead of resending the whole pipeline.
 A source that returns no rows (an empty list, the usual answer of an open-incidents endpoint) has no columns to check
 against: steps that read a column it lacks run anyway, the column is empty, and preview_data and the data checks list
 them under notChecked. With rows, an unknown column is an error, also after a filter that leaves none.
+When joining a dataset that may be empty, list fields: an empty dataset has no columns to bring, so without fields
+the later steps that read them fail.
 Limits per run: ${PIPELINE_LIMITS.maxMillis / 1000} s, and every table (the source and each step's result) at most
 ${(PIPELINE_LIMITS.maxSize / 1_000_000).toLocaleString('en')} million characters as JSON: on large data filter, aggregate, limit or
 select early. A dataset's result (what its widgets receive, at most 10,000 rows) may be at most ${MAX_RESULT_BYTES / 1024 / 1024} MB

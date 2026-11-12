@@ -103,7 +103,8 @@ The answer of `apply_operations`:
   not a count) and `error` when the dataset failed. `warning` (also in `get_data` and `preview_data`) means rows were
   served with a caveat, not a failure: a source cut to the cell limit, a cached copy after a failed refresh, or a parent
   over 100,000 rows. `notChecked` names columns that steps read but an empty source does not have; they are checked
-  once it returns rows. `truncated: true` means the result has more rows than the 10,000 that widgets receive.
+  once it returns rows. When joining a dataset that may be empty, list `fields`: an empty dataset has no columns to
+  bring, so without `fields` the later steps that read them fail. `truncated: true` means the result has more rows than the 10,000 that widgets receive.
   A result larger than 4 MB as JSON comes back as an `error` with its columns and no rows, for every reader alike:
   add `limit`, `select` or `aggregate` steps. Sample rows (here and in `get_data`, `preview_data`) stop at about
   200,000 characters, with a `note` when fewer rows than asked for fit.
