@@ -67,7 +67,7 @@ function cell(placed: StatusPlaced, theme: ChartTheme, now: number): string {
     linked
       ? label.replace(
           /<\/text>$/,
-          `<tspan font-weight="400" fill="${theme.textSecondary}">${ARROW}</tspan></text>`,
+          `<tspan dx="2" font-weight="400" fill="${theme.textSecondary}">${ARROW}</tspan></text>`,
         )
       : label,
   );

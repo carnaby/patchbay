@@ -124,4 +124,15 @@ describe('filters in the reference', () => {
     ])
       expect(text, words).toContain(words);
   });
+
+  it('documents the maxDays default, null resets, .start/.end for time columns and undimmed large maps', () => {
+    const text = referenceText('https://dash.example.com');
+    for (const words of [
+      'maxDays (default 366, at most 3660)',
+      'null resets custom and maxDays to false and 366',
+      'Compare a time column with .start/.end',
+      'more than 2,000 plain dots, one series without size or colour',
+    ])
+      expect(text, words).toContain(words);
+  });
 });

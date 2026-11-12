@@ -92,10 +92,25 @@ describe('the selection of a cross-filter', () => {
       default: null,
     });
     expect(crossFilterPick(country, 'SK')).toEqual({ text: 'SK' });
+    expect(crossFilterPick(country, 'eu')).toEqual({ text: 'eu' });
+    expect(crossFilterPick(country, 'x'.repeat(101))).toMatchObject({
+      problem: expect.stringMatching(/longer than 100 characters/),
+    });
   });
 });
 
 describe('dimming', () => {
+  it('dims by a numeric category the same as by text', () => {
+    const years = inferTable([
+      { year: 2025, v: 1 },
+      { year: 2026, v: 2 },
+    ]);
+    const [s] = buildChartOption(chart({ kind: 'bar', x: 'year', y: ['v'] }), years, theme, {
+      selection: { field: 'year', value: '2026' },
+    }).series as Series[];
+    expect(s!.data).toEqual([{ value: 1, itemStyle: { opacity: DIMMED_OPACITY } }, 2]);
+  });
+
   it('dims the bars of other categories and keeps the selected one, with explicit opacities', () => {
     const config = chart({ kind: 'bar', x: 'region', y: ['v'] });
     const plain = buildChartOption(config, table, theme);

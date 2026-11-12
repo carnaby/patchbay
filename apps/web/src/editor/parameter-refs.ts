@@ -81,8 +81,19 @@ export function urlPlaceAt(url: string, caret: number): 'urlPath' | 'urlQuery' |
     return before === '/' && (after === undefined || after === '/' || after === '?' || after === '#')
       ? 'urlPath'
       : null;
-  if (query !== null && caret > pathEnd && caret <= pathEnd + 1 + query.length)
-    return before === '=' && (after === undefined || after === '&' || after === '#') ? 'urlQuery' : null;
+  if (query !== null && caret > pathEnd && caret <= pathEnd + 1 + query.length) {
+    // A second "=" inside the value would be saved as a reference the check refuses.
+    const pair =
+      url
+        .slice(pathEnd + 1, caret)
+        .split('&')
+        .at(-1) ?? '';
+    return before === '=' &&
+      pair.indexOf('=') === pair.length - 1 &&
+      (after === undefined || after === '&' || after === '#')
+      ? 'urlQuery'
+      : null;
+  }
   return null;
 }
 

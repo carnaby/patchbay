@@ -14,6 +14,7 @@ import {
   type DatasetResult,
   DatasetSchema,
   type DataTable,
+  defaultParameterValues,
   dependentsOf,
   formattingWarnings,
   type LineageDoc,
@@ -40,7 +41,7 @@ import type { Deps } from '../context.ts';
 import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import type { Principal } from '../services/dashboards.ts';
 import { listTemplates } from '../services/templates.ts';
-import { loadDataOptions, RawParametersSchema, unknownIds, viewValues } from '../services/view.ts';
+import { optionsLoader, RawParametersSchema, readView, unknownIds } from '../services/view.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
 import { APP_VERSION } from '../util/version.ts';
@@ -118,19 +119,29 @@ const slug = (s: string) =>
 /**
  * Turns engine suggestions into ready-to-apply operations. A saved dataset is derived from (source kind "dataset"),
  * never copied; a preview has nothing saved to derive from, so its suggestions copy the source.
+ *
+ * @internal for tests
  */
-function suggestionOps(
-  doc: LineageDoc<SuggestionParent>,
+export function suggestionOps(
+  doc: LineageDoc<SuggestionParent> & { readonly widgets?: readonly { id: string }[] },
   dataset: Dataset,
   suggestions: Suggestion[],
   mode: 'derive' | 'copy',
 ) {
+  // Ids the document has plus those handed out in this answer: addWidget and addDataset would refuse a collision.
+  const taken = new Set([...doc.datasets.map((d) => d.id), ...(doc.widgets ?? []).map((w) => w.id)]);
+  // `base` is at most 31 characters (slug 28, a dash, two counter digits), so 8 or more of the parent's id stay.
+  const derivedId = (base: string) => `${dataset.id.slice(0, 40 - base.length - 1)}-${base}`;
   return suggestions.map((s) => {
-    const base = `${slug(s.title)}-${(++idCounter % 1000).toString(36)}`;
+    let base: string;
+    do base = `${slug(s.title)}-${(++idCounter % 1000).toString(36)}`;
+    while (taken.has(base) || taken.has(derivedId(base)));
+    taken.add(base);
     const ops: unknown[] = [];
     let datasetId = dataset.id;
     if (s.transforms.length) {
-      datasetId = `${dataset.id.slice(0, 20)}-${base}`.slice(0, 40);
+      datasetId = derivedId(base);
+      taken.add(datasetId);
       ops.push({
         op: 'addDataset',
         dataset:
@@ -413,7 +424,7 @@ export function createMcp(deps: Deps) {
           for (const id of touched) for (const d of dependentsOf(doc, id)) checked.add(d);
           const checkedDatasets = doc.datasets.filter((d) => checked.has(d.id));
           // The data checks show the view at the defaults; the answer says so when it matters.
-          const defaults = viewValues(doc, undefined);
+          const defaults = defaultParameterValues(doc.parameters);
           const scope = data.scope(target, doc, { parameters: defaults });
           // Keys pasted into URLs end up in every version and every get_dashboard answer: point to secrets instead.
           const warnings = touchedDatasets.flatMap((d) => {
@@ -518,7 +529,7 @@ export function createMcp(deps: Deps) {
           // dashboard only the user's own secrets apply, and nothing can be read from other datasets.
           const target = await dashboards.previewTarget(p, args.dashboardId, draft, {
             ...(args.parameters ? { parameters: args.parameters } : {}),
-            loadOptions: (saved, t) => loadDataOptions(data, t, saved, args.parameters),
+            loadOptions: optionsLoader(data, args.parameters),
           });
           const dataset = target.dataset;
           // Checked on the bound draft: before binding, a parameter may be a filter reference.
@@ -540,7 +551,13 @@ export function createMcp(deps: Deps) {
               suggestWidgets(profile, { transforms: dataset.transforms, accumulate: dataset.accumulate > 0 }),
               'copy',
             ),
-            ...noteOf(unknownNote(target.doc, args.parameters)),
+            ...noteOf(
+              args.dashboardId
+                ? unknownNote(target.doc, args.parameters)
+                : Object.keys(args.parameters ?? {}).length
+                  ? `Filter values need dashboardId (the filters are declared in a dashboard); ignored: ${Object.keys(args.parameters ?? {}).join(', ')}`
+                  : undefined,
+            ),
             ...(args.dashboardId ? viewEcho(args.dashboardId, target.doc, target.parameters) : {}),
             suggestionsNote:
               'These suggestions copy the previewed source because it is not saved yet. Once the dataset is saved, suggest_widgets returns suggestions that derive from it (source kind "dataset") instead.',
@@ -585,12 +602,7 @@ export function createMcp(deps: Deps) {
               `No dataset "${args.datasetId}". Datasets: ${doc.datasets.map((d) => d.id).join(', ') || 'none'}`,
             );
           const target = { id: args.dashboardId, ownerId: meta.ownerId };
-          const values = viewValues(
-            doc,
-            args.parameters,
-            Date.now(),
-            await loadDataOptions(data, target, doc, args.parameters),
-          );
+          const values = await readView(data, target, doc, args.parameters);
           const result = await data.scope(target, doc, { parameters: values }).resolve(dataset);
           const profile = profileTable(result.table);
           return json({
@@ -628,12 +640,7 @@ export function createMcp(deps: Deps) {
           const dataset = doc.datasets.find((d) => d.id === args.datasetId);
           if (!dataset) return fail(`No dataset "${args.datasetId}"`);
           const target = { id: args.dashboardId, ownerId: meta.ownerId };
-          const values = viewValues(
-            doc,
-            args.parameters,
-            Date.now(),
-            await loadDataOptions(data, target, doc, args.parameters),
-          );
+          const values = await readView(data, target, doc, args.parameters);
           const result = await data.scope(target, doc, { parameters: values }).resolve(dataset);
           const profile = profileTable(result.table);
           return json({
@@ -730,12 +737,7 @@ export function createMcp(deps: Deps) {
         ) => {
           const { meta, doc } = await dashboards.loadViewable(args.dashboardId, p);
           const target = { id: args.dashboardId, ownerId: meta.ownerId };
-          const values = viewValues(
-            doc,
-            args.parameters,
-            Date.now(),
-            await loadDataOptions(data, target, doc, args.parameters),
-          );
+          const values = await readView(data, target, doc, args.parameters);
           const results = new Map<string, DatasetResult>();
           const needed = args.widgetId ? doc.widgets.filter((w) => w.id === args.widgetId) : doc.widgets;
           if (args.widgetId && needed.length === 0) return fail(`No widget "${args.widgetId}"`);

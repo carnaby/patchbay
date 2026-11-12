@@ -12,7 +12,13 @@ import {
   effectiveRefreshSec,
   type LiveEvent,
 } from '@patchbay/core';
-import { keepPreviousData, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  type UseQueryResult,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from '../components/ui.tsx';
@@ -25,6 +31,7 @@ import {
   followsCalendar,
   lastFetch,
   lineageKey,
+  NO_VALUES,
   nextRefetch,
   queryOfView,
   refreshTiming,
@@ -35,6 +42,7 @@ import { openLiveChannel } from './live-channel.ts';
 import {
   choicesOfResult,
   dataValueReady,
+  optionsRefresh,
   pendingDataValue,
   type RawValues,
   useParameters,
@@ -139,7 +147,7 @@ export function useLiveEvents(id: string | undefined) {
         const datasetId = event.result.datasetId;
         // Pushed results are computed from the saved document, at no view: the hub pushes only datasets that use no
         // filter, and a push for one that does (an older server) is not this viewer's view.
-        if (saved?.datasets.some((d) => d.id === datasetId) && viewKey(saved, datasetId, {}) === '')
+        if (saved?.datasets.some((d) => d.id === datasetId) && viewKey(saved, datasetId, NO_VALUES) === '')
           qc.setQueryData(datasetKey(id, saved, datasetId), fromWire(event.result));
       } else if (event.type === 'doc') {
         void pullRemote(event);
@@ -210,9 +218,9 @@ export interface PendingValue {
 
 /**
  * Whether the data-driven values a request would carry may be sent (`dataValueReady`): their choices are loaded and
- * hold them, or failed. Also the first of them that loaded choices lack, which a wall screen holds until they hold it
- * again. The choices are read from the cache without fetching them: the page's DataOptionsGuard loads every options
- * dataset, with the same key.
+ * hold them, or failed. Also the first of them that loaded choices lack and a refreshing list can bring back, which a
+ * wall screen holds until it does. The choices are read from the cache without fetching them: the page's
+ * DataOptionsGuard loads every options dataset, with the same key.
  */
 function useChoiceState(
   dashboardId: string,
@@ -221,6 +229,10 @@ function useChoiceState(
 ): { ready: boolean; pending: PendingValue | null } {
   const entries = useMemo(() => (checks ? (JSON.parse(checks) as ChoiceCheck[]) : []), [checks]);
   const parameters = useEditor((s) => s.doc?.parameters);
+  // One flag per entry, as a string: a selector returning a new array would re-render on every store change.
+  const liveFlags = useEditor((s) =>
+    entries.map(([, dataset]) => (s.doc && optionsRefresh(s.doc, dataset) ? '1' : '0')).join(''),
+  );
   return useQueries({
     queries: entries.map(([, dataset, lineage, view]) => ({
       queryKey: datasetKeyFor(dashboardId, dataset, lineage, view),
@@ -237,7 +249,7 @@ function useChoiceState(
         const query = results[i];
         const choices = choicesOfResult(from.field, query?.data, Boolean(query?.isError));
         if (!dataValueReady(param, raw, choices)) ready = false;
-        const value = pendingDataValue(param, raw, choices);
+        const value = pendingDataValue(param, raw, choices, liveFlags[i] === '1');
         if (pending === null && value !== null) pending = { label: param.label, value };
       }
       return { ready, pending };
@@ -246,22 +258,16 @@ function useChoiceState(
 }
 
 /**
- * The data-driven value a dataset's request waits for because the loaded choices lack it, or null. The checks are the
- * ones `useDatasetResult` waits on, so a widget can tell a held value from an ordinary wait.
- */
-export function usePendingDataValue(dashboardId: string, dataset: Dataset | undefined): PendingValue | null {
-  const id = dataset?.id;
-  const raw = useParameters((s) => s.raw);
-  const checks = useEditor((s) => (id && s.doc ? choiceChecks(s.doc, id, raw) : ''));
-  return useChoiceState(dashboardId, checks, raw).pending;
-}
-
-/**
  * Data for one dataset. It only fetches definitions the server already has, for the dataset and everything it reads
  * (the editor autosaves within a second); until then the previous result stays on screen, so editing never flashes
- * empty widgets.
+ * empty widgets. Also the data-driven value the request waits for because a refreshing list lacks it, or null: read
+ * from the same choices the request waits on, so a widget can tell a held value from an ordinary wait.
  */
-export function useDatasetResult(dashboardId: string, dataset: Dataset | undefined, live: boolean) {
+export function useDatasetState(
+  dashboardId: string,
+  dataset: Dataset | undefined,
+  live: boolean,
+): { query: UseQueryResult<DatasetResult>; pending: PendingValue | null } {
   const id = dataset?.id;
   const raw = useParameters((s) => s.raw);
   // No request before this dashboard's URL was read: a value of another dashboard or an invalid link value waits.
@@ -273,19 +279,25 @@ export function useDatasetResult(dashboardId: string, dataset: Dataset | undefin
   const inSync = useEditor((s) => (id ? datasetInSync(s.saved, s.doc, id) : false));
   const refreshSec = useEditor((s) => (id && s.doc ? effectiveRefreshSec(s.doc, id) : 0));
   const checks = useEditor((s) => (id && s.doc ? choiceChecks(s.doc, id, raw) : ''));
-  const checked = useChoiceState(dashboardId, checks, raw).ready;
+  const choice = useChoiceState(dashboardId, checks, raw);
   // A dataset that uses filters is never pushed (one result per view): it polls even while the live channel is up.
   const timing = refreshTiming(refreshSec, live && view === '');
-  return useQuery({
+  const query = useQuery({
     queryKey: id ? datasetKeyFor(dashboardId, id, lineage, view) : ['data', dashboardId, 'none'],
     queryFn: fetchResult(dashboardId, id ?? '', view),
-    enabled: Boolean(id) && inSync && ready && checked,
+    enabled: Boolean(id) && inSync && ready && choice.ready,
     placeholderData: keepPreviousData,
     staleTime: timing.staleTime,
     // SSE pushes live updates; poll when it cannot, and after midnight for a relative period.
     refetchInterval: (query) =>
       nextRefetch(timing.refetchInterval, calendar, Date.now(), lastFetch(query.state)),
   });
+  return { query, pending: choice.pending };
+}
+
+/** The query alone, for callers that show no held value (see `useDatasetState`). */
+export function useDatasetResult(dashboardId: string, dataset: Dataset | undefined, live: boolean) {
+  return useDatasetState(dashboardId, dataset, live).query;
 }
 
 /** Column names of other datasets' current results, for the join and union step editors. */

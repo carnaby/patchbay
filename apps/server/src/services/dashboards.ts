@@ -761,8 +761,8 @@ export class DashboardService {
         isOwner: p.user !== null && meta.ownerId === p.user.id,
         anonymous: meta.ownerId === null,
         // Editors only, from the rule the fetch applies (assertMayFetchUrl): the dashboard's owner decides, never
-        // the viewer.
-        privateHosts: canEdit && this.privateHostsFor(meta.ownerId) !== null,
+        // the viewer. A read-only token previews public hosts only (previewTarget), so it is told so.
+        privateHosts: canEdit && !p.readOnly && this.privateHostsFor(meta.ownerId) !== null,
       },
     };
   }

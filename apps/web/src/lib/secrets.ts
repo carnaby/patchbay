@@ -105,6 +105,41 @@ export function confirmedForSave(
   return refs.length > 0 && refs.every((r) => confirmed.includes(r));
 }
 
+/**
+ * Whether saving `source` for dataset `id` (undefined: a new one) into `current` makes the server re-check its secrets
+ * against `base` (`secretRefChanges`). `base` is the saved document the server compares with; `current` is the local
+ * one the autosave sends whole, so an unsaved filter edit counts too.
+ */
+export function draftRefsChanged(
+  base: DashboardDoc,
+  current: DashboardDoc,
+  id: string | undefined,
+  source: Source,
+): boolean {
+  if (sourceSecretIds(source).length === 0) return false;
+  // No saved id can hold a NUL, so a new dataset never matches one the server already knows.
+  const key = id ?? '\u0000draft';
+  const existing = current.datasets.find((d) => d.id === key);
+  const datasets = existing
+    ? current.datasets.map((d) => (d.id === key ? { ...d, source } : d))
+    : [...current.datasets, { id: key, name: key, source, transforms: [], refreshSec: 0, accumulate: 0 }];
+  return secretRefChanges(base, { ...current, datasets } as DashboardDoc).includes(key);
+}
+
+/** The first credential problem of a dataset whose secrets the filter change makes the server re-check, or null. */
+export function parameterSecretProblem(
+  saved: DashboardDoc,
+  next: DashboardDoc,
+  issues: (source: Source) => readonly { message: string }[],
+): string | null {
+  for (const id of secretRefChanges(saved, next)) {
+    const d = next.datasets.find((x) => x.id === id);
+    const first = d ? issues(d.source)[0] : undefined;
+    if (first) return `Dataset "${d?.name}": ${first.message}`;
+  }
+  return null;
+}
+
 /** "A", "A and B", "A, B and C". */
 export function joinNames(names: string[]): string {
   if (names.length <= 1) return names[0] ?? '';

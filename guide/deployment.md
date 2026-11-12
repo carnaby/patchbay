@@ -229,8 +229,8 @@ What holds whatever the list says:
   addresses over plain http; only an IP or CIDR entry does. `localhost` cannot be listed: list
   `127.0.0.1`, and know that this opens every service listening on this machine or container.
 - Cloud metadata addresses (`169.254.169.254`, `169.254.170.2`, `169.254.170.23`, `fd00:ec2::254`, `fd00:ec2::23`,
-  `fd20:ce::254`, `100.100.100.200`, `169.254.0.23`) open only through an entry naming exactly that address, never through a range
-  (a `/32` or `/128` entry of one is refused). Do not list them.
+  `fd20:ce::254`, `100.100.100.200`, `169.254.0.23`) open only through an entry naming exactly that address, never
+  through a range (a `/32` or `/128` entry of one is refused). Do not list them.
 - `0.0.0.0`, `::` and multicast never connect. A redirect from `https://` to `http://` is refused.
 - Addresses in unusual notation (`3232235786`, `0x7f.1`, `::ffff:192.168.1.7`) are the same address to the guard.
   The server does not start with an entry it cannot use, and says what to write: a scheme, a port, a user name, a
@@ -270,7 +270,8 @@ Examples (addresses are placeholders for your own):
 - **Prometheus**: `http://192.168.1.30:9090/api/v1/query?query=up` with path `data.result`. Behind an
   authenticating proxy, bind a Bearer secret to `http://192.168.1.30:9090/api/v1/`.
 - **Pi-hole 5**: `http://192.168.1.2/admin/api.php?summaryRaw` with the API token (Settings, API) as a secret sent as
-  query parameter `auth`, with "Only send to" `http://192.168.1.2/admin/`. Pi-hole 6 hands out sessions through a login request, which Patchbay does not make.
+  query parameter `auth`, with "Only send to" `http://192.168.1.2/admin/`. Pi-hole 6 hands out sessions through a login
+  request, which Patchbay does not make.
 
 Secrets can be bound to listed hosts over `http://` and on other ports, but only to a host the list names by name or
 address (not one that merely resolves into a range today). Over plain http the value crosses your network
@@ -341,9 +342,9 @@ an upload has at most 500 columns with names of up to 200 characters, and a JSON
 holds at most three values per allowed cell, checked before it is parsed. Inline rows may use at most 200 different
 column names (checked when saved). Every table built from a source has at most 500 columns, and inline rows and HTTP
 responses keep at most `UPLOAD_MAX_CELLS` cells; both are checked record by record while the table is built, so a
-single wide record cannot multiply it. Uploads are parsed and saved one at a time
-across the server (two more may wait). A request body over 256 KB is received in full before it is processed, one at a
-time (eight more may wait): it has to arrive at 32 KB/s or faster on average after its first 5 s and within 60 s, or the
+single wide record cannot multiply it. Uploads are parsed and saved one at a time across the server (two more may
+wait). A request body over 256 KB is received in full before it is processed, one at a time (eight more may wait):
+it has to arrive at 32 KB/s or faster on average after its first 5 s and within 60 s, or the
 request gets `408` and the connection is closed, so a slow sender never holds the turn of others; bodies that are
 arriving or waiting hold at most 16 MB together, two per client. Node waits at most 20 s for a request's headers and 90
 s for a whole request. Every JSON request body and HTTP source response is refused before parsing when it nests deeper
@@ -402,8 +403,9 @@ across the process, so at most one worker is at its peak while the others sit at
 
 The main thread's peak was measured before the 16 MB connector cache was added and may now be up to that much higher.
 Its share is bounded by its caches and gates rather than by a heap flag: parsed tables (`DATA_CACHE_MB`,
-32), results reused for a few seconds (8 MB, and 8 MB for datasets that read others), serialised results (8 MB), connector results (16 MB), snapshot images (8 MB), response bodies
-(12 MB, 4 MB waiting), large request bodies arriving or waiting for their turn (16 MB) and one large request body and
+32), results reused for a few seconds (8 MB, and 8 MB for datasets that read others), serialised results (8 MB),
+connector results (16 MB), snapshot images (8 MB), response bodies (12 MB, 4 MB waiting), large request bodies
+arriving or waiting for their turn (16 MB) and one large request body and
 one upload processed at a time. V8 lets that heap grow to about twice what is live before it collects, which is where
 most of the gap between resting and peak comes from. The snapshot and feed workers stop after a minute without work;
 an idle server with its pipeline worker takes about 85 MB.
@@ -447,8 +449,9 @@ compares it with the container's limit:
 
 - **Soft** (`MEMORY_SOFT_FRACTION`): new heavy work gets `503` with `Retry-After: 5`: snapshots that are not cached,
   uploads and other bodies over 256 KB, the heavy jobs above, pipelines over 20,000 cells, results over 512 KB
-  that are not serialised already and exports that include uploaded tables. One exception: on a resting server, where no heavy work has run for 30 s and 112
-  MB are still free (up to 272 MB at 384 MB), one job may start; the 30 s start again when it ends. A burst gets at
+  that are not serialised already and exports that include uploaded tables. One exception: on a resting server, where
+  no heavy work has run for 30 s and 112 MB are still free (up to 272 MB at 384 MB), one job may start; the 30 s start
+  again when it ends. A burst gets at
   most one job every 30 s through it; a visitor after the burst gets served. A large body counts as running from
   the moment it is admitted, while it still arrives, so slow uploads cannot all pass that one admission.
 - **Hard** (`MEMORY_HARD_FRACTION`): no new heavy work, writes, MCP calls or live streams, with `Retry-After: 10`.

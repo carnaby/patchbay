@@ -77,8 +77,12 @@ export function tooLargeMessage(bytes: number): string {
   );
 }
 
-/** The result as an error, keeping its columns when they are small enough, so an editor can still pick from them. */
-export function tooLargeResult<T extends Pick<DatasetResult, 'table' | 'hash' | 'error'>>(
+/**
+ * The result as an error, keeping its columns when they are small enough, so an editor can still pick from them.
+ * Lasting: only an edit (steps that make it smaller) or a source that shrinks fixes it, so the page asks again
+ * every 15 minutes, never past a window the result states, instead of rebuilding it every minute.
+ */
+export function tooLargeResult<T extends Pick<DatasetResult, 'table' | 'hash' | 'error' | 'lasting'>>(
   result: T,
   bytes: number,
 ): T {
@@ -88,6 +92,7 @@ export function tooLargeResult<T extends Pick<DatasetResult, 'table' | 'hash' | 
     table: { columns: columns ? result.table.columns : [], rows: [] },
     hash: `error:too-large:${Math.round(bytes / 1024)}`,
     error: tooLargeMessage(bytes),
+    lasting: true,
   };
 }
 

@@ -1012,7 +1012,7 @@ describe('MCP tools', () => {
     ] as const) {
       expect(await refused(name, { ...base, parameters: { region: 'x'.repeat(201) } }), name).toMatch(/200/);
       expect(await refused(name, { ...base, parameters: { ['k'.repeat(41)]: 'eu' } }), name).toMatch(
-        /Invalid key/,
+        /at most 40 characters/,
       );
     }
 
@@ -1036,6 +1036,7 @@ describe('MCP tools', () => {
     );
     expect(bare.parameters).toBeUndefined();
     expect(bare.viewUrl).toBeUndefined();
+    expect(bare.note).toBeUndefined();
 
     const shot = text(
       await agent.callTool({
@@ -1058,6 +1059,8 @@ describe('MCP tools', () => {
       ),
     );
     expect(got.note).toBe(note);
+    // The misspelt id is ignored: the view stays at the default (All).
+    expect(got.parameters).toEqual({ region: '*' });
     const suggested = JSON.parse(
       text(
         await agent.callTool({
@@ -1077,7 +1080,20 @@ describe('MCP tools', () => {
       await agent.callTool({ name: 'render_snapshot', arguments: { dashboardId, parameters: typo } }),
     );
     expect(shotTypo.split('\n')).toContain(note);
-    expect(got.parameters).toEqual({ region: '*' });
+  });
+
+  it('says that filter values need a dashboard in a bare preview', async () => {
+    const agent = await ownClient('bare-preview@example.com');
+    const answer = JSON.parse(
+      text(
+        await agent.callTool({
+          name: 'preview_data',
+          arguments: { source: { kind: 'inline', rows: [{ a: 1 }] }, parameters: { region: 'eu' } },
+        }),
+      ),
+    );
+    expect(answer.note).toMatch(/need dashboardId/);
+    expect(answer.note).not.toContain('Unknown filter ids');
   });
 
   it('answers a busy data check after the save without telling the agent to retry the saved batch', async () => {

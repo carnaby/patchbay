@@ -167,20 +167,13 @@ describe('snapshot text', () => {
         { region: 'North America', sales: 12 },
       ]),
     };
-    const line = widget({
-      id: 'l',
-      type: 'chart',
-      title: 'Sales by region',
-      datasetId: 'sales',
-      config: { kind: 'line', x: 'region', y: ['sales'] },
-    });
+    const config = { kind: 'line' as const, x: 'region', y: ['sales'] };
+    const line = widget({ id: 'l', type: 'chart', title: 'Sales by region', datasetId: 'sales', config });
     const svg = echartsSvg(
-      buildChartOption(
-        ChartConfigSchema.parse({ kind: 'line', x: 'region', y: ['sales'] }),
-        regions.table,
-        THEMES.light,
-        { animation: false, static: true },
-      ),
+      buildChartOption(ChartConfigSchema.parse(config), regions.table, THEMES.light, {
+        animation: false,
+        static: true,
+      }),
       612,
       310,
     );
@@ -189,7 +182,33 @@ describe('snapshot text', () => {
     const img = decodePng(renderWidgetPng(line, regions));
     // The last two pixel columns of the card's content box, in the strip of x labels.
     expect(inkColumns(img, { x: 624, y: 326, w: 2, h: 18 }).length).toBe(0);
-    expect(inkColumns(img, { x: 14, y: 326, w: 612, h: 18 }).length).toBeGreaterThan(20);
+    const strip = inkColumns(img, { x: 14, y: 326, w: 612, h: 18 });
+    // "North America" ends near the edge (about 609 of 626), so a clipped or dropped label fails here.
+    expect(Math.max(...strip) / SCALE).toBeGreaterThan(600);
+    expect(inkColumns(img, { x: 520, y: 326, w: 104, h: 18 }).length).toBeGreaterThan(70);
+  });
+
+  it('keeps the last label of a daily time axis inside the card', () => {
+    const daily: DatasetResult = {
+      ...result,
+      table: inferTable(
+        [25, 26, 27, 28, 29, 30].map((d, i) => ({ day: `2026-10-${d}`, v: 40 + i })),
+        { types: { day: 'time' } },
+      ),
+    };
+    const line = widget({
+      id: 'l',
+      type: 'chart',
+      title: 'Per day',
+      datasetId: 'sales',
+      config: { kind: 'line', x: 'day', y: ['v'] },
+    });
+    const img = decodePng(renderWidgetPng(line, daily));
+    const strip = inkColumns(img, { x: 14, y: 326, w: 612, h: 18 });
+    expect(inkColumns(img, { x: 624, y: 326, w: 2, h: 18 }).length).toBe(0);
+    expect(Math.max(...strip) / SCALE).toBeGreaterThan(600);
+    // Only the last label inks this span (the one before ends near x 501): 18 columns in each of three runs, so a dropped label gives 0.
+    expect(inkColumns(img, { x: 580, y: 326, w: 44, h: 18 }).length).toBeGreaterThan(14);
   });
 
   it('uses the bundled Inter, whatever fonts the machine has', () => {
@@ -910,6 +929,8 @@ describe('status snapshots', () => {
     expect(svg).toMatch(/>cue<tspan[^>]*> ↗<\/tspan><\/text>/);
     expect(svg).toMatch(/>patchbay<tspan[^>]*> ↗<\/tspan><\/text>/);
     expect(svg).toContain('>immich</text>');
+    // A small gap, so the arrow does not touch the name.
+    expect(svg).toMatch(/<tspan dx="2"[^>]*> ↗/);
     expect(svg.match(/↗/g)).toHaveLength(6);
     expect(body()).not.toContain('↗');
     // The arrow stays inside the tile: the name gives way to it, and user text is escaped as before.
@@ -1032,5 +1053,133 @@ describe('cross-filter in snapshots', () => {
     const full = pixelsOf(decodePng(renderWidgetPng(table, result)), text);
     const one = pixelsOf(decodePng(renderWidgetPng(table, result, { parameters: { month: 'Jan' } })), text);
     expect(one).toBeLessThan(full * 0.7);
+  });
+
+  it('dims the list rows that are not selected', () => {
+    const list = widget({
+      id: 'l',
+      type: 'table',
+      datasetId: 'sales',
+      config: { style: 'list', crossFilter: { parameter: 'src', field: 'source' } },
+    });
+    const rows: DatasetResult = {
+      ...result,
+      table: inferTable(
+        Array.from({ length: 6 }, (_, i) => ({ title: `Headline number ${i}`, source: i === 1 ? 'Y' : 'X' })),
+      ),
+    };
+    const text = THEMES.light.textPrimary;
+    const full = pixelsOf(decodePng(renderWidgetPng(list, rows)), text);
+    const one = pixelsOf(decodePng(renderWidgetPng(list, rows, { parameters: { src: 'Y' } })), text);
+    expect(full).toBeGreaterThan(0);
+    expect(one).toBeLessThan(full * 0.7);
+  });
+
+  it('dims the map points that are not selected', () => {
+    const map = widget({
+      id: 'm',
+      type: 'map',
+      datasetId: 'sales',
+      config: {
+        lat: 'lat',
+        lon: 'lon',
+        basemap: 'none',
+        crossFilter: { parameter: 'name', field: 'name' },
+      },
+    });
+    const points: DatasetResult = {
+      ...result,
+      table: inferTable([
+        { name: 'a', lat: 48, lon: 17 },
+        { name: 'b', lat: 40, lon: -74 },
+        { name: 'c', lat: 1, lon: 103 },
+      ]),
+    };
+    // Exact palette pixels are blended on a map, so count the saturated ones: the card and the grid are grey.
+    const coloured = (png: Buffer) => {
+      const img = decodePng(png);
+      let n = 0;
+      for (let i = 0; i < img.rgba.length; i += 4) {
+        const r = img.rgba[i]!;
+        const g = img.rgba[i + 1]!;
+        const b = img.rgba[i + 2]!;
+        if (Math.max(r, g, b) - Math.min(r, g, b) > 60) n++;
+      }
+      return n;
+    };
+    const full = coloured(renderWidgetPng(map, points));
+    expect(full).toBeGreaterThan(0);
+    expect(coloured(renderWidgetPng(map, points, { parameters: { name: 'a' } }))).toBeLessThan(full * 0.6);
+    expect(coloured(renderWidgetPng(map, points, { parameters: { name: 'zzz' } }))).toBe(full);
+  });
+
+  it('dims a clickable line chart the way it dims bars', () => {
+    const rows = Array.from({ length: 60 }, (_, i) => ({ day: `d${i}`, v: (i * 7) % 13 }));
+    const table = inferTable(rows);
+    const config = ChartConfigSchema.parse({ kind: 'line', x: 'day', y: ['v'] });
+    const svg = (clickable?: 'x') =>
+      echartsSvg(
+        buildChartOption(config, table, THEMES.light, {
+          static: true,
+          animation: false,
+          ...(clickable ? { clickable } : {}),
+        }),
+        612,
+        310,
+      );
+    const paths = (s: string) => s.match(/<path/g)?.length ?? 0;
+    // Clickable symbols are what the dimming paints over: they are drawn only when the chart is clickable.
+    expect(paths(svg('x'))).toBeGreaterThan(paths(svg()));
+
+    const data: DatasetResult = { ...result, table };
+    const line = (crossFilter: boolean) =>
+      widget({
+        id: 'l',
+        type: 'chart',
+        datasetId: 'sales',
+        config: {
+          kind: 'line',
+          x: 'day',
+          y: ['v'],
+          ...(crossFilter ? { crossFilter: { parameter: 'day', field: 'day' } } : {}),
+        },
+      });
+    const lineInk = (w: ReturnType<typeof widget>, parameters?: Record<string, string>) =>
+      pixelsOf(
+        decodePng(renderWidgetPng(w, data, parameters ? { parameters } : undefined)),
+        THEMES.light.categorical[0]!,
+      );
+    const plain = lineInk(line(false));
+    const clickable = lineInk(line(true));
+    const selected = lineInk(line(true), { day: 'd5' });
+    // Both sides of each comparison come from this run, so only the direction is asserted.
+    expect(clickable).toBeGreaterThan(plain);
+    expect(selected).toBeLessThan(clickable);
+  });
+
+  it('renders a dashboard with the dimming of its cross-filtered widget', () => {
+    const doc = parseDashboard({
+      ...emptyDashboard('Sales'),
+      parameters: [
+        {
+          id: 'month',
+          label: 'Month',
+          type: 'select',
+          options: ['Jan', 'Feb', 'Mar'].map((m) => ({ value: m, label: m })),
+          all: 'All months',
+          default: null,
+        },
+      ],
+      datasets: [{ id: 'sales', name: 'Sales', source: { kind: 'inline', rows: [] } }],
+      widgets: [bars],
+      layout: [{ i: 'c', x: 0, y: 0, w: 6, h: 4 }],
+    });
+    const results = new Map([['sales', result]]);
+    const inkOf = (parameters: Record<string, string>) =>
+      ink(renderDashboardPng(doc, results, { parameters }));
+    const full = inkOf({});
+    expect(full).toBeGreaterThan(0);
+    expect(inkOf({ month: 'Feb' })).toBeLessThan(full * 0.6);
+    expect(inkOf({ month: 'Zzz' })).toBe(full);
   });
 });

@@ -33,7 +33,7 @@ import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import { exportBodies } from '../services/export-body.ts';
 import { type Body, rowsFormat, streamBodies, streamBody } from '../services/result-wire.ts';
 import { listTemplates } from '../services/templates.ts';
-import { loadDataOptions, RawParametersSchema, rawFromQuery, viewValues } from '../services/view.ts';
+import { optionsLoader, RawParametersSchema, rawFromQuery, readView } from '../services/view.ts';
 import { useCaseInfo } from '../showcase/info.ts';
 import { badRequest, HttpError, notFound, RetryLaterError } from '../util/errors.ts';
 import { memoryGuard } from '../util/memory-pressure.ts';
@@ -377,7 +377,7 @@ export function apiRoutes(deps: Deps) {
     const target = { id, ownerId: meta.ownerId };
     // One instant for the view and for its stated window: what the rows were computed for is what the page is told.
     const now = Date.now();
-    const parameters = viewValues(doc, raw, now, await loadDataOptions(data, target, doc, raw));
+    const parameters = await readView(data, target, doc, raw, now);
     const result = await data.scope(target, doc, { parameters }).resolve(dataset);
     // Per request and outside every cache: the shared result is copied, never changed (another request may hold it).
     const calendar = calendarOf(doc.parameters, lineageParameters(doc, dataset.id), parameters, now);
@@ -405,7 +405,7 @@ export function apiRoutes(deps: Deps) {
       requireEdit: true,
       ...(body.editing ? { editing: body.editing } : {}),
       ...(body.parameters ? { parameters: body.parameters } : {}),
-      loadOptions: (saved, t) => loadDataOptions(data, t, saved, body.parameters),
+      loadOptions: optionsLoader(data, body.parameters),
     });
     const dataset = target.dataset;
     // Checked on the bound draft: before binding, a parameter may be a filter reference such as "$param.days".
@@ -438,7 +438,7 @@ export function apiRoutes(deps: Deps) {
     if (!dataset) throw notFound('Dataset not found');
     const raw = rawFromQuery(c.req.url);
     const target = { id, ownerId: meta.ownerId };
-    const parameters = viewValues(doc, raw, Date.now(), await loadDataOptions(data, target, doc, raw));
+    const parameters = await readView(data, target, doc, raw);
     const result = await data.scope(target, doc, { parameters }).resolve(dataset);
     const profile = profileTable(result.table);
     return c.json({
@@ -559,9 +559,9 @@ export function apiRoutes(deps: Deps) {
     if (widgetId && !widget) throw notFound('Widget not found');
     const raw = rawFromQuery(c.req.url);
     const now = Date.now();
-    const parameters = viewValues(doc, raw, now, await loadDataOptions(data, target, doc, raw));
+    const parameters = await readView(data, target, doc, raw, now);
     // The window of every relative period joins the key, so a picture never outlives the day it was drawn for.
-    const windowOf = calendarOf(
+    const calendarWindow = calendarOf(
       doc.parameters,
       (doc.parameters ?? []).map((p) => p.id),
       parameters,
@@ -572,7 +572,7 @@ export function apiRoutes(deps: Deps) {
       version: meta.version,
       theme,
       widget: widgetId,
-      view: [viewQuery(doc.parameters, parameters), windowOf].filter(Boolean).join('#'),
+      view: [viewQuery(doc.parameters, parameters), calendarWindow].filter(Boolean).join('#'),
     });
     // Permission was checked above, for this request; the cache only saves the drawing. Busy, rate limited or out of
     // time, the error says when to come back (Retry-After, set by the app's error handler).

@@ -25,6 +25,7 @@ import {
   type DashboardDoc,
   type DatasetResult,
   DIMMED_OPACITY,
+  defaultParameterValues,
   effectiveSelection,
   formatNumber,
   formatRelative,
@@ -33,7 +34,6 @@ import {
   MAX_SERIES,
   type ParameterValues,
   parameterSummary,
-  readParameterValues,
   resolveColor,
   rowSelected,
   type Selection,
@@ -562,8 +562,7 @@ export function renderDashboardPng(
   const width = clamp(options.width, DASHBOARD_WIDTH.default, DASHBOARD_WIDTH.min, DASHBOARD_WIDTH.max);
   const col = (width - GAP * (GRID_COLUMNS + 1)) / GRID_COLUMNS;
   // The view this picture shows: the line under the title and the dimming always use the same values.
-  const values =
-    options.parameters ?? readParameterValues(doc.parameters, () => undefined, Date.now()).values;
+  const values = options.parameters ?? defaultParameterValues(doc.parameters);
   // The same text as presentation mode's summary (core parameterSummary): every filter, defaults included.
   const summary = doc.parameters?.length ? parameterSummary(doc.parameters, values) : '';
   const top = 64 + (summary ? SUMMARY_LINE : 0);

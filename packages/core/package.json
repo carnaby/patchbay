@@ -1,7 +1,7 @@
 {
   "name": "@patchbay/core",
   "description": "Patchbay domain logic shared by the server and the browser: schemas, ops, pipeline, charts.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": true,
   "license": "MIT",
   "homepage": "https://github.com/carnaby/patchbay#readme",

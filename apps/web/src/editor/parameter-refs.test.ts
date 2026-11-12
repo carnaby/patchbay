@@ -59,6 +59,13 @@ describe('inserting filter references', () => {
     ]);
     expect(texts('urlPath')).toEqual(['$param.city']);
     expect(texts('urlPath', true)).toEqual([]);
+    const parts = ['$param.period.from', '$param.period.to', '$param.period.start', '$param.period.end'];
+    expect(texts('body')).toEqual(['$param.region', '$param.city', ...parts]);
+    expect(connectorChoices(parameters, { type: 'string' }).map((c) => c.text)).toEqual([
+      '$param.region',
+      '$param.city',
+      ...parts,
+    ]);
     expect(refChoices([period], 'body', { secrets: false })[0]).toEqual({
       text: '$param.period.from',
       label: 'Period (first day)',
@@ -72,6 +79,9 @@ describe('inserting filter references', () => {
     expect(urlPlaceAt(url, 10)).toBeNull();
     expect(urlPlaceAt('https://a.example/v1/sales', 'https://a.example/v1/'.length)).toBeNull();
     expect(urlPlaceAt(url, url.length)).toBeNull();
+    expect(urlPlaceAt('https://x.io/p?a=b=', 19)).toBeNull();
+    expect(urlPlaceAt('https://x.io/p?a=', 17)).toBe('urlQuery');
+    expect(urlPlaceAt('https://x.io/p?a=1&b=', 21)).toBe('urlQuery');
   });
 
   it('inserts at the caret and says where the caret goes', () => {

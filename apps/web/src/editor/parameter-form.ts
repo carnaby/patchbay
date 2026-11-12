@@ -74,37 +74,70 @@ export function newParameter(type: ParameterType, taken: ReadonlySet<string>): P
   }
 }
 
-/** One option per line, "value" or "value | Label": pasting a list is the quickest way to declare a choice. */
+/** Only "\|" is an escape: a "|" inside a value or label. The first "|" not written so ends the value. */
+const escapeBars = (text: string) => text.replace(/\|/g, '\\|');
+const unescapeBars = (text: string) => text.replace(/\\\|/g, '|');
+/** One option per line cannot hold a line break: it is shown as this mark. */
+const LINE_BREAK = '↵';
+const oneLine = (text: string) => text.replace(/\r\n|\r|\n/g, LINE_BREAK);
+const shown = (text: string) => escapeBars(oneLine(text));
+
+/** The first "|" not written as "\|", or -1. A loop, not a lookbehind: older Safari cannot parse one. */
+function separatorAt(line: string): number {
+  for (let i = 0; i < line.length; i++) if (line[i] === '|' && line[i - 1] !== '\\') return i;
+  return -1;
+}
+
+/**
+ * One option per line, "value" or "value | Label": pasting a list is the quickest way to declare a choice. A "|"
+ * inside is written "\|", and a line break shows as "↵".
+ */
 export function optionsText(options: readonly OptionInput[]): string {
   return options
-    .map((o) =>
-      o.label !== undefined && o.label !== String(o.value) ? `${o.value} | ${o.label}` : String(o.value),
-    )
+    .map((o) => {
+      const value = String(o.value);
+      return o.label !== undefined && o.label !== value
+        ? `${shown(value)} | ${shown(o.label)}`
+        : shown(value);
+    })
     .join('\n');
 }
 
 export function parseOptions(text: string, previous: readonly OptionInput[] = []): OptionInput[] {
   return text.split('\n').flatMap((line) => {
-    const [first = '', ...rest] = line.split('|');
-    const value = first.trim();
+    const at = separatorAt(line);
+    const value = unescapeBars(at < 0 ? line : line.slice(0, at)).trim();
     if (!value) return [];
-    const label = rest.join('|').trim();
-    // A number an agent declared stays a number while its text is unchanged; the editor itself writes text.
-    const kept = previous.find((o) => String(o.value) === value)?.value ?? value;
-    return [{ value: kept, ...(label && label !== value ? { label } : {}) }];
+    const label = at < 0 ? '' : unescapeBars(line.slice(at + 1)).trim();
+    // What an agent declared stays as declared while its text is unchanged: a number stays a number, and a line
+    // break shown as "↵" stays a line break. The editor itself writes the text it shows.
+    const prev = previous.find((o) => oneLine(String(o.value)) === value);
+    const kept = prev?.value ?? value;
+    const keptText = String(kept);
+    const keptLabel = prev?.label !== undefined && oneLine(prev.label) === label ? prev.label : label;
+    // "eu | eu" saved by an agent shows as "eu"; typed back either way, it keeps its label.
+    const keepSame = prev?.label === keptText && (!label || label === value);
+    return [
+      {
+        value: kept,
+        ...(keptLabel && keptLabel !== keptText ? { label: keptLabel } : keepSame ? { label: keptText } : {}),
+      },
+    ];
   });
 }
 
 /**
  * The draft change of the "Fixed list" / "From a dataset column" switch. Never both: the schema refuses options
  * together with optionsFrom. A list starts from what the author typed before, or empty: a made-up option would save
- * as a real choice, while an empty list keeps Save disabled with the reason.
+ * as a real choice, while an empty list keeps Save disabled with the reason. `previous` are the options the form
+ * opened with: switching to a column and back keeps what they hold.
  */
 export function choiceSourcePatch(
   mode: 'list' | 'data',
   draft: Record<string, unknown>,
   optionsDraft: string,
   firstDataset: string | undefined,
+  previous: readonly OptionInput[] = [],
 ): Record<string, unknown> {
   if (mode === 'data')
     return {
@@ -113,7 +146,7 @@ export function choiceSourcePatch(
       all: typeof draft.all === 'string' ? draft.all : 'All',
       default: null,
     };
-  return { optionsFrom: undefined, options: parseOptions(optionsDraft, []) };
+  return { optionsFrom: undefined, options: parseOptions(optionsDraft, previous) };
 }
 
 /** The declaration a form describes, or the first reason it cannot be saved (the same checks as a save). */
@@ -135,12 +168,19 @@ export function checkParameter(
  * The patch that keeps `default` valid after the options or the ticked presets changed, so the Default list never
  * shows a value the saved filter would not accept; {} when it already is. Data-fed choices always start at All.
  */
-export function reseatDefault(draft: Record<string, unknown>): Record<string, unknown> {
+export function reseatDefault(
+  draft: Record<string, unknown>,
+  /** The options before this edit: typing in the default's own line moves the default with it. */
+  previousOptions?: readonly OptionInput[],
+): Record<string, unknown> {
   if (draft.type === 'select' && !draft.optionsFrom) {
     const options = (draft.options as OptionInput[] | undefined) ?? [];
     const hasAll = draft.all !== undefined;
     if (draft.default === null) return hasAll ? {} : { default: options[0]?.value ?? null };
     if (options.some((o) => String(o.value) === String(draft.default))) return {};
+    // Typing in the default's own line changes its value; follow the line, not the first option.
+    const was = previousOptions?.findIndex((o) => String(o.value) === String(draft.default)) ?? -1;
+    if (was >= 0 && previousOptions?.length === options.length) return { default: options[was]?.value };
     return { default: hasAll ? null : (options[0]?.value ?? null) };
   }
   if (draft.type === 'dateRange' && typeof draft.default === 'string') {
@@ -168,6 +208,67 @@ export function updateOps(before: Parameter, after: Parameter): OpInput[] {
     if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) set[key] = b[key] === undefined ? null : b[key];
   }
   return Object.keys(set).length > 0 ? [{ op: 'updateParameter', id: before.id, set }] : [];
+}
+
+export interface ElsewhereNote {
+  text: string;
+  /** The filter is gone or another kind: an update can no longer apply. */
+  blocksSave: boolean;
+}
+
+/** The form's own names for a declaration's fields, for the note about a change made elsewhere. */
+const FIELD_NAMES: Record<string, string> = {
+  label: 'label',
+  options: 'options',
+  optionsFrom: 'choices from data',
+  all: '"All"',
+  default: 'default',
+  placeholder: 'placeholder',
+  presets: 'presets',
+  custom: 'custom ranges',
+  min: 'earliest day',
+  max: 'latest day',
+  maxDays: 'longest range',
+};
+
+const changedFields = (before: Parameter, after: Parameter): string[] => {
+  const op = updateOps(before, after)[0];
+  return op?.op === 'updateParameter' ? Object.keys(op.set) : [];
+};
+
+/**
+ * What the form says when its filter changed elsewhere (an agent, another tab) after it opened, or null. `candidate`
+ * is the declaration the form would save, or null while it cannot be saved.
+ *
+ * A save sends only the fields the form changed (updateOps against the declaration it opened with), merged over the
+ * current one: a field changed only elsewhere is kept, and one changed in both is replaced whole, an options list
+ * included. Saying which keeps an agent's concurrent edit from being overwritten silently.
+ */
+export function elsewhereNote(
+  opened: Parameter,
+  live: Parameter | undefined,
+  candidate: Parameter | null,
+): ElsewhereNote | null {
+  if (!live || live.type !== opened.type)
+    return {
+      text: 'This filter was removed or replaced elsewhere since you opened it, so it cannot be saved.',
+      blocksSave: true,
+    };
+  const changed = changedFields(opened, live);
+  if (changed.length === 0) return null;
+  const names = (keys: string[]) => keys.map((k) => FIELD_NAMES[k] ?? k).join(', ');
+  if (!candidate)
+    return { text: `Changed elsewhere since you opened it: ${names(changed)}.`, blocksSave: false };
+  const mine = new Set(changedFields(opened, candidate));
+  const now = live as Record<string, unknown>;
+  const next = candidate as Record<string, unknown>;
+  const replaced = changed.filter((k) => mine.has(k) && JSON.stringify(now[k]) !== JSON.stringify(next[k]));
+  return {
+    text: replaced.length
+      ? `Changed elsewhere since you opened it; saving replaces: ${names(replaced)}.`
+      : `Changed elsewhere since you opened it (${names(changed)}); saving keeps those changes.`,
+    blocksSave: false,
+  };
 }
 
 /** "Make current values the default": one updateParameter per filter the URL sets. */

@@ -3,15 +3,17 @@
  * is an operation through the editor store (applyOps), so it is versioned, undoable and rebased like any other edit.
  */
 import {
+  applyOps,
   DATE_PRESET_LABELS,
   DATE_PRESETS,
+  type DashboardDoc,
   type DatePreset,
   lineageParameters,
   type OpInput,
   type Parameter,
 } from '@patchbay/core';
-import { ArrowDown, ArrowUp, Pencil, Plus, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { AlertTriangle, ArrowDown, ArrowUp, Pencil, Plus, Trash2 } from 'lucide-react';
+import { useEffect, useId, useState } from 'react';
 import {
   Badge,
   Button,
@@ -28,14 +30,17 @@ import {
   Toggle,
   toast,
 } from '../components/ui.tsx';
+import { parameterSecretProblem } from '../lib/secrets.ts';
 import { useEditor } from '../state/editor.ts';
 import { summaryOf, useParameters } from '../state/parameters.ts';
 import { useDatasetColumns } from '../state/sync.ts';
+import { issuesFor, useCredentialContext } from './CredentialsField.tsx';
 import {
   addFilterBlocker,
   checkParameter,
   choiceSourcePatch,
   defaultOps,
+  elsewhereNote,
   idFromLabel,
   newParameter,
   type OptionInput,
@@ -60,6 +65,10 @@ export function ParametersPanel({
   dashboardId: string;
 }) {
   const doc = useEditor((s) => s.doc);
+  const saved = useEditor((s) => s.saved);
+  // Only while open: a page load (a wall screen, a reconnect) sends no request, and each opening refetches a list
+  // older than its stale time, so the pre-check never judges against a list from page load.
+  const credentials = useCredentialContext(open);
   const apply = useEditor((s) => s.apply);
   const raw = useParameters((s) => s.raw);
   const [editing, setEditing] = useState<Editing>(null);
@@ -74,6 +83,7 @@ export function ParametersPanel({
     return !error;
   };
   const taken = new Set(parameters.map((p) => p.id));
+  const blockerId = useId();
   const addBlocker = addFilterBlocker(parameters);
   const defaultsToSave = defaultOps(parameters, raw);
   const add = (type: ParameterType) => setEditing({ parameter: newParameter(type, taken), isNew: true });
@@ -89,6 +99,7 @@ export function ParametersPanel({
           key={editing.parameter.id}
           initial={editing.parameter}
           isNew={editing.isNew}
+          live={editing.isNew ? undefined : parameters.find((p) => p.id === editing.parameter.id)}
           dashboardId={dashboardId}
           others={parameters.filter((p) => editing.isNew || p.id !== editing.parameter.id)}
           onCancel={() => setEditing(null)}
@@ -96,6 +107,21 @@ export function ParametersPanel({
             const ops: OpInput[] = editing.isNew
               ? [{ op: 'addParameter', parameter }]
               : updateOps(editing.parameter, parameter);
+            // The server re-checks the secrets of datasets whose filter request shape changes; say so here instead
+            // of letting the autosave be refused. Only a hint: applyOps computes a candidate and `run` stays the
+            // one path that changes the document.
+            let next: DashboardDoc | null = null;
+            try {
+              if (doc) next = applyOps(doc, ops).doc;
+            } catch {
+              // run reports it
+            }
+            const problem =
+              doc && next && parameterSecretProblem(saved ?? doc, next, (s) => issuesFor(s, credentials));
+            if (problem) {
+              toast(problem, 'bad');
+              return;
+            }
             if (
               run(
                 ops,
@@ -151,10 +177,15 @@ export function ParametersPanel({
                   <Pencil className="size-3.5" />
                 </IconButton>
                 <IconButton
-                  label="Remove filter"
-                  disabled={used !== null}
-                  title={used ? `${used}. Remove those references first.` : 'Remove filter'}
-                  onClick={() => run([{ op: 'removeParameter', id: p.id }], `Removed filter "${p.label}"`)}
+                  label={used ? `Remove filter (${used})` : 'Remove filter'}
+                  aria-disabled={used !== null || undefined}
+                  onClick={() => {
+                    if (used) {
+                      toast(`${used}. Remove those references first.`, 'bad');
+                      return;
+                    }
+                    run([{ op: 'removeParameter', id: p.id }], `Removed filter "${p.label}"`);
+                  }}
                 >
                   <Trash2 className="size-3.5" />
                 </IconButton>
@@ -164,11 +195,18 @@ export function ParametersPanel({
           <div className="flex flex-wrap items-center gap-2">
             {addBlocker ? (
               <>
-                <Button size="sm" disabled title={addBlocker}>
+                <Button
+                  size="sm"
+                  aria-disabled="true"
+                  aria-describedby={blockerId}
+                  onClick={() => toast(addBlocker, 'bad')}
+                >
                   <Plus className="size-4" />
                   Add filter
                 </Button>
-                <p className="w-full text-xs text-muted">{addBlocker}</p>
+                <p id={blockerId} className="w-full text-xs text-muted">
+                  {addBlocker}
+                </p>
               </>
             ) : (
               <Menu label="Add filter" icon={<Plus className="size-4" />}>
@@ -199,6 +237,7 @@ function ParameterForm({
   dashboardId,
   initial,
   isNew,
+  live,
   others,
   onSave,
   onCancel,
@@ -206,6 +245,7 @@ function ParameterForm({
   dashboardId: string;
   initial: Parameter;
   isNew: boolean;
+  live: Parameter | undefined;
   others: readonly Parameter[];
   onSave: (parameter: Parameter) => void;
   onCancel: () => void;
@@ -215,8 +255,12 @@ function ParameterForm({
   const [optionsDraft, setOptionsDraft] = useState(() =>
     initial.type === 'select' ? optionsText(initial.options ?? []) : '',
   );
-  const taken = useMemo(() => new Set(others.map((p) => p.id)), [others]);
+  const taken = new Set(others.map((p) => p.id));
   const check = checkParameter(draft, others, isNew ? undefined : initial);
+  // `initial` is the declaration the save diffs against; `live` is what the document holds now.
+  const elsewhere = isNew
+    ? null
+    : elsewhereNote(initial, live, 'parameter' in check ? check.parameter : null);
   /** Merges a patch; undefined removes a field, as the save's updateParameter would. */
   const set = (patch: Record<string, unknown>) =>
     setDraft((d) => {
@@ -269,6 +313,7 @@ function ParameterForm({
           set={set}
           optionsDraft={optionsDraft}
           setOptionsDraft={setOptionsDraft}
+          initialOptions={initial.options ?? []}
         />
       ) : initial.type === 'text' ? (
         <>
@@ -298,13 +343,21 @@ function ParameterForm({
         <DateFields draft={draft} set={set} />
       )}
       {'error' in check ? <p className="text-xs text-bad">{check.error}</p> : null}
+      <div role="status">
+        {elsewhere ? (
+          <p className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
+            <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" aria-hidden="true" />
+            <span>{elsewhere.text}</span>
+          </p>
+        ) : null}
+      </div>
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
         <Button
           variant="primary"
-          disabled={'error' in check}
+          disabled={'error' in check || elsewhere?.blocksSave === true}
           onClick={() => {
             if ('parameter' in check) onSave(check.parameter);
           }}
@@ -322,12 +375,14 @@ function SelectFields({
   set,
   optionsDraft,
   setOptionsDraft,
+  initialOptions,
 }: {
   dashboardId: string;
   draft: Record<string, unknown>;
   set: (patch: Record<string, unknown>) => void;
   optionsDraft: string;
   setOptionsDraft: (text: string) => void;
+  initialOptions: readonly OptionInput[];
 }) {
   const options = (draft.options as OptionInput[] | undefined) ?? [];
   const all = typeof draft.all === 'string' ? draft.all : undefined;
@@ -347,7 +402,7 @@ function SelectFields({
         value={fromData ? 'data' : 'list'}
         onChange={(mode) => {
           if (mode === (fromData ? 'data' : 'list')) return;
-          set(choiceSourcePatch(mode, draft, optionsDraft, sources[0]?.id));
+          set(choiceSourcePatch(mode, draft, optionsDraft, sources[0]?.id, initialOptions));
         }}
         options={[
           { value: 'list', label: 'Fixed list' },
@@ -397,7 +452,10 @@ function SelectFields({
           </Field>
         </>
       ) : (
-        <Field label="Options" hint='One per line: a value, or "value | Label". Values appear in links.'>
+        <Field
+          label="Options"
+          hint='One per line: a value, or "value | Label". Write \| for a "|" inside one; a line break shows as ↵. Values appear in links.'
+        >
           {(fid) => (
             <Textarea
               id={fid}
@@ -406,8 +464,11 @@ function SelectFields({
               spellCheck={false}
               onChange={(e) => {
                 setOptionsDraft(e.target.value);
-                const next = { ...draft, options: parseOptions(e.target.value, options) };
-                set({ options: next.options, ...reseatDefault(next) });
+                const next = {
+                  ...draft,
+                  options: parseOptions(e.target.value, [...options, ...initialOptions]),
+                };
+                set({ options: next.options, ...reseatDefault(next, options) });
               }}
             />
           )}
@@ -469,6 +530,7 @@ function DateFields({
     typeof draft.default === 'object' && draft.default !== null
       ? (draft.default as { from: string; to: string })
       : null;
+  // UTC, like the relative periods: the seeded custom range must agree with them.
   const today = new Date().toISOString().slice(0, 10);
   return (
     <>

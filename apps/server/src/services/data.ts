@@ -182,7 +182,7 @@ interface Loaded {
   origin?: DataTable;
 }
 
-export type Computed = Pick<DatasetResult, 'table' | 'hash' | 'truncated' | 'trace' | 'error'>;
+export type Computed = Pick<DatasetResult, 'table' | 'hash' | 'truncated' | 'trace' | 'error' | 'lasting'>;
 
 interface HistoryBuffer {
   rows: DataTable['rows'];

@@ -259,11 +259,12 @@ nothing. Datasets that use filters have one result per view, so the hub leaves t
 browsers poll them at the dataset's interval, with their filter values in the query. A data answer for a relative period
 (last 7 days, yesterday, …) names the window its rows were computed for and how long that window stays valid, and the
 browser asks again when it expires, so a wall screen follows the server's midnight, not its own clock. An answer whose
-error cannot pass by asking again (a deleted secret, a refused address) says so and is asked again only every 15
-minutes, so a fix still shows up without a reload; other errors are retried every minute, also for datasets that never
-refresh (a dataset with a regular interval keeps it). Both retries are spread over a few seconds so the widgets of a
-wall screen do not ask at the same instant. SSE was chosen over WebSockets because traffic is one-directional (writes go
-through normal HTTP requests), it works through every proxy, and reconnection is built into `EventSource`.
+error cannot pass by asking again (a deleted secret, a refused address, a result over the 4 MB cap, a weather city that
+does not exist) says so and is asked again only every 15 minutes, so a fix still shows up without a reload; other errors
+are retried every minute, also for datasets that never refresh (a dataset with a regular interval keeps it). Both
+retries are spread over a few seconds so the widgets of a wall screen do not ask at the same instant. SSE was chosen
+over WebSockets because traffic is one-directional (writes go through normal HTTP requests), it works through every
+proxy, and reconnection is built into `EventSource`.
 
 ## 5. The editor: undo/redo and live collaboration with agents
 

@@ -5,6 +5,9 @@
  */
 export const PARAM_PREFIX = '$param.';
 
+/** A whole value that is nothing but a reference: the class decides where one ends, for the checks and the binder. */
+export const WHOLE_REF = /^\$param\.[A-Za-z0-9_.]*$/;
+
 /** Ids have no "-", unlike dataset ids: the expression tokenizer would read `$param.top-n` as `$param.top` minus n. */
 export const PARAM_ID = /^[a-z][a-z0-9_]{0,31}$/;
 

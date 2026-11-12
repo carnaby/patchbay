@@ -300,13 +300,14 @@ function Cell({
 /** The ↗ icon that opens an entity's site; its padding is the click target and stays inside the name line. */
 function ExternalLink({ href, label }: { href: string; label: string }) {
   return (
+    // A finger needs ~32 px; the pseudo-element widens the hit area without moving the fit.
     <a
       href={href}
       target="_blank"
       rel="noopener noreferrer nofollow"
       aria-label={label}
       title={label}
-      className="pointer-events-auto flex shrink-0 items-center rounded-sm text-ink-2 hover:text-ink"
+      className="pointer-events-auto relative flex shrink-0 items-center rounded-sm text-ink-2 after:absolute after:-inset-1.5 after:content-[''] hover:text-ink"
       style={{ padding: LINK_PAD, margin: `-${LINK_PAD}px 0` }}
     >
       <ArrowUpRight aria-hidden="true" style={{ width: M.nameSize, height: M.nameSize }} />
