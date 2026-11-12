@@ -112,10 +112,12 @@ describe('data responses', () => {
       expect(res.text.length).toBeLessThan(10_000);
       expect(res.json.error).toMatch(/too large to send.*filter or limit rows/);
       expect(res.json.table.columns.map((c: { name: string }) => c.name)).toEqual(['s', 'big']);
+      expect(res.json.lasting).toBe(true);
     }
     // What the snapshot renderer and MCP tools read is the same error.
     const doc = (await call(`/api/dashboards/${id}`)).json.doc;
     const result = await deps.data.resolve({ id, ownerId: null }, doc.datasets[0]);
+    expect(result.lasting).toBe(true);
     expect(result.error).toMatch(/too large to send/);
     expect(result.table.rows).toEqual([]);
 
@@ -140,8 +142,27 @@ describe('data responses', () => {
       headers,
     });
     expect(limited.json.result.error).toBeUndefined();
+    expect(limited.json.result.lasting).toBeUndefined();
     expect(decodeTable(limited.json.result.table).rows).toHaveLength(100);
     expect(limited.json.profile.rows).toBe(100);
+  });
+
+  it('mark a too-large derived result as lasting on every read, also from the shared cache', async () => {
+    const csv = `s\n${`${'abcdefghij'.repeat(10)}\n`.repeat(3_000)}`;
+    const expr = `concat(${Array(17).fill('s').join(', ')})`;
+    const { id, headers } = await dashboardWith(csv, [{ type: 'derive', as: 'big', expr }]);
+    const child = { id: 'child', name: 'Child', source: { kind: 'dataset', id: 'd' }, transforms: [] };
+    const saved = await call(`/api/dashboards/${id}/ops`, {
+      body: { ops: [{ op: 'addDataset', dataset: child }] },
+      headers,
+    });
+    expect(saved.status).toBe(200);
+    for (let read = 0; read < 2; read++) {
+      const res = await call(`/api/dashboards/${id}/data/child?rows=arrays`);
+      expect(res.json.error).toMatch(/too large to send/);
+      expect(res.json.lasting).toBe(true);
+      expect(res.json).not.toHaveProperty('retryAfterSec');
+    }
   });
 
   it('answer many concurrent readers from one shared body and give the budget back', async () => {

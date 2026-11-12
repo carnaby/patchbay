@@ -12,7 +12,7 @@ import {
   type OpInput,
   type Parameter,
 } from '@patchbay/core';
-import { ArrowDown, ArrowUp, Pencil, Plus, Trash2 } from 'lucide-react';
+import { AlertTriangle, ArrowDown, ArrowUp, Pencil, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useId, useState } from 'react';
 import {
   Badge,
@@ -40,6 +40,7 @@ import {
   checkParameter,
   choiceSourcePatch,
   defaultOps,
+  elsewhereNote,
   idFromLabel,
   newParameter,
   type OptionInput,
@@ -98,6 +99,7 @@ export function ParametersPanel({
           key={editing.parameter.id}
           initial={editing.parameter}
           isNew={editing.isNew}
+          live={editing.isNew ? undefined : parameters.find((p) => p.id === editing.parameter.id)}
           dashboardId={dashboardId}
           others={parameters.filter((p) => editing.isNew || p.id !== editing.parameter.id)}
           onCancel={() => setEditing(null)}
@@ -235,6 +237,7 @@ function ParameterForm({
   dashboardId,
   initial,
   isNew,
+  live,
   others,
   onSave,
   onCancel,
@@ -242,6 +245,7 @@ function ParameterForm({
   dashboardId: string;
   initial: Parameter;
   isNew: boolean;
+  live: Parameter | undefined;
   others: readonly Parameter[];
   onSave: (parameter: Parameter) => void;
   onCancel: () => void;
@@ -253,6 +257,10 @@ function ParameterForm({
   );
   const taken = new Set(others.map((p) => p.id));
   const check = checkParameter(draft, others, isNew ? undefined : initial);
+  // `initial` is the declaration the save diffs against; `live` is what the document holds now.
+  const elsewhere = isNew
+    ? null
+    : elsewhereNote(initial, live, 'parameter' in check ? check.parameter : null);
   /** Merges a patch; undefined removes a field, as the save's updateParameter would. */
   const set = (patch: Record<string, unknown>) =>
     setDraft((d) => {
@@ -305,6 +313,7 @@ function ParameterForm({
           set={set}
           optionsDraft={optionsDraft}
           setOptionsDraft={setOptionsDraft}
+          initialOptions={initial.options ?? []}
         />
       ) : initial.type === 'text' ? (
         <>
@@ -334,13 +343,21 @@ function ParameterForm({
         <DateFields draft={draft} set={set} />
       )}
       {'error' in check ? <p className="text-xs text-bad">{check.error}</p> : null}
+      <div role="status">
+        {elsewhere ? (
+          <p className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
+            <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" aria-hidden="true" />
+            <span>{elsewhere.text}</span>
+          </p>
+        ) : null}
+      </div>
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
         <Button
           variant="primary"
-          disabled={'error' in check}
+          disabled={'error' in check || elsewhere?.blocksSave === true}
           onClick={() => {
             if ('parameter' in check) onSave(check.parameter);
           }}
@@ -358,12 +375,14 @@ function SelectFields({
   set,
   optionsDraft,
   setOptionsDraft,
+  initialOptions,
 }: {
   dashboardId: string;
   draft: Record<string, unknown>;
   set: (patch: Record<string, unknown>) => void;
   optionsDraft: string;
   setOptionsDraft: (text: string) => void;
+  initialOptions: readonly OptionInput[];
 }) {
   const options = (draft.options as OptionInput[] | undefined) ?? [];
   const all = typeof draft.all === 'string' ? draft.all : undefined;
@@ -383,7 +402,7 @@ function SelectFields({
         value={fromData ? 'data' : 'list'}
         onChange={(mode) => {
           if (mode === (fromData ? 'data' : 'list')) return;
-          set(choiceSourcePatch(mode, draft, optionsDraft, sources[0]?.id));
+          set(choiceSourcePatch(mode, draft, optionsDraft, sources[0]?.id, initialOptions));
         }}
         options={[
           { value: 'list', label: 'Fixed list' },
@@ -433,7 +452,10 @@ function SelectFields({
           </Field>
         </>
       ) : (
-        <Field label="Options" hint='One per line: a value, or "value | Label". Values appear in links.'>
+        <Field
+          label="Options"
+          hint='One per line: a value, or "value | Label". Write \| for a "|" inside one; a line break shows as ↵. Values appear in links.'
+        >
           {(fid) => (
             <Textarea
               id={fid}
@@ -442,7 +464,10 @@ function SelectFields({
               spellCheck={false}
               onChange={(e) => {
                 setOptionsDraft(e.target.value);
-                const next = { ...draft, options: parseOptions(e.target.value, options) };
+                const next = {
+                  ...draft,
+                  options: parseOptions(e.target.value, [...options, ...initialOptions]),
+                };
                 set({ options: next.options, ...reseatDefault(next, options) });
               }}
             />

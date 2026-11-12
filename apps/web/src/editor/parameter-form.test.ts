@@ -12,6 +12,7 @@ import {
   checkParameter,
   choiceSourcePatch,
   defaultOps,
+  elsewhereNote,
   idFromLabel,
   newParameter,
   optionsText,
@@ -274,5 +275,108 @@ describe('addFilterBlocker', () => {
     expect(addFilterBlocker(many(MAX_PARAMETERS))).toBe('A dashboard has at most 8 filters');
     expect(addFilterBlocker(many(MAX_PARAMETERS - 1))).toBeNull();
     expect(addFilterBlocker(undefined)).toBeNull();
+  });
+});
+
+describe('options with "|" or a line break', () => {
+  it('keeps a "|" in a value or label through the options text', () => {
+    const options = [
+      { value: 'a|b', label: 'A|B' },
+      { value: String.raw`x\|y` },
+      { value: '\\' },
+      { value: 'f\\', label: 'F' },
+      { value: 'eu', label: 'Europe | West' },
+    ];
+    const text = optionsText(options);
+    expect(text.split('\n')).toEqual([
+      String.raw`a\|b | A\|B`,
+      String.raw`x\\|y`,
+      '\\',
+      String.raw`f\ | F`,
+      String.raw`eu | Europe \| West`,
+    ]);
+    // Escaping alone carries them: no previous options needed.
+    expect(parseOptions(text)).toEqual(options);
+    expect(parseOptions(text, options)).toEqual(options);
+    expect(parseOptions(String.raw`a\|b | Label`)).toEqual([{ value: 'a|b', label: 'Label' }]);
+    // A label typed with bare bars reads as before: everything after the first one.
+    expect(parseOptions('eu | Europe | West')).toEqual([{ value: 'eu', label: 'Europe | West' }]);
+  });
+  it('keeps a line break in a value or label while its line is unchanged', () => {
+    const options = [{ value: 'a\nb', label: 'Line\r\none' }, { value: 'c' }];
+    expect(optionsText(options)).toBe('a↵b | Line↵one\nc');
+    expect(parseOptions(optionsText(options), options)).toEqual(options);
+    // Its label edited: the value stays as stored.
+    expect(parseOptions('a↵b | New\nc', options)).toEqual([{ value: 'a\nb', label: 'New' }, { value: 'c' }]);
+    // A new line typed with the mark saves what it shows.
+    expect(parseOptions('p↵q', [])).toEqual([{ value: 'p↵q' }]);
+    // Two values that show alike are refused as duplicates, never merged silently.
+    const alike = [{ value: 'a\nb' }, { value: 'a↵b' }];
+    const parsed = parseOptions(optionsText(alike), alike);
+    expect(checkParameter({ ...region, options: parsed }, [])).toEqual({
+      error: expect.stringContaining('appears twice'),
+    });
+  });
+  it('restores a line break and a number when a changed line is typed back to how it opened', () => {
+    const opened = [{ value: 'x\ny' }, { value: 2026 }];
+    const edited = parseOptions('x↵yz\n20261', opened);
+    expect(edited).toEqual([{ value: 'x↵yz' }, { value: '20261' }]);
+    // The textarea looks a line up in the draft's options and in the opened ones.
+    expect(parseOptions('x↵y\n2026', [...edited, ...opened])).toEqual(opened);
+    // Looking only in the draft, as before, loses both.
+    expect(parseOptions('x↵y\n2026', edited)).toEqual([{ value: 'x↵y' }, { value: '2026' }]);
+  });
+  it('keeps the opened options when the list is switched to a column and back', () => {
+    const options = [{ value: 'a|b' }, { value: 2026 }, { value: 'x\ny' }];
+    const { options: _o, ...dataDraft } = { ...region, ...choiceSourcePatch('data', region, '', 'sales') };
+    expect(choiceSourcePatch('list', dataDraft, optionsText(options), 'sales', options)).toEqual({
+      optionsFrom: undefined,
+      options,
+    });
+  });
+});
+
+describe('a filter changed elsewhere while its form is open', () => {
+  const agentOptions = [...region.options!, { value: 'apac', label: 'APAC' }];
+  const live = { ...region, options: agentOptions };
+
+  it('says nothing while the filter is as it was opened', () => {
+    expect(elsewhereNote(region, region, { ...region, label: 'Area' })).toBeNull();
+  });
+  it('blocks the save of a filter removed or replaced elsewhere', () => {
+    const removed = {
+      text: 'This filter was removed or replaced elsewhere since you opened it, so it cannot be saved.',
+      blocksSave: true,
+    };
+    expect(elsewhereNote(region, undefined, region)).toEqual(removed);
+    const text = ParameterSchema.parse({ id: 'region', label: 'Region', type: 'text' });
+    expect(elsewhereNote(region, text, region)).toEqual(removed);
+  });
+  it('says what saving replaces and what it keeps', () => {
+    expect(elsewhereNote(region, live, { ...region, label: 'Area' })).toEqual({
+      text: 'Changed elsewhere since you opened it (options); saving keeps those changes.',
+      blocksSave: false,
+    });
+    expect(elsewhereNote(region, live, { ...region, options: [{ value: 'eu' }] })).toEqual({
+      text: 'Changed elsewhere since you opened it; saving replaces: options.',
+      blocksSave: false,
+    });
+    // The same change made here and elsewhere replaces nothing.
+    expect(elsewhereNote(region, live, live)?.text).toBe(
+      'Changed elsewhere since you opened it (options); saving keeps those changes.',
+    );
+    expect(elsewhereNote(region, live, null)?.text).toBe('Changed elsewhere since you opened it: options.');
+    const { all: _all, ...noAll } = region;
+    expect(elsewhereNote(region, { ...noAll, label: 'Zone', default: 'eu' }, null)?.text).toBe(
+      'Changed elsewhere since you opened it: label, "All", default.',
+    );
+  });
+  it('keeps a change made only elsewhere when the form saves', () => {
+    const opened = applyOps(emptyDashboard('t'), [{ op: 'addParameter', parameter: region }]).doc;
+    const now = applyOps(opened, [
+      { op: 'updateParameter', id: 'region', set: { options: agentOptions } },
+    ]).doc;
+    const saved = applyOps(now, updateOps(region, { ...region, label: 'Area' })).doc;
+    expect(saved.parameters?.[0]).toMatchObject({ label: 'Area', options: agentOptions });
   });
 });

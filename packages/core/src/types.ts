@@ -66,12 +66,13 @@ export interface DatasetResult {
   trace?: PipelineResult['trace'];
   /** The dataset failed: no rows, or only what an earlier step kept. */
   error?: string;
-  /** The failure is this server's own limit, not the source: ask again after this many seconds. */
+  /** The failure is this server's load limit (busy, rate, budget), not the source: ask again after this many seconds. */
   retryAfterSec?: number;
   /**
-   * The error cannot pass by asking again: only an edit of the dashboard, a secret or a server setting fixes it. The
-   * page asks again only rarely (every 15 minutes), so a fix made while a wall screen stays open still shows up.
-   * Never set together with `retryAfterSec`; absent means it may pass.
+   * The error cannot pass by asking again: only an edit of the dashboard, a secret or a server setting fixes it, for
+   * example a result over the size cap or a weather city that does not exist (a source that changes may also fix it).
+   * The page asks again only rarely (every 15 minutes), so a fix made while a wall screen stays open still shows up. Never set together with `retryAfterSec`; absent means
+   * it may pass.
    */
   lasting?: true;
   /**

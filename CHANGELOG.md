@@ -42,6 +42,10 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   - a refused option names its value;
   - two suggestions no longer share a dataset id.
 - A read-only access token is no longer told that a dashboard may reach the server's private hosts.
+- The filter editor keeps an option whose value or label contains "|" (written `\|` in the options list) or a line
+  break (shown as ↵), instead of changing it when the list is edited.
+- The filter edit form says when the filter was changed elsewhere since the form opened (for example by an agent), and
+  which of those changes saving would replace. A filter removed or replaced meanwhile can no longer be saved over.
 
 ### Changed
 
@@ -50,6 +54,9 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 - `updateParameter` with an empty `set` is refused instead of saving a version that changes nothing.
 - A widget that does not refresh on its own now asks again every 15 minutes after the server refused its request (a
   dashboard made private or removed, a filter value no longer offered). Before, it never asked again until a reload.
+- A widget whose result is too large to send, or whose weather city does not exist, is now asked again every 15
+  minutes instead of every minute, like other errors only an edit can fix. A dataset with a regular refresh interval
+  keeps its interval, and a widget on a relative period still asks again when its window ends.
 
 ## [0.3.3] - 2026-11-11
 

@@ -7,8 +7,9 @@ export class HttpError extends Error {
   readonly details: unknown;
   /**
    * An error that only an edit, a secret or a server setting can fix. In-band results carry it so the page asks only
-   * rarely (DatasetResult.lasting); a refusal of this server's own limits is never lasting in a result. The one
-   * exception is RenderFailedError, which uses the flag only for the snapshot cache and never reaches a result.
+   * rarely (DatasetResult.lasting). A refusal of this server's load limits (busy, rate, budget) is never lasting in a
+   * result; the result size cap is (result-wire.ts `tooLargeResult`): a result over it stays over until it is edited or its source shrinks.
+   * RenderFailedError uses the flag only for the snapshot cache and never reaches a result.
    */
   readonly lasting: boolean;
   constructor(
@@ -40,7 +41,10 @@ export const notFound = (what = 'Not found') => new HttpError(404, what);
 export const forbidden = (why = 'Forbidden') => new HttpError(403, why);
 export const unauthorized = (why = 'Sign in required') => new HttpError(401, why);
 export const badRequest = (why: string, details?: unknown) => new HttpError(400, why, details);
-/** See `HttpError.lasting`. Only answers that asking again cannot change: never an upstream's answer. */
+/**
+ * See `HttpError.lasting`. Only answers that asking again cannot change: never an upstream's failure. The one upstream
+ * answer marked is a geocoder's "no such place" for a city the dashboard names (connectors/weather.ts).
+ */
 export const lastingError = (status: ContentfulStatusCode, message: string) =>
   new HttpError(status, message, undefined, { lasting: true });
 

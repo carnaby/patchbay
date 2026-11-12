@@ -1,5 +1,5 @@
 import { type DataTable, inferTable } from '@patchbay/core';
-import { HttpError } from '../util/errors.ts';
+import { lastingError } from '../util/errors.ts';
 import {
   type Connector,
   type ConnectorContext,
@@ -56,7 +56,8 @@ async function resolveLocation(params: Params, ctx: ConnectorContext): Promise<P
     `https://geocoding-api.open-meteo.com/v1/search?count=1&language=en&format=json&name=${encodeURIComponent(city)}`,
   );
   const hit = res.results?.[0];
-  if (!hit) throw new HttpError(400, `Unknown city "${city}"`);
+  // The geocoder knows no such place: only another city in the dashboard (or its filter) fixes it.
+  if (!hit) throw lastingError(400, `Unknown city "${city}"`);
   geocodeCache.set(key, hit);
   if (geocodeCache.size > GEOCODE_CACHE_MAX) geocodeCache.delete(geocodeCache.keys().next().value!);
   return { city: hit.name, latitude: hit.latitude, longitude: hit.longitude };
