@@ -11,6 +11,7 @@ import { now } from './db.ts';
 import { DashboardService, type Principal } from './services/dashboards.ts';
 import { buildTemplate } from './services/templates.ts';
 import type { UseCase } from './showcase/load.ts';
+import { type SourceRequest, sourceTrustKey } from './showcase/trust.ts';
 import type { StoredMeta } from './store/folder-store.ts';
 
 // Counts the requests an http source would send upstream; feeds use another function and stay real.
@@ -105,10 +106,28 @@ const setSource = (url: string) => ({
   id: 'news',
   set: { source: { kind: 'feed', url, limit: 30 } },
 });
+const trusted = (...requests: SourceRequest[]) => new Set(requests.map(sourceTrustKey));
+const GQL = 'https://gitlab.example/api/graphql';
+const QUERY = { query: '{ project(fullPath: "a/b") { name } }' };
+const postDataset = (body: unknown) => ({
+  id: 'gql',
+  name: 'GraphQL',
+  refreshSec: 300,
+  transforms: [],
+  source: { kind: 'http', url: GQL, method: 'POST', body },
+});
+const setPostBody = (body: unknown) => ({
+  op: 'updateDataset',
+  id: 'gql',
+  set: { source: { kind: 'http', url: GQL, method: 'POST', body } },
+});
 
 describe('trusted showcase URLs', () => {
   it('lets an anonymous dashboard add exactly a trusted URL and nothing else', async () => {
-    const svc = makeService({ urlSources: 'signed-in', trustedUrls: new Set([FEED]) });
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: FEED, method: 'GET' }),
+    });
     const { envelope, editKey } = await svc.create(anonymous(), {});
     const p = anonymous(editKey);
     const id = envelope.meta.id;
@@ -121,7 +140,10 @@ describe('trusted showcase URLs', () => {
   });
 
   it('allows fetching a trusted URL for an anonymous target and refuses any other', () => {
-    const svc = makeService({ urlSources: 'signed-in', trustedUrls: new Set([FEED]) });
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: FEED, method: 'GET' }),
+    });
     const target = { id: 'abcdef123456', ownerId: null };
     expect(() => svc.assertMayFetchUrl(target, FEED)).not.toThrow();
     expect(() => svc.assertMayFetchUrl(target, `${FEED}?x=1`)).toThrow();
@@ -129,7 +151,10 @@ describe('trusted showcase URLs', () => {
 
   it('trusts a showcase URL for GET only: a POST to it is refused when saved and when fetched', async () => {
     const API_URL = 'https://api.example.com/v1/trusted';
-    const svc = makeService({ urlSources: 'signed-in', trustedUrls: new Set([API_URL]) });
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: API_URL, method: 'GET' }),
+    });
     const { envelope, editKey } = await svc.create(anonymous(), {});
     const p = anonymous(editKey);
     const id = envelope.meta.id;
@@ -155,8 +180,69 @@ describe('trusted showcase URLs', () => {
     expect(() => svc.assertMayFetchUrl(target, API_URL, 'POST')).toThrow(/sign/i);
   });
 
+  it('trusts the exact showcase POST: same address and body, when saved and when fetched', async () => {
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: GQL, method: 'POST', body: QUERY }),
+    });
+    const { envelope, editKey } = await svc.create(anonymous(), {});
+    await expect(
+      svc.applyOps(envelope.meta.id, anonymous(editKey), [{ op: 'addDataset', dataset: postDataset(QUERY) }]),
+    ).resolves.toBeDefined();
+    const target = { id: 'abcdef123456', ownerId: null };
+    expect(() => svc.assertMayFetchUrl(target, GQL, 'POST', QUERY)).not.toThrow();
+    expect(() => svc.assertMayFetchUrl(target, GQL, 'POST', JSON.parse(JSON.stringify(QUERY)))).not.toThrow();
+  });
+
+  it('refuses a POST whose body differs in any way, and the trusted address with another method', async () => {
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: GQL, method: 'POST', body: { a: 1, b: 2 } }),
+    });
+    const { envelope, editKey } = await svc.create(anonymous(), {});
+    const id = envelope.meta.id;
+    const p = anonymous(editKey);
+    await svc.applyOps(id, p, [{ op: 'addDataset', dataset: postDataset({ a: 1, b: 2 }) }]);
+    const target = { id: 'abcdef123456', ownerId: null };
+    for (const body of [{ b: 2, a: 1 }, { a: 1, b: 2, c: 3 }, { a: 1, b: '2' }, { a: 1 }]) {
+      await expect(svc.applyOps(id, p, [setPostBody(body)])).rejects.toThrow(/sign/i);
+      expect(() => svc.assertMayFetchUrl(target, GQL, 'POST', body)).toThrow(/sign/i);
+    }
+    expect(() => svc.assertMayFetchUrl(target, GQL, 'POST')).toThrow(/sign/i);
+    expect(() => svc.assertMayFetchUrl(target, GQL)).toThrow(/sign/i);
+    expect(() => svc.assertMayFetchUrl(target, `${GQL}?x=1`, 'POST', { a: 1, b: 2 })).toThrow(/sign/i);
+  });
+
+  it('refuses a body with a filter reference even when it would bind to the trusted text', async () => {
+    // A short query, so the filter's option value is valid and the only refusal left is the URL_SOURCES one.
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: GQL, method: 'POST', body: { query: '{ a }' } }),
+    });
+    const { envelope, editKey } = await svc.create(anonymous(), {});
+    const p = anonymous(editKey);
+    await expect(
+      svc.applyOps(envelope.meta.id, p, [
+        {
+          op: 'addParameter',
+          parameter: {
+            id: 'q',
+            label: 'Query',
+            type: 'select',
+            options: [{ value: '{ a }' }],
+            default: '{ a }',
+          },
+        },
+        { op: 'addDataset', dataset: postDataset({ query: '$param.q' }) },
+      ]),
+    ).rejects.toThrow(/sign/i);
+  });
+
   it('leaves signed-in owners and URL_SOURCES=everyone unaffected', async () => {
-    const strict = makeService({ urlSources: 'signed-in', trustedUrls: new Set([FEED]) });
+    const strict = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: FEED, method: 'GET' }),
+    });
     const owner = signedIn('owner@example.com');
     const { envelope } = await strict.create(owner, {});
     await expect(
@@ -625,5 +711,87 @@ describe('trusted URLs through the whole app', () => {
     expect(get.status).toBe(200);
     expect(((await get.json()) as { error?: string }).error).toBeUndefined();
     expect(upstreamJson).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a trusted showcase POST through the whole app', () => {
+  let postDir: string;
+  let postDeps: Deps;
+  let postApp: ReturnType<typeof createApp>;
+
+  beforeAll(async () => {
+    postDir = mkdtempSync(join(tmpdir(), 'patchbay-showcase-post-'));
+    const base = join(postDir, 'showcase', 'graph-demo');
+    mkdirSync(base, { recursive: true });
+    writeFileSync(
+      join(base, 'meta.json'),
+      JSON.stringify({ id: 'graph-demo', order: 1, title: 'Graph', tab: 'Graph', description: 'GraphQL.' }),
+    );
+    writeFileSync(join(base, 'prompt.md'), 'Build a GraphQL board');
+    writeFileSync(
+      join(base, 'dashboard.json'),
+      JSON.stringify({ ...buildTemplate('blank'), datasets: [postDataset(QUERY)] }),
+    );
+    postDeps = await createDeps(
+      loadConfig({
+        NODE_ENV: 'test',
+        DATA_DIR: join(postDir, 'data'),
+        OFFLINE: '1',
+        URL_SOURCES: 'signed-in',
+        PUBLIC_URL: 'http://localhost:8787',
+        SHOWCASE_DIR: join(postDir, 'showcase'),
+        PIPELINE_WORKERS: '0',
+      }),
+    );
+    await syncShowcaseUseCases(postDeps);
+    postApp = createApp(postDeps);
+  });
+
+  afterAll(async () => {
+    postDeps.hub.close();
+    await postDeps.pipeline.close();
+    postDeps.db.close();
+    rmSync(postDir, { recursive: true, force: true });
+  });
+
+  it('lets an anonymous copy load the showcase POST and refuses a copy that changes its body', async () => {
+    const copy = await postDeps.dashboards.duplicate('scgraphdemo', anonymous());
+    const id = copy.envelope.meta.id;
+    const key = { 'x-edit-key': copy.editKey! };
+    upstreamJson.mockClear();
+    const ok = await postApp.request(`/api/dashboards/${id}/data/gql`, { headers: key });
+    const body = (await ok.json()) as { error?: string; table: { rows: unknown[] } };
+    expect(body.error).toBeUndefined();
+    expect(body.table.rows.length).toBeGreaterThan(0);
+    expect(upstreamJson).toHaveBeenCalledWith(GQL, expect.objectContaining({ method: 'POST', body: QUERY }));
+
+    const changed = await postApp.request(`/api/dashboards/${id}/ops`, {
+      method: 'POST',
+      headers: { ...key, 'content-type': 'application/json' },
+      body: JSON.stringify({ ops: [setPostBody({ query: '{ currentUser { username } }' })] }),
+    });
+    expect(changed.status).toBe(400);
+  });
+
+  it('previews the exact showcase POST for an anonymous copy and refuses any other body unsent', async () => {
+    const copy = await postDeps.dashboards.duplicate('scgraphdemo', anonymous());
+    const preview = (dataset: object) =>
+      postApp.request(`/api/dashboards/${copy.envelope.meta.id}/preview`, {
+        method: 'POST',
+        headers: { 'x-edit-key': copy.editKey!, 'content-type': 'application/json' },
+        body: JSON.stringify({ dataset }),
+      });
+    upstreamJson.mockClear();
+    const other = await preview({
+      source: { kind: 'http', url: GQL, method: 'POST', body: { query: '{ x }' } },
+    });
+    expect(JSON.stringify(await other.json())).toMatch(/Sign in/);
+    expect(upstreamJson).not.toHaveBeenCalled();
+    const same = await preview({ source: { kind: 'http', url: GQL, method: 'POST', body: QUERY } });
+    expect(same.status).toBe(200);
+    // The preview answers { result, profile, suggestions }: a refusal would be result.error.
+    const { result } = (await same.json()) as { result: { error?: string; table: { rows: unknown[] } } };
+    expect(result.error).toBeUndefined();
+    expect(result.table.rows.length).toBeGreaterThan(0);
   });
 });

@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { LIMITS } from '@patchbay/core';
 import { afterAll, describe, expect, it } from 'vitest';
 import { buildTemplate } from '../services/templates.ts';
-import { loadUseCases, MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES, trustedSourceUrls } from './load.ts';
+import { loadUseCases, MAX_ATTACHMENT_BYTES, MAX_VIDEO_BYTES, trustedSourceKeys } from './load.ts';
+import { sourceTrustKey } from './trust.ts';
 
 function useCase(root: string, slug: string, files: Record<string, string | Buffer>) {
   const dir = join(root, slug);
@@ -217,7 +218,7 @@ describe('loadUseCases', () => {
     expect(loadUseCases(join(tmpdir(), 'pb-does-not-exist-xyz'), () => {})).toEqual([]);
   });
 
-  it('collects the exact http and feed URLs as trusted sources', () => {
+  it('collects each source by its exact request: GET and feed URLs, and a POST with its body', () => {
     const root = tempRoot();
     const datasets = [
       {
@@ -234,14 +235,32 @@ describe('loadUseCases', () => {
         transforms: [],
         source: { kind: 'http', url: 'https://api.example.org/v1?x=1' },
       },
+      {
+        id: 'gql',
+        name: 'GraphQL',
+        refreshSec: 300,
+        transforms: [],
+        source: {
+          kind: 'http',
+          url: 'https://api.example.org/graphql',
+          method: 'POST',
+          body: { query: '{ a }' },
+        },
+      },
     ];
     useCase(root, 'urls', {
       'meta.json': meta('urls'),
       'prompt.md': 'x',
       'dashboard.json': doc({ datasets }),
     });
-    const urls = trustedSourceUrls(loadUseCases(root, () => {}));
-    expect([...urls].sort()).toEqual(['https://api.example.org/v1?x=1', 'https://example.org/rss']);
+    const keys = trustedSourceKeys(loadUseCases(root, () => {}));
+    expect([...keys].sort()).toEqual(
+      [
+        sourceTrustKey({ url: 'https://api.example.org/graphql', method: 'POST', body: { query: '{ a }' } }),
+        sourceTrustKey({ url: 'https://api.example.org/v1?x=1', method: 'GET' }),
+        sourceTrustKey({ url: 'https://example.org/rss', method: 'GET' }),
+      ].sort(),
+    );
   });
 
   const ds = (source: object) => [{ id: 'd', name: 'D', refreshSec: 60, transforms: [], source }];

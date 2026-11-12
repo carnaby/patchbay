@@ -12,6 +12,7 @@ import {
   useCaseDashboardId,
 } from '@patchbay/core';
 import { documentBytes, MAX_DOCUMENT_BYTES } from '../services/dashboards.ts';
+import { sourceTrustKey } from './trust.ts';
 
 /** The landing page loads these over the visitor's connection; the limits keep the repo and the image small too. */
 export const MAX_VIDEO_BYTES = 5 * 1024 * 1024;
@@ -108,8 +109,8 @@ function assertPortable(doc: DashboardDoc) {
     );
   if (secrets.length)
     throw new Error('dashboard.json references a stored secret; a showcase cannot hold credentials');
-  // Anonymous copies are trusted to load the showcase's exact URLs (trustedSourceUrls); a bound URL never matches its
-  // template, and trusting the template would let a copy's holder fetch any value on that path.
+  // Anonymous copies are trusted to send the showcase's exact requests (trustedSourceKeys); a bound URL never matches
+  // its template, and trusting the template would let a copy's holder fetch any value on that path.
   const bound = doc.datasets.filter(
     (d) =>
       (d.source.kind === 'http' || d.source.kind === 'feed') &&
@@ -177,13 +178,24 @@ export function loadUseCases(dir: string, warn: (message: string) => void = cons
 }
 
 /**
- * The URLs of the showcase's own sources. They come from files in the repository, so URL_SOURCES=signed-in may let
- * anonymous copies of a use case keep loading them; matching is exact, never by prefix.
+ * The requests of the showcase's own sources. They come from files in the repository, so URL_SOURCES=signed-in may let
+ * anonymous copies of a use case keep sending them; matching is exact (sourceTrustKey), never by prefix. Unfeatured use
+ * cases count too: their copies must keep working.
  */
-export function trustedSourceUrls(useCases: readonly UseCase[]): Set<string> {
-  const urls = new Set<string>();
+export function trustedSourceKeys(useCases: readonly UseCase[]): Set<string> {
+  const keys = new Set<string>();
   for (const u of useCases)
-    for (const d of u.doc.datasets)
-      if (d.source.kind === 'http' || d.source.kind === 'feed') urls.add(d.source.url);
-  return urls;
+    for (const d of u.doc.datasets) {
+      const s = d.source;
+      if (s.kind === 'feed') keys.add(sourceTrustKey({ url: s.url, method: 'GET' }));
+      else if (s.kind === 'http')
+        keys.add(
+          sourceTrustKey(
+            s.method === 'POST'
+              ? { url: s.url, method: 'POST', body: s.body }
+              : { url: s.url, method: 'GET' },
+          ),
+        );
+    }
+  return keys;
 }

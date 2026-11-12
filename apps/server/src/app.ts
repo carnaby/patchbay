@@ -23,7 +23,7 @@ import { DashboardService } from './services/dashboards.ts';
 import { DataService } from './services/data.ts';
 import { defaultPoolSize, InlineRunner, type PipelineRunner, WorkerPool } from './services/pipeline-pool.ts';
 import { ResultWire } from './services/result-wire.ts';
-import { loadUseCases, trustedSourceUrls } from './showcase/load.ts';
+import { loadUseCases, trustedSourceKeys } from './showcase/load.ts';
 import { DashboardIndex } from './store/dashboard-index.ts';
 import { FolderStore } from './store/folder-store.ts';
 import { HttpError, RetryLaterError, toHttpError } from './util/errors.ts';
@@ -96,7 +96,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
   const data = new DataService(connectors, store, pipeline, {
     outbound,
     credentials: (target, dataset) => dashboards!.credentialsFor(target, dataset),
-    urlPolicy: (target, url, method) => dashboards!.assertMayFetchUrl(target, url, method),
+    urlPolicy: (target, url, method, body) => dashboards!.assertMayFetchUrl(target, url, method, body),
     offline: config.offline,
     cacheBytes: config.dataCacheBytes,
     maxSourceCells: config.uploadMaxCells,
@@ -124,7 +124,7 @@ export async function createDeps(config: Config, overrides: DepsOverrides = {}):
       urlSources: config.urlSources,
       anonymousStorageBytes: config.anonymousStorageBytes,
       userStorageBytes: config.userStorageBytes,
-      trustedUrls: trustedSourceUrls(useCases),
+      trustedSources: trustedSourceKeys(useCases),
       privateHosts: config.privateHosts,
       privateHostsFor: config.privateHostsFor,
     },

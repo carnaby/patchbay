@@ -61,6 +61,7 @@ import { unknownConnectorMessage } from '../connectors/registry.ts';
 import { now } from '../db.ts';
 import type { LiveHub } from '../live/hub.ts';
 import type { UseCase } from '../showcase/load.ts';
+import { type SourceRequest, sourceTrustKey } from '../showcase/trust.ts';
 import type { DashboardIndex } from '../store/dashboard-index.ts';
 import type { FolderStore, StoredMeta } from '../store/folder-store.ts';
 import { newDashboardId, newId, randomToken, safeEqual, sha256 } from '../util/crypto.ts';
@@ -386,8 +387,8 @@ export interface DashboardServiceOptions {
   uploadMaxCells?: number;
   uploadMaxCellsAnonymous?: number;
   urlSources?: UrlSourcesMode;
-  /** Exact source URLs from the repository's showcase; URL_SOURCES=signed-in lets these through. */
-  trustedUrls?: ReadonlySet<string>;
+  /** Keys (showcase/trust.ts) of the repository showcase's own requests; URL_SOURCES=signed-in lets these through. */
+  trustedSources?: ReadonlySet<string>;
   /** ALLOW_PRIVATE_HOSTS, parsed; null when the operator listed none. */
   privateHosts?: PrivateHosts | null;
   /** PRIVATE_HOSTS_FOR: whose dashboards may use them. */
@@ -426,7 +427,7 @@ export class DashboardService {
   private readonly uploadMaxCells: number;
   private readonly uploadMaxCellsAnonymous: number;
   private readonly urlSources: UrlSourcesMode;
-  private readonly trustedUrls: ReadonlySet<string>;
+  private readonly trustedSources: ReadonlySet<string>;
   private readonly privateHosts: PrivateHosts | null;
   private readonly privateHostsMode: PrivateHostsFor;
   private readonly uploadGate: Gate;
@@ -448,7 +449,7 @@ export class DashboardService {
     this.uploadMaxCells = options.uploadMaxCells ?? DEFAULT_UPLOAD_MAX_CELLS;
     this.uploadMaxCellsAnonymous = options.uploadMaxCellsAnonymous ?? DEFAULT_UPLOAD_MAX_CELLS_ANONYMOUS;
     this.urlSources = options.urlSources ?? 'everyone';
-    this.trustedUrls = options.trustedUrls ?? new Set();
+    this.trustedSources = options.trustedSources ?? new Set();
     this.privateHosts = options.privateHosts ?? null;
     this.privateHostsMode = options.privateHostsFor ?? 'admins';
     this.uploadGate = options.uploadGate ?? newUploadGate();
@@ -609,13 +610,22 @@ export class DashboardService {
    * With URL_SOURCES=signed-in, a URL is fetched only for a dashboard that a signed-in user owns: a public instance
    * on its operator's connection must not fetch arbitrary addresses for strangers. Checked at use time (DataService
    * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
-   * exception is a GET of a URL that appears verbatim in the repository's showcase, so anonymous copies of a use case
-   * work (`isTrustedSource`). Returns the private hosts the dashboard's sources may reach (null: public addresses
-   * only), decided by its owner, never by the viewer. Its refusals are lasting: only the owner or the operator can
-   * change them.
+   * exception is a request that the repository's showcase sends itself: a GET of one of its URLs or one of its POSTs
+   * with exactly the same body (`isTrustedSource`), so anonymous copies of a use case work. Returns the private hosts
+   * the dashboard's sources may reach (null: public addresses only), decided by its owner, never by the viewer. Its
+   * refusals are lasting: only the owner or the operator can change them.
    */
-  assertMayFetchUrl(target: DashboardTarget, url: string, method: HttpMethod = 'GET'): PrivateHosts | null {
-    if (this.urlSources === 'signed-in' && target.ownerId === null && !this.isTrustedSource(url, method))
+  assertMayFetchUrl(
+    target: DashboardTarget,
+    url: string,
+    method: HttpMethod = 'GET',
+    body?: unknown,
+  ): PrivateHosts | null {
+    if (
+      this.urlSources === 'signed-in' &&
+      target.ownerId === null &&
+      !this.isTrustedSource({ url, method, body })
+    )
       throw lastingError(403, URL_SOURCES_SIGNED_IN);
     const hosts = target.publicOnly ? null : this.privateHostsFor(target.ownerId);
     // Without this, the dashboard would get the public instance's answer, which tells it to ask the operator.
@@ -625,12 +635,13 @@ export class DashboardService {
   }
 
   /**
-   * A source an anonymous dashboard may use under URL_SOURCES=signed-in: a GET of a showcase URL, matched exactly
-   * (no normalising, so a variant is refused). The showcase's sources are all GETs; trusting a POST to the same
-   * address would let a stranger send any body there on the operator's connection.
+   * A request an anonymous dashboard may send under URL_SOURCES=signed-in: one the repository's showcase sends itself,
+   * matched exactly (sourceTrustKey: no normalising, so a variant is refused). A POST is trusted only with the
+   * showcase's own body, so a stranger can repeat the showcase's query on the operator's connection but never send
+   * another.
    */
-  private isTrustedSource(url: string, method: HttpMethod): boolean {
-    return method === 'GET' && this.trustedUrls.has(url);
+  private isTrustedSource(request: SourceRequest): boolean {
+    return this.trustedSources.has(sourceTrustKey(request));
   }
 
   /**
@@ -693,8 +704,10 @@ export class DashboardService {
         ? [
             {
               id: d.id,
-              url: d.source.url,
-              method: d.source.kind === 'http' ? (d.source.method ?? 'GET') : 'GET',
+              request:
+                d.source.kind === 'http' && d.source.method === 'POST'
+                  ? { url: d.source.url, method: 'POST' as const, body: d.source.body }
+                  : { url: d.source.url, method: 'GET' as const },
             },
           ]
         : [],
@@ -702,10 +715,10 @@ export class DashboardService {
     if (
       this.urlSources === 'signed-in' &&
       ownerId === null &&
-      changed.some((s) => !this.isTrustedSource(s.url, s.method))
+      changed.some((s) => !this.isTrustedSource(s.request))
     )
       throw badRequest(URL_SOURCES_SIGNED_IN);
-    if (!options.restore) for (const s of changed) this.checkPrivateHosts(ownerId, s.id, s.url);
+    if (!options.restore) for (const s of changed) this.checkPrivateHosts(ownerId, s.id, s.request.url);
   }
 
   /**

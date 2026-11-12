@@ -149,10 +149,15 @@ export interface DataServiceOptions {
   /**
    * Called before every http or feed load: throws when this instance does not fetch the URL for the dashboard,
    * otherwise returns the private hosts (ALLOW_PRIVATE_HOSTS) its sources may reach, or null for public addresses
-   * only. DashboardService decides, by the dashboard's owner. http sources pass their method (a trusted showcase
-   * URL is trusted for GET only); feeds pass none.
+   * only. DashboardService decides, by the dashboard's owner. http sources pass their method and, for a POST, their
+   * body (a trusted showcase request is matched with both); feeds pass neither.
    */
-  urlPolicy?: (target: DashboardTarget, url: string, method?: HttpMethod) => PrivateHosts | null;
+  urlPolicy?: (
+    target: DashboardTarget,
+    url: string,
+    method?: HttpMethod,
+    body?: unknown,
+  ) => PrivateHosts | null;
   /** OFFLINE=1: feeds return their deterministic sample instead of fetching. */
   offline?: boolean;
   /** Memory for parsed tables (uploads, inline rows, HTTP responses), in bytes. */
@@ -248,6 +253,7 @@ export class DataService {
     target: DashboardTarget,
     url: string,
     method?: HttpMethod,
+    body?: unknown,
   ) => PrivateHosts | null;
   private readonly upstreamTest: UpstreamTestSeam | undefined;
   private readonly feeds: FeedService;
@@ -500,13 +506,15 @@ export class DataService {
         return this.loadInline(source.rows);
       case 'upload':
         return this.loadUpload(target, source.fileId);
-      case 'http':
+      case 'http': {
+        const method = source.method ?? 'GET';
         return this.loadHttp(
           target,
           dataset,
           source,
-          this.urlPolicy(target, source.url, source.method ?? 'GET'),
+          this.urlPolicy(target, source.url, method, method === 'POST' ? source.body : undefined),
         );
+      }
       case 'feed': {
         const feed = await this.feeds.load(source.url, this.urlPolicy(target, source.url));
         const rows = feed.table.rows.slice(0, source.limit);

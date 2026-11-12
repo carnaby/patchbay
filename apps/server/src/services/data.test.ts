@@ -394,6 +394,18 @@ describe('http sources', () => {
     expect(fetchMock.mock.calls[1]![1]).not.toHaveProperty('privateHosts');
   });
 
+  it('hands the policy the method and body of a POST, and no body for a GET', async () => {
+    const policy = vi.fn(() => null);
+    fetchMock.mockResolvedValue([{ ok: 1 }]);
+    const data = new DataService(connectors, store, new InlineRunner(), { urlPolicy: policy });
+    await data.resolve(target, post('https://api.example/q', { q: 'a' }));
+    await data.resolve(target, http('https://api.example/g'));
+    expect(policy.mock.calls.map((c) => c.slice(1))).toEqual([
+      ['https://api.example/q', 'POST', { q: 'a' }],
+      ['https://api.example/g', 'GET', undefined],
+    ]);
+  });
+
   it('does not share a concurrent fetch between a dashboard with the private hosts and one without', async () => {
     const lan = parsePrivateHosts('192.168.1.0/24')!;
     const policy = (t: { ownerId: string | null }) => (t.ownerId === 'admin' ? lan : null);
