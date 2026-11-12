@@ -158,7 +158,8 @@ export const npmDownloads: Connector = {
     id: 'npm.downloads',
     name: 'npm downloads',
     category: 'Tech',
-    description: 'Daily download counts of npm packages (long table: day, package, downloads).',
+    description:
+      'Daily download counts of npm packages (long table: day, package, downloads). Days npm has no counts for are empty, not 0.',
     params: [
       {
         name: 'packages',
@@ -191,16 +192,23 @@ export const npmDownloads: Connector = {
       .map((p) => p.trim())
       .filter(Boolean)
       .slice(0, 8);
-    const results = await Promise.all(
-      pkgs.map((p) =>
-        ctx
-          .fetchJson<{ downloads: { day: string; downloads: number }[] }>(
-            `https://api.npmjs.org/downloads/range/${params.period ?? 'last-month'}/${encodeURIComponent(p)}`,
-          )
-          .then((j) => j.downloads.map((d) => ({ day: d.day, package: p, downloads: d.downloads }))),
+    const period = params.period ?? 'last-month';
+    type Range = { downloads: { day: string; downloads: number }[] };
+    const base = `https://api.npmjs.org/downloads/range/${period}`;
+    const [total, results] = await Promise.all([
+      // A failed total only costs the gap detection; the packages' numbers are still returned.
+      ctx.fetchJson<Range>(base).catch(() => null),
+      Promise.all(
+        pkgs.map((p) => ctx.fetchJson<Range>(`${base}/${encodeURIComponent(p)}`).then((j) => ({ p, j }))),
       ),
+    ]);
+    // npm answers 0 for every package on days its counting lost. The registry's own total is 0 on exactly those
+    // days, which real traffic never is; a package's 0 alone may be real, so only the total marks a lost day.
+    const lost = new Set(total?.downloads.filter((d) => d.downloads === 0).map((d) => d.day));
+    const rows = results.flatMap(({ p, j }) =>
+      j.downloads.map((d) => ({ day: d.day, package: p, downloads: lost.has(d.day) ? null : d.downloads })),
     );
-    return inferTable(results.flat());
+    return inferTable(rows);
   },
   sample(params) {
     const pkgs = String(params.packages ?? 'react')

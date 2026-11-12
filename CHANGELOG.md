@@ -44,6 +44,9 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   GraphQL query into several datasets sent it several times at once and lost the requests over the per-host limit.
   A copy of a showcase can no longer send the trusted query again by varying only `path`: the `path` is now part
   of what a copy may not change (and, while one is loading, datasets that differ only in it share one request).
+- The npm downloads connector reads the days npm has no counts for as empty instead of 0. On those days npm reports 0
+  for every package (eight days in September and October 2026), which pulled averages and minimums down and drew dips
+  to zero; charts now show a gap. A small package's real 0 stays 0.
 
 ## [0.3.4] - 2026-11-12
 
