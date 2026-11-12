@@ -147,7 +147,7 @@ Hex keeps working, so older documents and brand colours stay valid, but it does 
 Unmapped series keep the automatic order on the palette slots the map left free, so a mapped colour never appears on
 a second entity. `setMeta { colors }` sets the same kind of map for the whole dashboard; a widget's own map wins. Pie
 and donut slices take their colour from their label, so they keep it when their sizes change. The array form of
-`colors` still works and keeps its old meaning: a palette used in series order.
+`colors` still works and keeps its old meaning: a palette used in series order. A KPI's sparkline takes the colour of the entity a select filter narrows its data to (when that value has a dashboard colour); with nothing in focus on a dashboard with entity colours it is neutral grey, since a total is no entity.
 
 `apply_operations` adds `warnings` (the batch is still saved) for the widgets it touched, and for the dashboard map
 when it changed:

@@ -1182,4 +1182,44 @@ describe('cross-filter in snapshots', () => {
     expect(inkOf({ month: 'Feb' })).toBeLessThan(full * 0.6);
     expect(inkOf({ month: 'Zzz' })).toBe(full);
   });
+
+  it('draws a KPI sparkline in the colour of the package its data is filtered to', () => {
+    const doc = parseDashboard({
+      ...emptyDashboard('Downloads'),
+      colors: { ai: 'accent-2', mcp: 'accent-1' },
+      parameters: [
+        {
+          id: 'pkg',
+          label: 'Package',
+          type: 'select',
+          options: [{ value: 'ai' }, { value: 'mcp' }],
+          all: 'All',
+          default: null,
+        },
+      ],
+      datasets: [
+        {
+          id: 'd',
+          name: 'D',
+          source: { kind: 'inline', rows: [] },
+          transforms: [{ type: 'filter', expr: '$param.pkg == null || package == $param.pkg' }],
+        },
+      ],
+      widgets: [{ id: 'k', type: 'kpi', datasetId: 'd', config: { field: 'n', sparkline: true } }],
+      layout: [{ i: 'k', x: 0, y: 0, w: 6, h: 3 }],
+    });
+    const rows = [3, 5, 4, 6, 8].map((n, i) => ({ day: `2026-11-0${i + 1}`, package: 'ai', n }));
+    const results = new Map([['d', { ...result, datasetId: 'd', table: inferTable(rows) }]]);
+    const light = THEMES.light;
+    const draw = (pkg: string | null) => decodePng(renderDashboardPng(doc, results, { parameters: { pkg } }));
+
+    const focused = draw('ai');
+    expect(pixelsOf(focused, light.categorical[1]!)).toBeGreaterThan(100);
+    expect(pixelsOf(focused, light.categorical[0]!)).toBe(0);
+    // The total of all packages is no package: neutral ink, and not the colour that belongs to mcp.
+    const all = draw(null);
+    expect(pixelsOf(all, light.muted)).toBeGreaterThan(100);
+    expect(pixelsOf(all, light.categorical[0]!)).toBe(0);
+    expect(pixelsOf(all, light.categorical[1]!)).toBe(0);
+  });
 });

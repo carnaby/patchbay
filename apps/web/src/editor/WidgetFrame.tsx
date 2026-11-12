@@ -4,12 +4,15 @@ import {
   crossFilterOf,
   crossFilterSelection,
   effectiveRefreshSec,
+  focusedEntity,
   isDataWidgetType,
   readParameterValues,
   type Scalar,
   type SoundRule,
   soundRuleMissingColumns,
   sourceSecretIds,
+  sparklineColor,
+  THEMES,
   type Widget,
   widgetAttributions,
 } from '@patchbay/core';
@@ -33,7 +36,7 @@ import {
 } from 'lucide-react';
 import { memo, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { cx, IconButton, Menu, MenuItem, MenuSeparator, toast } from '../components/ui.tsx';
-import { relativeTime, useAttributions, useSecretsStatus } from '../lib/hooks.ts';
+import { relativeTime, useAttributions, useSecretsStatus, useTheme } from '../lib/hooks.ts';
 import { credentialErrorHint } from '../lib/secrets.ts';
 import { SOUND_LABELS, useSoundSettings } from '../lib/sounds.ts';
 import { crossFilterClick } from '../state/cross-filter.ts';
@@ -90,17 +93,34 @@ export const WidgetFrame = memo(function WidgetFrame({
   const parameters = useEditor((s) => s.doc?.parameters);
   const raw = useParameters((s) => s.raw);
   // What the widget's filter selects now, also while presenting: a pinned view shows which item it is about.
-  const selection = useMemo(() => {
-    if (!crossFilterOf(widget)) return null;
-    const { values } = readParameterValues(
-      parameters,
-      (id) => (Object.hasOwn(raw, id) ? raw[id] : undefined),
-      Date.now(),
-      // As the store reads it: a value of a select fed by data is kept until its choices are loaded.
-      { lenientData: true },
-    );
-    return crossFilterSelection(widget, values);
-  }, [widget, parameters, raw]);
+  const viewValues = useMemo(
+    () =>
+      readParameterValues(
+        parameters,
+        (id) => (Object.hasOwn(raw, id) ? raw[id] : undefined),
+        Date.now(),
+        // As the store reads it: a value of a select fed by data is kept until its choices are loaded.
+        { lenientData: true },
+      ).values,
+    [parameters, raw],
+  );
+  const selection = useMemo(
+    () => (crossFilterOf(widget) ? crossFilterSelection(widget, viewValues) : null),
+    [widget, viewValues],
+  );
+  const mode = useTheme();
+  // A KPI's sparkline wears the colour of the entity its data is narrowed to, as in snapshots.
+  const accent = useMemo(
+    () =>
+      widget.type === 'kpi' && widget.config.sparkline
+        ? sparklineColor(
+            focusedEntity({ datasets: datasets ?? [], parameters, colors: entityColors }, widget, viewValues),
+            entityColors,
+            THEMES[mode],
+          )
+        : undefined,
+    [widget, datasets, parameters, entityColors, viewValues, mode],
+  );
   const crossParam = parameters?.find((p) => p.id === crossFilterOf(widget)?.parameter);
   // Choices of a select fed by data: a click is checked against them, not left to the server's 400 and a reset that
   // would follow a pushed history entry.
@@ -358,6 +378,7 @@ export const WidgetFrame = memo(function WidgetFrame({
           widget={widget}
           result={shown}
           entityColors={entityColors}
+          accent={accent}
           selection={selection}
           onPick={onPick}
           loading={held ? false : query.isFetching || !query.isFetched}

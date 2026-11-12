@@ -4,6 +4,7 @@ import {
   DatasetSchema,
   exportFileName,
   FileIdSchema,
+  focusedEntity,
   IdSchema,
   type LiveEvent,
   lineageParameters,
@@ -592,7 +593,12 @@ export function apiRoutes(deps: Deps) {
             kind: 'widget',
             widget,
             result,
-            options: { theme, entityColors: doc.colors, parameters },
+            options: {
+              theme,
+              entityColors: doc.colors,
+              parameters,
+              focus: focusedEntity(doc, widget, parameters),
+            },
           });
         }
         const results = new Map<string, DatasetResult>();

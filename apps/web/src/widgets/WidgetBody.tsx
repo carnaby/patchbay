@@ -48,6 +48,7 @@ export function WidgetBody({
   errorHint,
   asTable = false,
   entityColors,
+  accent,
   selection,
   onPick,
 }: {
@@ -62,6 +63,8 @@ export function WidgetBody({
   asTable?: boolean;
   /** The dashboard's entity colours (`doc.colors`). */
   entityColors?: ColorMap | undefined;
+  /** A KPI's sparkline colour (core sparklineColor); absent keeps the first palette colour. */
+  accent?: string | undefined;
   /** The item the widget's cross-filter selects: the others are dimmed (proposal 0010). */
   selection?: Selection | null;
   /** A click on an item, with its value of the cross-filter column; absent when clicks set nothing. */
@@ -109,7 +112,7 @@ export function WidgetBody({
         />
       );
     case 'kpi':
-      return <KpiBody widget={widget} result={result} />;
+      return <KpiBody widget={widget} result={result} accent={accent} />;
     case 'gauge':
       return <GaugeBody widget={widget} result={result} />;
     case 'table':
@@ -200,7 +203,7 @@ function GaugeBody({
   return <EChart option={option} label={widget.title ?? 'Gauge'} />;
 }
 
-function Sparkline({ values }: { values: number[] }) {
+function Sparkline({ values, stroke }: { values: number[]; stroke: string }) {
   if (values.length < 2) return null;
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -217,7 +220,7 @@ function Sparkline({ values }: { values: number[] }) {
       <polyline
         points={points}
         fill="none"
-        stroke="var(--pb-data)"
+        stroke={stroke}
         strokeWidth="2"
         vectorEffect="non-scaling-stroke"
         strokeLinejoin="round"
@@ -226,7 +229,15 @@ function Sparkline({ values }: { values: number[] }) {
   );
 }
 
-function KpiBody({ widget, result }: { widget: Extract<Widget, { type: 'kpi' }>; result: DatasetResult }) {
+function KpiBody({
+  widget,
+  result,
+  accent,
+}: {
+  widget: Extract<Widget, { type: 'kpi' }>;
+  result: DatasetResult;
+  accent: string | undefined;
+}) {
   const mode = useTheme();
   const kpi = computeKpi(widget.config, result.table);
   const Icon = kpi.delta === null ? null : kpi.delta > 0 ? ArrowUp : kpi.delta < 0 ? ArrowDown : Minus;
@@ -268,7 +279,7 @@ function KpiBody({ widget, result }: { widget: Extract<Widget, { type: 'kpi' }>;
       ) : null}
       {kpi.spark.length > 1 ? (
         <div className="mt-auto h-[38%] min-h-6 pt-2">
-          <Sparkline values={kpi.spark} />
+          <Sparkline values={kpi.spark} stroke={accent ?? 'var(--pb-data)'} />
         </div>
       ) : null}
     </div>

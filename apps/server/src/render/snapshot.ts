@@ -27,6 +27,7 @@ import {
   DIMMED_OPACITY,
   defaultParameterValues,
   effectiveSelection,
+  focusedEntity,
   formatNumber,
   formatRelative,
   GRID_COLUMNS,
@@ -38,6 +39,7 @@ import {
   rowSelected,
   type Selection,
   searchPlaceholder,
+  sparklineColor,
   statusConfigProblem,
   statusFit,
   statusModel,
@@ -156,6 +158,8 @@ function widgetBody(
   h: number,
   entityColors?: ColorMap,
   selection: Selection | null = null,
+  /** The entity a KPI is narrowed to (core focusedEntity); it picks the sparkline colour. */
+  focus: string | null = null,
 ): string {
   if (widget.type === 'text') {
     const plain = widget.config.markdown
@@ -281,7 +285,7 @@ function widgetBody(
               `${((i / (kpi.spark.length - 1)) * w).toFixed(1)},${(h - ((v - min) / (max - min || 1)) * sh).toFixed(1)}`,
           )
           .join(' ');
-        out += `<polyline points="${points}" fill="none" stroke="${theme.categorical[0]}" stroke-width="2" stroke-linejoin="round"/>`;
+        out += `<polyline points="${points}" fill="none" stroke="${sparklineColor(focus, entityColors, theme)}" stroke-width="2" stroke-linejoin="round"/>`;
       }
       return out;
     }
@@ -368,6 +372,7 @@ function card(
   /** Drawn in place of the body, for a widget the snapshot had no budget left for. */
   note?: string,
   selection: Selection | null = null,
+  focus: string | null = null,
 ): string {
   // As in the browser: a value the data does not hold dims nothing.
   const shown = effectiveSelection(selection, result?.table.rows ?? []);
@@ -389,7 +394,7 @@ function card(
     `<g transform="translate(${pad}, ${top})">${
       note
         ? text(0, 16, truncate(note, Math.floor(bodyW / 6.5)), { color: theme.muted })
-        : widgetBody(widget, result, theme, bodyW, bodyH, entityColors, shown)
+        : widgetBody(widget, result, theme, bodyW, bodyH, entityColors, shown, focus)
     }</g>`,
     '</svg>',
   ].join('');
@@ -506,6 +511,8 @@ export function renderWidgetPng(
     height?: number;
     entityColors?: ColorMap | undefined;
     parameters?: ParameterValues | undefined;
+    /** The entity the widget is narrowed to (core focusedEntity), which the caller reads from the dashboard. */
+    focus?: string | null | undefined;
   } = {},
 ): Buffer {
   const theme = THEMES[options.theme ?? 'light'];
@@ -525,6 +532,7 @@ export function renderWidgetPng(
       options.entityColors,
       undefined,
       crossFilterSelection(widget, options.parameters),
+      options.focus ?? null,
     ),
     width,
     height,
@@ -619,7 +627,17 @@ export function renderDashboardPng(
     const drawn = trimmed(widget, limits.get(widget.id));
     // A map card is bounded by construction (title, then the map, which clips itself), so it may stay unclipped.
     const svg = nest(
-      card(drawn, result, theme, w, h, doc.colors, note, crossFilterSelection(widget, values)),
+      card(
+        drawn,
+        result,
+        theme,
+        w,
+        h,
+        doc.colors,
+        note,
+        crossFilterSelection(widget, values),
+        focusedEntity(doc, widget, values),
+      ),
       x,
       y,
       w,

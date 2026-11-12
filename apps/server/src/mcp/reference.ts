@@ -310,6 +310,7 @@ always adjusted to stay readable; custom hex below 3:1 contrast gets a warning.
   order.) Pie slices keep their colour by label even when their sizes change.
 - Dashboard-wide: setMeta { colors: { "<entity>": "<colour>" } } applies to every chart and map (a widget's own colors win);
   null removes it. Use it when the same entities (cities, products) appear in several charts.
+  A KPI's sparkline takes the colour of the entity a select filter narrows its data to (when that value has a dashboard colour); with nothing in focus on a dashboard with entity colours it is neutral grey, since a total is no entity.
 - chart referenceLines (max 3): [{ value | stat: ${REFERENCE_STATS.join('|')}, field?, label?, color? }] on ${REFERENCE_LINE_KINDS.join(', ')}.
   Give exactly one of value and stat; stat is computed over the plotted rows of field (default the first y, and
   field must be one of y). Drawn dashed with "label · value"; the axis widens to show it. Default colour neutral.

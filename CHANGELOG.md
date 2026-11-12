@@ -50,6 +50,10 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 - Daily time axes over a month or a quarter no longer show a stray date right after a month's name ("Oct 6 8",
   "Nov 2 5"): ECharts kept the step after a month's last label as a label of its own. Patchbay ships a one-line fix
   to ECharts until it is fixed upstream.
+- A KPI's sparkline now takes the colour of the item its data is filtered to, such as the package a click on a chart
+  focused. Before, it always kept the first palette colour, which on a dashboard with entity colours belongs to one of
+  the entities. With nothing focused on such a dashboard it is neutral grey, because the total of all items is no
+  item; dashboards without entity colours are unchanged.
 
 ## [0.3.4] - 2026-11-12
 

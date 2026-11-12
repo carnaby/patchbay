@@ -3,7 +3,15 @@
  * stays at full strength while the others are dimmed. Colour still follows the entity (theme.ts): dimming lowers
  * opacity and never recolours. Shared by the browser and the snapshot renderer, so both draw the same selection.
  */
-import { MAX_TEXT_VALUE, type Parameter, type ParameterValue, type ParameterValues } from './parameters.ts';
+import type { ColorMap } from './colors.ts';
+import type { LineageDoc } from './lineage.ts';
+import {
+  lineageParameters,
+  MAX_TEXT_VALUE,
+  type Parameter,
+  type ParameterValue,
+  type ParameterValues,
+} from './parameters.ts';
 import type { CrossFilter, Widget } from './schema.ts';
 import type { Row, Scalar } from './table.ts';
 
@@ -28,6 +36,28 @@ export function crossFilterSelection(widget: Widget, values: ParameterValues | u
   const value = values[cross.parameter] as ParameterValue;
   if (value === null || value === '' || typeof value === 'object') return null;
   return { field: cross.field, value: String(value) };
+}
+
+/**
+ * The entity a data widget is narrowed to, named by a select filter in its dataset's lineage and coloured on the
+ * dashboard. A KPI has no entity column (its data is often aggregated across entities), so the filter that narrowed
+ * it is the only place the entity is named. Null for none, and for several: no one entity is in focus then.
+ */
+export function focusedEntity(
+  doc: LineageDoc & { parameters?: readonly Parameter[] | undefined; colors?: ColorMap | undefined },
+  widget: Widget,
+  values: ParameterValues | undefined,
+): string | null {
+  if (!('datasetId' in widget) || !values || !doc.colors) return null;
+  const named = new Set<string>();
+  for (const id of lineageParameters(doc, widget.datasetId)) {
+    if (doc.parameters?.find((p) => p.id === id)?.type !== 'select' || !Object.hasOwn(values, id)) continue;
+    const value = values[id];
+    if (typeof value !== 'string' && typeof value !== 'number') continue;
+    const key = String(value);
+    if (key !== '' && Object.hasOwn(doc.colors, key)) named.add(key);
+  }
+  return named.size === 1 ? [...named][0]! : null;
 }
 
 /** Whether a row is the selected item (true), another one (false), or nothing is selected (null). As text: 2026 and "2026" are one item. */
