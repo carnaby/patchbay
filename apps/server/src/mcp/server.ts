@@ -65,6 +65,11 @@ const DATA_CHECK_SAMPLE = 3;
 const BUSY_CHECK_SAVED = 'The server is busy, so this dataset was not checked; the change is saved.';
 const BUSY_CHECK_DRY =
   'The server is busy, so this dataset was not checked; the operations are valid, nothing was saved.';
+/** A data check refused by this server's own per-host limit (the result carries retryAfterSec): not the source's fault. */
+const LIMITED_CHECK_SAVED =
+  "This server's own limit on requests to one host refused the check for now, not the source; the change is saved. Check again with get_data in a few seconds.";
+const LIMITED_CHECK_DRY =
+  "This server's own limit on requests to one host refused the check for now, not the source; the operations are valid, nothing was saved.";
 
 /**
  * Agents watching an accumulating dataset over MCP saw rows arrive at the rhythm of their own calls, not refreshSec,
@@ -480,6 +485,12 @@ export function createMcp(deps: Deps) {
                 if (!(e instanceof BusyError)) throw e;
                 return { datasetId: d.id, error: args.dryRun ? BUSY_CHECK_DRY : BUSY_CHECK_SAVED };
               }
+              const notes = [
+                ...(r.error && r.retryAfterSec
+                  ? [args.dryRun ? LIMITED_CHECK_DRY : LIMITED_CHECK_SAVED]
+                  : []),
+                ...(d.accumulate > 0 ? [ACCUMULATE_NOTE] : []),
+              ];
               return {
                 datasetId: d.id,
                 rowCount: r.table.rows.length,
@@ -489,7 +500,8 @@ export function createMcp(deps: Deps) {
                 error: r.error,
                 ...(r.warning ? { warning: r.warning } : {}),
                 ...notCheckedNote(r.trace),
-                ...(d.accumulate > 0 ? { note: ACCUMULATE_NOTE } : {}),
+                ...(r.error && r.retryAfterSec ? { retryAfterSec: r.retryAfterSec } : {}),
+                ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
               };
             }),
           );

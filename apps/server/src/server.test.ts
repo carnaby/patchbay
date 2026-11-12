@@ -12,6 +12,7 @@ import { snapshotGate } from './render/gate.ts';
 import { drawLimits, MAX_PIXELS } from './render/snapshot.ts';
 import { isAcceptableRedirect, redirectMatches } from './routes/oauth.ts';
 import { buildTemplate, listTemplates } from './services/templates.ts';
+import { RetryLaterError } from './util/errors.ts';
 import { BusyError } from './util/gate.ts';
 import { RateLimiter } from './util/rate-limit.ts';
 import { runAsClient } from './util/request-context.ts';
@@ -984,6 +985,46 @@ describe('MCP tools', () => {
     });
     expect(preview.isError).toBeFalsy();
     expect(JSON.parse(text(preview)).notChecked).toMatch(/status, name/);
+  });
+
+  it("says the change is saved when its data check was refused by the server's own load limit", async () => {
+    const agent = await ownClient('limit-agent@example.com');
+    const { dashboardId } = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'L' } })),
+    );
+    const spy = vi
+      .spyOn(deps.data, 'loadSource')
+      .mockRejectedValue(
+        new RetryLaterError(
+          429,
+          'This server is already loading a lot from x.example; it will try again shortly',
+          10,
+        ),
+      );
+    try {
+      const applied = JSON.parse(
+        text(
+          await agent.callTool({
+            name: 'apply_operations',
+            arguments: {
+              dashboardId,
+              operations: [
+                {
+                  op: 'addDataset',
+                  dataset: { id: 'root', name: 'Root', source: { kind: 'inline', rows: [{ a: 1 }] } },
+                },
+              ],
+            },
+          }),
+        ),
+      );
+      const check = applied.dataChecks.find((c: { datasetId: string }) => c.datasetId === 'root');
+      expect(check.error).toMatch(/already loading a lot/);
+      expect(check.retryAfterSec).toBe(10);
+      expect(check.note).toMatch(/the change is saved/);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('bounds filter ids and values of the view tools and echoes the view on preview_data and render_snapshot', async () => {

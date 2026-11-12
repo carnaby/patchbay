@@ -211,6 +211,31 @@ describe('resolution scopes', () => {
     }
   });
 
+  it('loads three http sources on one host at once, and the union reading them, with the default limits', async () => {
+    // url is optional: the file's beforeEach(() => fetchMock.mockReset()) returns the mock, which vitest then calls
+    // as a cleanup with no arguments.
+    fetchMock.mockImplementation(async (url?: string) => {
+      await new Promise((r) => setTimeout(r, 20));
+      return [{ check: url?.split('/').pop(), state: 'ok' }];
+    });
+    const data = new DataService(connectors, store);
+    const http = (id: string, path: string) => ({
+      id,
+      name: id,
+      source: { kind: 'http', url: `https://status.example/api/${path}` },
+    });
+    const d = doc(
+      http('components', 'components'),
+      http('incidents', 'incidents'),
+      http('history', 'history'),
+      from('all', 'components', { transforms: [{ type: 'union', with: ['incidents', 'history'] }] }),
+    );
+    const scope = data.scope(target, d);
+    const results = await Promise.all(d.datasets.map((x) => scope.resolve(x)));
+    expect(results.map((r) => r.error)).toEqual([undefined, undefined, undefined, undefined]);
+    expect(results[3]!.table.rows).toHaveLength(3);
+  });
+
   it('checks columns in a dataset that reads one a filter emptied, and not in one that reads an empty source', async () => {
     const data = new DataService(connectors, store);
     const d = doc(

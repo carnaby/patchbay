@@ -3,6 +3,13 @@
  * network, so a stranger must not be able to turn it into a crawler: a few requests at a time overall, fewer per
  * host, and a per-host budget over time. Distinct URLs on one host share the budget, so a list of query strings
  * cannot be used to hammer someone else's server.
+ *
+ * Requests wait for their host in a FIFO queue instead of being refused: HTTP sources and feeds 2 at a time and 60 a
+ * minute per host (up to 8 s, at most 16 waiting per host and 8 per client), built-in connectors 4 and 120 (up to 8 s,
+ * 32 and 8). A dashboard opens several addresses on one host together (a status wall, a connector with several param
+ * sets), and a refusal there is an error on screen. Waiting changes only the order: what a host receives stays within
+ * its budget, and the bounded queues refuse at once whatever would pile up beyond them, so a stranger's dashboard
+ * cannot hammer a host by asking for more.
  */
 import { lastingError, RetryLaterError } from './errors.ts';
 import { Gate } from './gate.ts';
@@ -17,6 +24,15 @@ export interface OutboundOptions {
   perHostConcurrency?: number;
   /** Requests one host may receive per minute (burst = the same number). */
   perHostPerMinute?: number;
+  /**
+   * How long a request waits for its host before it is refused. Then the global gate and the fetch itself may pass
+   * the scope deadline (20 s): the scope reports the source as still loading and the page asks again.
+   */
+  maxWaitMs?: number;
+  /** Requests waiting for one host beyond this are refused at once. */
+  maxQueuePerHost?: number;
+  /** Requests one client may have waiting for one host, so a single dashboard cannot take a host's whole queue. */
+  maxQueuedPerClient?: number;
   /** Built-in connector loads, counted per upstream host in buckets of their own (see `acquireConnectorSlot`). */
   connector?: ConnectorOptions;
 }
@@ -38,12 +54,6 @@ export interface ConnectorOptions {
   maxQueuedPerClient?: number;
 }
 
-interface Bucket {
-  tokens: number;
-  updated: number;
-  active: number;
-}
-
 interface Waiter {
   client: string;
   grant: (release: () => void) => void;
@@ -51,7 +61,10 @@ interface Waiter {
   timer: NodeJS.Timeout;
 }
 
-interface ConnectorBucket extends Bucket {
+interface Bucket {
+  tokens: number;
+  updated: number;
+  active: number;
   waiting: Waiter[];
   wake: NodeJS.Timeout | null;
 }
@@ -64,84 +77,23 @@ const busyHost = (host: string) =>
     10,
   );
 
-export class OutboundLimiter {
-  private readonly gate: Gate;
+/** Places and a minute budget per host, with a bounded FIFO queue of those waiting for them. */
+class HostQueue {
+  private readonly limits: Required<ConnectorOptions>;
   private readonly hosts = new Map<string, Bucket>();
-  private readonly perHostConcurrency: number;
-  private readonly perHostPerMinute: number;
-  private readonly connectorHosts = new Map<string, ConnectorBucket>();
-  private readonly connector: Required<ConnectorOptions>;
 
-  constructor(options: OutboundOptions = {}) {
-    this.gate = new Gate({
-      concurrency: options.concurrency ?? 3,
-      maxQueue: 64,
-      maxQueuedPerClient: 16,
-      maxWaitMs: 15_000,
-    });
-    this.perHostConcurrency = options.perHostConcurrency ?? 2;
-    this.perHostPerMinute = options.perHostPerMinute ?? 60;
-    const c = options.connector ?? {};
-    this.connector = {
-      perHostConcurrency: c.perHostConcurrency ?? 4,
-      perHostPerMinute: c.perHostPerMinute ?? 120,
-      maxWaitMs: c.maxWaitMs ?? 8000,
-      maxQueuePerHost: c.maxQueuePerHost ?? 32,
-      maxQueuedPerClient: c.maxQueuedPerClient ?? 8,
-    };
+  constructor(limits: Required<ConnectorOptions>) {
+    this.limits = limits;
   }
 
-  private bucket(host: string): Bucket {
-    const now = Date.now();
-    let b = this.hosts.get(host);
-    if (!b) {
-      b = { tokens: this.perHostPerMinute, updated: now, active: 0 };
-      this.hosts.set(host, b);
-      if (this.hosts.size > 10_000) {
-        for (const [h, x] of this.hosts)
-          if (x.active === 0 && now - x.updated > 120_000) this.hosts.delete(h);
-      }
-    }
-    b.tokens = Math.min(
-      this.perHostPerMinute,
-      b.tokens + ((now - b.updated) / 60_000) * this.perHostPerMinute,
-    );
-    b.updated = now;
-    return b;
-  }
-
-  /** Runs one request to `url`, or refuses it when the host's budget or the server's capacity is spent. */
-  async run<T>(client: string, url: string, task: () => Promise<T>): Promise<T> {
-    let host: string;
-    try {
-      host = new URL(url).hostname.toLowerCase();
-    } catch {
-      throw lastingError(400, 'Invalid URL');
-    }
-    const b = this.bucket(host);
-    if (b.active >= this.perHostConcurrency || b.tokens < 1) throw busyHost(host);
-    b.tokens -= 1;
-    b.active++;
-    try {
-      return await this.gate.run(client, task);
-    } finally {
-      b.active--;
-    }
-  }
-
-  /**
-   * Connector loads wait for their turn instead of being refused: a dashboard opens several param sets of one connector
-   * at once (compare-cities: two forecasts, two air-quality readings), and a refusal there is an error on screen. One
-   * place per load and host, held until the load ends, because one load may ask its host for 50 URLs at once.
-   * Not through the global gate: connectors call a fixed set of public APIs, not addresses a stranger chose.
-   */
-  async acquireConnectorSlot(client: string, host: string, signal?: AbortSignal): Promise<() => void> {
+  /** A place on `host`, waiting for it if needed; resolves to its release. */
+  async acquire(client: string, host: string, signal?: AbortSignal): Promise<() => void> {
     // The load this place is for has ended (it failed on another host): no place, no token, no queue entry.
     if (signal?.aborted) throw new Error('The load ended before its turn came');
-    const { perHostConcurrency, maxWaitMs, maxQueuePerHost, maxQueuedPerClient } = this.connector;
-    const b = this.connectorBucket(host);
-    // Only with nobody waiting: a new load never takes the place a waiter is about to get.
-    if (b.waiting.length === 0 && b.active < perHostConcurrency && b.tokens >= 1) return this.grant(host, b);
+    const { maxWaitMs, maxQueuePerHost, maxQueuedPerClient } = this.limits;
+    const b = this.bucket(host);
+    const now = this.tryGrant(host, b);
+    if (now) return now;
     if (
       b.waiting.length >= maxQueuePerHost ||
       b.waiting.filter((w) => w.client === client).length >= maxQueuedPerClient
@@ -183,30 +135,44 @@ export class OutboundLimiter {
     });
   }
 
-  private connectorBucket(host: string): ConnectorBucket {
+  /** A place on `host` now, or the busy-host refusal: never a queue entry. */
+  tryAcquire(host: string): () => void {
+    const b = this.bucket(host);
+    const now = this.tryGrant(host, b);
+    if (!now) throw busyHost(host);
+    return now;
+  }
+
+  private tryGrant(host: string, b: Bucket): (() => void) | null {
+    // Only with nobody waiting: a new request never takes the place a waiter is about to get.
+    if (b.waiting.length === 0 && b.active < this.limits.perHostConcurrency && b.tokens >= 1)
+      return this.grant(host, b);
+    return null;
+  }
+
+  private bucket(host: string): Bucket {
     const now = Date.now();
-    let b = this.connectorHosts.get(host);
+    let b = this.hosts.get(host);
     if (!b) {
-      b = { tokens: this.connector.perHostPerMinute, updated: now, active: 0, waiting: [], wake: null };
-      this.connectorHosts.set(host, b);
-      if (this.connectorHosts.size > 10_000) {
+      b = { tokens: this.limits.perHostPerMinute, updated: now, active: 0, waiting: [], wake: null };
+      this.hosts.set(host, b);
+      if (this.hosts.size > 10_000) {
         // Only buckets nobody holds or waits on, and full again: forgetting them changes nothing.
-        for (const [h, x] of this.connectorHosts)
-          if (x.active === 0 && x.waiting.length === 0 && now - x.updated > 120_000)
-            this.connectorHosts.delete(h);
+        for (const [h, x] of this.hosts)
+          if (x.active === 0 && x.waiting.length === 0 && now - x.updated > 120_000) this.hosts.delete(h);
       }
     }
     this.refill(b, now);
     return b;
   }
 
-  private refill(b: ConnectorBucket, now = Date.now()) {
-    const { perHostPerMinute } = this.connector;
+  private refill(b: Bucket, now = Date.now()) {
+    const { perHostPerMinute } = this.limits;
     b.tokens = Math.min(perHostPerMinute, b.tokens + ((now - b.updated) / 60_000) * perHostPerMinute);
     b.updated = now;
   }
 
-  private grant(host: string, b: ConnectorBucket): () => void {
+  private grant(host: string, b: Bucket): () => void {
     b.tokens -= 1;
     b.active++;
     let released = false;
@@ -219,8 +185,8 @@ export class OutboundLimiter {
   }
 
   /** Starts waiters in order while the host has room, and wakes up later when only the minute budget holds them. */
-  private pump(host: string, b: ConnectorBucket) {
-    const { perHostConcurrency, perHostPerMinute } = this.connector;
+  private pump(host: string, b: Bucket) {
+    const { perHostConcurrency, perHostPerMinute } = this.limits;
     this.refill(b);
     while (b.waiting.length > 0 && b.active < perHostConcurrency && b.tokens >= 1) {
       const next = b.waiting.shift()!;
@@ -243,5 +209,73 @@ export class OutboundLimiter {
       Math.ceil(((1 - b.tokens) / perHostPerMinute) * 60_000),
     );
     b.wake.unref();
+  }
+}
+
+export class OutboundLimiter {
+  private readonly gate: Gate;
+  private readonly http: HostQueue;
+  private readonly connectors: HostQueue;
+
+  constructor(options: OutboundOptions = {}) {
+    this.gate = new Gate({
+      concurrency: options.concurrency ?? 3,
+      maxQueue: 64,
+      maxQueuedPerClient: 16,
+      maxWaitMs: 15_000,
+    });
+    this.http = new HostQueue({
+      perHostConcurrency: options.perHostConcurrency ?? 2,
+      perHostPerMinute: options.perHostPerMinute ?? 60,
+      maxWaitMs: options.maxWaitMs ?? 8000,
+      maxQueuePerHost: options.maxQueuePerHost ?? 16,
+      maxQueuedPerClient: options.maxQueuedPerClient ?? 8,
+    });
+    const c = options.connector ?? {};
+    this.connectors = new HostQueue({
+      perHostConcurrency: c.perHostConcurrency ?? 4,
+      perHostPerMinute: c.perHostPerMinute ?? 120,
+      maxWaitMs: c.maxWaitMs ?? 8000,
+      maxQueuePerHost: c.maxQueuePerHost ?? 32,
+      maxQueuedPerClient: c.maxQueuedPerClient ?? 8,
+    });
+  }
+
+  /**
+   * Runs one request to `url` once its host has a place and a token, or refuses it when the wait runs out, the queue
+   * is full, or (with `wait: false`) the host is busy now.
+   */
+  async run<T>(
+    client: string,
+    url: string,
+    task: () => Promise<T>,
+    options: { wait?: boolean } = {},
+  ): Promise<T> {
+    let host: string;
+    try {
+      host = new URL(url).hostname.toLowerCase();
+    } catch {
+      throw lastingError(400, 'Invalid URL');
+    }
+    // The host place comes before the global gate: a request waiting for a busy host must not hold one of the few
+    // places every host shares.
+    const release =
+      options.wait === false ? this.http.tryAcquire(host) : await this.http.acquire(client, host);
+    try {
+      return await this.gate.run(client, task);
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Connector loads wait for their host like http sources (4 at a time and 120 a minute per host, up to 8 s, at most
+   * 32 waiting per host and 8 per client): a dashboard opens several param sets of one connector at once
+   * (compare-cities: two forecasts, two air-quality readings), and a refusal there is an error on screen. One place
+   * per load and host, held until the load ends, because one load may ask its host for 50 URLs at once. Buckets of
+   * their own, not through the global gate: connectors call a fixed set of public APIs, not addresses a stranger chose.
+   */
+  acquireConnectorSlot(client: string, host: string, signal?: AbortSignal): Promise<() => void> {
+    return this.connectors.acquire(client, host, signal);
   }
 }

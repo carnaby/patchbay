@@ -349,8 +349,10 @@ request gets `408` and the connection is closed, so a slow sender never holds th
 arriving or waiting hold at most 16 MB together, two per client. Node waits at most 20 s for a request's headers and 90
 s for a whole request. Every JSON request body and HTTP source response is refused before parsing when it nests deeper
 than 64 levels. HTTP sources are fetched at most three at a time, two at a time and 60 times a minute per host, and a
-failing address is not asked again for 30 s; an HTTP source or feed refused over these limits shows an error, and the
-page asks again after 10 s. Built-in connectors share a separate budget per upstream host (four loads at a time and 120
+failing address is not asked again for 30 s. A request over the per-host limits waits up to 8 s for its turn (at most 16
+wait per host, 8 of them for one client; beyond that it is refused at once), then shows an error that the page retries
+after 10 s. The OAuth client metadata fetch never waits: it is refused at once. Built-in connectors share a separate
+budget per upstream host (four loads at a time and 120
 a minute): a load over it waits up to 8 s for its turn, then shows an error that the page retries after 10 s; every
 dataset, with the datasets it reads, has 20 s in all: when a source load is still pending then, its widget says the
 source is still loading and the page asks again after 10 s (otherwise, for example a slow chain of steps, the old

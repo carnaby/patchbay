@@ -472,21 +472,24 @@ describe('http sources', () => {
     expect(policy).toHaveBeenCalledTimes(2);
   });
 
-  it('limits requests per host, without remembering its own refusal as a failure', async () => {
-    let finish!: (v: unknown) => void;
-    fetchMock.mockImplementation(() => new Promise((r) => (finish = r)));
-    const outbound = new OutboundLimiter({ perHostConcurrency: 1 });
+  it('queues requests to a busy host, refuses beyond the queue, and does not remember that refusal', async () => {
+    const finish: ((v: unknown) => void)[] = [];
+    fetchMock.mockImplementation(() => new Promise((r) => finish.push(r)));
+    const outbound = new OutboundLimiter({ perHostConcurrency: 1, maxQueuedPerClient: 1 });
     const data = new DataService(connectors, store, new InlineRunner(), { outbound });
-    const slow = data.resolve(target, http('https://host.example/a'));
-    const refused = await data.resolve(target, http('https://host.example/b'));
+    const first = data.resolve(target, http('https://host.example/a'));
+    const second = data.resolve(target, http('https://host.example/b'));
+    const refused = await data.resolve(target, http('https://host.example/c'));
     expect(refused.error).toMatch(/already loading a lot from host\.example/);
-    // Another host is not affected.
-    fetchMock.mockResolvedValueOnce([{ x: 1 }]);
-    expect((await data.resolve(target, http('https://other.example/a'))).table.rows).toEqual([{ x: 1 }]);
-    finish([{ y: 1 }]);
-    await slow;
+    expect(refused.retryAfterSec).toBe(10);
+    await vi.waitFor(() => expect(finish).toHaveLength(1));
+    finish[0]!([{ y: 1 }]);
+    await vi.waitFor(() => expect(finish).toHaveLength(2));
+    finish[1]!([{ y: 2 }]);
+    expect((await first).table.rows).toEqual([{ y: 1 }]);
+    expect((await second).table.rows).toEqual([{ y: 2 }]);
     fetchMock.mockResolvedValue([{ z: 1 }]);
-    expect((await data.resolve(target, http('https://host.example/b'))).table.rows).toEqual([{ z: 1 }]);
+    expect((await data.resolve(target, http('https://host.example/c'))).table.rows).toEqual([{ z: 1 }]);
   });
 
   it('keeps the cache key of a GET exactly as it was, and gives every POST body its own', () => {

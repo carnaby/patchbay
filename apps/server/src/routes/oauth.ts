@@ -107,7 +107,8 @@ const RegistrationSchema = z.object({
 /**
  * A client metadata document is a few hundred bytes; anyone can make /oauth/authorize fetch one, before signing in,
  * so the fetch is held far below the limits of data sources: a small body, few JSON values, a short timeout, and
- * the outbound limiter that data sources use (a few at a time across the server, fewer per host).
+ * the outbound limiter that data sources use (a few at a time across the server, fewer per host), without its queue:
+ * a busy host refuses the fetch at once.
  */
 export const CIMD_MAX_BYTES = 16 * 1024;
 export const CIMD_MAX_VALUES = 256;
@@ -221,14 +222,19 @@ export function oauthRoutes(deps: Deps) {
       throw oauthError(400, 'invalid_client', 'Client metadata document is unavailable');
     }
     // No redirects: the document must live at the URL that is the client's identity, not wherever that URL points.
+    // Anyone can start this fetch before signing in, so it never holds a place in a host's queue.
     const fetched = await deps.outbound
-      .run(client, clientId, () =>
-        safeFetchJson(clientId, {
-          redirects: 0,
-          maxBytes: CIMD_MAX_BYTES,
-          maxValues: CIMD_MAX_VALUES,
-          timeoutMs: CIMD_TIMEOUT_MS,
-        }),
+      .run(
+        client,
+        clientId,
+        () =>
+          safeFetchJson(clientId, {
+            redirects: 0,
+            maxBytes: CIMD_MAX_BYTES,
+            maxValues: CIMD_MAX_VALUES,
+            timeoutMs: CIMD_TIMEOUT_MS,
+          }),
+        { wait: false },
       )
       .then(
         (json) => ({ json }),

@@ -31,6 +31,11 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   On a source with rows an unknown column is still an error.
 - `union` keeps a column's type when one of the datasets it combines has no rows; before, an empty list could turn
   the time column of the whole result into text.
+- HTTP sources and feeds on one host now wait their turn for up to 8 seconds instead of failing with "already loading
+  a lot" when more than two load at once, so a dashboard with several addresses on one host, such as a status wall,
+  loads all of them. What one host receives from the server stays limited to two requests at a time and 60 a minute.
+- When the server's own load limit refuses a data check of `apply_operations`, the check now says that the change is
+  saved and when to look again.
 
 ## [0.3.4] - 2026-11-12
 

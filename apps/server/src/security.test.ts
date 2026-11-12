@@ -396,7 +396,9 @@ describe('OAuth consent screen data', () => {
     const run = vi.spyOn(deps.outbound, 'run');
     const consent = await startAuthorization(clientId, 'https://extras.example/cb');
     expect(consent.pathname).toBe('/oauth/consent');
-    expect(run).toHaveBeenCalledWith(expect.stringMatching(/^ip:/), clientId, expect.any(Function));
+    expect(run).toHaveBeenCalledWith(expect.stringMatching(/^ip:/), clientId, expect.any(Function), {
+      wait: false,
+    });
     run.mockRestore();
     const row = deps.db.prepare('SELECT metadata FROM oauth_clients WHERE client_id = ?').get(clientId) as {
       metadata: string;

@@ -155,13 +155,72 @@ describe('connector budget', () => {
     void l.acquireConnectorSlot('c', 'h.example').catch(() => {});
     await expect(l.acquireConnectorSlot('d', 'h.example')).rejects.toBeInstanceOf(RetryLaterError); // host cap
   });
+});
 
-  it('turns an http-source refusal into a RetryLaterError with status 429', async () => {
+describe('http source budget', () => {
+  afterEach(() => vi.useRealTimers());
+  const never = () => new Promise<number>(() => {});
+
+  it('queues requests above the per-host concurrency instead of refusing them, never more than two at once', async () => {
+    const l = new OutboundLimiter();
+    let running = 0;
+    let most = 0;
+    const task = async () => {
+      running++;
+      most = Math.max(most, running);
+      await new Promise((r) => setTimeout(r, 5));
+      running--;
+      return 1;
+    };
+    const urls = [1, 2, 3, 4, 5].map((i) => `https://status.example/${i}`);
+    expect(await Promise.all(urls.map((u) => l.run('a', u, task)))).toEqual([1, 1, 1, 1, 1]);
+    expect(most).toBe(2);
+  });
+
+  it('refuses after the wait with the busy-host RetryLaterError', async () => {
+    vi.useFakeTimers();
+    const l = new OutboundLimiter({ perHostConcurrency: 1, maxWaitMs: 8000 });
+    void l.run('a', 'https://h.example/1', never);
+    const waiting = l.run('b', 'https://h.example/2', async () => 1);
+    const refused = expect(waiting).rejects.toMatchObject({ status: 429, retryAfterSec: 10 });
+    await vi.advanceTimersByTimeAsync(8001);
+    await refused;
+    await expect(waiting).rejects.toThrow(/already loading a lot from h\.example; it will try again shortly/);
+  });
+
+  it('refuses at once beyond the queue caps (per host, and per client on that host)', async () => {
+    const l = new OutboundLimiter({ perHostConcurrency: 1, maxQueuePerHost: 2, maxQueuedPerClient: 1 });
+    void l.run('a', 'https://h.example/0', never);
+    void l.run('b', 'https://h.example/1', never).catch(() => {});
+    await expect(l.run('b', 'https://h.example/2', never)).rejects.toMatchObject({ status: 429 }); // client cap
+    void l.run('c', 'https://h.example/3', never).catch(() => {});
+    await expect(l.run('d', 'https://h.example/4', never)).rejects.toMatchObject({ status: 429 }); // host cap
+  });
+
+  it('waits for a token when the minute budget is spent, then runs', async () => {
+    vi.useFakeTimers();
+    const l = new OutboundLimiter({ perHostConcurrency: 10, perHostPerMinute: 2, maxWaitMs: 60_000 });
+    await l.run('a', 'https://h.example/1', async () => 1);
+    await l.run('a', 'https://h.example/2', async () => 2);
+    const third = l.run('a', 'https://h.example/3', async () => 3);
+    await vi.advanceTimersByTimeAsync(30_000); // one token per 30 s at 2/min
+    await expect(third).resolves.toBe(3);
+  });
+
+  it('refuses at once when asked not to wait', async () => {
     const l = new OutboundLimiter({ perHostConcurrency: 1 });
-    const slow = l.run('a', 'https://h.example/1', () => new Promise(() => {}));
-    void slow;
-    const refused = l.run('a', 'https://h.example/2', async () => 1);
-    await expect(refused).rejects.toMatchObject({ status: 429, retryAfterSec: 10 });
-    await expect(refused).rejects.toThrow(/already loading a lot from h\.example; it will try again shortly/);
+    void l.run('a', 'https://h.example/1', never);
+    await expect(l.run('b', 'https://h.example/2', async () => 1, { wait: false })).rejects.toMatchObject({
+      status: 429,
+      retryAfterSec: 10,
+    });
+  });
+
+  it('frees the host place when the task fails', async () => {
+    const l = new OutboundLimiter({ perHostConcurrency: 1 });
+    await expect(
+      l.run('a', 'https://h.example/1', async () => Promise.reject(new Error('down'))),
+    ).rejects.toThrow('down');
+    await expect(l.run('a', 'https://h.example/2', async () => 2, { wait: false })).resolves.toBe(2);
   });
 });
