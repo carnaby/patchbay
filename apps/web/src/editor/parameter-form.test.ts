@@ -12,6 +12,7 @@ import {
   checkParameter,
   choiceSourcePatch,
   defaultOps,
+  elsewhereNote,
   idFromLabel,
   newParameter,
   optionsText,
@@ -323,5 +324,50 @@ describe('options with "|" or a line break', () => {
       optionsFrom: undefined,
       options,
     });
+  });
+});
+
+describe('a filter changed elsewhere while its form is open', () => {
+  const agentOptions = [...region.options!, { value: 'apac', label: 'APAC' }];
+  const live = { ...region, options: agentOptions };
+
+  it('says nothing while the filter is as it was opened', () => {
+    expect(elsewhereNote(region, region, { ...region, label: 'Area' })).toBeNull();
+  });
+  it('blocks the save of a filter removed or replaced elsewhere', () => {
+    const removed = {
+      text: 'This filter was removed or replaced elsewhere since you opened it, so it cannot be saved.',
+      blocksSave: true,
+    };
+    expect(elsewhereNote(region, undefined, region)).toEqual(removed);
+    const text = ParameterSchema.parse({ id: 'region', label: 'Region', type: 'text' });
+    expect(elsewhereNote(region, text, region)).toEqual(removed);
+  });
+  it('says what saving replaces and what it keeps', () => {
+    expect(elsewhereNote(region, live, { ...region, label: 'Area' })).toEqual({
+      text: 'Changed elsewhere since you opened it (options); saving keeps those changes.',
+      blocksSave: false,
+    });
+    expect(elsewhereNote(region, live, { ...region, options: [{ value: 'eu' }] })).toEqual({
+      text: 'Changed elsewhere since you opened it; saving replaces: options.',
+      blocksSave: false,
+    });
+    // The same change made here and elsewhere replaces nothing.
+    expect(elsewhereNote(region, live, live)?.text).toBe(
+      'Changed elsewhere since you opened it (options); saving keeps those changes.',
+    );
+    expect(elsewhereNote(region, live, null)?.text).toBe('Changed elsewhere since you opened it: options.');
+    const { all: _all, ...noAll } = region;
+    expect(elsewhereNote(region, { ...noAll, label: 'Zone', default: 'eu' }, null)?.text).toBe(
+      'Changed elsewhere since you opened it: label, "All", default.',
+    );
+  });
+  it('keeps a change made only elsewhere when the form saves', () => {
+    const opened = applyOps(emptyDashboard('t'), [{ op: 'addParameter', parameter: region }]).doc;
+    const now = applyOps(opened, [
+      { op: 'updateParameter', id: 'region', set: { options: agentOptions } },
+    ]).doc;
+    const saved = applyOps(now, updateOps(region, { ...region, label: 'Area' })).doc;
+    expect(saved.parameters?.[0]).toMatchObject({ label: 'Area', options: agentOptions });
   });
 });

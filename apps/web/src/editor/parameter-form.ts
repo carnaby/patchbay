@@ -210,6 +210,67 @@ export function updateOps(before: Parameter, after: Parameter): OpInput[] {
   return Object.keys(set).length > 0 ? [{ op: 'updateParameter', id: before.id, set }] : [];
 }
 
+export interface ElsewhereNote {
+  text: string;
+  /** The filter is gone or another kind: an update can no longer apply. */
+  blocksSave: boolean;
+}
+
+/** The form's own names for a declaration's fields, for the note about a change made elsewhere. */
+const FIELD_NAMES: Record<string, string> = {
+  label: 'label',
+  options: 'options',
+  optionsFrom: 'choices from data',
+  all: '"All"',
+  default: 'default',
+  placeholder: 'placeholder',
+  presets: 'presets',
+  custom: 'custom ranges',
+  min: 'earliest day',
+  max: 'latest day',
+  maxDays: 'longest range',
+};
+
+const changedFields = (before: Parameter, after: Parameter): string[] => {
+  const op = updateOps(before, after)[0];
+  return op?.op === 'updateParameter' ? Object.keys(op.set) : [];
+};
+
+/**
+ * What the form says when its filter changed elsewhere (an agent, another tab) after it opened, or null. `candidate`
+ * is the declaration the form would save, or null while it cannot be saved.
+ *
+ * A save sends only the fields the form changed (updateOps against the declaration it opened with), merged over the
+ * current one: a field changed only elsewhere is kept, and one changed in both is replaced whole, an options list
+ * included. Saying which keeps an agent's concurrent edit from being overwritten silently.
+ */
+export function elsewhereNote(
+  opened: Parameter,
+  live: Parameter | undefined,
+  candidate: Parameter | null,
+): ElsewhereNote | null {
+  if (!live || live.type !== opened.type)
+    return {
+      text: 'This filter was removed or replaced elsewhere since you opened it, so it cannot be saved.',
+      blocksSave: true,
+    };
+  const changed = changedFields(opened, live);
+  if (changed.length === 0) return null;
+  const names = (keys: string[]) => keys.map((k) => FIELD_NAMES[k] ?? k).join(', ');
+  if (!candidate)
+    return { text: `Changed elsewhere since you opened it: ${names(changed)}.`, blocksSave: false };
+  const mine = new Set(changedFields(opened, candidate));
+  const now = live as Record<string, unknown>;
+  const next = candidate as Record<string, unknown>;
+  const replaced = changed.filter((k) => mine.has(k) && JSON.stringify(now[k]) !== JSON.stringify(next[k]));
+  return {
+    text: replaced.length
+      ? `Changed elsewhere since you opened it; saving replaces: ${names(replaced)}.`
+      : `Changed elsewhere since you opened it (${names(changed)}); saving keeps those changes.`,
+    blocksSave: false,
+  };
+}
+
 /** "Make current values the default": one updateParameter per filter the URL sets. */
 export function defaultOps(
   parameters: readonly Parameter[] | undefined,
