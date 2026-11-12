@@ -346,4 +346,28 @@ describe('stacked long-format series on a time axis', () => {
       [ms[2], 2],
     ]);
   });
+
+  it('keeps the points of a scatter flagged as stacked, which is never stacked', () => {
+    const same = [
+      { hour: t[0], type: 'a', n: 1 },
+      { hour: t[0], type: 'a', n: 5 },
+    ];
+    expect(build({ kind: 'scatter', stacked: true }, same).series[0]!.data).toEqual([
+      [ms[0], 1],
+      [ms[0], 5],
+    ]);
+  });
+
+  it('shows symbols on a stacked line whose points all sit between gaps, however many rows', () => {
+    // Two series that never share an hour: after alignment every point is isolated, and a long line hides symbols.
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      hour: new Date(ms[0]! + i * 3_600_000).toISOString(),
+      type: i % 2 === 0 ? 'a' : 'b',
+      n: 1,
+    }));
+    const option = build({ kind: 'line', stacked: true }, many) as unknown as {
+      series: { showSymbol: boolean }[];
+    };
+    expect(option.series.map((s) => s.showSymbol)).toEqual([true, true]);
+  });
 });

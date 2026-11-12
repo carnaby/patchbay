@@ -244,6 +244,7 @@ everything built on it stays in sync.
   the 10,000 rows widgets get; a parent above 100,000 rows gives its last 100,000, with a warning). A derived dataset
   has no `refreshSec` or `accumulate` of its own: it refreshes when its source does. To keep a history, accumulate
   the source.
+- A stacked chart on a time axis lines up its series by time and leaves a gap where a series has no row for a time: timeBucket the rows to a common time before stacking, so every series has a point at each one.
 - `join { with, on, how, fields? }` adds columns where keys match: `on: ["country"]` when both sides use the name,
   `[{ "left": "code", "right": "iso" }]` otherwise, up to 4 keys. `how: "left"` (default) keeps every row, `"inner"`
   only rows with a match. Keys must have the same type; a time matches a number (both epoch ms), and text dates

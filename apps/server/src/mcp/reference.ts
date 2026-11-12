@@ -254,6 +254,7 @@ ${tableFns}
 - chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels?, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors?, referenceLines?, crossFilter? }
   kinds: ${CHART_KINDS.join(', ')}. "series" splits long-format data (one row per time+category) into lines/bars.
   xMin/xMax fix the x axis of a scatter with a numeric x.
+  A stacked chart on a time axis lines up its series by time and leaves a gap where a series has no row for a time: timeBucket the rows to a common time before stacking, so every series has a point at each one.
   showLabels puts the value on each mark. Unset, the browser shows none and snapshots label single-series bar charts
   of up to 12 bars; false turns them off in snapshots too.
   pie/donut: x = label, y[0] = value (aggregate first; at most 6 slices are kept). heatmap: x, series = y-axis category, y[0] = value.

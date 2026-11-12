@@ -56,7 +56,7 @@ describe('stacked charts on a time axis', () => {
     { hour, type: 'feature', n: 3 },
   ]);
 
-  it.each(['bar', 'area'])('stacks each %s segment on the segments of the same hour', (kind) => {
+  it.each(['bar', 'line', 'area'])('stacks each %s segment on the segments of the same hour', (kind) => {
     const s = segments(kind, rows);
     expect(s.bug).toEqual([
       [0, 0, 2],
