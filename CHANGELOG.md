@@ -6,6 +6,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-12
+
 ### Fixed
 
 - A wall screen whose dashboard was made private or removed kept asking for it: every minute from the next midnight
@@ -310,7 +312,8 @@ The server was reviewed adversarially before release, and every finding has a re
 - Hostile feeds are parsed in linear time off the main thread; snapshot drawing is bounded per render.
 - `URL_SOURCES=signed-in` keeps strangers from making a public instance fetch arbitrary addresses.
 
-[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/carnaby/patchbay/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/carnaby/patchbay/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/carnaby/patchbay/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/carnaby/patchbay/compare/v0.3.0...v0.3.1
