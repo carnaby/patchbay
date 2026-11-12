@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RetryLaterError } from './errors.ts';
-import { OutboundLimiter } from './outbound.ts';
+import { isBusyHostRefusal, OutboundLimiter } from './outbound.ts';
 
 const limiter = (connector: Record<string, number>) => new OutboundLimiter({ connector });
 
@@ -214,6 +214,27 @@ describe('http source budget', () => {
       status: 429,
       retryAfterSec: 10,
     });
+  });
+
+  it('tells its own per-host refusal apart from other messages, also when a reader names it', async () => {
+    const l = new OutboundLimiter({ perHostConcurrency: 1 });
+    void l.run('a', 'https://h.example/1', never);
+    const refusal = await l.run('b', 'https://h.example/2', never, { wait: false }).then(
+      () => 'granted',
+      (e: Error) => e.message,
+    );
+    expect(isBusyHostRefusal(refusal)).toBe(true);
+    expect(isBusyHostRefusal(`Source dataset "status" failed: ${refusal}`)).toBe(true);
+    expect(isBusyHostRefusal('Still loading; trying again shortly')).toBe(false);
+    expect(isBusyHostRefusal(`Upstream says: ${refusal}`)).toBe(false);
+    expect(isBusyHostRefusal(undefined)).toBe(false);
+  });
+
+  it('holds no global place while a request waits for its host', async () => {
+    const l = new OutboundLimiter({ concurrency: 2, perHostConcurrency: 1 });
+    void l.run('a', 'https://a.example/1', never);
+    void l.run('a', 'https://a.example/2', never).catch(() => {}); // waits for a.example
+    await expect(l.run('a', 'https://b.example/1', async () => 'b')).resolves.toBe('b');
   });
 
   it('frees the host place when the task fails', async () => {

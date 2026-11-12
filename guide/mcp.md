@@ -107,7 +107,11 @@ The answer of `apply_operations`:
   bring, so without `fields` the later steps that read them fail. `truncated: true` means the result has more rows than the 10,000 that widgets receive.
   A result larger than 4 MB as JSON comes back as an `error` with its columns and no rows, for every reader alike:
   add `limit`, `select` or `aggregate` steps. Sample rows (here and in `get_data`, `preview_data`) stop at about
-  200,000 characters, with a `note` when fewer rows than asked for fit.
+  200,000 characters, with a `note` when fewer rows than asked for fit. A check with `retryAfterSec` failed for now
+  and may pass by asking again after that many seconds (`get_data`); its `note` says whether the change was saved (in
+  a dry run: the operations are valid, nothing was saved) and names the cause: this server's own limit on requests to
+  one host, which is not the source's fault, or a source still loading when the 20 s for the check ran out. The check
+  of an accumulating dataset has a `note` on where its history is kept; two notes are joined in one.
 - `warnings`, when there is something to fix that did not fail the batch (see "Secrets" and "Colour and formatting").
 
 Sound cues are spelled out in `changes` whenever an operation adds, changes or removes one (trigger, sound, volume and

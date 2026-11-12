@@ -32,10 +32,17 @@ export const SCOPE_DEADLINE_MS = 20_000;
 export const SCOPE_TIMEOUT_MESSAGE =
   'Loading this dataset and the datasets it reads took longer than 20 s; shorten the chain or simplify its steps';
 /** The deadline passed while `id`'s source was still loading: the load goes on, so asking again joins or reads it. */
-export const stillLoadingMessage = (id: string) =>
-  `Source dataset "${id}" is still loading (its source is slow or busy); it is asked again shortly`;
+const STILL_LOADING_TAIL = ' is still loading (its source is slow or busy); it is asked again shortly';
+export const stillLoadingMessage = (id: string) => `Source dataset "${id}"${STILL_LOADING_TAIL}`;
 /** The same, shown on the widget of the dataset whose own source is the slow one. */
 export const STILL_LOADING_OWN = 'Still loading; trying again shortly';
+/**
+ * Whether a result is the deadline's "still loading" answer. It carries retryAfterSec like a refusal by this server's
+ * own limits, but its cause is a slow source; once the error became a result, its message is what tells them apart.
+ */
+export const isStillLoading = ({ error }: Pick<DatasetResult, 'error'>): boolean =>
+  error === STILL_LOADING_OWN ||
+  (error?.startsWith('Source dataset "') === true && error.endsWith(STILL_LOADING_TAIL));
 /** As the connector limiter's busy-host hint: a load still in flight has usually finished by then. */
 const STILL_LOADING_RETRY_SEC = 10;
 

@@ -352,25 +352,24 @@ than 64 levels. HTTP sources are fetched at most three at a time, two at a time 
 failing address is not asked again for 30 s. A request over the per-host limits waits up to 8 s for its turn (at most 16
 wait per host, 8 of them for one client; beyond that it is refused at once), then shows an error that the page retries
 after 10 s. The OAuth client metadata fetch never waits: it is refused at once. Built-in connectors share a separate
-budget per upstream host (four loads at a time and 120
-a minute): a load over it waits up to 8 s for its turn, then shows an error that the page retries after 10 s; every
-dataset, with the datasets it reads, has 20 s in all: when a source load is still pending then, its widget says the
-source is still loading and the page asks again after 10 s (otherwise, for example a slow chain of steps, the old
-message stays); the demo connectors never leave the server and are not counted. The pipeline worker's queue takes jobs
-round-robin per client, one client holding at most a tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are
-drawn one at a time in a worker thread, at most four requests in flight and two per client; each client may have four
-drawn at once and then one every two seconds (images served from the 30 s cache do not count), beyond which the API
-answers `429 Too Many Requests` with `Retry-After`. When a queue is full the API answers `503 Service Unavailable` with
-`Retry-After`, and live refreshes skip a beat, instead of the process running out of memory. Live refresh never runs for
-uploads and inline rows (they change only when edited) and at most every 30 s for HTTP sources. A dataset's result is
-sent only up to 4 MB as JSON (larger ones show an error asking for limit, select or aggregate steps); each result is
-serialised once and shared by everyone reading it, and response bodies still being read take at most 12 MB together (6
-MB per client), with at most 4 MB more waiting for room up to 10 s; further large reads get a 503 at once. Exports
-(`/api/dashboards/:id/export`) are sent within the same budget: the document is the one shared copy every reader of it
-gets, and uploaded tables go out in parts of 1 MB, each built only once the previous one has been read and given back
-once read. A part not read within 60 s ends the download. Each client may start ten exports at once and then one every
-two seconds (`429` with `Retry-After` beyond that); an export with tables is refused under memory pressure like other
-heavy work.
+budget per upstream host (four loads at a time and 120 a minute): a load over it waits up to 8 s for its turn, then
+shows an error that the page retries after 10 s; every dataset, with the datasets it reads, has 20 s in all: when a
+source load is still pending then, its widget says the source is still loading and the page asks again after 10 s
+(otherwise, for example a slow chain of steps, the old message stays); the demo connectors never leave the server and
+are not counted. The pipeline worker's queue takes jobs round-robin per client, one client holding at most a tenth of
+it. Snapshots (`snapshot.png`, `render_snapshot`) are drawn one at a time in a worker thread, at most four requests in
+flight and two per client; each client may have four drawn at once and then one every two seconds (images served from
+the 30 s cache do not count), beyond which the API answers `429 Too Many Requests` with `Retry-After`. When a queue is
+full the API answers `503 Service Unavailable` with `Retry-After`, and live refreshes skip a beat, instead of the
+process running out of memory. Live refresh never runs for uploads and inline rows (they change only when edited) and at
+most every 30 s for HTTP sources. A dataset's result is sent only up to 4 MB as JSON (larger ones show an error asking
+for limit, select or aggregate steps); each result is serialised once and shared by everyone reading it, and response
+bodies still being read take at most 12 MB together (6 MB per client), with at most 4 MB more waiting for room up to 10
+s; further large reads get a 503 at once. Exports (`/api/dashboards/:id/export`) are sent within the same budget: the
+document is the one shared copy every reader of it gets, and uploaded tables go out in parts of 1 MB, each built only
+once the previous one has been read and given back once read. A part not read within 60 s ends the download. Each client
+may start ten exports at once and then one every two seconds (`429` with `Retry-After` beyond that); an export with
+tables is refused under memory pressure like other heavy work.
 
 With the default `URL_SOURCES=everyone`, anyone who can edit a dashboard, including an anonymous visitor, can make
 the server send a POST with a JSON body of their choosing to any public address, for example a chat or automation

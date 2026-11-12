@@ -34,8 +34,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 - HTTP sources and feeds on one host now wait their turn for up to 8 seconds instead of failing with "already loading
   a lot" when more than two load at once, so a dashboard with several addresses on one host, such as a status wall,
   loads all of them. What one host receives from the server stays limited to two requests at a time and 60 a minute.
-- When the server's own load limit refuses a data check of `apply_operations`, the check now says that the change is
-  saved and when to look again.
+- When the server's own load limit refuses a data check of `apply_operations`, or its source is still loading after
+  20 seconds, the check now says which of the two it was, that the change is saved, and when to look again.
 
 ## [0.3.4] - 2026-11-12
 

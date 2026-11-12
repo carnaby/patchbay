@@ -1021,9 +1021,102 @@ describe('MCP tools', () => {
       const check = applied.dataChecks.find((c: { datasetId: string }) => c.datasetId === 'root');
       expect(check.error).toMatch(/already loading a lot/);
       expect(check.retryAfterSec).toBe(10);
-      expect(check.note).toMatch(/the change is saved/);
+      expect(check.note).toMatch(/^This server's own limit .*the change is saved/);
+      // A dry run says nothing was saved; an accumulating dataset keeps its own note after this one.
+      const dry = JSON.parse(
+        text(
+          await agent.callTool({
+            name: 'apply_operations',
+            arguments: {
+              dashboardId,
+              dryRun: true,
+              operations: [
+                {
+                  op: 'addDataset',
+                  dataset: {
+                    id: 'history',
+                    name: 'History',
+                    source: { kind: 'inline', rows: [{ a: 1 }] },
+                    accumulate: 10,
+                  },
+                },
+              ],
+            },
+          }),
+        ),
+      );
+      const history = dry.dataChecks.find((c: { datasetId: string }) => c.datasetId === 'history');
+      expect(history.retryAfterSec).toBe(10);
+      expect(history.note).toMatch(
+        /^This server's own limit [^.]*; the operations are valid, nothing was saved\. The accumulate history /,
+      );
+      expect(history.note).not.toMatch(/the change is saved/);
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  it('says a data check whose source was still loading at the deadline is the source, and the change is saved', async () => {
+    const agent = await ownClient('slow-check-agent@example.com');
+    const { dashboardId } = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'S' } })),
+    );
+    let finish!: () => void;
+    const slow = new Promise<void>((r) => (finish = r));
+    const load = deps.data.loadSource.bind(deps.data);
+    const loads = vi.spyOn(deps.data, 'loadSource').mockImplementation(async (t, dataset) => {
+      if (dataset.id === 'root') await slow;
+      return load(t, dataset);
+    });
+    // The real deadline is 20 s; a short one reaches the same "still loading" path.
+    const scope = deps.data.scope.bind(deps.data);
+    const scopes = vi
+      .spyOn(deps.data, 'scope')
+      .mockImplementation((t, doc, options) => scope(t, doc, { ...options, deadlineMs: 100 }));
+    const operations = [
+      {
+        op: 'addDataset',
+        dataset: { id: 'root', name: 'Root', source: { kind: 'inline', rows: [{ a: 1 }] } },
+      },
+      { op: 'addDataset', dataset: { id: 'child', name: 'Child', source: { kind: 'dataset', id: 'root' } } },
+    ];
+    try {
+      const checks = async (dryRun: boolean) => {
+        const applied = JSON.parse(
+          text(
+            await agent.callTool({
+              name: 'apply_operations',
+              arguments: { dashboardId, dryRun, operations },
+            }),
+          ),
+        );
+        const list = applied.dataChecks as {
+          datasetId: string;
+          error?: string;
+          retryAfterSec?: number;
+          note?: string;
+        }[];
+        expect(list.map((c) => c.datasetId).sort()).toEqual(['child', 'root']);
+        return list;
+      };
+      for (const check of await checks(true)) {
+        expect(check.error).toMatch(/still loading/i);
+        expect(check.retryAfterSec).toBe(10);
+        expect(check.note).toBe(
+          'The source is still loading (see error); the operations are valid, nothing was saved.',
+        );
+      }
+      for (const check of await checks(false)) {
+        expect(check.error).toMatch(/still loading/i);
+        expect(check.note).toBe(
+          'The source is still loading (see error); the change is saved. Check again with get_data in 10 seconds.',
+        );
+        expect(check.note).not.toMatch(/limit/);
+      }
+    } finally {
+      finish();
+      scopes.mockRestore();
+      loads.mockRestore();
     }
   });
 

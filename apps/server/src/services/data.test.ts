@@ -474,7 +474,11 @@ describe('http sources', () => {
 
   it('queues requests to a busy host, refuses beyond the queue, and does not remember that refusal', async () => {
     const finish: ((v: unknown) => void)[] = [];
-    fetchMock.mockImplementation(() => new Promise((r) => finish.push(r)));
+    fetchMock.mockImplementation((url) =>
+      url.startsWith('https://other.example/')
+        ? Promise.resolve([{ x: 1 }])
+        : new Promise((r) => finish.push(r)),
+    );
     const outbound = new OutboundLimiter({ perHostConcurrency: 1, maxQueuedPerClient: 1 });
     const data = new DataService(connectors, store, new InlineRunner(), { outbound });
     const first = data.resolve(target, http('https://host.example/a'));
@@ -482,6 +486,8 @@ describe('http sources', () => {
     const refused = await data.resolve(target, http('https://host.example/c'));
     expect(refused.error).toMatch(/already loading a lot from host\.example/);
     expect(refused.retryAfterSec).toBe(10);
+    // Another host is not affected: it neither waits behind host.example nor counts against its queue.
+    expect((await data.resolve(target, http('https://other.example/a'))).table.rows).toEqual([{ x: 1 }]);
     await vi.waitFor(() => expect(finish).toHaveLength(1));
     finish[0]!([{ y: 1 }]);
     await vi.waitFor(() => expect(finish).toHaveLength(2));

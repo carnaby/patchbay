@@ -40,10 +40,12 @@ import { SCOPES } from '../auth/tokens.ts';
 import type { Deps } from '../context.ts';
 import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import type { Principal } from '../services/dashboards.ts';
+import { isStillLoading } from '../services/scope.ts';
 import { listTemplates } from '../services/templates.ts';
 import { optionsLoader, RawParametersSchema, readView, unknownIds } from '../services/view.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
+import { isBusyHostRefusal } from '../util/outbound.ts';
 import { APP_VERSION } from '../util/version.ts';
 import { advertise } from './input-schema.ts';
 import { referenceText, SERVER_INSTRUCTIONS } from './reference.ts';
@@ -65,11 +67,18 @@ const DATA_CHECK_SAMPLE = 3;
 const BUSY_CHECK_SAVED = 'The server is busy, so this dataset was not checked; the change is saved.';
 const BUSY_CHECK_DRY =
   'The server is busy, so this dataset was not checked; the operations are valid, nothing was saved.';
-/** A data check refused by this server's own per-host limit (the result carries retryAfterSec): not the source's fault. */
+/**
+ * Data checks that ended with a retry hint, by cause. Both say what was saved; only a per-host refusal by this server
+ * may say the source is not at fault, while a source still loading at the deadline is the source's own slowness.
+ */
 const LIMITED_CHECK_SAVED =
   "This server's own limit on requests to one host refused the check for now, not the source; the change is saved. Check again with get_data in a few seconds.";
 const LIMITED_CHECK_DRY =
   "This server's own limit on requests to one host refused the check for now, not the source; the operations are valid, nothing was saved.";
+const stillLoadingCheckSaved = (seconds: number) =>
+  `The source is still loading (see error); the change is saved. Check again with get_data in ${seconds} seconds.`;
+const STILL_LOADING_CHECK_DRY =
+  'The source is still loading (see error); the operations are valid, nothing was saved.';
 
 /**
  * Agents watching an accumulating dataset over MCP saw rows arrive at the rhythm of their own calls, not refreshSec,
@@ -486,8 +495,11 @@ export function createMcp(deps: Deps) {
                 return { datasetId: d.id, error: args.dryRun ? BUSY_CHECK_DRY : BUSY_CHECK_SAVED };
               }
               const notes = [
-                ...(r.error && r.retryAfterSec
+                ...(r.retryAfterSec && isBusyHostRefusal(r.error)
                   ? [args.dryRun ? LIMITED_CHECK_DRY : LIMITED_CHECK_SAVED]
+                  : []),
+                ...(r.retryAfterSec && isStillLoading(r)
+                  ? [args.dryRun ? STILL_LOADING_CHECK_DRY : stillLoadingCheckSaved(r.retryAfterSec)]
                   : []),
                 ...(d.accumulate > 0 ? [ACCUMULATE_NOTE] : []),
               ];

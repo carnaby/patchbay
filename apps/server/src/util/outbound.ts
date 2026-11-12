@@ -69,13 +69,21 @@ interface Bucket {
   wake: NodeJS.Timeout | null;
 }
 
+const BUSY_HOST_HEAD = 'This server is already loading a lot from ';
+const BUSY_HOST_TAIL = '; it will try again shortly';
 /** Answered for both kinds of request: the status and the retry hint make the page ask again by itself. */
-const busyHost = (host: string) =>
-  new RetryLaterError(
-    429,
-    `This server is already loading a lot from ${host}; it will try again shortly`,
-    10,
-  );
+const busyHost = (host: string) => new RetryLaterError(429, `${BUSY_HOST_HEAD}${host}${BUSY_HOST_TAIL}`, 10);
+
+/**
+ * Whether an error message is a per-host refusal of this limiter, also as the reason a dataset reading the refused one
+ * failed (`Source dataset "x" failed: …`). Results carry only the message, and a slow source's "still loading" has a
+ * retry hint too, so the message is what names the cause.
+ */
+export const isBusyHostRefusal = (message: string | undefined): boolean => {
+  if (message === undefined || !message.endsWith(BUSY_HOST_TAIL)) return false;
+  const at = message.indexOf(BUSY_HOST_HEAD);
+  return at === 0 || (at > 0 && message.startsWith('Source dataset "'));
+};
 
 /** Places and a minute budget per host, with a bounded FIFO queue of those waiting for them. */
 class HostQueue {
