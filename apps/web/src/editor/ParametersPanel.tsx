@@ -313,7 +313,7 @@ function ParameterForm({
           set={set}
           optionsDraft={optionsDraft}
           setOptionsDraft={setOptionsDraft}
-          initialOptions={initial.type === 'select' ? (initial.options ?? []) : []}
+          initialOptions={initial.options ?? []}
         />
       ) : initial.type === 'text' ? (
         <>
@@ -343,12 +343,14 @@ function ParameterForm({
         <DateFields draft={draft} set={set} />
       )}
       {'error' in check ? <p className="text-xs text-bad">{check.error}</p> : null}
-      {elsewhere ? (
-        <p role="status" className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
-          <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" aria-hidden="true" />
-          <span>{elsewhere.text}</span>
-        </p>
-      ) : null}
+      <div role="status">
+        {elsewhere ? (
+          <p className="flex items-start gap-2 rounded-lg bg-warn/10 p-2.5 text-xs text-ink">
+            <AlertTriangle className="mt-px size-3.5 shrink-0 text-warn" aria-hidden="true" />
+            <span>{elsewhere.text}</span>
+          </p>
+        ) : null}
+      </div>
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={onCancel}>
           Cancel
@@ -452,7 +454,7 @@ function SelectFields({
       ) : (
         <Field
           label="Options"
-          hint='One per line: a value, or "value | Label". Write \| for a "|" inside one; ↵ stands for a line break. Values appear in links.'
+          hint='One per line: a value, or "value | Label". Write \| for a "|" inside one; a line break shows as ↵. Values appear in links.'
         >
           {(fid) => (
             <Textarea
@@ -462,7 +464,10 @@ function SelectFields({
               spellCheck={false}
               onChange={(e) => {
                 setOptionsDraft(e.target.value);
-                const next = { ...draft, options: parseOptions(e.target.value, options) };
+                const next = {
+                  ...draft,
+                  options: parseOptions(e.target.value, [...options, ...initialOptions]),
+                };
                 set({ options: next.options, ...reseatDefault(next, options) });
               }}
             />

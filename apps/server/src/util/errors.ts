@@ -8,7 +8,7 @@ export class HttpError extends Error {
   /**
    * An error that only an edit, a secret or a server setting can fix. In-band results carry it so the page asks only
    * rarely (DatasetResult.lasting). A refusal of this server's load limits (busy, rate, budget) is never lasting in a
-   * result; the result size cap is (result-wire.ts `tooLargeResult`): a result over it stays over until it is edited.
+   * result; the result size cap is (result-wire.ts `tooLargeResult`): a result over it stays over until it is edited or its source shrinks.
    * RenderFailedError uses the flag only for the snapshot cache and never reaches a result.
    */
   readonly lasting: boolean;

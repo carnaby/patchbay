@@ -317,6 +317,15 @@ describe('options with "|" or a line break', () => {
       error: expect.stringContaining('appears twice'),
     });
   });
+  it('restores a line break and a number when a changed line is typed back to how it opened', () => {
+    const opened = [{ value: 'x\ny' }, { value: 2026 }];
+    const edited = parseOptions('x↵yz\n20261', opened);
+    expect(edited).toEqual([{ value: 'x↵yz' }, { value: '20261' }]);
+    // The textarea looks a line up in the draft's options and in the opened ones.
+    expect(parseOptions('x↵y\n2026', [...edited, ...opened])).toEqual(opened);
+    // Looking only in the draft, as before, loses both.
+    expect(parseOptions('x↵y\n2026', edited)).toEqual([{ value: 'x↵y' }, { value: '2026' }]);
+  });
   it('keeps the opened options when the list is switched to a column and back', () => {
     const options = [{ value: 'a|b' }, { value: 2026 }, { value: 'x\ny' }];
     const { options: _o, ...dataDraft } = { ...region, ...choiceSourcePatch('data', region, '', 'sales') };
