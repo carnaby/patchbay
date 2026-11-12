@@ -235,10 +235,21 @@ function typesOf(table: DataTable): Record<string, ColumnType> {
   return Object.fromEntries(table.columns.map((c) => [c.name, c.type]));
 }
 
-function requireFields(table: DataTable, fields: (string | undefined)[], step: number) {
+/** How one step treats a column the table lacks: lenient only on an open input that still has no rows (runPipeline). */
+interface FieldCheck {
+  lenient: boolean;
+  /** Columns the step read without checking, in the trace entry. */
+  unchecked: string[];
+}
+
+function requireFields(table: DataTable, fields: (string | undefined)[], step: number, check: FieldCheck) {
   const names = new Set(table.columns.map((c) => c.name));
   for (const f of fields) {
     if (f !== undefined && !names.has(f)) {
+      if (check.lenient) {
+        if (!check.unchecked.includes(f)) check.unchecked.push(f);
+        continue;
+      }
       throw new TransformError(
         `Unknown column "${f}". Available: ${[...names].join(', ') || '(none)'}`,
         step,
@@ -363,7 +374,8 @@ export function unionColumns(tables: readonly (readonly string[])[], origin?: st
  * column: the parent of a derived dataset, otherwise the dataset itself.
  */
 export interface PipelineInputs {
-  tables: Record<string, { name: string; table: DataTable }>;
+  /** open: no rows, from a source that returned none (see runPipeline); when absent, whether the table has no rows. */
+  tables: Record<string, { name: string; table: DataTable; open?: boolean }>;
   self: { id: string; name: string };
 }
 
@@ -402,10 +414,23 @@ function inputTable(inputs: PipelineInputs | undefined, id: string, step: number
   return inputs.tables[id]!;
 }
 
-function requireFieldsIn(table: DataTable, fields: readonly string[], datasetId: string, step: number) {
+function requireFieldsIn(
+  table: DataTable,
+  fields: readonly string[],
+  datasetId: string,
+  step: number,
+  check: FieldCheck,
+  otherOpen: boolean,
+) {
   const names = new Set(table.columns.map((c) => c.name));
   for (const f of fields) {
     if (!names.has(f)) {
+      // The other side's own openness decides, whatever this table is: its columns are known once it had rows.
+      if (otherOpen) {
+        const name = `${datasetId}.${f}`;
+        if (!check.unchecked.includes(name)) check.unchecked.push(name);
+        continue;
+      }
       throw new TransformError(
         `Unknown column "${f}" in "${datasetId}". Available: ${[...names].join(', ') || '(none)'}`,
         step,
@@ -425,12 +450,13 @@ function applyStep(
   step: number,
   budget: RunBudget,
   inputs: PipelineInputs | undefined,
+  check: FieldCheck,
 ): DataTable {
   const known = typesOf(table);
   const order = table.columns.map((c) => c.name);
   switch (t.type) {
     case 'filter': {
-      requireFields(table, [...referencedFields(parse(t.expr, BOUND))], step);
+      requireFields(table, [...referencedFields(parse(t.expr, BOUND))], step, check);
       const fn = compileFor(t.expr, table, () => budget.tick(), BOUND);
       return budget.measure({
         columns: table.columns,
@@ -441,9 +467,12 @@ function applyStep(
       });
     }
     case 'select': {
-      requireFields(table, t.fields, step);
+      requireFields(table, t.fields, step, check);
       return budget.measure({
-        columns: t.fields.map((f) => table.columns.find((c) => c.name === f)!),
+        // A field the table lacks passed only as unchecked: there are no rows, so every value is null.
+        columns: t.fields.map(
+          (f) => table.columns.find((c) => c.name === f) ?? { name: f, type: 'string' as const },
+        ),
         rows: table.rows.map((r) => Object.fromEntries(t.fields.map((f) => [f, r[f] ?? null]))),
       });
     }
@@ -456,7 +485,7 @@ function applyStep(
       });
     }
     case 'rename': {
-      requireFields(table, Object.keys(t.map), step);
+      requireFields(table, Object.keys(t.map), step, check);
       // Own entries only: a plain lookup turns a "__proto__" or "constructor" column into Object's members.
       const to = (n: string) => (Object.hasOwn(t.map, n) ? t.map[n]! : n);
       // Checked on the final names so a swap stays legal; a collision would silently merge two columns' values.
@@ -482,7 +511,7 @@ function applyStep(
       });
     }
     case 'derive': {
-      requireFields(table, [...referencedFields(parse(t.expr, BOUND))], step);
+      requireFields(table, [...referencedFields(parse(t.expr, BOUND))], step, check);
       const fn = compileFor(t.expr, table, () => budget.tick(), BOUND);
       const replaces = order.includes(t.as);
       // Charged row by row: text built by an expression is new memory, and 40 derive steps of long text over a
@@ -501,6 +530,7 @@ function applyStep(
         table,
         t.by.map((b) => b.field),
         step,
+        check,
       );
       let compares = 0;
       // Text compares with localeCompare, about a microsecond each; a large sort can take seconds on its own.
@@ -520,7 +550,7 @@ function applyStep(
         rows: t.from === 'end' ? table.rows.slice(-t.n) : table.rows.slice(0, t.n),
       });
     case 'aggregate': {
-      requireFields(table, [...t.groupBy, ...t.metrics.map((m) => m.field)], step);
+      requireFields(table, [...t.groupBy, ...t.metrics.map((m) => m.field)], step, check);
       for (const m of t.metrics) {
         if (m.op !== 'count' && !m.field) throw new TransformError(`Metric "${m.op}" needs a field`, step);
       }
@@ -571,8 +601,9 @@ function applyStep(
       return retype(rows, [...t.groupBy, ...t.metrics.map(metricName)], keepTypes);
     }
     case 'timeBucket': {
-      requireFields(table, [t.field], step);
-      if (known[t.field] !== 'time' && known[t.field] !== 'number') {
+      requireFields(table, [t.field], step, check);
+      // With no rows a column's type is a guess from no values: one derived from an unchecked column is typed text.
+      if (!check.lenient && known[t.field] !== 'time' && known[t.field] !== 'number') {
         throw new TransformError(`Column "${t.field}" is not a time column`, step);
       }
       const as = t.as ?? t.field;
@@ -589,7 +620,7 @@ function applyStep(
       );
     }
     case 'window': {
-      requireFields(table, [t.field, ...(t.partitionBy ?? [])], step);
+      requireFields(table, [t.field, ...(t.partitionBy ?? [])], step, check);
       const as = t.as ?? `${t.op}_${t.field}`;
       if (!order.includes(as)) budget.ensure(table.rows.length * cellSize(as, 0));
       const size = t.size ?? 7;
@@ -657,7 +688,7 @@ function applyStep(
       return budget.measure(retype(rows, order.includes(as) ? order : [...order, as], known));
     }
     case 'fillNull': {
-      requireFields(table, t.fields, step);
+      requireFields(table, t.fields, step, check);
       // The value is one shared string in memory but is repeated in every row of the JSON.
       const grows = cellSize('', t.value) - cellSize('', null);
       const rows = table.rows.map((r) => {
@@ -675,24 +706,31 @@ function applyStep(
       return retype(rows, order, known);
     }
     case 'join': {
-      const other = inputTable(inputs, t.with, step).table;
+      const entry = inputTable(inputs, t.with, step);
+      const other = entry.table;
+      const otherOpen = entry.open ?? other.rows.length === 0;
       const keys = joinKeys(t.on);
       requireFields(
         table,
         keys.map((k) => k.left),
         step,
+        check,
       );
       requireFieldsIn(
         other,
         keys.map((k) => k.right),
         t.with,
         step,
+        check,
+        otherOpen,
       );
-      if (t.fields) requireFieldsIn(other, t.fields, t.with, step);
+      if (t.fields) requireFieldsIn(other, t.fields, t.with, step, check, otherOpen);
       const theirs = typesOf(other);
       for (const k of keys) {
-        const mine = known[k.left]!;
-        const their = theirs[k.right]!;
+        const mine = known[k.left];
+        const their = theirs[k.right];
+        // An open side has no rows, so no values that could mismatch, and its column types are guesses.
+        if (mine === undefined || their === undefined || check.lenient || otherOpen) continue;
         if (!sameKeyType(mine, their)) {
           throw new TransformError(
             `Key "${k.left}" is ${TYPE_WORDS[mine]} here and ${TYPE_WORDS[their]} in "${t.with}"; convert one side with derive ${keyConversion(k, mine, their)}`,
@@ -746,7 +784,7 @@ function applyStep(
         else if (t.how === 'left') emit(row, null);
       }
       const types: Record<string, ColumnType> = { ...known };
-      for (const b of brought) setCell(types, b.name, theirs[b.from]!);
+      for (const b of brought) if (theirs[b.from] !== undefined) setCell(types, b.name, theirs[b.from]!);
       return retype(rows, [...order, ...brought.map((b) => b.name)], types);
     }
     case 'union': {
@@ -776,7 +814,10 @@ function applyStep(
         );
       }
       const seen = new Map<string, Set<ColumnType>>();
-      for (const s of sources) {
+      // A table without rows has no values that could disagree: its column types are guesses (text, when made from
+      // columns it never had), and an empty list must not turn a time column of the whole union into text.
+      const withRows = sources.filter((s) => s.table.rows.length > 0);
+      for (const s of withRows.length ? withRows : sources) {
         for (const c of s.table.columns) {
           const set = seen.get(c.name) ?? new Set<ColumnType>();
           set.add(c.type);
@@ -828,7 +869,9 @@ function applyStep(
 export interface PipelineResult {
   table: DataTable;
   /** Row count after each step - handy for explaining a pipeline to a human or an agent. */
-  trace: { step: number; type: Transform['type']; rows: number }[];
+  trace: { step: number; type: Transform['type']; rows: number; unchecked?: string[] }[];
+  /** The run was open and its result has no rows: datasets reading it do not check columns either. */
+  open?: boolean;
 }
 
 /**
@@ -855,8 +898,12 @@ export function runPipeline(
   input: DataTable,
   transforms: Transform[],
   inputs?: PipelineInputs,
+  options: { open?: boolean } = {},
 ): PipelineResult {
   let table = input;
+  // A source with no rows has no columns to check; a table emptied by a step, here or in the dataset it reads, still
+  // has them, so the caller passes the lineage's openness down instead of it being read off this input.
+  const open = options.open ?? input.rows.length === 0;
   const trace: PipelineResult['trace'] = [];
   const budget = new RunBudget(Date.now() + PIPELINE_LIMITS.maxMillis);
   // Only a run with steps is measured, matching the pool, which hands a table without steps back untouched.
@@ -876,15 +923,21 @@ export function runPipeline(
     if (table.rows.length * Math.max(table.columns.length, 1) > PIPELINE_LIMITS.maxCells) {
       throw new TransformError('Too much data to process; filter or aggregate earlier', i);
     }
+    const check: FieldCheck = { lenient: open && table.rows.length === 0, unchecked: [] };
     try {
-      table = applyStep(table, t, i, budget, inputs);
+      table = applyStep(table, t, i, budget, inputs, check);
     } catch (e) {
       if (e instanceof TransformError) throw e;
       throw new TransformError(e instanceof Error ? e.message : String(e), i);
     }
-    trace.push({ step: i, type: t.type, rows: table.rows.length });
+    trace.push({
+      step: i,
+      type: t.type,
+      rows: table.rows.length,
+      ...(check.unchecked.length ? { unchecked: check.unchecked } : {}),
+    });
   });
-  return { table, trace };
+  return { table, trace, ...(open && table.rows.length === 0 ? { open: true } : {}) };
 }
 
 /** Gives every step without an id a deterministic one (`s1`, `s2`, ...), unique within the pipeline. */

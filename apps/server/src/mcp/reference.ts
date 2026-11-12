@@ -167,6 +167,9 @@ operations below instead of resending the whole pipeline.
   inside it.
 - window { op, field, as?, size?, partitionBy? }   ops: ${WINDOW_OPS.join(', ')} (sort first)
 - fillNull { fields, value }
+A source that returns no rows (an empty list, the usual answer of an open-incidents endpoint) has no columns to check
+against: steps that read a column it lacks run anyway, the column is empty, and preview_data and the data checks list
+them under notChecked. With rows, an unknown column is an error, also after a filter that leaves none.
 Limits per run: ${PIPELINE_LIMITS.maxMillis / 1000} s, and every table (the source and each step's result) at most
 ${(PIPELINE_LIMITS.maxSize / 1_000_000).toLocaleString('en')} million characters as JSON: on large data filter, aggregate, limit or
 select early. A dataset's result (what its widgets receive, at most 10,000 rows) may be at most ${MAX_RESULT_BYTES / 1024 / 1024} MB
@@ -184,7 +187,8 @@ as JSON; a larger one comes back as an error with its columns and no rows: add l
 - union { with: [ids], origin?: "column", labels?: { id: "label" } }: append rows of other datasets, columns matched
   by name. With origin, chart the result with series: "<origin column>" to compare sources in one chart. Labels
   default to the dataset names (for a derived dataset's own rows, its source dataset's name); set them to keep series
-  values and colours stable when a dataset is renamed. A column with different types becomes text.
+  values and colours stable when a dataset is renamed. A column with different types becomes text; a dataset without
+  rows does not count.
 - Whole-table functions in expressions: ${Object.keys(TABLE_FUNCTIONS).join(', ')} (column, by?). They use the rows at that point of the pipeline.
   Share of total: derive { as: "share", expr: "round(sales / col_sum(sales) * 100, 1)" }.
 - Chains are at most ${LIMITS.datasetDepth} deep; a dataset reads at most ${LIMITS.datasetInputs} others; joins and unions produce at most ${maxRows} rows.

@@ -108,6 +108,20 @@ function sampleTable(table: DataTable, limit: number, from: 'start' | 'end' = 's
   };
 }
 
+/**
+ * Steps that read columns an empty source does not have run without them (core runPipeline): the agent hears which,
+ * because a typo there only shows once rows arrive.
+ */
+function notCheckedNote(trace: DatasetResult['trace']): { notChecked?: string } {
+  const steps = (trace ?? []).filter((s) => s.unchecked?.length);
+  if (!steps.length) return {};
+  const names = [...new Set(steps.flatMap((s) => s.unchecked!))].join(', ');
+  const which = steps.map((s) => s.step + 1).join(', ');
+  return {
+    notChecked: `The source returned no rows, so step${steps.length > 1 ? 's' : ''} ${which} could not check ${names}; they are checked when rows arrive. To check the names now, preview a related source that has rows (for example all incidents instead of the open ones).`,
+  };
+}
+
 let idCounter = 0;
 const slug = (s: string) =>
   s
@@ -474,6 +488,7 @@ export function createMcp(deps: Deps) {
                 sampleRows: fitRows(r.table, r.table.rows.slice(0, DATA_CHECK_SAMPLE), SAMPLE_CHARS / 30),
                 error: r.error,
                 ...(r.warning ? { warning: r.warning } : {}),
+                ...notCheckedNote(r.trace),
                 ...(d.accumulate > 0 ? { note: ACCUMULATE_NOTE } : {}),
               };
             }),
@@ -543,6 +558,7 @@ export function createMcp(deps: Deps) {
           return json({
             ...sampleTable(result.table, args.sampleRows),
             ...(result.warning ? { warning: result.warning } : {}),
+            ...notCheckedNote(result.trace),
             trace: result.trace,
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
             suggestions: suggestionOps(

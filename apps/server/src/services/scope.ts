@@ -49,6 +49,8 @@ export interface FullResult {
   warning?: string;
   /** Rows dropped from the start to fit PIPELINE_LIMITS.maxRows. */
   cut: number;
+  /** No rows, from a source that returned none: datasets reading it do not check columns (core runPipeline). */
+  open?: boolean;
 }
 
 export interface ScopeOptions {
@@ -410,7 +412,7 @@ export class ResolveScope {
     if (refs.length) {
       const tables: PipelineInputs['tables'] = {};
       refs.forEach((id, i) => {
-        tables[id] = { name: this.nameOf(id), table: others[i]!.table };
+        tables[id] = { name: this.nameOf(id), table: others[i]!.table, open: others[i]!.open === true };
         fetchedAt = Math.min(fetchedAt, others[i]!.fetchedAt);
       });
       // Union labels the rows it starts with after where they came from: the parent of a derived dataset.
@@ -419,13 +421,23 @@ export class ResolveScope {
     }
     // Shared across requests only while in flight in practice: the result cache is the 8 MB one widget results use,
     // so a large table is not kept. Across requests the final capped results are shared instead (finalKey).
+    // A derived dataset's input is its parent's result: a parent a filter emptied still has known columns.
+    const open =
+      source.kind === 'dataset' ? 'open' in input && input.open === true : input.table.rows.length === 0;
     const result = await this.within(() =>
-      this.data.processShared(input.table, dataset.transforms, inputs, input.fresh),
+      this.data.processShared(input.table, dataset.transforms, inputs, input.fresh, open),
     );
     const cut = Math.max(0, result.table.rows.length - PIPELINE_LIMITS.maxRows);
     const table = cut ? lastRows(result.table) : result.table;
     const warning = [...new Set(warnings)].join('; ');
-    return { table, trace: result.trace, fetchedAt, cut, ...(warning ? { warning } : {}) };
+    return {
+      table,
+      trace: result.trace,
+      fetchedAt,
+      cut,
+      ...(warning ? { warning } : {}),
+      ...(result.open ? { open: true } : {}),
+    };
   }
 
   /** A dataset this one reads, with its warnings passed on and its failure named after it. */

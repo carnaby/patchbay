@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   compile,
+  type DataTable,
   ExprError,
   inferTable,
   MAX_STRING,
   PIPELINE_LIMITS,
+  type PipelineInputs,
   runPipeline,
   TransformError,
   type TransformInput,
@@ -194,5 +196,168 @@ describe('text limits in expressions', () => {
       compile('year(s)')({ s: 'Sat Oct 31 2026 12:00:00 GMT+0100 (Central European Standard Time)' }),
     ).toBe(2026);
     expect(compile('date(s)')({ s: `2026-10-31${' '.repeat(5000)}` })).toBeNull();
+  });
+});
+
+describe('a source that returned no rows', () => {
+  // An open-incidents endpoint answers { "incidents": [] } most of the time: no rows, so no columns to check.
+  const empty = inferTable([]);
+  const incidents = inferTable([
+    { name: 'API errors', status: 'investigating', impact: 'minor', created_at: '2026-11-12T08:00:00Z' },
+  ]);
+  const wall = steps([
+    { type: 'filter', expr: 'status != "resolved"' },
+    { type: 'derive', as: 'service', expr: '"GitHub"' },
+    { type: 'derive', as: 'detail', expr: 'name' },
+    { type: 'derive', as: 'since', expr: 'created_at' },
+    { type: 'sort', by: [{ field: 'created_at', dir: 'desc' }] },
+    { type: 'select', fields: ['service', 'detail', 'since', 'impact'] },
+  ]);
+  const inputs = (tables: Record<string, DataTable>): PipelineInputs => ({
+    tables: Object.fromEntries(Object.entries(tables).map(([id, table]) => [id, { name: id, table }])),
+    self: { id: 'self', name: 'Self' },
+  });
+
+  it('runs steps that read columns it does not have, and names them in the trace', () => {
+    const { table, trace } = runPipeline(empty, wall);
+    expect(table.rows).toEqual([]);
+    expect(table.columns.map((c) => c.name)).toEqual(['service', 'detail', 'since', 'impact']);
+    expect(trace.map((s) => s.unchecked ?? [])).toEqual([
+      ['status'],
+      [],
+      ['name'],
+      ['created_at'],
+      ['created_at'],
+      ['impact'],
+    ]);
+  });
+
+  it('checks the same steps as strictly as before once the source has rows', () => {
+    expect(runPipeline(incidents, wall).table.rows).toHaveLength(1);
+    expect(runPipeline(incidents, wall).trace.every((s) => s.unchecked === undefined)).toBe(true);
+    expect(() => runPipeline(incidents, steps([{ type: 'derive', as: 'link', expr: 'shortlink' }]))).toThrow(
+      'Step 1: Unknown column "shortlink". Available: name, status, impact, created_at',
+    );
+  });
+
+  it('keeps checking after a filter leaves no rows, because the columns are known', () => {
+    expect(() =>
+      runPipeline(
+        incidents,
+        steps([
+          { type: 'filter', expr: 'status == "resolved"' },
+          { type: 'derive', as: 'detail', expr: 'nmae' },
+        ]),
+      ),
+    ).toThrow('Step 2: Unknown column "nmae"');
+  });
+
+  it('keeps checking in a dataset that reads one a filter emptied, and passes openness on from an empty source', () => {
+    const emptied = runPipeline(incidents, steps([{ type: 'filter', expr: 'status == "resolved"' }]));
+    expect(emptied.open).toBeUndefined();
+    expect(() =>
+      runPipeline(emptied.table, steps([{ type: 'derive', as: 'detail', expr: 'nmae' }]), undefined, {
+        open: false,
+      }),
+    ).toThrow('Step 1: Unknown column "nmae"');
+    const fromEmpty = runPipeline(empty, steps([{ type: 'derive', as: 'service', expr: '"GitHub"' }]));
+    expect(fromEmpty.open).toBe(true);
+    const next = runPipeline(
+      fromEmpty.table,
+      steps([{ type: 'derive', as: 'detail', expr: 'name' }]),
+      undefined,
+      {
+        open: true,
+      },
+    );
+    expect(next.trace[0]!.unchecked).toEqual(['name']);
+    const regions = runPipeline(
+      inferTable([{ code: 'SK', region: 'Central' }]),
+      steps([{ type: 'filter', expr: 'code == "XX"' }]),
+    ).table;
+    expect(() =>
+      runPipeline(
+        inferTable([{ code: 'SK' }]),
+        steps([{ type: 'join', with: 'regions', on: ['code'], fields: ['regoin'] }]),
+        {
+          tables: { regions: { name: 'regions', table: regions, open: false } },
+          self: { id: 'self', name: 'Self' },
+        },
+      ),
+    ).toThrow('Unknown column "regoin" in "regions"');
+  });
+
+  it('runs a time step and a join on a column made from a column it could not check', () => {
+    // retype has no row to look at, so such a column is typed text; its type is a guess, not a mismatch.
+    expect(
+      runPipeline(
+        empty,
+        steps([
+          { type: 'derive', as: 'since', expr: 'created_at' },
+          { type: 'timeBucket', field: 'since', unit: 'day' },
+        ]),
+      ).table.rows,
+    ).toEqual([]);
+    const days = inferTable([{ day: '2026-11-12T00:00:00Z', n: 1 }]);
+    expect(
+      runPipeline(
+        empty,
+        steps([
+          { type: 'derive', as: 'day', expr: 'created_at' },
+          { type: 'join', with: 'days', on: ['day'] },
+        ]),
+        { tables: { days: { name: 'days', table: days } }, self: { id: 'self', name: 'Self' } },
+      ).table.rows,
+    ).toEqual([]);
+  });
+
+  it('runs every step kind that names columns, and counts zero rows as zero', () => {
+    for (const step of steps([
+      { type: 'rename', map: { a: 'b' } },
+      { type: 'fillNull', fields: ['a'], value: 0 },
+      { type: 'aggregate', groupBy: ['g'], metrics: [{ op: 'sum', field: 'v', as: 'total' }] },
+      { type: 'timeBucket', field: 't', unit: 'day' },
+      { type: 'window', op: 'cumsum', field: 'v', partitionBy: ['g'] },
+    ])) {
+      expect(runPipeline(empty, [step]).table.rows, step.type).toEqual([]);
+    }
+    const count = runPipeline(
+      empty,
+      steps([{ type: 'aggregate', groupBy: [], metrics: [{ op: 'count', as: 'n' }] }]),
+    );
+    expect(count.table.rows).toEqual([{ n: 0 }]);
+    // One row now, with known columns: a later typo is an error again.
+    expect(() =>
+      runPipeline(
+        empty,
+        steps([
+          { type: 'aggregate', groupBy: [], metrics: [{ op: 'count', as: 'n' }] },
+          { type: 'derive', as: 'm', expr: 'nn' },
+        ]),
+      ),
+    ).toThrow('Step 2: Unknown column "nn"');
+  });
+
+  it('joins an empty table, and joins with an empty one, without checking the empty side', () => {
+    const regions = inferTable([{ code: 'SK', region: 'Central' }]);
+    expect(
+      runPipeline(empty, steps([{ type: 'join', with: 'regions', on: ['code'] }]), inputs({ regions })).table
+        .rows,
+    ).toEqual([]);
+    const joined = runPipeline(
+      regions,
+      steps([{ type: 'join', with: 'none', on: ['code'], fields: ['name'] }]),
+      inputs({ none: empty }),
+    );
+    expect(joined.table.rows).toEqual([{ code: 'SK', region: 'Central', name: null }]);
+    expect(joined.trace[0]!.unchecked).toEqual(['none.code', 'none.name']);
+  });
+
+  it('keeps a column type in a union when the input that disagrees has no rows', () => {
+    const components = inferTable([{ check: 'API', since: '2026-11-12T10:00:00Z' }]);
+    const open = runPipeline(empty, steps([{ type: 'select', fields: ['check', 'since'] }])).table;
+    const { table } = runPipeline(components, steps([{ type: 'union', with: ['open'] }]), inputs({ open }));
+    expect(table.columns.find((c) => c.name === 'since')?.type).toBe('time');
+    expect(table.rows[0]!.since).toBe(Date.parse('2026-11-12T10:00:00Z'));
   });
 });

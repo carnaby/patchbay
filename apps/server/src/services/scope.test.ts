@@ -208,6 +208,21 @@ describe('resolution scopes', () => {
     }
   });
 
+  it('checks columns in a dataset that reads one a filter emptied, and not in one that reads an empty source', async () => {
+    const data = new DataService(connectors, store);
+    const d = doc(
+      inline('warm', cities, { transforms: [{ type: 'filter', expr: 'temp > 100' }] }),
+      from('typo', 'warm', { transforms: [{ type: 'derive', as: 'c', expr: 'ctiy' }] }),
+      inline('open', []),
+      from('wall', 'open', { transforms: [{ type: 'derive', as: 'detail', expr: 'name' }] }),
+    );
+    const scope = data.scope(target, d);
+    expect((await scope.resolve(byId(d, 'typo'))).error).toMatch(/Unknown column "ctiy"/);
+    const wall = await scope.resolve(byId(d, 'wall'));
+    expect(wall.error).toBeUndefined();
+    expect(wall.trace?.[0]?.unchecked).toEqual(['name']);
+  });
+
   it('marks a failure that is our own limit with the time after which to ask again', () => {
     expect(errorResult('d', new RetryLaterError(429, 'busy', 10)).retryAfterSec).toBe(10);
     expect(errorResult('d', new HttpError(400, 'x')).retryAfterSec).toBeUndefined();

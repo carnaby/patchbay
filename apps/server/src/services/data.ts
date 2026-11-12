@@ -574,8 +574,9 @@ export class DataService {
     input: DataTable,
     transforms: Transform[],
     inputs?: PipelineInputs,
+    open?: boolean,
   ): Promise<PipelineResult> {
-    const run = () => this.pipeline.run(input, transforms, inputs);
+    const run = () => this.pipeline.run(input, transforms, inputs, open);
     // A large table can fill the pipeline worker's heap: it waits for its turn with the other heavy jobs. The tables a
     // join or union reads are copied to the worker too, so they count.
     const heavy = transforms.length > 0 && cellsOf(input, transforms, inputs) >= HEAVY_PIPELINE_CELLS;
@@ -638,20 +639,27 @@ export class DataService {
     transforms: Transform[],
     inputs?: PipelineInputs,
     fresh = false,
+    open = input.rows.length === 0,
   ): Promise<PipelineResult> {
-    if (fresh) return this.run(input, transforms, inputs);
+    if (fresh) return this.run(input, transforms, inputs, open);
+    // Openness is part of the key: the same empty table checks columns or not depending on where it came from.
     const read = inputs
       ? JSON.stringify([
           inputs.self,
-          Object.entries(inputs.tables).map(([id, t]) => [id, t.name, this.tableId(t.table)]),
+          Object.entries(inputs.tables).map(([id, t]) => [
+            id,
+            t.name,
+            this.tableId(t.table),
+            t.open ?? t.table.rows.length === 0,
+          ]),
         ])
       : '';
-    const key = `full|${this.tableId(input)}|${read}|${JSON.stringify(transforms)}`;
+    const key = `full|${open}|${this.tableId(input)}|${read}|${JSON.stringify(transforms)}`;
     const hit = this.results.get(key) as PipelineResult | undefined;
     if (hit) return Promise.resolve(hit);
     let pending = this.computing.get(key) as Promise<PipelineResult> | undefined;
     if (!pending) {
-      pending = this.run(input, transforms, inputs)
+      pending = this.run(input, transforms, inputs, open)
         .then((r) => {
           this.results.set(key, r, approxTableBytes(r.table), RESULT_TTL_MS);
           return r;

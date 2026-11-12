@@ -23,6 +23,15 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   long as the address and the body stay exactly as in the showcase. A changed body still needs a signed-in owner.
 - The landing page names filters and clicks, wall screens, GraphQL sources and joined datasets among the features.
 
+### Fixed
+
+- Steps that read a column of a source no longer fail when the source returns an empty list, such as the open
+  incidents of a status page, which are usually none. With no rows there is nothing to check: the step runs and the
+  column is empty, and `preview_data` and the data checks of `apply_operations` name the columns that wait for rows.
+  On a source with rows an unknown column is still an error.
+- `union` keeps a column's type when one of the datasets it combines has no rows; before, an empty list could turn
+  the time column of the whole result into text.
+
 ## [0.3.4] - 2026-11-12
 
 ### Fixed

@@ -952,6 +952,40 @@ describe('MCP tools', () => {
     }
   });
 
+  it('checks a dataset whose source has no rows without failing, and says which columns wait for rows', async () => {
+    const agent = await ownClient('empty-source-agent@example.com');
+    const { dashboardId } = JSON.parse(
+      text(await agent.callTool({ name: 'create_dashboard', arguments: { title: 'E' } })),
+    );
+    const open = {
+      id: 'open',
+      name: 'Open incidents',
+      source: { kind: 'inline', rows: [] },
+      transforms: [
+        { type: 'filter', expr: 'status != "resolved"' },
+        { type: 'derive', as: 'detail', expr: 'name' },
+      ],
+    };
+    const applied = JSON.parse(
+      text(
+        await agent.callTool({
+          name: 'apply_operations',
+          arguments: { dashboardId, operations: [{ op: 'addDataset', dataset: open }] },
+        }),
+      ),
+    );
+    const check = applied.dataChecks.find((c: { datasetId: string }) => c.datasetId === 'open');
+    expect(check.error).toBeUndefined();
+    expect(check.rowCount).toBe(0);
+    expect(check.notChecked).toMatch(/status, name/);
+    const preview = await agent.callTool({
+      name: 'preview_data',
+      arguments: { source: open.source, transforms: open.transforms },
+    });
+    expect(preview.isError).toBeFalsy();
+    expect(JSON.parse(text(preview)).notChecked).toMatch(/status, name/);
+  });
+
   it('bounds filter ids and values of the view tools and echoes the view on preview_data and render_snapshot', async () => {
     const agent = await ownClient('view-echo@example.com');
     const { dashboardId } = JSON.parse(
