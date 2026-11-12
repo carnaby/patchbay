@@ -47,6 +47,9 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 - The npm downloads connector reads the days npm has no counts for as empty instead of 0. On those days npm reports 0
   for every package (eight days in September and October 2026), which pulled averages and minimums down and drew dips
   to zero; charts now show a gap. A small package's real 0 stays 0.
+- Daily time axes over a month or a quarter no longer show a stray date right after a month's name ("Oct 6 8",
+  "Nov 2 5"): ECharts kept the step after a month's last label as a label of its own. Patchbay ships a one-line fix
+  to ECharts until it is fixed upstream.
 
 ## [0.3.4] - 2026-11-12
 

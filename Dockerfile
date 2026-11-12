@@ -12,6 +12,7 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/core/package.json packages/core/
 COPY apps/server/package.json apps/server/
 COPY apps/web/package.json apps/web/
+COPY patches patches/
 RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm --filter @patchbay/web build

@@ -1,0 +1,56 @@
+diff --git a/dist/echarts.esm.js b/dist/echarts.esm.js
+index 1f312a7b38d89cad98b0595750f3aa1f9db3937b..5b78b24fcc48d48bf911c1744864944781154f12 100644
+--- a/dist/echarts.esm.js
++++ b/dist/echarts.esm.js
+@@ -34050,7 +34050,8 @@ function createIntervalTicks(bottomUnitName, approxInterval, isUTC, extent, inne
+     out.push({
+       value: dateTime,
+       // extent[1] should be added; deduplication will be performed later.
+-      notAdd: dateTime > extent[1]
++      // Patchbay: a look-ahead tick past its span (Sep 29 + 7 = Oct 6) is not a tick; ECharts kept it inside the axis.
++      notAdd: dateTime > extent[1] || dateTime > maxTimestamp
+     });
+   }
+   function addLevelTicks(unitName, lastLevelTicks, levelTicks) {
+diff --git a/dist/echarts.esm.mjs b/dist/echarts.esm.mjs
+index 3780a0bafb7f888a820451bf5c370cf86c7b93bd..e80d923964e076b953de04eba5cbfa178dd233a0 100644
+--- a/dist/echarts.esm.mjs
++++ b/dist/echarts.esm.mjs
+@@ -34050,7 +34050,8 @@ function createIntervalTicks(bottomUnitName, approxInterval, isUTC, extent, inne
+     out.push({
+       value: dateTime,
+       // extent[1] should be added; deduplication will be performed later.
+-      notAdd: dateTime > extent[1]
++      // Patchbay: a look-ahead tick past its span (Sep 29 + 7 = Oct 6) is not a tick; ECharts kept it inside the axis.
++      notAdd: dateTime > extent[1] || dateTime > maxTimestamp
+     });
+   }
+   function addLevelTicks(unitName, lastLevelTicks, levelTicks) {
+diff --git a/dist/echarts.js b/dist/echarts.js
+index 71f6176b106a62749fa9d86f81a748176095fc44..bd1f89b84fa7199ff3fd74c72503c8596800fa66 100644
+--- a/dist/echarts.js
++++ b/dist/echarts.js
+@@ -34056,7 +34056,8 @@
+         out.push({
+           value: dateTime,
+           // extent[1] should be added; deduplication will be performed later.
+-          notAdd: dateTime > extent[1]
++          // Patchbay: a look-ahead tick past its span (Sep 29 + 7 = Oct 6) is not a tick; ECharts kept it inside the axis.
++          notAdd: dateTime > extent[1] || dateTime > maxTimestamp
+         });
+       }
+       function addLevelTicks(unitName, lastLevelTicks, levelTicks) {
+diff --git a/lib/scale/Time.js b/lib/scale/Time.js
+index 57586e591bec950d31943f07ffeefd838eb79214..23d3e184276b2f38b15ee101f9d1be9646d5a933 100644
+--- a/lib/scale/Time.js
++++ b/lib/scale/Time.js
+@@ -353,7 +353,8 @@ function createIntervalTicks(bottomUnitName, approxInterval, isUTC, extent, inne
+     out.push({
+       value: dateTime,
+       // extent[1] should be added; deduplication will be performed later.
+-      notAdd: dateTime > extent[1]
++      // Patchbay: a look-ahead tick past its span (Sep 29 + 7 = Oct 6) is not a tick; ECharts kept it inside the axis.
++      notAdd: dateTime > extent[1] || dateTime > maxTimestamp
+     });
+   }
+   function addLevelTicks(unitName, lastLevelTicks, levelTicks) {

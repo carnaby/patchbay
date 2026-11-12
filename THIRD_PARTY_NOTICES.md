@@ -27,6 +27,9 @@ This product includes software developed at
 The Apache Software Foundation (https://www.apache.org/).
 ```
 
+Patchbay applies a one-line fix to Apache ECharts 6.1.0 (`patches/echarts@6.1.0.patch`): a time axis no longer keeps a
+look-ahead tick past the end of a month as a label.
+
 resvg-js is used as published, without modification; its source is available at
 the link above under the Mozilla Public License 2.0.
 
