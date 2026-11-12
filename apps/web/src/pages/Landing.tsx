@@ -6,14 +6,14 @@ import {
   Camera,
   Database,
   FileSpreadsheet,
-  History,
   KeyRound,
   LayoutGrid,
   type LucideIcon,
+  MousePointerClick,
   Radio,
   ShieldCheck,
   SlidersHorizontal,
-  Sparkles,
+  Tv,
   Zap,
 } from 'lucide-react';
 import { type ReactNode, useMemo } from 'react';
@@ -271,7 +271,7 @@ const STEPS: { icon: LucideIcon; title: string; body: string; example: string }[
   {
     icon: SlidersHorizontal,
     title: 'Shape it with rules',
-    body: 'Filter, derive, bucket by time, aggregate, run rolling windows. Declarative steps, evaluated safely on the server.',
+    body: 'Filter, derive, bucket by time, aggregate, run rolling windows, and join or stack datasets. Declarative steps, evaluated safely on the server.',
     example: 'timeBucket(day) → aggregate(max temp)',
   },
   {
@@ -434,9 +434,9 @@ const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
     body: 'Server-side refresh loops push only changed data over Server-Sent Events. Ten viewers, one upstream call.',
   },
   {
-    icon: History,
-    title: 'Undo, redo, versions',
-    body: 'Undo every edit in the editor, and roll back to an earlier saved version (up to the last 50), including the agent’s.',
+    icon: MousePointerClick,
+    title: 'Filters and clicks',
+    body: 'Add a period, a list or a search to any dashboard. Click a bar, a slice, a row or a map dot and every chart follows; the rest dims, colours stay.',
   },
   {
     icon: Database,
@@ -446,7 +446,7 @@ const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
   {
     icon: FileSpreadsheet,
     title: 'Your own data',
-    body: 'Upload CSV or JSON, paste a table, or read any HTTPS JSON API or news feed. Patchbay profiles the columns and suggests charts.',
+    body: 'Upload CSV or JSON, paste a table, or read any HTTPS JSON API (GraphQL and other POST queries too) or news feed. Patchbay profiles the columns and suggests charts.',
   },
   {
     icon: KeyRound,
@@ -464,9 +464,9 @@ const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
     body: 'Dashboards render to PNG on the server, so your agent checks its own work instead of guessing.',
   },
   {
-    icon: Sparkles,
-    title: 'Suggestions without AI',
-    body: 'A deterministic suggestion engine proposes charts for any dataset, even if you never connect an agent.',
+    icon: Tv,
+    title: 'Wall screens',
+    body: 'Presentation mode runs on a TV with nobody at it: full screen, live data, the filters kept in the link. Status tiles show at a glance what is up.',
   },
 ];
 

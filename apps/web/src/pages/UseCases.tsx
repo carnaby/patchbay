@@ -163,8 +163,8 @@ export function UseCases() {
           One prompt to your agent. A live dashboard.
         </h2>
         <p className="mt-3 text-ink-2 text-pretty">
-          Real dashboards, each built by an AI agent from the prompt shown. Open them live or copy one and
-          make it yours.
+          Real dashboards, each built by an AI agent from the prompt shown. Open one live to filter it, click
+          it or put it on a TV, or copy one and make it yours.
         </p>
       </div>
 
