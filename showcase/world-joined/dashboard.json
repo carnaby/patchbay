@@ -1,0 +1,647 @@
+{
+  "schemaVersion": 1,
+  "title": "Wealth vs. life expectancy, 2023",
+  "description": "GDP per capita vs. life expectancy across the world's countries in 2023 (World Bank WDI, regional aggregates excluded). Click a region to focus on it.",
+  "datasets": [
+    {
+      "id": "countries",
+      "name": "Countries (WB metadata, no aggregates)",
+      "source": {
+        "kind": "http",
+        "url": "https://api.worldbank.org/v2/country?format=json&per_page=400",
+        "path": "1"
+      },
+      "transforms": [
+        {
+          "id": "no-agg",
+          "type": "filter",
+          "expr": "trim(`region.value`) != \"Aggregates\""
+        },
+        {
+          "id": "ren",
+          "type": "rename",
+          "map": {
+            "id": "iso3",
+            "incomeLevel.value": "income",
+            "name": "country",
+            "region.value": "region_raw"
+          }
+        },
+        {
+          "id": "reg",
+          "type": "derive",
+          "as": "region",
+          "expr": "trim(region_raw) == \"Middle East, North Africa, Afghanistan & Pakistan\" ? \"MENA, Afghanistan & Pakistan\" : trim(region_raw)"
+        },
+        {
+          "id": "sel",
+          "type": "select",
+          "fields": ["iso3", "country", "region", "income", "capitalCity", "latitude", "longitude"]
+        }
+      ],
+      "refreshSec": 86400,
+      "accumulate": 0
+    },
+    {
+      "id": "gdp",
+      "name": "GDP per capita 2023 (current US$)",
+      "source": {
+        "kind": "connector",
+        "connector": "worldbank.indicator",
+        "params": {
+          "countries": "all",
+          "from": 2023,
+          "indicator": "NY.GDP.PCAP.CD",
+          "to": 2023
+        }
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "rename",
+          "map": {
+            "value": "gdp_pc"
+          }
+        },
+        {
+          "id": "s2",
+          "type": "select",
+          "fields": ["iso3", "gdp_pc"]
+        }
+      ],
+      "refreshSec": 86400,
+      "accumulate": 0
+    },
+    {
+      "id": "life",
+      "name": "Life expectancy 2023",
+      "source": {
+        "kind": "connector",
+        "connector": "worldbank.indicator",
+        "params": {
+          "countries": "all",
+          "from": 2023,
+          "indicator": "SP.DYN.LE00.IN",
+          "to": 2023
+        }
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "rename",
+          "map": {
+            "value": "life_exp"
+          }
+        },
+        {
+          "id": "s2",
+          "type": "select",
+          "fields": ["iso3", "life_exp"]
+        }
+      ],
+      "refreshSec": 86400,
+      "accumulate": 0
+    },
+    {
+      "id": "pop",
+      "name": "Population 2023",
+      "source": {
+        "kind": "connector",
+        "connector": "worldbank.indicator",
+        "params": {
+          "countries": "all",
+          "from": 2023,
+          "indicator": "SP.POP.TOTL",
+          "to": 2023
+        }
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "rename",
+          "map": {
+            "value": "population"
+          }
+        },
+        {
+          "id": "s2",
+          "type": "select",
+          "fields": ["iso3", "population"]
+        }
+      ],
+      "refreshSec": 86400,
+      "accumulate": 0
+    },
+    {
+      "id": "world",
+      "name": "Countries 2023 (joined)",
+      "source": {
+        "kind": "dataset",
+        "id": "countries"
+      },
+      "transforms": [
+        {
+          "id": "j-gdp",
+          "type": "join",
+          "with": "gdp",
+          "on": ["iso3"],
+          "how": "left"
+        },
+        {
+          "id": "j-life",
+          "type": "join",
+          "with": "life",
+          "on": ["iso3"],
+          "how": "left"
+        },
+        {
+          "id": "j-pop",
+          "type": "join",
+          "with": "pop",
+          "on": ["iso3"],
+          "how": "left"
+        },
+        {
+          "id": "r-gdp",
+          "type": "derive",
+          "as": "gdp_pc",
+          "expr": "isNull(gdp_pc) ? null : round(gdp_pc, 0)"
+        },
+        {
+          "id": "r-life",
+          "type": "derive",
+          "as": "life_exp",
+          "expr": "isNull(life_exp) ? null : round(life_exp, 1)"
+        },
+        {
+          "id": "r-popm",
+          "type": "derive",
+          "as": "pop_m",
+          "expr": "isNull(population) ? null : round(population / 1000000, 2)"
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "scatter",
+      "name": "Scatter points (focus-aware)",
+      "source": {
+        "kind": "dataset",
+        "id": "world"
+      },
+      "transforms": [
+        {
+          "id": "complete",
+          "type": "filter",
+          "expr": "!isNull(gdp_pc) && !isNull(life_exp)"
+        },
+        {
+          "id": "focus",
+          "type": "derive",
+          "as": "group",
+          "expr": "$param.region == null || region == $param.region ? region : \"Other regions\""
+        },
+        {
+          "id": "order",
+          "type": "derive",
+          "as": "z",
+          "expr": "group == \"Other regions\" ? 0 : 1"
+        },
+        {
+          "id": "srt",
+          "type": "sort",
+          "by": [
+            {
+              "field": "z",
+              "dir": "asc"
+            },
+            {
+              "field": "group",
+              "dir": "asc"
+            }
+          ]
+        },
+        {
+          "id": "sel",
+          "type": "select",
+          "fields": ["country", "group", "gdp_pc", "life_exp", "pop_m"]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "focus",
+      "name": "Countries in selected region",
+      "source": {
+        "kind": "dataset",
+        "id": "world"
+      },
+      "transforms": [
+        {
+          "id": "f",
+          "type": "filter",
+          "expr": "$param.region == null || region == $param.region"
+        },
+        {
+          "id": "srt",
+          "type": "sort",
+          "by": [
+            {
+              "field": "life_exp",
+              "dir": "desc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "kpis",
+      "name": "Summary of selection",
+      "source": {
+        "kind": "dataset",
+        "id": "focus"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "aggregate",
+          "groupBy": [],
+          "metrics": [
+            {
+              "op": "count",
+              "as": "countries"
+            },
+            {
+              "op": "sum",
+              "field": "population",
+              "as": "population"
+            },
+            {
+              "op": "median",
+              "field": "gdp_pc",
+              "as": "median_gdp"
+            },
+            {
+              "op": "median",
+              "field": "life_exp",
+              "as": "median_life"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "by-region",
+      "name": "Median life expectancy by region",
+      "source": {
+        "kind": "dataset",
+        "id": "world"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "filter",
+          "expr": "!isNull(life_exp)"
+        },
+        {
+          "id": "s2",
+          "type": "aggregate",
+          "groupBy": ["region"],
+          "metrics": [
+            {
+              "op": "median",
+              "field": "life_exp",
+              "as": "median_life"
+            },
+            {
+              "op": "count",
+              "as": "countries"
+            }
+          ]
+        },
+        {
+          "id": "s3",
+          "type": "derive",
+          "as": "median_life",
+          "expr": "round(median_life, 1)"
+        },
+        {
+          "id": "s4",
+          "type": "sort",
+          "by": [
+            {
+              "field": "median_life",
+              "dir": "desc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "map-pts",
+      "name": "Map points",
+      "source": {
+        "kind": "dataset",
+        "id": "world"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "filter",
+          "expr": "!isNull(latitude) && !isNull(population)"
+        },
+        {
+          "id": "s2",
+          "type": "sort",
+          "by": [
+            {
+              "field": "population",
+              "dir": "desc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    }
+  ],
+  "widgets": [
+    {
+      "id": "k-countries",
+      "title": "Countries & territories",
+      "datasetId": "kpis",
+      "type": "kpi",
+      "config": {
+        "field": "countries",
+        "agg": "last",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false
+      }
+    },
+    {
+      "id": "k-pop",
+      "title": "Population",
+      "datasetId": "kpis",
+      "type": "kpi",
+      "config": {
+        "field": "population",
+        "agg": "last",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "compact",
+          "decimals": 2
+        }
+      }
+    },
+    {
+      "id": "k-gdp",
+      "title": "Median GDP per capita (US$)",
+      "datasetId": "kpis",
+      "type": "kpi",
+      "config": {
+        "field": "median_gdp",
+        "agg": "last",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "currency",
+          "decimals": 0,
+          "currency": "USD"
+        }
+      }
+    },
+    {
+      "id": "k-life",
+      "title": "Median life expectancy",
+      "datasetId": "kpis",
+      "type": "kpi",
+      "config": {
+        "field": "median_life",
+        "agg": "last",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "number",
+          "decimals": 1,
+          "suffix": " yrs"
+        }
+      }
+    },
+    {
+      "id": "scatter-chart",
+      "title": "Life expectancy (years) vs. GDP per capita (US$, log scale)",
+      "description": "One dot per country, 2023. GDP per capita is on the vertical log axis because only that axis supports log scale. Selecting a region greys out the rest for context.",
+      "datasetId": "scatter",
+      "type": "chart",
+      "config": {
+        "kind": "scatter",
+        "x": "life_exp",
+        "y": ["gdp_pc"],
+        "series": "group",
+        "horizontal": false,
+        "stacked": false,
+        "smooth": false,
+        "showLegend": false,
+        "xMin": 50,
+        "xMax": 90,
+        "logScale": true,
+        "format": {
+          "style": "currency",
+          "decimals": 0,
+          "currency": "USD"
+        },
+        "maxPoints": 5000
+      }
+    },
+    {
+      "id": "region-bar",
+      "title": "Median life expectancy by region (years)",
+      "description": "Click a bar to focus the whole dashboard on that region; click again to reset. Colours match the scatter and the map.",
+      "datasetId": "by-region",
+      "type": "chart",
+      "config": {
+        "kind": "bar",
+        "x": "region",
+        "y": ["median_life"],
+        "series": "region",
+        "horizontal": true,
+        "stacked": true,
+        "smooth": false,
+        "showLegend": false,
+        "showLabels": true,
+        "logScale": false,
+        "format": {
+          "style": "number",
+          "decimals": 1
+        },
+        "maxPoints": 5000,
+        "crossFilter": {
+          "parameter": "region",
+          "field": "region"
+        }
+      }
+    },
+    {
+      "id": "pop-map",
+      "title": "Population by country (dot area, placed at the capital) - click a dot to focus its region",
+      "datasetId": "map-pts",
+      "type": "map",
+      "config": {
+        "lat": "latitude",
+        "lon": "longitude",
+        "mode": "points",
+        "series": "region",
+        "size": "population",
+        "label": "country",
+        "view": "world",
+        "basemap": "countries",
+        "terminator": false,
+        "maxPoints": 5000,
+        "format": {
+          "style": "compact"
+        },
+        "crossFilter": {
+          "parameter": "region",
+          "field": "region"
+        }
+      }
+    },
+    {
+      "id": "country-table",
+      "title": "Countries in selection",
+      "description": "Sorted by life expectancy. A dash means the World Bank has no 2023 value.",
+      "datasetId": "focus",
+      "type": "table",
+      "config": {
+        "columns": [
+          "country",
+          "region",
+          "income",
+          {
+            "field": "gdp_pc",
+            "label": "GDP per capita",
+            "format": {
+              "style": "currency",
+              "decimals": 0,
+              "currency": "USD"
+            },
+            "colorAs": "fill"
+          },
+          {
+            "field": "life_exp",
+            "label": "Life expectancy (yrs)",
+            "format": {
+              "style": "number",
+              "decimals": 1
+            },
+            "colorAs": "fill"
+          },
+          {
+            "field": "population",
+            "label": "Population",
+            "format": {
+              "style": "compact",
+              "decimals": 1
+            },
+            "colorAs": "fill"
+          }
+        ],
+        "pageSize": 10
+      }
+    }
+  ],
+  "layout": [
+    {
+      "i": "k-countries",
+      "x": 0,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "k-pop",
+      "x": 3,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "k-gdp",
+      "x": 6,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "k-life",
+      "x": 9,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "scatter-chart",
+      "x": 0,
+      "y": 2,
+      "w": 8,
+      "h": 7
+    },
+    {
+      "i": "region-bar",
+      "x": 8,
+      "y": 2,
+      "w": 4,
+      "h": 7
+    },
+    {
+      "i": "pop-map",
+      "x": 0,
+      "y": 9,
+      "w": 12,
+      "h": 7
+    },
+    {
+      "i": "country-table",
+      "x": 0,
+      "y": 16,
+      "w": 12,
+      "h": 6
+    }
+  ],
+  "colors": {
+    "East Asia & Pacific": "accent-1",
+    "Europe & Central Asia": "accent-2",
+    "Latin America & Caribbean": "accent-3",
+    "MENA, Afghanistan & Pakistan": "accent-4",
+    "North America": "accent-5",
+    "Other regions": "neutral",
+    "South Asia": "accent-6",
+    "Sub-Saharan Africa": "accent-7"
+  },
+  "parameters": [
+    {
+      "id": "region",
+      "label": "Region",
+      "type": "select",
+      "optionsFrom": {
+        "dataset": "countries",
+        "field": "region"
+      },
+      "all": "All regions",
+      "default": null
+    }
+  ]
+}

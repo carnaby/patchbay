@@ -1,0 +1,7 @@
+{
+  "id": "gitlab-graphql",
+  "order": 6,
+  "title": "GitLab's latest merges, over GraphQL",
+  "tab": "GraphQL",
+  "description": "GitLab's public GraphQL API as a data source: merges per hour, what kind of work they are, the master pipelines and the latest merges. Click a kind to filter."
+}

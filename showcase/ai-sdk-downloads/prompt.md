@@ -1,0 +1,1 @@
+In Patchbay, track npm downloads of the main AI SDKs over the last year: @modelcontextprotocol/sdk, ai, openai, @anthropic-ai/sdk, @google/genai and langchain. Add a period filter with the usual presets and let me click a package to focus every chart on it. Use one colour per package everywhere. Check the render and fix anything unreadable.

@@ -1,0 +1,927 @@
+{
+  "schemaVersion": 1,
+  "title": "Service status wall",
+  "description": "Live status of GitHub, Cloudflare, npm and OpenAI from their official status pages, with a clock and the latest GitHub incident reports. Built for an office TV in presentation mode.",
+  "datasets": [
+    {
+      "id": "gh-inc",
+      "name": "GitHub open incidents (from feed)",
+      "source": {
+        "kind": "dataset",
+        "id": "gh-history"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "filter",
+          "expr": "state != \"Resolved\""
+        },
+        {
+          "id": "s2",
+          "type": "derive",
+          "as": "service",
+          "expr": "\"GitHub\""
+        },
+        {
+          "id": "s3",
+          "type": "derive",
+          "as": "check",
+          "expr": "\"Open incidents\""
+        },
+        {
+          "id": "s4",
+          "type": "derive",
+          "as": "state",
+          "expr": "\"warn\""
+        },
+        {
+          "id": "s5",
+          "type": "derive",
+          "as": "detail",
+          "expr": "title"
+        },
+        {
+          "id": "s6",
+          "type": "derive",
+          "as": "since",
+          "expr": "published"
+        },
+        {
+          "id": "lbl",
+          "type": "derive",
+          "as": "label",
+          "expr": "lower(state)"
+        },
+        {
+          "id": "s7",
+          "type": "select",
+          "fields": ["service", "check", "label", "state", "detail", "since", "link"]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "gh-comp",
+      "name": "GitHub components",
+      "source": {
+        "kind": "http",
+        "url": "https://www.githubstatus.com/api/v2/components.json",
+        "path": "components"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "filter",
+          "expr": "group != true && !startsWith(name, \"Visit \")"
+        },
+        {
+          "id": "s2",
+          "type": "derive",
+          "as": "service",
+          "expr": "\"GitHub\""
+        },
+        {
+          "id": "s3",
+          "type": "derive",
+          "as": "check",
+          "expr": "name"
+        },
+        {
+          "id": "s4",
+          "type": "derive",
+          "as": "kind",
+          "expr": "\"component\""
+        },
+        {
+          "id": "s5",
+          "type": "derive",
+          "as": "state",
+          "expr": "status == \"operational\" ? \"ok\" : (status == \"major_outage\" ? \"fail\" : (status == \"under_maintenance\" ? \"off\" : \"warn\"))"
+        },
+        {
+          "id": "s6",
+          "type": "derive",
+          "as": "detail",
+          "expr": "status == \"degraded_performance\" ? \"Degraded performance\" : (status == \"partial_outage\" ? \"Partial outage\" : (status == \"major_outage\" ? \"Major outage\" : (status == \"under_maintenance\" ? \"Under maintenance\" : status)))"
+        },
+        {
+          "id": "s7",
+          "type": "derive",
+          "as": "since",
+          "expr": "updated_at"
+        },
+        {
+          "id": "s8",
+          "type": "derive",
+          "as": "link",
+          "expr": "\"https://www.githubstatus.com\""
+        },
+        {
+          "id": "s9",
+          "type": "select",
+          "fields": ["service", "check", "kind", "state", "detail", "since", "link"]
+        }
+      ],
+      "refreshSec": 60,
+      "accumulate": 0
+    },
+    {
+      "id": "gh",
+      "name": "GitHub checks",
+      "source": {
+        "kind": "dataset",
+        "id": "gh-comp"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "union",
+          "with": ["gh-inc"]
+        },
+        {
+          "id": "incidents-first",
+          "type": "derive",
+          "as": "prio",
+          "expr": "isNull(kind) ? 0 : 1"
+        },
+        {
+          "id": "sort-prio",
+          "type": "sort",
+          "by": [
+            {
+              "field": "prio",
+              "dir": "asc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "cf-inc",
+      "name": "Cloudflare open incidents",
+      "source": {
+        "kind": "http",
+        "url": "https://www.cloudflarestatus.com/api/v2/incidents.json",
+        "path": "incidents"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "filter",
+          "expr": "status != \"resolved\" && status != \"postmortem\" && status != \"completed\""
+        },
+        {
+          "id": "s2",
+          "type": "derive",
+          "as": "service",
+          "expr": "\"Cloudflare\""
+        },
+        {
+          "id": "s3",
+          "type": "derive",
+          "as": "check",
+          "expr": "\"Open incidents\""
+        },
+        {
+          "id": "s4",
+          "type": "derive",
+          "as": "state",
+          "expr": "(impact == \"major\" || impact == \"critical\") ? \"fail\" : \"warn\""
+        },
+        {
+          "id": "s5",
+          "type": "derive",
+          "as": "detail",
+          "expr": "name"
+        },
+        {
+          "id": "s6",
+          "type": "derive",
+          "as": "since",
+          "expr": "created_at"
+        },
+        {
+          "id": "s7",
+          "type": "derive",
+          "as": "link",
+          "expr": "shortlink"
+        },
+        {
+          "id": "lbl",
+          "type": "derive",
+          "as": "label",
+          "expr": "concat(status, \" · \", impact, \" impact\")"
+        },
+        {
+          "id": "s8",
+          "type": "select",
+          "fields": ["service", "check", "label", "state", "detail", "since", "link"]
+        }
+      ],
+      "refreshSec": 60,
+      "accumulate": 0
+    },
+    {
+      "id": "cf-raw",
+      "name": "Cloudflare components",
+      "source": {
+        "kind": "http",
+        "url": "https://www.cloudflarestatus.com/api/v2/components.json",
+        "path": "components"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "filter",
+          "expr": "group != true"
+        },
+        {
+          "id": "s2",
+          "type": "derive",
+          "as": "is_dc",
+          "expr": "endsWith(name, \")\") && contains(name, \" - (\")"
+        },
+        {
+          "id": "s3",
+          "type": "select",
+          "fields": ["name", "status", "updated_at", "is_dc"]
+        }
+      ],
+      "refreshSec": 60,
+      "accumulate": 0
+    },
+    {
+      "id": "cf-comp",
+      "name": "Cloudflare services",
+      "source": {
+        "kind": "dataset",
+        "id": "cf-raw"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "filter",
+          "expr": "!is_dc"
+        },
+        {
+          "id": "s2",
+          "type": "derive",
+          "as": "service",
+          "expr": "\"Cloudflare\""
+        },
+        {
+          "id": "s3",
+          "type": "derive",
+          "as": "check",
+          "expr": "name"
+        },
+        {
+          "id": "s4",
+          "type": "derive",
+          "as": "kind",
+          "expr": "\"component\""
+        },
+        {
+          "id": "s5",
+          "type": "derive",
+          "as": "state",
+          "expr": "status == \"operational\" ? \"ok\" : (status == \"major_outage\" ? \"fail\" : (status == \"under_maintenance\" ? \"off\" : \"warn\"))"
+        },
+        {
+          "id": "s6",
+          "type": "derive",
+          "as": "detail",
+          "expr": "status == \"degraded_performance\" ? \"Degraded performance\" : (status == \"partial_outage\" ? \"Partial outage\" : (status == \"major_outage\" ? \"Major outage\" : (status == \"under_maintenance\" ? \"Under maintenance\" : status)))"
+        },
+        {
+          "id": "s7",
+          "type": "derive",
+          "as": "since",
+          "expr": "updated_at"
+        },
+        {
+          "id": "s8",
+          "type": "derive",
+          "as": "link",
+          "expr": "\"https://www.cloudflarestatus.com\""
+        },
+        {
+          "id": "s9",
+          "type": "select",
+          "fields": ["service", "check", "kind", "state", "detail", "since", "link"]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "cf-dc",
+      "name": "Cloudflare data centers (summary)",
+      "source": {
+        "kind": "dataset",
+        "id": "cf-raw"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "filter",
+          "expr": "is_dc && status != \"operational\""
+        },
+        {
+          "id": "s2",
+          "type": "derive",
+          "as": "bucket",
+          "expr": "status == \"major_outage\" ? \"down\" : (status == \"under_maintenance\" ? \"maintenance\" : \"rerouted\")"
+        },
+        {
+          "id": "s3",
+          "type": "aggregate",
+          "groupBy": ["bucket"],
+          "metrics": [
+            {
+              "op": "count",
+              "as": "n"
+            }
+          ]
+        },
+        {
+          "id": "s4",
+          "type": "derive",
+          "as": "service",
+          "expr": "\"Cloudflare\""
+        },
+        {
+          "id": "s5",
+          "type": "derive",
+          "as": "check",
+          "expr": "bucket == \"down\" ? concat(n, \" data centers down\") : (bucket == \"maintenance\" ? concat(n, \" data centers in maintenance\") : concat(n, \" data centers rerouted\"))"
+        },
+        {
+          "id": "s6",
+          "type": "derive",
+          "as": "state",
+          "expr": "bucket == \"down\" ? \"warn\" : \"off\""
+        },
+        {
+          "id": "s7",
+          "type": "derive",
+          "as": "detail",
+          "expr": "\"Edge locations; traffic is served from nearby data centers\""
+        },
+        {
+          "id": "s8",
+          "type": "derive",
+          "as": "link",
+          "expr": "\"https://www.cloudflarestatus.com\""
+        },
+        {
+          "id": "s9",
+          "type": "select",
+          "fields": ["service", "check", "state", "detail", "link"]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "cf",
+      "name": "Cloudflare checks",
+      "source": {
+        "kind": "dataset",
+        "id": "cf-comp"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "union",
+          "with": ["cf-inc", "cf-dc"]
+        },
+        {
+          "id": "incidents-first",
+          "type": "derive",
+          "as": "prio",
+          "expr": "isNull(kind) ? 0 : 1"
+        },
+        {
+          "id": "sort-prio",
+          "type": "sort",
+          "by": [
+            {
+              "field": "prio",
+              "dir": "asc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "npm-inc",
+      "name": "npm open incidents",
+      "source": {
+        "kind": "http",
+        "url": "https://status.npmjs.org/api/v2/incidents.json",
+        "path": "incidents"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "filter",
+          "expr": "status != \"resolved\" && status != \"postmortem\" && status != \"completed\""
+        },
+        {
+          "id": "s2",
+          "type": "derive",
+          "as": "service",
+          "expr": "\"npm\""
+        },
+        {
+          "id": "s3",
+          "type": "derive",
+          "as": "check",
+          "expr": "\"Open incidents\""
+        },
+        {
+          "id": "s4",
+          "type": "derive",
+          "as": "state",
+          "expr": "(impact == \"major\" || impact == \"critical\") ? \"fail\" : \"warn\""
+        },
+        {
+          "id": "s5",
+          "type": "derive",
+          "as": "detail",
+          "expr": "name"
+        },
+        {
+          "id": "s6",
+          "type": "derive",
+          "as": "since",
+          "expr": "created_at"
+        },
+        {
+          "id": "s7",
+          "type": "derive",
+          "as": "link",
+          "expr": "shortlink"
+        },
+        {
+          "id": "lbl",
+          "type": "derive",
+          "as": "label",
+          "expr": "concat(status, \" · \", impact, \" impact\")"
+        },
+        {
+          "id": "s8",
+          "type": "select",
+          "fields": ["service", "check", "label", "state", "detail", "since", "link"]
+        }
+      ],
+      "refreshSec": 60,
+      "accumulate": 0
+    },
+    {
+      "id": "npm-comp",
+      "name": "npm components",
+      "source": {
+        "kind": "http",
+        "url": "https://status.npmjs.org/api/v2/components.json",
+        "path": "components"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "filter",
+          "expr": "group != true"
+        },
+        {
+          "id": "s2",
+          "type": "derive",
+          "as": "service",
+          "expr": "\"npm\""
+        },
+        {
+          "id": "s3",
+          "type": "derive",
+          "as": "check",
+          "expr": "name"
+        },
+        {
+          "id": "s4",
+          "type": "derive",
+          "as": "kind",
+          "expr": "\"component\""
+        },
+        {
+          "id": "s5",
+          "type": "derive",
+          "as": "state",
+          "expr": "status == \"operational\" ? \"ok\" : (status == \"major_outage\" ? \"fail\" : (status == \"under_maintenance\" ? \"off\" : \"warn\"))"
+        },
+        {
+          "id": "s6",
+          "type": "derive",
+          "as": "detail",
+          "expr": "status == \"degraded_performance\" ? \"Degraded performance\" : (status == \"partial_outage\" ? \"Partial outage\" : (status == \"major_outage\" ? \"Major outage\" : (status == \"under_maintenance\" ? \"Under maintenance\" : status)))"
+        },
+        {
+          "id": "s7",
+          "type": "derive",
+          "as": "since",
+          "expr": "updated_at"
+        },
+        {
+          "id": "s8",
+          "type": "derive",
+          "as": "link",
+          "expr": "\"https://status.npmjs.org\""
+        },
+        {
+          "id": "s9",
+          "type": "select",
+          "fields": ["service", "check", "kind", "state", "detail", "since", "link"]
+        }
+      ],
+      "refreshSec": 60,
+      "accumulate": 0
+    },
+    {
+      "id": "npm",
+      "name": "npm checks",
+      "source": {
+        "kind": "dataset",
+        "id": "npm-comp"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "union",
+          "with": ["npm-inc"]
+        },
+        {
+          "id": "incidents-first",
+          "type": "derive",
+          "as": "prio",
+          "expr": "isNull(kind) ? 0 : 1"
+        },
+        {
+          "id": "sort-prio",
+          "type": "sort",
+          "by": [
+            {
+              "field": "prio",
+              "dir": "asc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "oai-inc",
+      "name": "OpenAI open incidents",
+      "source": {
+        "kind": "http",
+        "url": "https://status.openai.com/api/v2/incidents.json",
+        "path": "incidents"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "filter",
+          "expr": "status != \"resolved\" && status != \"postmortem\" && status != \"completed\""
+        },
+        {
+          "id": "s2",
+          "type": "derive",
+          "as": "service",
+          "expr": "\"OpenAI\""
+        },
+        {
+          "id": "s3",
+          "type": "derive",
+          "as": "check",
+          "expr": "\"Open incidents\""
+        },
+        {
+          "id": "s4",
+          "type": "derive",
+          "as": "state",
+          "expr": "(impact == \"major\" || impact == \"critical\") ? \"fail\" : \"warn\""
+        },
+        {
+          "id": "s5",
+          "type": "derive",
+          "as": "detail",
+          "expr": "name"
+        },
+        {
+          "id": "s6",
+          "type": "derive",
+          "as": "since",
+          "expr": "created_at"
+        },
+        {
+          "id": "s7",
+          "type": "derive",
+          "as": "link",
+          "expr": "\"https://status.openai.com\""
+        },
+        {
+          "id": "lbl",
+          "type": "derive",
+          "as": "label",
+          "expr": "concat(status, \" · \", impact, \" impact\")"
+        },
+        {
+          "id": "s8",
+          "type": "select",
+          "fields": ["service", "check", "label", "state", "detail", "since", "link"]
+        }
+      ],
+      "refreshSec": 60,
+      "accumulate": 0
+    },
+    {
+      "id": "oai-comp",
+      "name": "OpenAI components",
+      "source": {
+        "kind": "http",
+        "url": "https://status.openai.com/api/v2/components.json",
+        "path": "components"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "derive",
+          "as": "service",
+          "expr": "\"OpenAI\""
+        },
+        {
+          "id": "s2",
+          "type": "derive",
+          "as": "check",
+          "expr": "name"
+        },
+        {
+          "id": "s3",
+          "type": "derive",
+          "as": "kind",
+          "expr": "\"component\""
+        },
+        {
+          "id": "s4",
+          "type": "derive",
+          "as": "state",
+          "expr": "status == \"operational\" ? \"ok\" : (status == \"major_outage\" ? \"fail\" : (status == \"under_maintenance\" ? \"off\" : \"warn\"))"
+        },
+        {
+          "id": "s5",
+          "type": "derive",
+          "as": "detail",
+          "expr": "status == \"degraded_performance\" ? \"Degraded performance\" : (status == \"partial_outage\" ? \"Partial outage\" : (status == \"major_outage\" ? \"Major outage\" : (status == \"under_maintenance\" ? \"Under maintenance\" : status)))"
+        },
+        {
+          "id": "s6",
+          "type": "derive",
+          "as": "since",
+          "expr": "updated_at"
+        },
+        {
+          "id": "s7",
+          "type": "derive",
+          "as": "link",
+          "expr": "\"https://status.openai.com\""
+        },
+        {
+          "id": "s8",
+          "type": "select",
+          "fields": ["service", "check", "kind", "state", "detail", "since", "link"]
+        }
+      ],
+      "refreshSec": 60,
+      "accumulate": 0
+    },
+    {
+      "id": "oai",
+      "name": "OpenAI checks",
+      "source": {
+        "kind": "dataset",
+        "id": "oai-comp"
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "union",
+          "with": ["oai-inc"]
+        },
+        {
+          "id": "incidents-first",
+          "type": "derive",
+          "as": "prio",
+          "expr": "isNull(kind) ? 0 : 1"
+        },
+        {
+          "id": "sort-prio",
+          "type": "sort",
+          "by": [
+            {
+              "field": "prio",
+              "dir": "asc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "gh-history",
+      "name": "GitHub incident history",
+      "source": {
+        "kind": "feed",
+        "url": "https://www.githubstatus.com/history.atom",
+        "limit": 8
+      },
+      "transforms": [
+        {
+          "id": "s1",
+          "type": "derive",
+          "as": "head",
+          "expr": "substr(summary, 0, 40)"
+        },
+        {
+          "id": "s2",
+          "type": "derive",
+          "as": "state",
+          "expr": "contains(head, \"Resolved\") ? \"Resolved\" : (contains(head, \"Monitoring\") ? \"Monitoring\" : (contains(head, \"Identified\") ? \"Identified\" : (contains(head, \"Investigating\") ? \"Investigating\" : \"Ongoing\")))"
+        },
+        {
+          "id": "s3",
+          "type": "limit",
+          "n": 5,
+          "from": "start"
+        },
+        {
+          "id": "s4",
+          "type": "select",
+          "fields": ["id", "title", "link", "state", "published"]
+        }
+      ],
+      "refreshSec": 300,
+      "accumulate": 0
+    }
+  ],
+  "widgets": [
+    {
+      "id": "clock",
+      "type": "clock",
+      "config": {
+        "style": "digital",
+        "hourCycle": "h23",
+        "showDate": true,
+        "showSeconds": false
+      }
+    },
+    {
+      "id": "st-gh",
+      "title": "GitHub",
+      "datasetId": "gh",
+      "type": "status",
+      "config": {
+        "entity": "check",
+        "status": "state",
+        "label": "label",
+        "kind": "kind",
+        "detail": "detail",
+        "since": "since",
+        "link": "link",
+        "summary": true
+      }
+    },
+    {
+      "id": "st-cf",
+      "title": "Cloudflare",
+      "datasetId": "cf",
+      "type": "status",
+      "config": {
+        "entity": "check",
+        "status": "state",
+        "label": "label",
+        "kind": "kind",
+        "detail": "detail",
+        "since": "since",
+        "link": "link",
+        "summary": true
+      }
+    },
+    {
+      "id": "st-npm",
+      "title": "npm",
+      "datasetId": "npm",
+      "type": "status",
+      "config": {
+        "entity": "check",
+        "status": "state",
+        "label": "label",
+        "kind": "kind",
+        "detail": "detail",
+        "since": "since",
+        "link": "link",
+        "summary": true
+      }
+    },
+    {
+      "id": "st-oai",
+      "title": "OpenAI",
+      "datasetId": "oai",
+      "type": "status",
+      "config": {
+        "entity": "check",
+        "status": "state",
+        "label": "label",
+        "kind": "kind",
+        "detail": "detail",
+        "since": "since",
+        "link": "link",
+        "summary": true
+      }
+    },
+    {
+      "id": "gh-incidents",
+      "title": "Latest GitHub incident reports",
+      "datasetId": "gh-history",
+      "type": "table",
+      "config": {
+        "columns": [
+          {
+            "field": "title",
+            "link": "link",
+            "colorAs": "fill"
+          },
+          "state",
+          "published"
+        ],
+        "pageSize": 5,
+        "rules": [
+          {
+            "when": "state != \"Resolved\"",
+            "color": "warning",
+            "colorAs": "fill",
+            "label": "still open"
+          }
+        ],
+        "style": "list"
+      }
+    }
+  ],
+  "layout": [
+    {
+      "i": "st-gh",
+      "x": 0,
+      "y": 0,
+      "w": 3,
+      "h": 5
+    },
+    {
+      "i": "st-cf",
+      "x": 3,
+      "y": 0,
+      "w": 3,
+      "h": 5
+    },
+    {
+      "i": "st-npm",
+      "x": 6,
+      "y": 0,
+      "w": 3,
+      "h": 5
+    },
+    {
+      "i": "st-oai",
+      "x": 9,
+      "y": 0,
+      "w": 3,
+      "h": 5
+    },
+    {
+      "i": "gh-incidents",
+      "x": 0,
+      "y": 5,
+      "w": 9,
+      "h": 3
+    },
+    {
+      "i": "clock",
+      "x": 9,
+      "y": 5,
+      "w": 3,
+      "h": 3
+    }
+  ]
+}

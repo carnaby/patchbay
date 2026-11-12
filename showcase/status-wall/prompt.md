@@ -1,0 +1,1 @@
+Make a status wall for our office TV: are GitHub, Cloudflare, npm and OpenAI working right now? One tile per service, problems spelled out, a clock, and the latest GitHub incident reports. It will run unattended in presentation mode. Check the render and fix anything unreadable.

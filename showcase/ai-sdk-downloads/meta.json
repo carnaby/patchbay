@@ -1,0 +1,7 @@
+{
+  "id": "ai-sdk-downloads",
+  "order": 3,
+  "title": "AI SDK downloads, filter by click",
+  "tab": "Filters & clicks",
+  "description": "A year of npm downloads for six AI SDKs. Pick a period, click a package, and every chart and number follows."
+}

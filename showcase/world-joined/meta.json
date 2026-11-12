@@ -1,0 +1,7 @@
+{
+  "id": "world-joined",
+  "order": 5,
+  "title": "Wealth and life expectancy, joined",
+  "tab": "Joined data",
+  "description": "Three World Bank indicators joined with the country list: GDP per capita against life expectancy, population on a map, and a click on a region to focus."
+}

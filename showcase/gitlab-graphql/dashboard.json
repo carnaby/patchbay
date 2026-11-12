@@ -1,0 +1,679 @@
+{
+  "schemaVersion": 1,
+  "title": "gitlab-org/gitlab · live",
+  "description": "What is happening right now in GitLab's main project: the latest 100 merged MRs and the latest 100 master pipelines, from GitLab's public GraphQL API, refreshed every 5 minutes.",
+  "datasets": [
+    {
+      "id": "merges",
+      "name": "Latest 100 merged MRs",
+      "source": {
+        "kind": "http",
+        "url": "https://gitlab.com/api/graphql",
+        "path": "data.project.mergeRequests.nodes",
+        "method": "POST",
+        "body": {
+          "query": "{ project(fullPath: \"gitlab-org/gitlab\") { mergeRequests(state: merged, sort: MERGED_AT_DESC, first: 100) { nodes { iid title webUrl mergedAt author { username } labels(first: 40) { nodes { title } } } } } }"
+        }
+      },
+      "transforms": [
+        {
+          "id": "names",
+          "type": "rename",
+          "map": {
+            "author.username": "author",
+            "labels.nodes": "labels"
+          }
+        },
+        {
+          "id": "kind",
+          "type": "derive",
+          "as": "kind",
+          "expr": "contains(labels, '\"type::bug\"') ? \"bug\" : contains(labels, '\"type::feature\"') ? \"feature\" : contains(labels, '\"type::maintenance\"') ? \"maintenance\" : \"other\""
+        },
+        {
+          "id": "nolabels",
+          "type": "drop",
+          "fields": ["labels"]
+        },
+        {
+          "id": "newest",
+          "type": "sort",
+          "by": [
+            {
+              "field": "mergedAt",
+              "dir": "desc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 300,
+      "accumulate": 0
+    },
+    {
+      "id": "merges-hourly",
+      "name": "Merges per hour by kind",
+      "source": {
+        "kind": "dataset",
+        "id": "merges"
+      },
+      "transforms": [
+        {
+          "id": "fullhours",
+          "type": "filter",
+          "expr": "mergedAt >= floor(col_min(mergedAt) / 3600000) * 3600000 + 3600000"
+        },
+        {
+          "id": "bucket",
+          "type": "timeBucket",
+          "field": "mergedAt",
+          "unit": "hour",
+          "as": "hour"
+        },
+        {
+          "id": "count",
+          "type": "aggregate",
+          "groupBy": ["hour", "kind"],
+          "metrics": [
+            {
+              "op": "count",
+              "as": "merges"
+            }
+          ]
+        },
+        {
+          "id": "order",
+          "type": "sort",
+          "by": [
+            {
+              "field": "hour",
+              "dir": "asc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "merges-by-kind",
+      "name": "Merges by kind",
+      "source": {
+        "kind": "dataset",
+        "id": "merges"
+      },
+      "transforms": [
+        {
+          "id": "count",
+          "type": "aggregate",
+          "groupBy": ["kind"],
+          "metrics": [
+            {
+              "op": "count",
+              "as": "merges"
+            }
+          ]
+        },
+        {
+          "id": "order",
+          "type": "sort",
+          "by": [
+            {
+              "field": "merges",
+              "dir": "desc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "merge-rate",
+      "name": "Merge rate",
+      "source": {
+        "kind": "dataset",
+        "id": "merges"
+      },
+      "transforms": [
+        {
+          "id": "span",
+          "type": "aggregate",
+          "groupBy": [],
+          "metrics": [
+            {
+              "op": "count",
+              "as": "n"
+            },
+            {
+              "op": "min",
+              "field": "mergedAt",
+              "as": "first"
+            },
+            {
+              "op": "max",
+              "field": "mergedAt",
+              "as": "last"
+            }
+          ]
+        },
+        {
+          "id": "rate",
+          "type": "derive",
+          "as": "per_hour",
+          "expr": "round((n - 1) / ((last - first) / 3600000), 1)"
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "pipelines",
+      "name": "Latest 100 master pipelines",
+      "source": {
+        "kind": "http",
+        "url": "https://gitlab.com/api/graphql",
+        "path": "data.project.pipelines.nodes",
+        "method": "POST",
+        "body": {
+          "query": "{ project(fullPath: \"gitlab-org/gitlab\") { pipelines(ref: \"master\", first: 100) { nodes { iid status source createdAt finishedAt duration path } } } }"
+        }
+      },
+      "transforms": [
+        {
+          "id": "lower",
+          "type": "derive",
+          "as": "status",
+          "expr": "lower(status)"
+        },
+        {
+          "id": "url",
+          "type": "derive",
+          "as": "url",
+          "expr": "concat(\"https://gitlab.com\", path)"
+        },
+        {
+          "id": "minutes",
+          "type": "derive",
+          "as": "duration_min",
+          "expr": "if(isNull(duration), duration, round(duration / 60, 1))"
+        },
+        {
+          "id": "pid",
+          "type": "derive",
+          "as": "pipeline",
+          "expr": "concat(\"#\", substr(path, len(\"/gitlab-org/gitlab/-/pipelines/\")))"
+        },
+        {
+          "id": "ago",
+          "type": "derive",
+          "as": "started",
+          "expr": "concat(string(round((now() - createdAt) / 60000)), \" min ago\")"
+        },
+        {
+          "id": "nopath",
+          "type": "drop",
+          "fields": ["path", "duration"]
+        },
+        {
+          "id": "newest",
+          "type": "sort",
+          "by": [
+            {
+              "field": "createdAt",
+              "dir": "desc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 300,
+      "accumulate": 0
+    },
+    {
+      "id": "pipe-status",
+      "name": "Pipelines by status",
+      "source": {
+        "kind": "dataset",
+        "id": "pipelines"
+      },
+      "transforms": [
+        {
+          "id": "count",
+          "type": "aggregate",
+          "groupBy": ["status"],
+          "metrics": [
+            {
+              "op": "count",
+              "as": "pipelines"
+            }
+          ]
+        },
+        {
+          "id": "order",
+          "type": "sort",
+          "by": [
+            {
+              "field": "pipelines",
+              "dir": "desc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "pipe-summary",
+      "name": "Pipeline summary",
+      "source": {
+        "kind": "dataset",
+        "id": "pipelines"
+      },
+      "transforms": [
+        {
+          "id": "ok",
+          "type": "derive",
+          "as": "ok",
+          "expr": "status == \"success\" ? 1 : 0"
+        },
+        {
+          "id": "bad",
+          "type": "derive",
+          "as": "bad",
+          "expr": "status == \"failed\" ? 1 : 0"
+        },
+        {
+          "id": "active",
+          "type": "derive",
+          "as": "active",
+          "expr": "(status == \"running\" || status == \"pending\" || status == \"created\" || status == \"preparing\" || status == \"waiting_for_resource\") ? 1 : 0"
+        },
+        {
+          "id": "sum",
+          "type": "aggregate",
+          "groupBy": [],
+          "metrics": [
+            {
+              "op": "sum",
+              "field": "ok",
+              "as": "ok"
+            },
+            {
+              "op": "sum",
+              "field": "bad",
+              "as": "bad"
+            },
+            {
+              "op": "sum",
+              "field": "active",
+              "as": "active"
+            },
+            {
+              "op": "median",
+              "field": "duration_min",
+              "as": "median_min"
+            }
+          ]
+        },
+        {
+          "id": "rate",
+          "type": "derive",
+          "as": "success_rate",
+          "expr": "round(ok / (ok + bad) * 100, 1)"
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "pipe-finished",
+      "name": "Finished pipelines",
+      "source": {
+        "kind": "dataset",
+        "id": "pipelines"
+      },
+      "transforms": [
+        {
+          "id": "done",
+          "type": "filter",
+          "expr": "!isNull(duration_min)"
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    }
+  ],
+  "widgets": [
+    {
+      "id": "kpi-rate",
+      "title": "Merges per hour",
+      "description": "Pace over the time span of the latest 100 merged MRs.",
+      "datasetId": "merge-rate",
+      "type": "kpi",
+      "config": {
+        "field": "per_hour",
+        "agg": "last",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "number",
+          "decimals": 1
+        }
+      }
+    },
+    {
+      "id": "kpi-success",
+      "title": "Master success rate",
+      "description": "Succeeded / (succeeded + failed) among the latest 100 master pipelines; running ones are left out.",
+      "datasetId": "pipe-summary",
+      "type": "kpi",
+      "config": {
+        "field": "success_rate",
+        "agg": "last",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " %"
+        },
+        "bands": [
+          {
+            "upTo": 70,
+            "color": "negative"
+          },
+          {
+            "upTo": 85,
+            "color": "warning"
+          },
+          {
+            "upTo": 100,
+            "color": "positive"
+          }
+        ]
+      }
+    },
+    {
+      "id": "kpi-active",
+      "title": "Master pipelines in progress",
+      "datasetId": "pipe-summary",
+      "type": "kpi",
+      "config": {
+        "field": "active",
+        "agg": "last",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "number",
+          "decimals": 0
+        }
+      }
+    },
+    {
+      "id": "kpi-duration",
+      "title": "Median master pipeline",
+      "description": "Median duration of the finished pipelines among the latest 100 on master.",
+      "datasetId": "pipe-summary",
+      "type": "kpi",
+      "config": {
+        "field": "median_min",
+        "agg": "last",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " min"
+        }
+      }
+    },
+    {
+      "id": "chart-hourly",
+      "title": "Merged MRs per hour, by type label",
+      "description": "Latest 100 merges. The oldest, partly covered hour is left out; the last bar is the current hour so far.",
+      "datasetId": "merges-hourly",
+      "type": "chart",
+      "config": {
+        "kind": "bar",
+        "x": "hour",
+        "y": ["merges"],
+        "series": "kind",
+        "horizontal": false,
+        "stacked": true,
+        "smooth": false,
+        "showLegend": true,
+        "logScale": false,
+        "maxPoints": 5000
+      }
+    },
+    {
+      "id": "chart-kind",
+      "title": "Latest 100 merges by type",
+      "description": "From the type::bug / type::feature / type::maintenance labels; other = no type label.",
+      "datasetId": "merges-by-kind",
+      "type": "chart",
+      "config": {
+        "kind": "bar",
+        "x": "kind",
+        "y": ["merges"],
+        "series": "kind",
+        "horizontal": true,
+        "stacked": true,
+        "smooth": false,
+        "showLegend": false,
+        "showLabels": true,
+        "logScale": false,
+        "colors": {
+          "bug": "accent-4",
+          "feature": "accent-1",
+          "maintenance": "accent-2",
+          "other": "neutral"
+        },
+        "maxPoints": 5000
+      }
+    },
+    {
+      "id": "chart-pipe-status",
+      "title": "Latest 100 master pipelines by status",
+      "datasetId": "pipe-status",
+      "type": "chart",
+      "config": {
+        "kind": "donut",
+        "x": "status",
+        "y": ["pipelines"],
+        "horizontal": false,
+        "stacked": false,
+        "smooth": false,
+        "showLegend": true,
+        "logScale": false,
+        "maxPoints": 5000
+      }
+    },
+    {
+      "id": "chart-pipe-duration",
+      "title": "Finished master pipelines: duration (min) by start time",
+      "datasetId": "pipe-finished",
+      "type": "chart",
+      "config": {
+        "kind": "scatter",
+        "x": "createdAt",
+        "y": ["duration_min"],
+        "series": "status",
+        "horizontal": false,
+        "stacked": false,
+        "smooth": false,
+        "showLegend": true,
+        "logScale": false,
+        "maxPoints": 5000
+      }
+    },
+    {
+      "id": "table-merges",
+      "title": "Newest merges",
+      "datasetId": "merges",
+      "type": "table",
+      "config": {
+        "columns": [
+          {
+            "field": "title",
+            "link": "webUrl",
+            "colorAs": "fill"
+          },
+          "kind",
+          "author",
+          "mergedAt"
+        ],
+        "pageSize": 15,
+        "style": "list"
+      }
+    },
+    {
+      "id": "table-pipelines",
+      "title": "Latest master pipelines",
+      "datasetId": "pipelines",
+      "type": "table",
+      "config": {
+        "columns": [
+          {
+            "field": "pipeline",
+            "label": "Pipeline",
+            "link": "url",
+            "colorAs": "fill"
+          },
+          {
+            "field": "status",
+            "label": "Status",
+            "colorAs": "fill"
+          },
+          {
+            "field": "duration_min",
+            "label": "Duration (min)",
+            "format": {
+              "style": "number",
+              "decimals": 0
+            },
+            "colorAs": "fill"
+          },
+          {
+            "field": "started",
+            "label": "Started",
+            "colorAs": "fill"
+          }
+        ],
+        "pageSize": 15,
+        "rules": [
+          {
+            "when": "status == \"failed\"",
+            "color": "negative",
+            "columns": ["status"],
+            "colorAs": "text",
+            "label": "failed"
+          },
+          {
+            "when": "status == \"success\"",
+            "color": "positive",
+            "columns": ["status"],
+            "colorAs": "text",
+            "label": "success"
+          },
+          {
+            "when": "status == \"running\"",
+            "color": "accent-1",
+            "columns": ["status"],
+            "colorAs": "text",
+            "label": "running"
+          }
+        ]
+      }
+    }
+  ],
+  "layout": [
+    {
+      "i": "kpi-rate",
+      "x": 0,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "kpi-success",
+      "x": 3,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "kpi-active",
+      "x": 6,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "kpi-duration",
+      "x": 9,
+      "y": 0,
+      "w": 3,
+      "h": 2
+    },
+    {
+      "i": "chart-hourly",
+      "x": 0,
+      "y": 2,
+      "w": 8,
+      "h": 4
+    },
+    {
+      "i": "chart-kind",
+      "x": 8,
+      "y": 2,
+      "w": 4,
+      "h": 4
+    },
+    {
+      "i": "chart-pipe-status",
+      "x": 0,
+      "y": 6,
+      "w": 4,
+      "h": 4
+    },
+    {
+      "i": "chart-pipe-duration",
+      "x": 4,
+      "y": 6,
+      "w": 8,
+      "h": 4
+    },
+    {
+      "i": "table-merges",
+      "x": 0,
+      "y": 10,
+      "w": 7,
+      "h": 7
+    },
+    {
+      "i": "table-pipelines",
+      "x": 7,
+      "y": 10,
+      "w": 5,
+      "h": 7
+    }
+  ],
+  "colors": {
+    "bug": "accent-4",
+    "canceled": "neutral",
+    "created": "accent-7",
+    "failed": "negative",
+    "feature": "accent-1",
+    "maintenance": "accent-2",
+    "manual": "accent-5",
+    "other": "neutral",
+    "pending": "warning",
+    "running": "accent-1",
+    "skipped": "accent-8",
+    "success": "positive"
+  }
+}
