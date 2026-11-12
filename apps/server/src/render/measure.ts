@@ -41,6 +41,8 @@ for (const weight of WEIGHTS) {
   advances.set(weight, table);
 }
 
+// Unbounded on purpose: a worker is replaced after a render timeout, and in practice the table only grows by the
+// distinct characters seen, which is small.
 function advanceOf(ch: string, weight: Weight): number {
   const table = advances.get(weight)!;
   const known = table.get(ch);
@@ -65,4 +67,14 @@ export function installTextMeasure(): void {
   echarts.setPlatformAPI({
     measureText: (text, font) => ({ width: interTextWidth(String(text ?? ''), font ?? '12px sans-serif') }),
   });
+}
+
+/** Cuts `value` with an ellipsis so it draws no wider than `maxWidth` px in `font`. */
+export function truncateToWidth(value: string, maxWidth: number, font: string): string {
+  if (interTextWidth(value, font) <= maxWidth) return value;
+  const chars = [...value];
+  // Keep at least one character, as truncate() does.
+  let keep = chars.length - 1;
+  while (keep > 1 && interTextWidth(`${chars.slice(0, keep).join('')}…`, font) > maxWidth) keep--;
+  return `${chars.slice(0, Math.max(1, keep)).join('')}…`;
 }

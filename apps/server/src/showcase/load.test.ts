@@ -247,6 +247,26 @@ describe('loadUseCases', () => {
           body: { query: '{ a }' },
         },
       },
+      {
+        id: 'apipath',
+        name: 'API path',
+        refreshSec: 60,
+        transforms: [],
+        source: { kind: 'http', url: 'https://api.example.org/v1?x=1', path: 'data.items' },
+      },
+      {
+        id: 'gqlpath',
+        name: 'GraphQL path',
+        refreshSec: 300,
+        transforms: [],
+        source: {
+          kind: 'http',
+          url: 'https://api.example.org/graphql',
+          method: 'POST',
+          body: { query: '{ a }' },
+          path: 'data.a',
+        },
+      },
     ];
     useCase(root, 'urls', {
       'meta.json': meta('urls'),
@@ -257,7 +277,14 @@ describe('loadUseCases', () => {
     expect([...keys].sort()).toEqual(
       [
         sourceTrustKey({ url: 'https://api.example.org/graphql', method: 'POST', body: { query: '{ a }' } }),
+        sourceTrustKey({
+          url: 'https://api.example.org/graphql',
+          method: 'POST',
+          body: { query: '{ a }' },
+          path: 'data.a',
+        }),
         sourceTrustKey({ url: 'https://api.example.org/v1?x=1', method: 'GET' }),
+        sourceTrustKey({ url: 'https://api.example.org/v1?x=1', method: 'GET', path: 'data.items' }),
         sourceTrustKey({ url: 'https://example.org/rss', method: 'GET' }),
       ].sort(),
     );

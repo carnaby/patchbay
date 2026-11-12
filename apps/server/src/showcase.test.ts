@@ -738,7 +738,10 @@ describe('trusted URLs through the whole app', () => {
 
     const get = await preview({ source: { kind: 'http', url: FEED } });
     expect(get.status).toBe(200);
-    expect(((await get.json()) as { error?: string }).error).toBeUndefined();
+    // The preview answers { result, profile, suggestions }: a refusal would be result.error.
+    const { result } = (await get.json()) as { result: { error?: string; table: { rows: unknown[] } } };
+    expect(result.error).toBeUndefined();
+    expect(result.table.rows.length).toBeGreaterThan(0);
     expect(upstreamJson).toHaveBeenCalledTimes(1);
   });
 });
@@ -760,6 +763,21 @@ describe('a trusted showcase POST through the whole app', () => {
     writeFileSync(
       join(base, 'dashboard.json'),
       JSON.stringify({ ...buildTemplate('blank'), datasets: [postDataset(QUERY)] }),
+    );
+    // A second use case whose POST also has a `path`: that part of the request must be trusted as well.
+    const pathed = join(postDir, 'showcase', 'graph-path');
+    mkdirSync(pathed, { recursive: true });
+    writeFileSync(
+      join(pathed, 'meta.json'),
+      JSON.stringify({ id: 'graph-path', order: 2, title: 'Pathed', tab: 'Pathed', description: 'GraphQL.' }),
+    );
+    writeFileSync(join(pathed, 'prompt.md'), 'Build a pathed GraphQL board');
+    writeFileSync(
+      join(pathed, 'dashboard.json'),
+      JSON.stringify({
+        ...buildTemplate('blank'),
+        datasets: [{ ...postDataset(QUERY), source: { ...postDataset(QUERY).source, path: 'data.items' } }],
+      }),
     );
     postDeps = await createDeps(
       loadConfig({
@@ -869,5 +887,59 @@ describe('a trusted showcase POST through the whole app', () => {
     expect(() => postDeps.dashboards.assertMayFetchUrl(target, GQL, 'POST', QUERY, 'y.1')).toThrow(/sign/i);
     expect(() => postDeps.dashboards.assertMayFetchUrl(target, GQL, 'POST', QUERY)).not.toThrow();
     expect(upstreamJson).not.toHaveBeenCalled();
+  });
+
+  it('lets an anonymous copy load a trusted POST that has a path, with one upstream call', async () => {
+    const copy = await postDeps.dashboards.duplicate('scgraphpath', anonymous());
+    upstreamJson.mockClear();
+    upstreamJson.mockResolvedValueOnce({ data: { items: [{ a: 1 }, { a: 2 }] } } as never);
+    const res = await postApp.request(`/api/dashboards/${copy.envelope.meta.id}/data/gql`, {
+      headers: { 'x-edit-key': copy.editKey! },
+    });
+    const body = (await res.json()) as { error?: string; table: { rows: unknown[] } };
+    expect(body.error).toBeUndefined();
+    expect(body.table.rows).toHaveLength(2);
+    expect(upstreamJson).toHaveBeenCalledTimes(1);
+  });
+
+  // A signed-in owner may save any POST. An anonymous duplicate skips the write rule (create does not run
+  // checkUrlSources), so the check at fetch time is the only guard: pin it.
+  describe('an anonymous copy of an owner-made POST dashboard', () => {
+    const ownerDashboard = async (id: string, body: unknown) => {
+      const owner = postDeps.users.upsert({ email: `${id}@example.com`, name: 'Owner' });
+      const at = now();
+      const meta: StoredMeta = {
+        id,
+        ownerId: owner.id,
+        ownerEmail: owner.email,
+        visibility: 'public',
+        editKeyHash: null,
+        version: 1,
+        createdAt: at,
+        updatedAt: at,
+        lastViewedAt: at,
+        lastActor: { kind: 'user', label: 'test' },
+      };
+      const parameters = [
+        { id: 'q', label: 'Query', type: 'select', options: [{ value: '{ a }' }], default: '{ a }' },
+      ];
+      const doc = { ...buildTemplate('blank'), parameters, datasets: [postDataset(body)] };
+      await postDeps.store.create(meta, doc as never, meta.lastActor!, ['Created']);
+      postDeps.index.upsert(meta, { title: doc.title, widgets: 0 });
+    };
+
+    it.each([
+      ['a body that is not a showcase', 'ownermadeone', { query: '{ x }' }],
+      ['a $param. in the body', 'ownermadetwo', { query: '$param.q' }],
+    ])('refuses to send %s, unsent', async (_name, id, body) => {
+      await ownerDashboard(id, body);
+      const copy = await postDeps.dashboards.duplicate(id, anonymous());
+      upstreamJson.mockClear();
+      const res = await postApp.request(`/api/dashboards/${copy.envelope.meta.id}/data/gql`, {
+        headers: { 'x-edit-key': copy.editKey! },
+      });
+      expect(JSON.stringify(await res.json())).toMatch(/Sign in/);
+      expect(upstreamJson).not.toHaveBeenCalled();
+    });
   });
 });

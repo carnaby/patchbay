@@ -436,7 +436,7 @@ const FEATURES: { icon: LucideIcon; title: string; body: string }[] = [
   {
     icon: MousePointerClick,
     title: 'Filters and clicks',
-    body: 'Add a period, a list or a search to any dashboard. Click a bar, a slice, a row or a map dot and every chart follows; the rest dims, colours stay.',
+    body: 'Add a period, a list or a search to any dashboard. Click a bar, a slice, a row or a map dot and the other widgets follow; the unclicked items dim, colours stay.',
   },
   {
     icon: Database,

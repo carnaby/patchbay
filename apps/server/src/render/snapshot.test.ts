@@ -239,6 +239,30 @@ describe('snapshot text', () => {
     expect(Math.abs(got.at(-1)! - want.at(-1)!)).toBeLessThanOrEqual(1);
   });
 
+  it('cuts table cells and headers by their drawn width, so capitals and digits stay in their column', () => {
+    const wide = 'WWWWWWWWWWWWWWWWWWWWWWWW';
+    const rows = [{ a: wide, b: '00000000000000000000000', c: 'MMMMMMMMMMMMMMMMMMMMMMMM' }];
+    const table = decodePng(
+      renderWidgetPng(
+        widget({ id: 't', type: 'table', title: 'Wide', datasetId: 'w', config: {} }),
+        {
+          datasetId: 'w',
+          table: inferTable(rows as never),
+          fetchedAt: new Date(0).toISOString(),
+          hash: 'w',
+          truncated: false,
+        },
+        { width: 480, height: 200 },
+      ),
+    );
+    // The body is 480 - 28 px wide in three columns; the last pixels before the next column's text must be clear.
+    const colW = (480 - 28) / 3;
+    for (const i of [1, 2]) {
+      const edge = 14 + i * colW;
+      expect(inkColumns(table, { x: edge - 3, y: 38, w: 2, h: 60 }), `column ${i}`).toEqual([]);
+    }
+  });
+
   it('draws the dashboard title', () => {
     const img = decodePng(renderDashboardPng(emptyDashboard('Sales analytics'), new Map()));
     // Dashboard snapshots are not scaled; the title sits at (16, 40) in 22 px bold.

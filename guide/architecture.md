@@ -147,7 +147,9 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
   CI, demos and screenshots independent of third-party uptime.
 - A **TTL cache with in-flight de-duplication** sits in front of connectors. The TTL is the connector's minimum refresh
   interval, chosen to respect each free tier. If upstream fails, a copy up to an hour old is served with a warning
-  instead of an empty widget.
+  instead of an empty widget. Requests in flight are also shared across paths: datasets that read different parts of
+  one response (GraphQL aliases, a status page's components and incidents) wait for one upstream request, and only the
+  parsed table of each path is cached.
 - **Feeds** (`source.kind: "feed"`) take a user-supplied URL, so they go through the same SSRF guard as the `http`
   source (`safeFetchText`), never through a connector. `apps/server/src/feeds/` finds the feed a web page announces,
   parses RSS, Atom and JSON Feed into fixed columns and turns every text into plain text at parse time, so nothing
@@ -174,7 +176,9 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
   read only datasets of the same document: one document has one owner, one visibility and one set of editors, which
   is what keeps the secret rules intact. Expressions can also use whole-table functions (`col_sum(x, by?)` …),
   computed once per step over the rows at that point of the pipeline. A preview of a draft never adds to a saved
-  dataset's accumulated history, it only reads it.
+  dataset's accumulated history, it only reads it. A source that returns no rows has no known columns, so the
+  lineage stays open there: steps that read its columns run without failing and are checked once rows arrive
+  (`notChecked` names them).
 - **Results are serialised once and shared** (`services/result-wire.ts`). The web app asks for rows as arrays
   (`?rows=arrays`, column names once instead of in every row; `decodeTable` in core turns them back); other clients
   get rows as objects. Concurrent readers of a result and every subscriber of a live push send the same bytes, and the
@@ -376,8 +380,8 @@ the wire but a runtime dependency on both sides for a file that is cached anyway
 
 The landing page can present ready-made use cases. Each one is a folder `showcase/<id>/` with `meta.json` (strict:
 `id` equal to the folder name, lowercase words joined by single hyphens and at least 4 letters or digits, `order`,
-`title` up to 60 characters, `tab` up to 24, `description` up to 200, optional `attachment` and `featured`), `prompt.md` (1-4000
-characters) and `dashboard.json` (a `DashboardDoc` within the 1 MB document limit, `LIMITS.documentBytes`, measured
+`title` up to 60 characters, `tab` up to 24, `description` up to 200, optional `attachment` and `featured`),
+`prompt.md` (1-4000 characters) and `dashboard.json` (a `DashboardDoc` within the 1 MB document limit, `LIMITS.documentBytes`, measured
 as `DashboardService` measures every write, since every visitor's copy is such a write). Optional files:
 
 - `video.mp4` (16:9 H.264, at most 5 MB) and `poster.jpg` (at most 150 KB), shown before the first frame of either
@@ -407,14 +411,14 @@ pruned and not counted in the anonymous storage limit. A changed `dashboard.json
 by anyone else is never touched. Anyone can make an editable copy. With `URL_SOURCES=signed-in`, the showcase's own
 requests are trusted, so anonymous copies keep working: a GET of an http or feed URL it uses, matched exactly (no
 prefixes), and a POST only with the same URL and exactly the same body. A copy that changes the body, the URL, the
-method or the `path` needs a signed-in owner. A use case whose sync fails (a corrupt stored dashboard, an id owned by someone else)
-is left out of the list and the routes; a failed sync never keeps the server from starting. An admin can delete a
+method or the `path` needs a signed-in owner. A use case whose sync fails (a corrupt stored dashboard, an id owned by
+someone else) is left out of the list and the routes; a failed sync never keeps the server from starting. An admin can delete a
 showcase dashboard, but it comes back at the next restart.
 
 Routes:
 
-- `GET /api/use-cases` lists the featured ones (`public, max-age=300`), with media and attachment URLs that carry the content hash
-  as `?v=`, so a deploy that changes a file changes its URL.
+- `GET /api/use-cases` lists the featured ones (`public, max-age=300`), with media and attachment URLs that carry the content
+  hash as `?v=`, so a deploy that changes a file changes its URL.
 - `GET /showcase/<id>` redirects (302) to the dashboard.
 - `/showcase/<id>/video.mp4`, `/video-square.mp4`, `/poster.jpg` and `/<name>.csv` (the declared attachment only,
   matched by name and never used as a path, sent as `text/csv` with `Content-Disposition: attachment`) answer GET and

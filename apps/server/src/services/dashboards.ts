@@ -611,8 +611,8 @@ export class DashboardService {
    * on its operator's connection must not fetch arbitrary addresses for strangers. Checked at use time (DataService
    * calls this before every http or feed load) and, for an early message, when such a source is saved. The one
    * exception is a request that the repository's showcase sends itself: a GET of one of its URLs or one of its POSTs
-   * with exactly the same body and path (`isTrustedSource`), so anonymous copies of a use case work. Returns the private hosts
-   * the dashboard's sources may reach (null: public addresses only), decided by its owner, never by the viewer. Its
+   * with exactly the same body and path (`isTrustedSource`), so anonymous copies of a use case work. Returns the
+   * private hosts the dashboard's sources may reach (null: public addresses only), decided by its owner, never by the viewer. Its
    * refusals are lasting: only the owner or the operator can change them.
    */
   assertMayFetchUrl(
@@ -638,8 +638,8 @@ export class DashboardService {
   /**
    * A request an anonymous dashboard may send under URL_SOURCES=signed-in: one the repository's showcase sends itself,
    * matched exactly (sourceTrustKey: no normalising, so a variant is refused). A POST is trusted only with the
-   * showcase's own body, and any request only with its path, so a stranger can repeat the showcase's query on the operator's connection but never send
-   * another.
+   * showcase's own body, and any request only with its path, so a stranger can repeat the showcase's query on the
+   * operator's connection but never send another.
    */
   private isTrustedSource(request: SourceRequest): boolean {
     return this.trustedSources.has(sourceTrustKey(request));

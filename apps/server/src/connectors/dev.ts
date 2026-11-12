@@ -204,7 +204,7 @@ export const npmDownloads: Connector = {
     ]);
     // npm answers 0 for every package on days its counting lost. The registry's own total is 0 on exactly those
     // days, which real traffic never is; a package's 0 alone may be real, so only the total marks a lost day.
-    const lost = new Set(total?.downloads.filter((d) => d.downloads === 0).map((d) => d.day));
+    const lost = new Set(total?.downloads?.filter((d) => d.downloads === 0).map((d) => d.day));
     const rows = results.flatMap(({ p, j }) =>
       j.downloads.map((d) => ({ day: d.day, package: p, downloads: lost.has(d.day) ? null : d.downloads })),
     );

@@ -53,7 +53,7 @@ import { buildMapOption, mapTime, WORLD_MAP } from '@patchbay/core/map';
 import { Resvg } from '@resvg/resvg-js';
 import * as echarts from 'echarts';
 import { collectGarbage } from './gc.ts';
-import { installTextMeasure } from './measure.ts';
+import { installTextMeasure, truncateToWidth } from './measure.ts';
 import { statusSvg } from './status-svg.ts';
 import { FONT, FONT_OPTIONS, text, truncate, xmlChars } from './svg.ts';
 
@@ -335,10 +335,15 @@ function widgetBody(
         return out;
       }
       const colW = w / Math.max(cols.length, 1);
-      const maxChars = Math.max(4, Math.floor(colW / 7));
+      // Cut by drawn width, not by character count: capitals and digits are wider than the average letter.
+      const maxPx = Math.max(24, colW - 8);
       let out = cols
         .map((c, i) =>
-          text(i * colW, 21, truncate(c.label, maxChars), { size: 13, weight: 600, color: theme.muted }),
+          text(i * colW, 21, truncateToWidth(c.label, maxPx, '600 13px Inter'), {
+            size: 13,
+            weight: 600,
+            color: theme.muted,
+          }),
         )
         .join('');
       out += `<line x1="0" y1="32" x2="${w}" y2="32" stroke="${theme.grid}"/>`;
@@ -352,7 +357,7 @@ function widgetBody(
           // The same tint the browser draws: a wash behind the cell, the text keeps the normal ink.
           if (cell.background)
             out += `<rect x="${i * colW - 4}" y="${top}" width="${colW - 2}" height="${TABLE_ROW - 1}" rx="3" fill="${cell.background}"/>`;
-          out += text(i * colW, top + 21, truncate(cell.text, maxChars), {
+          out += text(i * colW, top + 21, truncateToWidth(cell.text, maxPx, '400 13px Inter'), {
             size: 13,
             color: cell.color ?? theme.textPrimary,
           });

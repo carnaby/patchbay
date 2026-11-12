@@ -37,4 +37,16 @@ describe('npm downloads', () => {
     const table = await npmDownloads.fetch({ packages: 'react' }, failing);
     expect(column(table, 'downloads')).toEqual([17_693_894, 0, 32_073_030]);
   });
+
+  it("keeps npm's numbers when the registry total answers without downloads", async () => {
+    const { ctx } = upstream(routes);
+    const odd = {
+      fetchJson: async <T>(url: string) =>
+        url === 'https://api.npmjs.org/downloads/range/last-month'
+          ? ({ error: 'no data' } as T)
+          : ctx.fetchJson<T>(url),
+    };
+    const table = await npmDownloads.fetch({ packages: 'react' }, odd);
+    expect(column(table, 'downloads')).toEqual([17_693_894, 0, 32_073_030]);
+  });
 });

@@ -385,8 +385,8 @@ showcase off, point `SHOWCASE_DIR` at an empty folder. Restart after changing fi
 startup. Their dashboards are public and read-only (an admin delete lasts until the next restart). The video and
 poster routes are not behind the API rate limiter, so put a CDN or a proxy limit in front when the server is exposed
 directly. With `URL_SOURCES=signed-in`, their exact requests still load for anonymous copies: a GET of a URL that
-appears in them, or one of their POSTs with the same body, in both cases with the same `path`; any other http or feed request needs a signed-in owner as
-before.
+appears in them, or one of their POSTs with the same body, in both cases with the same `path`; any other http or feed
+request needs a signed-in owner as before.
 
 ### Memory budget
 
