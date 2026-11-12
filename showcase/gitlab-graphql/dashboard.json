@@ -63,6 +63,11 @@
           "expr": "mergedAt >= floor(col_min(mergedAt) / 3600000) * 3600000 + 3600000"
         },
         {
+          "id": "bykind",
+          "type": "filter",
+          "expr": "$param.kind == null || kind == $param.kind"
+        },
+        {
           "id": "bucket",
           "type": "timeBucket",
           "field": "mergedAt",
@@ -122,6 +127,12 @@
               "dir": "desc"
             }
           ]
+        },
+        {
+          "id": "label",
+          "type": "derive",
+          "as": "label",
+          "expr": "concat(kind, \" · \", string(merges))"
         }
       ],
       "refreshSec": 0,
@@ -136,12 +147,19 @@
       },
       "transforms": [
         {
+          "id": "sel",
+          "type": "derive",
+          "as": "sel",
+          "expr": "($param.kind == null || kind == $param.kind) ? 1 : 0"
+        },
+        {
           "id": "span",
           "type": "aggregate",
           "groupBy": [],
           "metrics": [
             {
-              "op": "count",
+              "op": "sum",
+              "field": "sel",
               "as": "n"
             },
             {
@@ -160,7 +178,7 @@
           "id": "rate",
           "type": "derive",
           "as": "per_hour",
-          "expr": "round((n - 1) / ((last - first) / 3600000), 1)"
+          "expr": "round(n / ((last - first) / 3600000), 1)"
         }
       ],
       "refreshSec": 0,
@@ -340,13 +358,30 @@
       ],
       "refreshSec": 0,
       "accumulate": 0
+    },
+    {
+      "id": "merges-view",
+      "name": "Merged MRs (filtered)",
+      "source": {
+        "kind": "dataset",
+        "id": "merges"
+      },
+      "transforms": [
+        {
+          "id": "bykind",
+          "type": "filter",
+          "expr": "$param.kind == null || kind == $param.kind"
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
     }
   ],
   "widgets": [
     {
       "id": "kpi-rate",
       "title": "Merges per hour",
-      "description": "Pace over the time span of the latest 100 merged MRs.",
+      "description": "Merges of the selected kind per hour, over the time span of the latest 100 merged MRs.",
       "datasetId": "merge-rate",
       "type": "kpi",
       "config": {
@@ -433,7 +468,7 @@
     {
       "id": "chart-hourly",
       "title": "Merged MRs per hour, by type label",
-      "description": "Latest 100 merges. The oldest, partly covered hour is left out; the last bar is the current hour so far.",
+      "description": "Latest 100 merges, following the Kind filter; click a segment to filter, click again to reset. The oldest, partly covered hour is left out; the last bar is the current hour so far.",
       "datasetId": "merges-hourly",
       "type": "chart",
       "config": {
@@ -446,25 +481,29 @@
         "smooth": false,
         "showLegend": true,
         "logScale": false,
-        "maxPoints": 5000
+        "maxPoints": 5000,
+        "crossFilter": {
+          "parameter": "kind",
+          "field": "kind"
+        }
       }
     },
     {
       "id": "chart-kind",
       "title": "Latest 100 merges by type",
-      "description": "From the type::bug / type::feature / type::maintenance labels; other = no type label.",
+      "description": "Click a bar to set the Kind filter (click again to reset); the other kinds are dimmed. From the type::bug / type::feature / type::maintenance labels; other = no type label.",
       "datasetId": "merges-by-kind",
       "type": "chart",
       "config": {
         "kind": "bar",
-        "x": "kind",
+        "x": "label",
         "y": ["merges"],
         "series": "kind",
         "horizontal": true,
         "stacked": true,
         "smooth": false,
         "showLegend": false,
-        "showLabels": true,
+        "showLabels": false,
         "logScale": false,
         "colors": {
           "bug": "accent-4",
@@ -472,7 +511,11 @@
           "maintenance": "accent-2",
           "other": "neutral"
         },
-        "maxPoints": 5000
+        "maxPoints": 5000,
+        "crossFilter": {
+          "parameter": "kind",
+          "field": "kind"
+        }
       }
     },
     {
@@ -513,7 +556,7 @@
     {
       "id": "table-merges",
       "title": "Newest merges",
-      "datasetId": "merges",
+      "datasetId": "merges-view",
       "type": "table",
       "config": {
         "columns": [
@@ -675,5 +718,28 @@
     "running": "accent-1",
     "skipped": "accent-8",
     "success": "positive"
-  }
+  },
+  "parameters": [
+    {
+      "id": "kind",
+      "label": "Kind",
+      "type": "select",
+      "options": [
+        {
+          "value": "bug"
+        },
+        {
+          "value": "feature"
+        },
+        {
+          "value": "maintenance"
+        },
+        {
+          "value": "other"
+        }
+      ],
+      "all": "All kinds",
+      "default": null
+    }
+  ]
 }
