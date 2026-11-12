@@ -305,6 +305,7 @@ function ParameterForm({
           set={set}
           optionsDraft={optionsDraft}
           setOptionsDraft={setOptionsDraft}
+          initialOptions={initial.type === 'select' ? (initial.options ?? []) : []}
         />
       ) : initial.type === 'text' ? (
         <>
@@ -358,12 +359,14 @@ function SelectFields({
   set,
   optionsDraft,
   setOptionsDraft,
+  initialOptions,
 }: {
   dashboardId: string;
   draft: Record<string, unknown>;
   set: (patch: Record<string, unknown>) => void;
   optionsDraft: string;
   setOptionsDraft: (text: string) => void;
+  initialOptions: readonly OptionInput[];
 }) {
   const options = (draft.options as OptionInput[] | undefined) ?? [];
   const all = typeof draft.all === 'string' ? draft.all : undefined;
@@ -383,7 +386,7 @@ function SelectFields({
         value={fromData ? 'data' : 'list'}
         onChange={(mode) => {
           if (mode === (fromData ? 'data' : 'list')) return;
-          set(choiceSourcePatch(mode, draft, optionsDraft, sources[0]?.id));
+          set(choiceSourcePatch(mode, draft, optionsDraft, sources[0]?.id, initialOptions));
         }}
         options={[
           { value: 'list', label: 'Fixed list' },
@@ -433,7 +436,10 @@ function SelectFields({
           </Field>
         </>
       ) : (
-        <Field label="Options" hint='One per line: a value, or "value | Label". Values appear in links.'>
+        <Field
+          label="Options"
+          hint='One per line: a value, or "value | Label". Write \| for a "|" inside one; ↵ stands for a line break. Values appear in links.'
+        >
           {(fid) => (
             <Textarea
               id={fid}

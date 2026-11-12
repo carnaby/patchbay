@@ -74,40 +74,70 @@ export function newParameter(type: ParameterType, taken: ReadonlySet<string>): P
   }
 }
 
-/** One option per line, "value" or "value | Label": pasting a list is the quickest way to declare a choice. */
+/** Only "\|" is an escape: a "|" inside a value or label. The first "|" not written so ends the value. */
+const escapeBars = (text: string) => text.replace(/\|/g, '\\|');
+const unescapeBars = (text: string) => text.replace(/\\\|/g, '|');
+/** One option per line cannot hold a line break: it is shown as this mark. */
+const LINE_BREAK = '↵';
+const oneLine = (text: string) => text.replace(/\r\n|\r|\n/g, LINE_BREAK);
+const shown = (text: string) => escapeBars(oneLine(text));
+
+/** The first "|" not written as "\|", or -1. A loop, not a lookbehind: older Safari cannot parse one. */
+function separatorAt(line: string): number {
+  for (let i = 0; i < line.length; i++) if (line[i] === '|' && line[i - 1] !== '\\') return i;
+  return -1;
+}
+
+/**
+ * One option per line, "value" or "value | Label": pasting a list is the quickest way to declare a choice. A "|"
+ * inside is written "\|", and a line break shows as "↵".
+ */
 export function optionsText(options: readonly OptionInput[]): string {
   return options
-    .map((o) =>
-      o.label !== undefined && o.label !== String(o.value) ? `${o.value} | ${o.label}` : String(o.value),
-    )
+    .map((o) => {
+      const value = String(o.value);
+      return o.label !== undefined && o.label !== value
+        ? `${shown(value)} | ${shown(o.label)}`
+        : shown(value);
+    })
     .join('\n');
 }
 
 export function parseOptions(text: string, previous: readonly OptionInput[] = []): OptionInput[] {
   return text.split('\n').flatMap((line) => {
-    const [first = '', ...rest] = line.split('|');
-    const value = first.trim();
+    const at = separatorAt(line);
+    const value = unescapeBars(at < 0 ? line : line.slice(0, at)).trim();
     if (!value) return [];
-    const label = rest.join('|').trim();
-    // A number an agent declared stays a number while its text is unchanged; the editor itself writes text.
-    const prev = previous.find((o) => String(o.value) === value);
+    const label = at < 0 ? '' : unescapeBars(line.slice(at + 1)).trim();
+    // What an agent declared stays as declared while its text is unchanged: a number stays a number, and a line
+    // break shown as "↵" stays a line break. The editor itself writes the text it shows.
+    const prev = previous.find((o) => oneLine(String(o.value)) === value);
     const kept = prev?.value ?? value;
+    const keptText = String(kept);
+    const keptLabel = prev?.label !== undefined && oneLine(prev.label) === label ? prev.label : label;
     // "eu | eu" saved by an agent shows as "eu"; typed back either way, it keeps its label.
-    const keepSame = prev?.label === value && (!label || label === value);
-    return [{ value: kept, ...(label && label !== value ? { label } : keepSame ? { label: value } : {}) }];
+    const keepSame = prev?.label === keptText && (!label || label === value);
+    return [
+      {
+        value: kept,
+        ...(keptLabel && keptLabel !== keptText ? { label: keptLabel } : keepSame ? { label: keptText } : {}),
+      },
+    ];
   });
 }
 
 /**
  * The draft change of the "Fixed list" / "From a dataset column" switch. Never both: the schema refuses options
  * together with optionsFrom. A list starts from what the author typed before, or empty: a made-up option would save
- * as a real choice, while an empty list keeps Save disabled with the reason.
+ * as a real choice, while an empty list keeps Save disabled with the reason. `previous` are the options the form
+ * opened with: switching to a column and back keeps what they hold.
  */
 export function choiceSourcePatch(
   mode: 'list' | 'data',
   draft: Record<string, unknown>,
   optionsDraft: string,
   firstDataset: string | undefined,
+  previous: readonly OptionInput[] = [],
 ): Record<string, unknown> {
   if (mode === 'data')
     return {
@@ -116,7 +146,7 @@ export function choiceSourcePatch(
       all: typeof draft.all === 'string' ? draft.all : 'All',
       default: null,
     };
-  return { optionsFrom: undefined, options: parseOptions(optionsDraft, []) };
+  return { optionsFrom: undefined, options: parseOptions(optionsDraft, previous) };
 }
 
 /** The declaration a form describes, or the first reason it cannot be saved (the same checks as a save). */

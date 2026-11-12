@@ -276,3 +276,52 @@ describe('addFilterBlocker', () => {
     expect(addFilterBlocker(undefined)).toBeNull();
   });
 });
+
+describe('options with "|" or a line break', () => {
+  it('keeps a "|" in a value or label through the options text', () => {
+    const options = [
+      { value: 'a|b', label: 'A|B' },
+      { value: String.raw`x\|y` },
+      { value: '\\' },
+      { value: 'f\\', label: 'F' },
+      { value: 'eu', label: 'Europe | West' },
+    ];
+    const text = optionsText(options);
+    expect(text.split('\n')).toEqual([
+      String.raw`a\|b | A\|B`,
+      String.raw`x\\|y`,
+      '\\',
+      String.raw`f\ | F`,
+      String.raw`eu | Europe \| West`,
+    ]);
+    // Escaping alone carries them: no previous options needed.
+    expect(parseOptions(text)).toEqual(options);
+    expect(parseOptions(text, options)).toEqual(options);
+    expect(parseOptions(String.raw`a\|b | Label`)).toEqual([{ value: 'a|b', label: 'Label' }]);
+    // A label typed with bare bars reads as before: everything after the first one.
+    expect(parseOptions('eu | Europe | West')).toEqual([{ value: 'eu', label: 'Europe | West' }]);
+  });
+  it('keeps a line break in a value or label while its line is unchanged', () => {
+    const options = [{ value: 'a\nb', label: 'Line\r\none' }, { value: 'c' }];
+    expect(optionsText(options)).toBe('a↵b | Line↵one\nc');
+    expect(parseOptions(optionsText(options), options)).toEqual(options);
+    // Its label edited: the value stays as stored.
+    expect(parseOptions('a↵b | New\nc', options)).toEqual([{ value: 'a\nb', label: 'New' }, { value: 'c' }]);
+    // A new line typed with the mark saves what it shows.
+    expect(parseOptions('p↵q', [])).toEqual([{ value: 'p↵q' }]);
+    // Two values that show alike are refused as duplicates, never merged silently.
+    const alike = [{ value: 'a\nb' }, { value: 'a↵b' }];
+    const parsed = parseOptions(optionsText(alike), alike);
+    expect(checkParameter({ ...region, options: parsed }, [])).toEqual({
+      error: expect.stringContaining('appears twice'),
+    });
+  });
+  it('keeps the opened options when the list is switched to a column and back', () => {
+    const options = [{ value: 'a|b' }, { value: 2026 }, { value: 'x\ny' }];
+    const { options: _o, ...dataDraft } = { ...region, ...choiceSourcePatch('data', region, '', 'sales') };
+    expect(choiceSourcePatch('list', dataDraft, optionsText(options), 'sales', options)).toEqual({
+      optionsFrom: undefined,
+      options,
+    });
+  });
+});
