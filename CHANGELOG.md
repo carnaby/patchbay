@@ -28,6 +28,9 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ### Fixed
 
+- Stacked bar, line and area charts over time now stack each value on the values of the same time. When a series had
+  no row for some hour or day (one row per time and category), its segments and every segment above them were drawn
+  on the wrong time, so bars floated or overlapped.
 - Steps that read a column of a source no longer fail when the source returns an empty list, such as the open
   incidents of a status page, which are usually none. With no rows there is nothing to check: the step runs and the
   column is empty, and `preview_data` and the data checks of `apply_operations` name the columns that wait for rows.
