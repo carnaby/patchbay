@@ -236,6 +236,45 @@ describe('resolution scopes', () => {
     expect(results[3]!.table.rows).toHaveLength(3);
   });
 
+  it('loads five datasets that read aliases of one GraphQL query, and their union, with one request', async () => {
+    fetchMock.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return { data: Object.fromEntries([0, 1, 2, 3, 4].map((i) => [`w${i}`, { nodes: [{ iid: i }] }])) };
+    });
+    const data = new DataService(connectors, store);
+    const body = {
+      query:
+        '{ w0: x { nodes { iid } } w1: x { nodes { iid } } w2: x { nodes { iid } } w3: x { nodes { iid } } w4: x { nodes { iid } } }',
+    };
+    const window = (i: number) => ({
+      id: `w${i}`,
+      name: `W${i}`,
+      source: {
+        kind: 'http',
+        url: 'https://gitlab.example/api/graphql',
+        method: 'POST',
+        body,
+        path: `data.w${i}.nodes`,
+      },
+    });
+    const d = doc(
+      ...[0, 1, 2, 3, 4].map(window),
+      from('day', 'w0', { transforms: [{ type: 'union', with: ['w1', 'w2', 'w3', 'w4'] }] }),
+    );
+    const scope = data.scope(target, d);
+    const results = await Promise.all(d.datasets.map((x) => scope.resolve(x)));
+    expect(results.map((r) => r.error)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(results[5]!.table.rows.map((r) => r.iid).sort()).toEqual([0, 1, 2, 3, 4]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it('checks columns in a dataset that reads one a filter emptied, and not in one that reads an empty source', async () => {
     const data = new DataService(connectors, store);
     const d = doc(

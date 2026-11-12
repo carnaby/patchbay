@@ -199,17 +199,22 @@ interface HistoryBuffer {
 type HttpSource = Extract<Dataset['source'], { kind: 'http' }>;
 
 /**
- * The cache and in-flight key of an http source. A GET's key is exactly what it was before POST existed, so a deploy
- * does not empty the cache. A POST adds its method and a SHA-256 of its JSON body: two queries on one URL never share
- * a response, and a body cannot be crafted to collide with another. The two kinds never meet: after the credentials a
- * GET key goes on with its URL ("http…"), a POST key with "POST:".
+ * What goes out for an http source: credentials, private-host flag, method, URL and, for a POST, a SHA-256 of its JSON
+ * body. A GET's key is exactly what it was before POST existed, so a deploy does not empty the cache. Two queries on
+ * one URL never share a request, and a body cannot be crafted to collide with another. The two kinds never meet:
+ * after the credentials a GET key goes on with its URL ("http…"), a POST key with "POST:". The path is not here: it
+ * is read from the response and never sent, so datasets that differ only in it share one request.
  */
-export function httpCacheKey(source: HttpSource, credentialKey: string, lan: boolean): string {
+export function httpRequestKey(source: HttpSource, credentialKey: string, lan: boolean): string {
   const head = `http:${lan ? 'lan|' : ''}${credentialKey}|`;
-  const tail = `${source.url}#${source.path ?? ''}`;
-  if (source.method !== 'POST') return head + tail;
+  if (source.method !== 'POST') return head + source.url;
   const body = source.body === undefined ? '' : JSON.stringify(source.body);
-  return `${head}POST:${createHash('sha256').update(body).digest('base64url')}|${tail}`;
+  return `${head}POST:${createHash('sha256').update(body).digest('base64url')}|${source.url}`;
+}
+
+/** The cache key of a parsed table: the request key plus the path, because one response can feed several datasets. */
+export function httpCacheKey(source: HttpSource, credentialKey: string, lan: boolean): string {
+  return `${httpRequestKey(source, credentialKey, lan)}#${source.path ?? ''}`;
 }
 
 export class DataService {
@@ -223,6 +228,11 @@ export class DataService {
    */
   private readonly tables: ByteLru<CacheEntry>;
   private readonly loading = new Map<string, Promise<CacheEntry>>();
+  /**
+   * Responses in flight, by request, so datasets that read different paths of one response (GraphQL aliases, a status
+   * page's summary.json) share one request. Only parsed tables are cached, per path.
+   */
+  private readonly requests = new Map<string, Promise<unknown>>();
   /**
    * Recent pipeline results, keyed by the identity of the input table: capped results for widgets, and (keys starting
    * with "full|") uncapped ones that derived datasets read. One byte budget for both.
@@ -426,11 +436,12 @@ export class DataService {
       .join(',');
     // A response fetched with the operator's private hosts never answers a dashboard that may not use them.
     const key = httpCacheKey(source, credentialKey, Boolean(privateHosts));
+    const requestKey = httpRequestKey(source, credentialKey, Boolean(privateHosts));
     let entry = this.tables.get(key);
     if (!entry) {
       let pending = this.loading.get(key);
       if (!pending) {
-        pending = this.fetchHttp(key, source, credentials, privateHosts).finally(() =>
+        pending = this.fetchHttp(key, requestKey, source, credentials, privateHosts).finally(() =>
           this.loading.delete(key),
         );
         this.loading.set(key, pending);
@@ -449,24 +460,43 @@ export class DataService {
     };
   }
 
+  private response(
+    requestKey: string,
+    source: HttpSource,
+    credentials: Credential[],
+    privateHosts: PrivateHosts | null,
+  ): Promise<unknown> {
+    let pending = this.requests.get(requestKey);
+    if (!pending) {
+      // One request takes one place and one token of the host's budget, whoever waits on it.
+      pending = this.outbound
+        .run(currentClient(), source.url, () =>
+          safeFetchJson(source.url, {
+            credentials,
+            // Only a POST carries these, so a GET is fetched with exactly the options it always had.
+            ...(source.method === 'POST'
+              ? { method: 'POST' as const, ...(source.body !== undefined ? { body: source.body } : {}) }
+              : {}),
+            ...(privateHosts ? { privateHosts } : {}),
+            ...(this.upstreamTest ? { test: this.upstreamTest } : {}),
+          }),
+        )
+        .finally(() => this.requests.delete(requestKey));
+      this.requests.set(requestKey, pending);
+    }
+    return pending;
+  }
+
   private async fetchHttp(
     key: string,
+    requestKey: string,
     source: Extract<Dataset['source'], { kind: 'http' }>,
     credentials: Credential[],
     privateHosts: PrivateHosts | null,
   ): Promise<CacheEntry> {
     try {
-      const json = await this.outbound.run(currentClient(), source.url, () =>
-        safeFetchJson(source.url, {
-          credentials,
-          // Only a POST carries these, so a GET is fetched with exactly the options it always had.
-          ...(source.method === 'POST'
-            ? { method: 'POST' as const, ...(source.body !== undefined ? { body: source.body } : {}) }
-            : {}),
-          ...(privateHosts ? { privateHosts } : {}),
-          ...(this.upstreamTest ? { test: this.upstreamTest } : {}),
-        }),
-      );
+      const json = await this.response(requestKey, source, credentials, privateHosts);
+      // The response is shared by every waiter: reading a path builds new rows and must never write into it.
       const { table, capped } = cappedTable(
         recordsFrom(json, source.path, this.maxSourceCells),
         this.maxSourceCells,

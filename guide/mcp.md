@@ -448,7 +448,8 @@ search. An `http` source sends one with `method: "POST"` and a JSON `body`:
 - GraphQL needs the object `{ "query": "…" }`, not the bare query text. A string body is sent as a JSON string, and a
   string that looks like JSON is refused.
 - **Read queries only.** The request repeats on every refresh, preview and load. An identical body is answered from
-  the 30 s cache; two different bodies on one URL never share a cached response.
+  the 30 s cache; datasets that send the same address and body at the same time share one request, whatever their
+  `path`; two different bodies on one URL never share a cached response.
 - **No secrets in the body.** It is part of the document, so editors, agents, exports and the viewers of a public
   dashboard see it. Keys stay in secrets (below), sent as a header or query parameter; GraphQL and analytics APIs
   read their token from a header.

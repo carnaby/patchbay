@@ -36,6 +36,10 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   loads all of them. What one host receives from the server stays limited to two requests at a time and 60 a minute.
 - When the server's own load limit refuses a data check of `apply_operations`, or its source is still loading after
   20 seconds, the check now says which of the two it was, that the change is saved, and when to look again.
+- Datasets that read different parts of one response, such as the aliases of one GraphQL query or a status page's
+  components and incidents, now share one request instead of sending it once each. Before, a dashboard that split one
+  GraphQL query into several datasets sent it several times at once and lost the requests over the per-host limit.
+  A copy of a showcase can no longer send the trusted query again by varying only `path`, while another is loading.
 
 ## [0.3.4] - 2026-11-12
 

@@ -794,4 +794,63 @@ describe('a trusted showcase POST through the whole app', () => {
     expect(result.error).toBeUndefined();
     expect(result.table.rows.length).toBeGreaterThan(0);
   });
+
+  // `path` is read from the response and never sent, so a copy that varies it must not send the trusted query again.
+  const slowUpstream = () =>
+    upstreamJson.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return [{ a: 1 }];
+    });
+
+  it('sends the trusted POST once for anonymous previews that differ only in path', async () => {
+    const copies = await Promise.all(
+      [0, 1].map(() => postDeps.dashboards.duplicate('scgraphdemo', anonymous())),
+    );
+    const preview = (copy: (typeof copies)[number], path: string) =>
+      postApp.request(`/api/dashboards/${copy.envelope.meta.id}/preview`, {
+        method: 'POST',
+        headers: { 'x-edit-key': copy.editKey!, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          dataset: { source: { kind: 'http', url: GQL, method: 'POST', body: QUERY, path } },
+        }),
+      });
+    upstreamJson.mockClear();
+    slowUpstream();
+    try {
+      const answers = await Promise.all([preview(copies[0]!, 'x.one'), preview(copies[1]!, 'x.two')]);
+      expect(answers.map((r) => r.status)).toEqual([200, 200]);
+      expect(upstreamJson).toHaveBeenCalledTimes(1);
+    } finally {
+      upstreamJson.mockImplementation(async () => [{ a: 1 }]);
+    }
+  });
+
+  it('sends the trusted POST once for saved datasets that differ only in path', async () => {
+    const copy = await postDeps.dashboards.duplicate('scgraphdemo', anonymous());
+    const id = copy.envelope.meta.id;
+    const key = { 'x-edit-key': copy.editKey! };
+    const dataset = (n: number) => ({
+      ...postDataset(QUERY),
+      id: `gql${n}`,
+      source: { kind: 'http', url: GQL, method: 'POST', body: QUERY, path: `y.${n}` },
+    });
+    const added = await postApp.request(`/api/dashboards/${id}/ops`, {
+      method: 'POST',
+      headers: { ...key, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ops: [1, 2, 3].map((n) => ({ op: 'addDataset', dataset: dataset(n) })),
+      }),
+    });
+    expect(added.status).toBe(200);
+    upstreamJson.mockClear();
+    slowUpstream();
+    try {
+      await Promise.all(
+        [1, 2, 3].map((n) => postApp.request(`/api/dashboards/${id}/data/gql${n}`, { headers: key })),
+      );
+      expect(upstreamJson).toHaveBeenCalledTimes(1);
+    } finally {
+      upstreamJson.mockImplementation(async () => [{ a: 1 }]);
+    }
+  });
 });

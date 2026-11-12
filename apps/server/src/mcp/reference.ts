@@ -139,7 +139,7 @@ a POST without body sends an empty one.
 - body is any JSON value, usually an object such as { "query": "..." }. Send the object itself, never a string holding JSON
   (a string is sent as a JSON string, and one that looks like JSON is refused). It goes out as application/json, at most ${LIMITS.httpBody.toLocaleString('en-US')} characters as JSON and ${LIMITS.httpBodyDepth} levels deep.
 - Only for read queries. The request is sent again on every refresh, preview, data check and page load (an identical
-  body is answered from a ${HTTP_MIN_REFRESH_SEC} s cache), so never point it at an endpoint that creates, changes or deletes anything.
+  body is answered from a ${HTTP_MIN_REFRESH_SEC} s cache, and datasets that load together with the same address and body share one request whatever their path: one GraphQL query with aliases, such as a: … b: …, can feed several datasets with paths data.a.nodes, data.b.nodes), so never point it at an endpoint that creates, changes or deletes anything.
 - The body is part of the document: editors, agents, exports and the viewers of a public dashboard see it. Never put a key or token in it.
   Bind a secret instead (see Secrets); APIs like GitHub's read the token from a header.
 - A redirect answer to a POST is an error, never followed: the body is not resent anywhere. Use the final address.
