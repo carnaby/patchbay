@@ -26,8 +26,8 @@
     "@tanstack/react-query": "^5.107.1",
     "clsx": "^2.1.1",
     "echarts": "^6.1.0",
-    "immer": "^11.2.9",
-    "lucide-react": "^1.70.0",
+    "immer": "^11.2.10",
+    "lucide-react": "^1.71.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-grid-layout": "^2.3.0",
@@ -40,8 +40,8 @@
     "@tailwindcss/vite": "^4.3.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.2.1",
+    "@vitejs/plugin-react": "^6.3.0",
     "tailwindcss": "^4.3.5",
-    "vite": "^8.3.6"
+    "vite": "^8.3.7"
   }
 }
