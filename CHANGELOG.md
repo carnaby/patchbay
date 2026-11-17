@@ -6,6 +6,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-11-17
+
 ### Added
 
 - Four new showcase dashboards, each built by an AI agent from the prompt in its folder, open at `/showcase/<id>`
@@ -369,7 +371,8 @@ The server was reviewed adversarially before release, and every finding has a re
 - Hostile feeds are parsed in linear time off the main thread; snapshot drawing is bounded per render.
 - `URL_SOURCES=signed-in` keeps strangers from making a public instance fetch arbitrary addresses.
 
-[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.3.4...HEAD
+[Unreleased]: https://github.com/carnaby/patchbay/compare/v0.3.5...HEAD
+[0.3.5]: https://github.com/carnaby/patchbay/compare/v0.3.4...v0.3.5
 [0.3.4]: https://github.com/carnaby/patchbay/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/carnaby/patchbay/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/carnaby/patchbay/compare/v0.3.1...v0.3.2
