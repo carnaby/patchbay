@@ -1,8 +1,10 @@
 version: 2
 updates:
+  # Updates go to next like every other change: each merge into main deploys to production.
   # One entry covers the whole pnpm workspace: Dependabot reads pnpm-workspace.yaml and pnpm-lock.yaml.
   - package-ecosystem: npm
     directory: /
+    target-branch: next
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
@@ -12,6 +14,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
+    target-branch: next
     schedule:
       interval: weekly
     groups:
@@ -21,6 +24,7 @@ updates:
   # The base image in the Dockerfile. The NAS compose file pins cloudflared by hand on purpose and is not listed.
   - package-ecosystem: docker
     directory: /
+    target-branch: next
     schedule:
       interval: weekly
     # Node majors are chosen by hand: only even (LTS) lines, after the tests ran on them.
