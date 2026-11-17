@@ -458,7 +458,11 @@ export const FUNCTIONS: Record<string, { args: string; doc: string; fn: (...a: S
   startsWith: { args: 's, prefix', doc: 'Prefix test', fn: (s, p) => str(s).startsWith(str(p)) },
   endsWith: { args: 's, suffix', doc: 'Suffix test', fn: (s, p) => str(s).endsWith(str(p)) },
   now: { args: '', doc: 'Current time (epoch ms)', fn: () => Date.now() },
-  date: { args: 's', doc: 'Parse a date string to epoch ms', fn: (s) => dateOf(s)?.getTime() ?? null },
+  date: {
+    args: 's',
+    doc: 'Parse a date string, or take epoch ms as they are, as a time (epoch ms)',
+    fn: (s) => dateOf(s)?.getTime() ?? null,
+  },
   year: { args: 't', doc: 'UTC year', fn: datePart((d) => d.getUTCFullYear()) },
   month: { args: 't', doc: 'UTC month 1-12', fn: datePart((d) => d.getUTCMonth() + 1) },
   day: { args: 't', doc: 'UTC day of month', fn: datePart((d) => d.getUTCDate()) },

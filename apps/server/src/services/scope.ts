@@ -32,10 +32,17 @@ export const SCOPE_DEADLINE_MS = 20_000;
 export const SCOPE_TIMEOUT_MESSAGE =
   'Loading this dataset and the datasets it reads took longer than 20 s; shorten the chain or simplify its steps';
 /** The deadline passed while `id`'s source was still loading: the load goes on, so asking again joins or reads it. */
-export const stillLoadingMessage = (id: string) =>
-  `Source dataset "${id}" is still loading (its source is slow or busy); it is asked again shortly`;
+const STILL_LOADING_TAIL = ' is still loading (its source is slow or busy); it is asked again shortly';
+export const stillLoadingMessage = (id: string) => `Source dataset "${id}"${STILL_LOADING_TAIL}`;
 /** The same, shown on the widget of the dataset whose own source is the slow one. */
 export const STILL_LOADING_OWN = 'Still loading; trying again shortly';
+/**
+ * Whether a result is the deadline's "still loading" answer. It carries retryAfterSec like a refusal by this server's
+ * own limits, but its cause is a slow source; once the error became a result, its message is what tells them apart.
+ */
+export const isStillLoading = ({ error }: Pick<DatasetResult, 'error'>): boolean =>
+  error === STILL_LOADING_OWN ||
+  (error?.startsWith('Source dataset "') === true && error.endsWith(STILL_LOADING_TAIL));
 /** As the connector limiter's busy-host hint: a load still in flight has usually finished by then. */
 const STILL_LOADING_RETRY_SEC = 10;
 
@@ -49,6 +56,8 @@ export interface FullResult {
   warning?: string;
   /** Rows dropped from the start to fit PIPELINE_LIMITS.maxRows. */
   cut: number;
+  /** No rows, from a source that returned none: datasets reading it do not check columns (core runPipeline). */
+  open?: boolean;
 }
 
 export interface ScopeOptions {
@@ -410,7 +419,7 @@ export class ResolveScope {
     if (refs.length) {
       const tables: PipelineInputs['tables'] = {};
       refs.forEach((id, i) => {
-        tables[id] = { name: this.nameOf(id), table: others[i]!.table };
+        tables[id] = { name: this.nameOf(id), table: others[i]!.table, open: others[i]!.open === true };
         fetchedAt = Math.min(fetchedAt, others[i]!.fetchedAt);
       });
       // Union labels the rows it starts with after where they came from: the parent of a derived dataset.
@@ -419,13 +428,23 @@ export class ResolveScope {
     }
     // Shared across requests only while in flight in practice: the result cache is the 8 MB one widget results use,
     // so a large table is not kept. Across requests the final capped results are shared instead (finalKey).
+    // A derived dataset's input is its parent's result: a parent a filter emptied still has known columns.
+    const open =
+      source.kind === 'dataset' ? 'open' in input && input.open === true : input.table.rows.length === 0;
     const result = await this.within(() =>
-      this.data.processShared(input.table, dataset.transforms, inputs, input.fresh),
+      this.data.processShared(input.table, dataset.transforms, inputs, input.fresh, open),
     );
     const cut = Math.max(0, result.table.rows.length - PIPELINE_LIMITS.maxRows);
     const table = cut ? lastRows(result.table) : result.table;
     const warning = [...new Set(warnings)].join('; ');
-    return { table, trace: result.trace, fetchedAt, cut, ...(warning ? { warning } : {}) };
+    return {
+      table,
+      trace: result.trace,
+      fetchedAt,
+      cut,
+      ...(warning ? { warning } : {}),
+      ...(result.open ? { open: true } : {}),
+    };
   }
 
   /** A dataset this one reads, with its warnings passed on and its failure named after it. */

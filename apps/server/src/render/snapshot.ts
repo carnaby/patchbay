@@ -7,7 +7,6 @@
  * and rasterised with resvg (no headless browser needed).
  */
 
-import { fileURLToPath } from 'node:url';
 import {
   buildChartOption,
   buildGaugeOption,
@@ -27,6 +26,7 @@ import {
   DIMMED_OPACITY,
   defaultParameterValues,
   effectiveSelection,
+  focusedEntity,
   formatNumber,
   formatRelative,
   GRID_COLUMNS,
@@ -38,6 +38,7 @@ import {
   rowSelected,
   type Selection,
   searchPlaceholder,
+  sparklineColor,
   statusConfigProblem,
   statusFit,
   statusModel,
@@ -49,30 +50,40 @@ import {
 } from '@patchbay/core';
 import world from '@patchbay/core/geo/world-110m.json' with { type: 'json' };
 import { buildMapOption, mapTime, WORLD_MAP } from '@patchbay/core/map';
-import { Resvg, type ResvgRenderOptions } from '@resvg/resvg-js';
+import { Resvg } from '@resvg/resvg-js';
 import * as echarts from 'echarts';
 import { collectGarbage } from './gc.ts';
+import { installTextMeasure, truncateToWidth } from './measure.ts';
 import { statusSvg } from './status-svg.ts';
-import { FONT, text, truncate, xmlChars } from './svg.ts';
+import { FONT, FONT_OPTIONS, text, truncate, xmlChars } from './svg.ts';
 
 // The same Natural Earth countries the browser's map chunk registers: no tiles, so snapshots work offline too.
 echarts.registerMap(WORLD_MAP, world as Parameters<typeof echarts.registerMap>[1]);
+installTextMeasure();
+
+/** The browser's table: a 32 px header (rule included) and rows 32 px apart, 13 px text. */
+const TABLE_HEAD = 33;
+const TABLE_ROW = 32;
+/** Room for the page line under a table that pages or scrolls. */
+const TABLE_FOOTER = 20;
 
 /**
- * The renderer brings its own fonts instead of asking the OS. resvg finds system fonts through
- * fontconfig, and the slim runtime image has no fonts.conf, so it found none and every text node
- * rendered empty while shapes still drew. On a desktop it picks whatever happens to be installed.
- * Inter covers Latin, Greek, Cyrillic and the symbols used below (▲ ▼ ■ ⚠ …); scripts it lacks
- * (CJK, Arabic) render as boxes, a fair price for snapshots that look the same on every host.
+ * How many rows of a table fit the way the browser shows them, and what to say when not all do. A table that fits in
+ * a snapshot must also fit on screen, so an agent never trusts a picture that hides a scrollbar.
  */
-const FONT_OPTIONS: ResvgRenderOptions['font'] = {
-  loadSystemFonts: false,
-  fontFiles: ['Inter-Regular.ttf', 'Inter-SemiBold.ttf', 'Inter-Bold.ttf'].map((file) =>
-    fileURLToPath(new URL(`./fonts/${file}`, import.meta.url)),
-  ),
-  defaultFontFamily: 'Inter',
-  sansSerifFamily: 'Inter',
-};
+export function tableFit(
+  rows: number,
+  pageSize: number,
+  height: number,
+): { shown: number; note: string | null } {
+  const perPage = Math.min(rows, pageSize);
+  const room = (footer: number) => Math.max(0, Math.floor((height - TABLE_HEAD - footer) / TABLE_ROW));
+  if (rows <= pageSize && room(0) >= perPage) return { shown: perPage, note: null };
+  const shown = Math.min(perPage, room(TABLE_FOOTER));
+  if (shown < perPage) return { shown, note: `${perPage - shown} more rows: the table scrolls here` };
+  return { shown, note: `1-${perPage} of ${rows}` };
+}
+
 const ROW_HEIGHT = 80;
 const GAP = 12;
 const HEADER = 36;
@@ -156,6 +167,8 @@ function widgetBody(
   h: number,
   entityColors?: ColorMap,
   selection: Selection | null = null,
+  /** The entity a KPI is narrowed to (core focusedEntity); it picks the sparkline colour. */
+  focus: string | null = null,
 ): string {
   if (widget.type === 'text') {
     const plain = widget.config.markdown
@@ -281,7 +294,7 @@ function widgetBody(
               `${((i / (kpi.spark.length - 1)) * w).toFixed(1)},${(h - ((v - min) / (max - min || 1)) * sh).toFixed(1)}`,
           )
           .join(' ');
-        out += `<polyline points="${points}" fill="none" stroke="${theme.categorical[0]}" stroke-width="2" stroke-linejoin="round"/>`;
+        out += `<polyline points="${points}" fill="none" stroke="${sparklineColor(focus, entityColors, theme)}" stroke-width="2" stroke-linejoin="round"/>`;
       }
       return out;
     }
@@ -322,29 +335,36 @@ function widgetBody(
         return out;
       }
       const colW = w / Math.max(cols.length, 1);
-      const maxChars = Math.max(4, Math.floor(colW / 7));
+      // Cut by drawn width, not by character count: capitals and digits are wider than the average letter.
+      const maxPx = Math.max(24, colW - 8);
       let out = cols
         .map((c, i) =>
-          text(i * colW, 12, truncate(c.label, maxChars), { size: 11, weight: 600, color: theme.muted }),
+          text(i * colW, 21, truncateToWidth(c.label, maxPx, '600 13px Inter'), {
+            size: 13,
+            weight: 600,
+            color: theme.muted,
+          }),
         )
         .join('');
-      out += `<line x1="0" y1="20" x2="${w}" y2="20" stroke="${theme.grid}"/>`;
-      const rows = table.rows.slice(0, Math.max(0, Math.floor((h - 26) / 20)));
-      rows.forEach((row, r) => {
+      out += `<line x1="0" y1="32" x2="${w}" y2="32" stroke="${theme.grid}"/>`;
+      const fit = tableFit(table.rows.length, widget.config.pageSize, h);
+      table.rows.slice(0, fit.shown).forEach((row, r) => {
+        const top = TABLE_HEAD + r * TABLE_ROW;
         const dimmed = rowSelected(row, selection) === false;
         if (dimmed) out += `<g opacity="${DIMMED_OPACITY}">`;
         cols.forEach((c, i) => {
           const cell = cellStyle(row, c, rules, theme);
           // The same tint the browser draws: a wash behind the cell, the text keeps the normal ink.
           if (cell.background)
-            out += `<rect x="${i * colW - 4}" y="${24 + r * 20}" width="${colW - 2}" height="19" rx="3" fill="${cell.background}"/>`;
-          out += text(i * colW, 38 + r * 20, truncate(cell.text, maxChars), {
-            size: 12,
+            out += `<rect x="${i * colW - 4}" y="${top}" width="${colW - 2}" height="${TABLE_ROW - 1}" rx="3" fill="${cell.background}"/>`;
+          out += text(i * colW, top + 21, truncateToWidth(cell.text, maxPx, '400 13px Inter'), {
+            size: 13,
             color: cell.color ?? theme.textPrimary,
           });
         });
         if (dimmed) out += '</g>';
       });
+      if (fit.note) out += text(w, h - 5, fit.note, { size: 11, color: theme.muted, anchor: 'end' });
       return out;
     }
     case 'status': {
@@ -368,6 +388,7 @@ function card(
   /** Drawn in place of the body, for a widget the snapshot had no budget left for. */
   note?: string,
   selection: Selection | null = null,
+  focus: string | null = null,
 ): string {
   // As in the browser: a value the data does not hold dims nothing.
   const shown = effectiveSelection(selection, result?.table.rows ?? []);
@@ -389,7 +410,7 @@ function card(
     `<g transform="translate(${pad}, ${top})">${
       note
         ? text(0, 16, truncate(note, Math.floor(bodyW / 6.5)), { color: theme.muted })
-        : widgetBody(widget, result, theme, bodyW, bodyH, entityColors, shown)
+        : widgetBody(widget, result, theme, bodyW, bodyH, entityColors, shown, focus)
     }</g>`,
     '</svg>',
   ].join('');
@@ -506,6 +527,8 @@ export function renderWidgetPng(
     height?: number;
     entityColors?: ColorMap | undefined;
     parameters?: ParameterValues | undefined;
+    /** The entity the widget is narrowed to (core focusedEntity), which the caller reads from the dashboard. */
+    focus?: string | null | undefined;
   } = {},
 ): Buffer {
   const theme = THEMES[options.theme ?? 'light'];
@@ -525,6 +548,7 @@ export function renderWidgetPng(
       options.entityColors,
       undefined,
       crossFilterSelection(widget, options.parameters),
+      options.focus ?? null,
     ),
     width,
     height,
@@ -619,7 +643,17 @@ export function renderDashboardPng(
     const drawn = trimmed(widget, limits.get(widget.id));
     // A map card is bounded by construction (title, then the map, which clips itself), so it may stay unclipped.
     const svg = nest(
-      card(drawn, result, theme, w, h, doc.colors, note, crossFilterSelection(widget, values)),
+      card(
+        drawn,
+        result,
+        theme,
+        w,
+        h,
+        doc.colors,
+        note,
+        crossFilterSelection(widget, values),
+        focusedEntity(doc, widget, values),
+      ),
       x,
       y,
       w,

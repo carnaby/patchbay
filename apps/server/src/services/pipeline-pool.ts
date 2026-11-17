@@ -35,7 +35,13 @@ import {
 import { parseUpload, UploadError, type UploadInput } from './upload-parse.ts';
 
 export interface PipelineRunner {
-  run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs): Promise<PipelineResult>;
+  /** `open`: the lineage's source returned no rows (core runPipeline); when absent, whether `table` has none. */
+  run(
+    table: DataTable,
+    transforms: Transform[],
+    inputs?: PipelineInputs,
+    open?: boolean,
+  ): Promise<PipelineResult>;
   /** Parses an uploaded file into a table, off the main thread when workers are on. */
   parseUpload(input: UploadInput): Promise<DataTable>;
   /** Asks idle workers to collect their garbage (under memory pressure, util/memory-pressure.ts). */
@@ -54,8 +60,8 @@ export class PipelineError extends Error {
 
 /** Runs on the calling thread. Used when workers are disabled (PIPELINE_WORKERS=0). */
 export class InlineRunner implements PipelineRunner {
-  async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs) {
-    return runPipeline(table, transforms, inputs);
+  async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs, open?: boolean) {
+    return runPipeline(table, transforms, inputs, open === undefined ? {} : { open });
   }
   async parseUpload(input: UploadInput) {
     return parseUpload(input);
@@ -64,7 +70,7 @@ export class InlineRunner implements PipelineRunner {
 }
 
 type Message =
-  | { kind: 'pipeline'; table: DataTable; transforms: Transform[]; inputs?: PipelineInputs }
+  | { kind: 'pipeline'; table: DataTable; transforms: Transform[]; inputs?: PipelineInputs; open?: boolean }
   | { kind: 'upload'; input: UploadInput };
 
 interface Job {
@@ -330,13 +336,22 @@ export class WorkerPool implements PipelineRunner {
     });
   }
 
-  run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs): Promise<PipelineResult> {
-    if (transforms.length === 0) return Promise.resolve({ table, trace: [] });
+  run(
+    table: DataTable,
+    transforms: Transform[],
+    inputs?: PipelineInputs,
+    open?: boolean,
+  ): Promise<PipelineResult> {
+    if (transforms.length === 0) {
+      // A source with no steps and no rows passes its openness on to the datasets that read it, as runPipeline does.
+      const passes = (open ?? table.rows.length === 0) && table.rows.length === 0;
+      return Promise.resolve({ table, trace: [], ...(passes ? { open: true } : {}) });
+    }
     // The configured size, not the live slots: while a worker is being replaced there may be none, and that work
     // must wait for the replacement rather than run here.
     if (this.size === 0 || runsInline(table, transforms, this.inlineBelowCells, inputs)) {
       try {
-        return Promise.resolve(runPipeline(table, transforms, inputs));
+        return Promise.resolve(runPipeline(table, transforms, inputs, open === undefined ? {} : { open }));
       } catch (e) {
         return Promise.reject(e);
       }
@@ -352,7 +367,13 @@ export class WorkerPool implements PipelineRunner {
         return Promise.reject(e);
       }
     }
-    return this.submit({ kind: 'pipeline', table, transforms, ...(inputs ? { inputs } : {}) });
+    return this.submit({
+      kind: 'pipeline',
+      table,
+      transforms,
+      ...(inputs ? { inputs } : {}),
+      ...(open === undefined ? {} : { open }),
+    });
   }
 
   parseUpload(input: UploadInput): Promise<DataTable> {

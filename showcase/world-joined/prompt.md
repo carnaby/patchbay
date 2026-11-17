@@ -1,0 +1,1 @@
+In Patchbay, show how wealth and life expectancy relate across the world's countries in 2023: GDP per capita against life expectancy coloured by region, population on a map, and let me click a region to focus on it. Use World Bank data and leave out regional aggregates. Check the render and fix anything unreadable.

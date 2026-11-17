@@ -325,17 +325,17 @@ hard links they are copied, and the server says so once in its log.
 Anyone can create anonymous dashboards, so everything a stranger can make the server hold or do is bounded. The
 defaults suit one container with 384 MB of memory; raise them only with more memory.
 
-| Variable                     | Default  | What it bounds                                                                                                   |
-| ---------------------------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
-| `UPLOAD_MAX_CELLS`           | 500000   | Rows × columns of an upload to an owned dashboard, and of an HTTP response or inline rows in memory.             |
-| `UPLOAD_MAX_CELLS_ANONYMOUS` | 200000   | The same for anonymous dashboards.                                                                               |
-| `DATA_CACHE_MB`              | 32       | Parsed tables (uploads, inline rows, HTTP responses) kept between requests, least recently used first out.       |
-| `PIPELINE_WORKER_MEMORY_MB`  | 96       | Heap of each pipeline worker; a job that needs more fails instead of exhausting the container.                   |
-| `PIPELINE_WORKERS`           | CPUs − 1 | Pipeline worker threads (at most 4). Each one can take its whole heap: keep `1` at 384 MB.                       |
-| `URL_SOURCES`                | everyone | `signed-in`: http and feed sources load only for dashboards owned by a signed-in user (showcase URLs: GET only). |
-| `MEMORY_LIMIT_MB`            | detected | Memory the guard measures against (see [Memory guard](#memory-guard)); `0` turns the guard off.                  |
-| `MEMORY_SOFT_FRACTION`       | 0.8      | Share of that memory above which new heavy work gets 503; lower on small limits (128 MB stay free).              |
-| `MEMORY_HARD_FRACTION`       | 0.9      | Share above which writes, MCP calls and new live streams get 503 too; lower on small limits (64 MB free).        |
+| Variable                     | Default  | What it bounds                                                                                                                       |
+| ---------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `UPLOAD_MAX_CELLS`           | 500000   | Rows × columns of an upload to an owned dashboard, and of an HTTP response or inline rows in memory.                                 |
+| `UPLOAD_MAX_CELLS_ANONYMOUS` | 200000   | The same for anonymous dashboards.                                                                                                   |
+| `DATA_CACHE_MB`              | 32       | Parsed tables (uploads, inline rows, HTTP responses) kept between requests, least recently used first out.                           |
+| `PIPELINE_WORKER_MEMORY_MB`  | 96       | Heap of each pipeline worker; a job that needs more fails instead of exhausting the container.                                       |
+| `PIPELINE_WORKERS`           | CPUs − 1 | Pipeline worker threads (at most 4). Each one can take its whole heap: keep `1` at 384 MB.                                           |
+| `URL_SOURCES`                | everyone | `signed-in`: http and feed sources load only for dashboards owned by a signed-in user (showcase sources: only their exact requests). |
+| `MEMORY_LIMIT_MB`            | detected | Memory the guard measures against (see [Memory guard](#memory-guard)); `0` turns the guard off.                                      |
+| `MEMORY_SOFT_FRACTION`       | 0.8      | Share of that memory above which new heavy work gets 503; lower on small limits (128 MB stay free).                                  |
+| `MEMORY_HARD_FRACTION`       | 0.9      | Share above which writes, MCP calls and new live streams get 503 too; lower on small limits (64 MB free).                            |
 
 Fixed limits, for reference: uploads are parsed in the pipeline worker and refused as soon as they pass the cell limit;
 an upload has at most 500 columns with names of up to 200 characters, and a JSON upload nests at most 64 levels and
@@ -349,26 +349,27 @@ request gets `408` and the connection is closed, so a slow sender never holds th
 arriving or waiting hold at most 16 MB together, two per client. Node waits at most 20 s for a request's headers and 90
 s for a whole request. Every JSON request body and HTTP source response is refused before parsing when it nests deeper
 than 64 levels. HTTP sources are fetched at most three at a time, two at a time and 60 times a minute per host, and a
-failing address is not asked again for 30 s; an HTTP source or feed refused over these limits shows an error, and the
-page asks again after 10 s. Built-in connectors share a separate budget per upstream host (four loads at a time and 120
-a minute): a load over it waits up to 8 s for its turn, then shows an error that the page retries after 10 s; every
-dataset, with the datasets it reads, has 20 s in all: when a source load is still pending then, its widget says the
-source is still loading and the page asks again after 10 s (otherwise, for example a slow chain of steps, the old
-message stays); the demo connectors never leave the server and are not counted. The pipeline worker's queue takes jobs
-round-robin per client, one client holding at most a tenth of it. Snapshots (`snapshot.png`, `render_snapshot`) are
-drawn one at a time in a worker thread, at most four requests in flight and two per client; each client may have four
-drawn at once and then one every two seconds (images served from the 30 s cache do not count), beyond which the API
-answers `429 Too Many Requests` with `Retry-After`. When a queue is full the API answers `503 Service Unavailable` with
-`Retry-After`, and live refreshes skip a beat, instead of the process running out of memory. Live refresh never runs for
-uploads and inline rows (they change only when edited) and at most every 30 s for HTTP sources. A dataset's result is
-sent only up to 4 MB as JSON (larger ones show an error asking for limit, select or aggregate steps); each result is
-serialised once and shared by everyone reading it, and response bodies still being read take at most 12 MB together (6
-MB per client), with at most 4 MB more waiting for room up to 10 s; further large reads get a 503 at once. Exports
-(`/api/dashboards/:id/export`) are sent within the same budget: the document is the one shared copy every reader of it
-gets, and uploaded tables go out in parts of 1 MB, each built only once the previous one has been read and given back
-once read. A part not read within 60 s ends the download. Each client may start ten exports at once and then one every
-two seconds (`429` with `Retry-After` beyond that); an export with tables is refused under memory pressure like other
-heavy work.
+failing address is not asked again for 30 s. A request over the per-host limits waits up to 8 s for its turn (at most 16
+wait per host, 8 of them for one client; beyond that it is refused at once), then shows an error that the page retries
+after 10 s. The OAuth client metadata fetch never waits: it is refused at once. Built-in connectors share a separate
+budget per upstream host (four loads at a time and 120 a minute): a load over it waits up to 8 s for its turn, then
+shows an error that the page retries after 10 s; every dataset, with the datasets it reads, has 20 s in all: when a
+source load is still pending then, its widget says the source is still loading and the page asks again after 10 s
+(otherwise, for example a slow chain of steps, the old message stays); the demo connectors never leave the server and
+are not counted. The pipeline worker's queue takes jobs round-robin per client, one client holding at most a tenth of
+it. Snapshots (`snapshot.png`, `render_snapshot`) are drawn one at a time in a worker thread, at most four requests in
+flight and two per client; each client may have four drawn at once and then one every two seconds (images served from
+the 30 s cache do not count), beyond which the API answers `429 Too Many Requests` with `Retry-After`. When a queue is
+full the API answers `503 Service Unavailable` with `Retry-After`, and live refreshes skip a beat, instead of the
+process running out of memory. Live refresh never runs for uploads and inline rows (they change only when edited) and at
+most every 30 s for HTTP sources. A dataset's result is sent only up to 4 MB as JSON (larger ones show an error asking
+for limit, select or aggregate steps); each result is serialised once and shared by everyone reading it, and response
+bodies still being read take at most 12 MB together (6 MB per client), with at most 4 MB more waiting for room up to 10
+s; further large reads get a 503 at once. Exports (`/api/dashboards/:id/export`) are sent within the same budget: the
+document is the one shared copy every reader of it gets, and uploaded tables go out in parts of 1 MB, each built only
+once the previous one has been read and given back once read. A part not read within 60 s ends the download. Each client
+may start ten exports at once and then one every two seconds (`429` with `Retry-After` beyond that); an export with
+tables is refused under memory pressure like other heavy work.
 
 With the default `URL_SOURCES=everyone`, anyone who can edit a dashboard, including an anonymous visitor, can make
 the server send a POST with a JSON body of their choosing to any public address, for example a chat or automation
@@ -383,8 +384,9 @@ change it in Docker, mount your folder over `/app/showcase` (the image bakes the
 showcase off, point `SHOWCASE_DIR` at an empty folder. Restart after changing files: sizes and ETags are read at
 startup. Their dashboards are public and read-only (an admin delete lasts until the next restart). The video and
 poster routes are not behind the API rate limiter, so put a CDN or a proxy limit in front when the server is exposed
-directly. With `URL_SOURCES=signed-in`, the exact URLs that appear in them still load for
-anonymous copies (as GET requests only); any other http or feed URL needs a signed-in owner as before.
+directly. With `URL_SOURCES=signed-in`, their exact requests still load for anonymous copies: a GET of a URL that
+appears in them, or one of their POSTs with the same body, in both cases with the same `path`; any other http or feed
+request needs a signed-in owner as before.
 
 ### Memory budget
 

@@ -6,6 +6,63 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Added
+
+- Four new showcase dashboards, each built by an AI agent from the prompt in its folder, open at `/showcase/<id>`
+  and not yet in the landing page's tabs: a status wall for the office TV (GitHub, Cloudflare, npm and OpenAI status
+  pages combined into one list, in presentation mode), AI SDK downloads with a period filter and click to filter,
+  wealth and life expectancy from World Bank data joined with the country list, and GitLab's latest merges read over
+  GraphQL.
+- A showcase use case can stay out of the landing page's tabs with `"featured": false` in its `meta.json`; its
+  dashboard, `/showcase/<id>` link and videos keep working.
+
+### Changed
+
+- A column made with `derive` from a time column, `date()` or `now()` is now a time column, so a status widget shows
+  how long a problem has lasted, tables show relative times and charts get a time axis; before, it was a plain number.
+- With `URL_SOURCES=signed-in`, copies of a showcase use case also load its POST sources, such as a GraphQL query, as
+  long as the address, the body and the `path` stay exactly as in the showcase. A changed body or path still needs a
+  signed-in owner. The same now holds for the `path` of their GET sources: a copy that changes it needs a signed-in
+  owner, so a copy cannot make the server repeat a request by varying it.
+- The agent reference and the editor say that the percent format takes 0-100, so agents multiply a ratio such as
+  0.86 by 100 first instead of showing "0.9%"; the reference also says that `date(t * 1000)` turns epoch seconds
+  into a time.
+- The landing page names filters and clicks, wall screens, GraphQL sources and joined datasets among the features.
+
+### Fixed
+
+- Stacked bar, line and area charts over time now stack each value on the values of the same time. When a series had
+  no row for some hour or day (one row per time and category), its segments and every segment above them were drawn
+  on the wrong time, so bars floated or overlapped.
+- Steps that read a column of a source no longer fail when the source returns an empty list, such as the open
+  incidents of a status page, which are usually none. With no rows there is nothing to check: the step runs and the
+  column is empty, and `preview_data` and the data checks of `apply_operations` name the columns that wait for rows.
+  On a source with rows an unknown column is still an error.
+- `union` keeps a column's type when one of the datasets it combines has no rows; before, an empty list could turn
+  the time column of the whole result into text.
+- HTTP sources and feeds on one host now wait their turn for up to 8 seconds instead of failing with "already loading
+  a lot" when more than two load at once, so a dashboard with several addresses on one host, such as a status wall,
+  loads all of them. What one host receives from the server stays limited to two requests at a time and 60 a minute.
+- When the server's own load limit refuses a data check of `apply_operations`, or its source is still loading after
+  20 seconds, the check now says which of the two it was, that the change is saved, and when to look again.
+- Datasets that read different parts of one response, such as the aliases of one GraphQL query or a status page's
+  components and incidents, now share one request instead of sending it once each. Before, a dashboard that split one
+  GraphQL query into several datasets sent it several times at once and lost the requests over the per-host limit.
+- The npm downloads connector reads the days npm has no counts for as empty instead of 0. On those days npm reports 0
+  for every package (eight days in September and October 2026), which pulled averages and minimums down and drew dips
+  to zero; charts now show a gap. A small package's real 0 stays 0.
+- Daily time axes over a month or a quarter no longer show a stray date right after a month's name ("Oct 6 8",
+  "Nov 2 5"): ECharts kept the step after a month's last label as a label of its own. Patchbay ships a one-line fix
+  to ECharts until it is fixed upstream.
+- A KPI's sparkline now takes the colour of the item its data is filtered to, such as the package picked in a select
+  filter or by a click on one. Before, it always kept the first palette colour, which on a dashboard with entity
+  colours belongs to one of the entities. With nothing focused on such a dashboard it is neutral grey, because the total of all items is no
+  item; dashboards without entity colours are unchanged.
+- Snapshots measure text in the font they draw it with, so a long axis label (such as `@modelcontextprotocol/sdk`) is no
+  longer cut off at the card's edge and legend entries no longer run into each other.
+- Tables in snapshots have the browser's row height and page size, and say when rows would scroll or page, so a table
+  that fits in a snapshot also fits on screen.
+
 ## [0.3.4] - 2026-11-12
 
 ### Fixed

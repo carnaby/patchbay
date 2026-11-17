@@ -82,6 +82,21 @@ export function seriesColors(
   });
 }
 
+/**
+ * The ink of a KPI's sparkline. The focused entity's colour; on a dashboard that colours its entities and has none
+ * in focus, neutral, because the total of all entities is no entity and must not wear one's colour. Without entity
+ * colours the first palette colour, as before.
+ */
+export function sparklineColor(
+  focus: string | null,
+  entityColors: ColorMap | undefined,
+  theme: ChartTheme,
+): string {
+  const named = focus === null ? undefined : mappedColor(focus, undefined, entityColors);
+  if (named) return resolveColor(named, theme, 'mark');
+  return entityColors && Object.keys(entityColors).length > 0 ? theme.muted : theme.categorical[0]!;
+}
+
 /** Every colour a widget sets, with where it is set, for the checks below. */
 function widgetColors(widget: Widget): { where: string; color: Color }[] {
   const out: { where: string; color: Color }[] = [];

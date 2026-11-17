@@ -303,6 +303,25 @@ describe('steps that read other datasets', () => {
     }
   });
 
+  it("carries the lineage's openness to a worker and back", async () => {
+    const pool = new WorkerPool({ size: 1, timeoutMs: 20_000, inlineBelowCells: 0 });
+    try {
+      const empty = inferTable([]);
+      const read = steps([{ type: 'derive', as: 'detail', expr: 'name' }]);
+      expect(runsInline(empty, read, 0)).toBe(false);
+      const open = await pool.run(empty, read, undefined, true);
+      expect(open.trace[0]!.unchecked).toEqual(['name']);
+      expect(open.open).toBe(true);
+      // A parent a filter emptied is not open: its columns are known, so a typo still fails in the worker.
+      await expect(pool.run(empty, read, undefined, false)).rejects.toThrow('Unknown column "name"');
+      // Without steps nothing reaches the worker, and openness still passes on.
+      expect((await pool.run(empty, [], undefined, true)).open).toBe(true);
+      expect((await pool.run(empty, [], undefined, false)).open).toBeUndefined();
+    } finally {
+      await pool.close();
+    }
+  });
+
   it('counts the cells of the inputs for the inline threshold', () => {
     const small = inferTable([{ country: 'SK' }]);
     const union = steps([{ type: 'union', with: ['big'] }]);

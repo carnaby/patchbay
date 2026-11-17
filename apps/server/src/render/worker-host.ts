@@ -35,6 +35,7 @@ export type RenderTask =
         theme?: ThemeMode;
         entityColors?: ColorMap | undefined;
         parameters?: ParameterValues | undefined;
+        focus?: string | null | undefined;
       };
     }
   | {

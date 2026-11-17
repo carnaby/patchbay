@@ -136,3 +136,18 @@ describe('filters in the reference', () => {
       expect(text, words).toContain(words);
   });
 });
+
+describe('formats and times in the reference', () => {
+  it('says that percent takes 0-100 and how to show a ratio', () => {
+    const text = referenceText('https://dash.example.com');
+    expect(text).toMatch(/percent takes 0-100/);
+    expect(text).toMatch(/ratio \(0-1\).*\* 100/);
+  });
+
+  it('says how epoch seconds become a time and that arithmetic on a time gives a number', () => {
+    const text = referenceText('https://dash.example.com');
+    expect(text).toContain('date(t * 1000)');
+    expect(text).toMatch(/- date\(s\): Parse a date string, or take epoch ms as they are/);
+    expect(text).toMatch(/arithmetic on a time .*gives a number.*timeBucket/i);
+  });
+});

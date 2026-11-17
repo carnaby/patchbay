@@ -1,8 +1,8 @@
 /**
  * Runs transform pipelines and parses uploaded files off the main thread. Receives
- * { id, kind: 'pipeline', table, transforms, inputs? } or { id, kind: 'upload', input } (the file as transferred UTF-8
- * bytes, see util/workers.ts) and answers { id, ok, result } or { id, ok: false, message }. { kind: 'collect' } asks
- * an idle worker to collect its garbage and gets no answer.
+ * { id, kind: 'pipeline', table, transforms, inputs?, open? } or { id, kind: 'upload', input } (the file as
+ * transferred UTF-8 bytes, see util/workers.ts) and answers { id, ok, result } or { id, ok: false, message }.
+ * { kind: 'collect' } asks an idle worker to collect its garbage and gets no answer.
  */
 import { getHeapStatistics } from 'node:v8';
 import { parentPort } from 'node:worker_threads';
@@ -11,11 +11,24 @@ import { parseUpload, UploadError, type UploadInput } from '../services/upload-p
 import { collectAfterLargeJob, collectNow, textFromWorkerBytes } from '../util/workers.ts';
 
 type Job =
-  | { id: number; kind: 'pipeline'; table: DataTable; transforms: Transform[]; inputs?: PipelineInputs }
+  | {
+      id: number;
+      kind: 'pipeline';
+      table: DataTable;
+      transforms: Transform[];
+      inputs?: PipelineInputs;
+      open?: boolean;
+    }
   | { id: number; kind: 'upload'; input: Omit<UploadInput, 'content'> & { bytes: Uint8Array } };
 
 function run(job: Job) {
-  if (job.kind === 'pipeline') return runPipeline(job.table, job.transforms, job.inputs);
+  if (job.kind === 'pipeline')
+    return runPipeline(
+      job.table,
+      job.transforms,
+      job.inputs,
+      job.open === undefined ? {} : { open: job.open },
+    );
   const { bytes, ...rest } = job.input;
   return parseUpload({ ...rest, content: textFromWorkerBytes(bytes) });
 }

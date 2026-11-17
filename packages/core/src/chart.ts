@@ -151,6 +151,15 @@ function cartesianOption(
   const markType = config.kind === 'area' ? 'line' : config.kind;
   const categories =
     axisKind === 'category' ? [...new Set(table.rows.map((r) => String(r[config.x] ?? '')))] : null;
+  // ECharts stacks a time axis by data index, not by time (dataStackHelper), so every series of a stack needs a point
+  // at every time, in one order: otherwise a series that skips an hour puts its later segments on the wrong hour.
+  // Scatter is never stacked (see s.stack below), so its points stay as the rows give them.
+  const stackTimes =
+    config.series && config.stacked && axisKind === 'time' && markType !== 'scatter'
+      ? [
+          ...new Set(table.rows.map((r) => r[config.x]).filter((x): x is number => typeof x === 'number')),
+        ].sort((a, b) => a - b)
+      : null;
   const selection = opts.selection ?? null;
   const bySeries = selection !== null && config.series !== undefined && selection.field === config.series;
   const byX = selection !== null && axisKind === 'category' && selection.field === config.x;
@@ -205,13 +214,32 @@ function cartesianOption(
             }
             return categories!.map((c) => dimmedPoint(c, map.get(c) ?? null));
           })()
-        : g.points;
+        : stackTimes
+          ? (() => {
+              const map = new Map<number, Scalar>();
+              for (const [x, y] of g.points) {
+                if (typeof x !== 'number') continue;
+                const prev = map.get(x);
+                map.set(x, typeof prev === 'number' && typeof y === 'number' ? prev + y : y);
+              }
+              return stackTimes.map((x): [number, Scalar] => [x, map.get(x) ?? null]);
+            })()
+          : g.points;
+    // A point between two nulls draws no line, and above 40 rows no symbol either: it would vanish.
+    const isolated =
+      stackTimes !== null &&
+      markType === 'line' &&
+      (data as [number, Scalar][]).some(
+        ([, v], i, all) =>
+          v !== null && (all[i - 1]?.[1] ?? null) === null && (all[i + 1]?.[1] ?? null) === null,
+      );
     const s: Option = {
       name: g.name,
       type: markType,
       data,
       showSymbol:
         markType === 'scatter' ||
+        isolated ||
         (markType === 'line' &&
           // Only a category axis gives a click by x a name to set; a time axis keeps the usual rule.
           (table.rows.length <= 40 || (opts.clickable === 'x' && axisKind === 'category'))),

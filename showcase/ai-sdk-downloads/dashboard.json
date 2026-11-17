@@ -1,0 +1,508 @@
+{
+  "schemaVersion": 1,
+  "title": "AI SDK downloads on npm",
+  "description": "Daily npm downloads of the main AI SDKs over the last year. Pick a period, click a package to focus every chart on it.",
+  "datasets": [
+    {
+      "id": "raw",
+      "name": "npm downloads, last year",
+      "source": {
+        "kind": "connector",
+        "connector": "npm.downloads",
+        "params": {
+          "packages": "@modelcontextprotocol/sdk,ai,openai,@anthropic-ai/sdk,@google/genai,langchain",
+          "period": "last-year"
+        }
+      },
+      "transforms": [],
+      "refreshSec": 21600,
+      "accumulate": 0
+    },
+    {
+      "id": "daily",
+      "name": "Daily, in period",
+      "source": {
+        "kind": "dataset",
+        "id": "raw"
+      },
+      "transforms": [
+        {
+          "id": "gaps",
+          "type": "filter",
+          "expr": "col_sum(downloads, day) > 0"
+        },
+        {
+          "id": "sort",
+          "type": "sort",
+          "by": [
+            {
+              "field": "package",
+              "dir": "asc"
+            },
+            {
+              "field": "day",
+              "dir": "asc"
+            }
+          ]
+        },
+        {
+          "id": "avg7",
+          "type": "window",
+          "op": "rolling_avg",
+          "field": "downloads",
+          "as": "avg7",
+          "size": 7,
+          "partitionBy": ["package"]
+        },
+        {
+          "id": "round",
+          "type": "derive",
+          "as": "avg7",
+          "expr": "round(avg7)"
+        },
+        {
+          "id": "share",
+          "type": "derive",
+          "as": "share",
+          "expr": "round(avg7 / col_sum(avg7, day) * 100, 1)"
+        },
+        {
+          "id": "period",
+          "type": "filter",
+          "expr": "day >= $param.period.start && day < $param.period.end"
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "trend",
+      "name": "Daily, focused",
+      "source": {
+        "kind": "dataset",
+        "id": "daily"
+      },
+      "transforms": [
+        {
+          "id": "pkg",
+          "type": "filter",
+          "expr": "$param.pkg == null || package == $param.pkg"
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "totals",
+      "name": "Per package, in period",
+      "source": {
+        "kind": "dataset",
+        "id": "daily"
+      },
+      "transforms": [
+        {
+          "id": "agg",
+          "type": "aggregate",
+          "groupBy": ["package"],
+          "metrics": [
+            {
+              "op": "sum",
+              "field": "downloads",
+              "as": "total"
+            },
+            {
+              "op": "avg",
+              "field": "downloads",
+              "as": "per_day"
+            },
+            {
+              "op": "first",
+              "field": "avg7",
+              "as": "start_avg"
+            },
+            {
+              "op": "last",
+              "field": "avg7",
+              "as": "end_avg"
+            }
+          ]
+        },
+        {
+          "id": "sharetot",
+          "type": "derive",
+          "as": "share",
+          "expr": "round(total / col_sum(total) * 100, 1)"
+        },
+        {
+          "id": "growth",
+          "type": "derive",
+          "as": "growth",
+          "expr": "round((end_avg / start_avg - 1) * 100, 1)"
+        },
+        {
+          "id": "sort",
+          "type": "sort",
+          "by": [
+            {
+              "field": "total",
+              "dir": "desc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    },
+    {
+      "id": "perday",
+      "name": "All focused packages per day",
+      "source": {
+        "kind": "dataset",
+        "id": "trend"
+      },
+      "transforms": [
+        {
+          "id": "agg",
+          "type": "aggregate",
+          "groupBy": ["day"],
+          "metrics": [
+            {
+              "op": "sum",
+              "field": "downloads",
+              "as": "downloads"
+            },
+            {
+              "op": "sum",
+              "field": "avg7",
+              "as": "avg7"
+            }
+          ]
+        },
+        {
+          "id": "sort",
+          "type": "sort",
+          "by": [
+            {
+              "field": "day",
+              "dir": "asc"
+            }
+          ]
+        }
+      ],
+      "refreshSec": 0,
+      "accumulate": 0
+    }
+  ],
+  "widgets": [
+    {
+      "id": "kpi-total",
+      "title": "Downloads in period",
+      "datasetId": "perday",
+      "type": "kpi",
+      "config": {
+        "field": "downloads",
+        "agg": "sum",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "compact",
+          "decimals": 1
+        }
+      }
+    },
+    {
+      "id": "kpi-avg",
+      "title": "Average per day",
+      "datasetId": "perday",
+      "type": "kpi",
+      "config": {
+        "field": "downloads",
+        "agg": "avg",
+        "compare": "none",
+        "goodWhen": "up",
+        "sparkline": false,
+        "format": {
+          "style": "compact",
+          "decimals": 1
+        }
+      }
+    },
+    {
+      "id": "kpi-now",
+      "title": "Per day now (7-day avg), vs period start",
+      "datasetId": "perday",
+      "type": "kpi",
+      "config": {
+        "field": "avg7",
+        "agg": "last",
+        "compare": "first",
+        "goodWhen": "up",
+        "sparkline": true,
+        "format": {
+          "style": "compact",
+          "decimals": 1
+        }
+      }
+    },
+    {
+      "id": "trend-chart",
+      "title": "Downloads per day (7-day average)",
+      "datasetId": "trend",
+      "type": "chart",
+      "config": {
+        "kind": "line",
+        "x": "day",
+        "y": ["avg7"],
+        "series": "package",
+        "horizontal": false,
+        "stacked": false,
+        "smooth": false,
+        "showLegend": true,
+        "logScale": false,
+        "format": {
+          "style": "compact"
+        },
+        "maxPoints": 5000,
+        "crossFilter": {
+          "parameter": "pkg",
+          "field": "package"
+        }
+      }
+    },
+    {
+      "id": "totals-chart",
+      "title": "Total downloads in period · click to focus",
+      "datasetId": "totals",
+      "type": "chart",
+      "config": {
+        "kind": "bar",
+        "x": "package",
+        "y": ["total"],
+        "series": "package",
+        "horizontal": true,
+        "stacked": true,
+        "smooth": false,
+        "showLegend": false,
+        "showLabels": true,
+        "logScale": false,
+        "format": {
+          "style": "compact",
+          "decimals": 1
+        },
+        "maxPoints": 5000,
+        "crossFilter": {
+          "parameter": "pkg",
+          "field": "package"
+        }
+      }
+    },
+    {
+      "id": "share-chart",
+      "title": "Share of the six SDKs' daily downloads (%, 7-day average)",
+      "datasetId": "trend",
+      "type": "chart",
+      "config": {
+        "kind": "line",
+        "x": "day",
+        "y": ["share"],
+        "series": "package",
+        "horizontal": false,
+        "stacked": false,
+        "smooth": false,
+        "yMin": 0,
+        "logScale": false,
+        "format": {
+          "style": "number",
+          "decimals": 0,
+          "suffix": " %"
+        },
+        "maxPoints": 5000,
+        "crossFilter": {
+          "parameter": "pkg",
+          "field": "package"
+        }
+      }
+    },
+    {
+      "id": "summary",
+      "title": "Per package · click a row to focus",
+      "datasetId": "totals",
+      "type": "table",
+      "config": {
+        "columns": [
+          {
+            "field": "package",
+            "label": "Package",
+            "colorAs": "fill"
+          },
+          {
+            "field": "total",
+            "label": "Downloads in period",
+            "format": {
+              "style": "compact",
+              "decimals": 1
+            },
+            "colorAs": "fill"
+          },
+          {
+            "field": "per_day",
+            "label": "Average per day",
+            "format": {
+              "style": "compact",
+              "decimals": 1
+            },
+            "colorAs": "fill"
+          },
+          {
+            "field": "end_avg",
+            "label": "Per day now (7-day avg)",
+            "format": {
+              "style": "compact",
+              "decimals": 1
+            },
+            "colorAs": "fill"
+          },
+          {
+            "field": "share",
+            "label": "Share of the six",
+            "format": {
+              "style": "number",
+              "decimals": 1,
+              "suffix": " %"
+            },
+            "colorAs": "fill"
+          },
+          {
+            "field": "growth",
+            "label": "Change, period start to now",
+            "format": {
+              "style": "number",
+              "decimals": 1,
+              "suffix": " %"
+            },
+            "bands": [
+              {
+                "upTo": -0.05,
+                "color": "negative"
+              },
+              {
+                "upTo": 0.05,
+                "color": "neutral"
+              },
+              {
+                "upTo": 1000000,
+                "color": "positive"
+              }
+            ],
+            "colorAs": "text"
+          }
+        ],
+        "pageSize": 10,
+        "crossFilter": {
+          "parameter": "pkg",
+          "field": "package"
+        }
+      }
+    }
+  ],
+  "layout": [
+    {
+      "i": "kpi-total",
+      "x": 0,
+      "y": 0,
+      "w": 4,
+      "h": 2
+    },
+    {
+      "i": "kpi-avg",
+      "x": 4,
+      "y": 0,
+      "w": 4,
+      "h": 2
+    },
+    {
+      "i": "kpi-now",
+      "x": 8,
+      "y": 0,
+      "w": 4,
+      "h": 2
+    },
+    {
+      "i": "trend-chart",
+      "x": 0,
+      "y": 2,
+      "w": 7,
+      "h": 5
+    },
+    {
+      "i": "totals-chart",
+      "x": 7,
+      "y": 2,
+      "w": 5,
+      "h": 5
+    },
+    {
+      "i": "share-chart",
+      "x": 0,
+      "y": 7,
+      "w": 12,
+      "h": 4
+    },
+    {
+      "i": "summary",
+      "x": 0,
+      "y": 11,
+      "w": 12,
+      "h": 4
+    }
+  ],
+  "colors": {
+    "@anthropic-ai/sdk": "accent-4",
+    "@google/genai": "accent-5",
+    "@modelcontextprotocol/sdk": "accent-1",
+    "ai": "accent-2",
+    "langchain": "accent-6",
+    "openai": "accent-3"
+  },
+  "parameters": [
+    {
+      "id": "period",
+      "label": "Period",
+      "type": "dateRange",
+      "presets": ["last7d", "last30d", "last90d", "thisYear", "last12m"],
+      "custom": true,
+      "min": "2025-11-12",
+      "max": "2026-11-11",
+      "maxDays": 366,
+      "default": "last12m"
+    },
+    {
+      "id": "pkg",
+      "label": "Package",
+      "type": "select",
+      "options": [
+        {
+          "value": "@modelcontextprotocol/sdk"
+        },
+        {
+          "value": "ai"
+        },
+        {
+          "value": "openai"
+        },
+        {
+          "value": "@anthropic-ai/sdk"
+        },
+        {
+          "value": "@google/genai"
+        },
+        {
+          "value": "langchain"
+        }
+      ],
+      "all": "All packages",
+      "default": null
+    }
+  ]
+}

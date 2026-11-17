@@ -284,3 +284,90 @@ describe('tooltips', () => {
     expect(option.tooltip?.confine).toBe(true);
   });
 });
+
+describe('stacked long-format series on a time axis', () => {
+  // ECharts stacks a time axis by data index, not by time: a series without a row at some hour would put every
+  // later segment on the wrong hour.
+  const t = ['2026-11-11T00:00:00Z', '2026-11-11T01:00:00Z', '2026-11-11T02:00:00Z'];
+  const ms = t.map((x) => Date.parse(x));
+  const rows = [
+    { hour: t[2], type: 'feature', n: 3 },
+    { hour: t[0], type: 'bug', n: 2 },
+    { hour: t[0], type: 'feature', n: 3 },
+    { hour: t[1], type: 'feature', n: 3 },
+    { hour: t[2], type: 'bug', n: 2 },
+  ];
+  type Built = { xAxis: { type: string }; series: { name: string; data: unknown[] }[] };
+  const build = (config: Record<string, unknown>, data = rows) =>
+    buildChartOption(
+      ChartConfigSchema.parse({ x: 'hour', y: ['n'], series: 'type', ...config }),
+      inferTable(data),
+      THEMES.light,
+    ) as unknown as Built;
+
+  it.each(['bar', 'line', 'area'])(
+    'gives every series of a stacked %s chart one point per hour, in time order, null where it has no row',
+    (kind) => {
+      const option = build({ kind, stacked: true });
+      expect(option.xAxis.type).toBe('time');
+      expect(option.series.map((s) => [s.name, s.data])).toEqual([
+        [
+          'bug',
+          [
+            [ms[0], 2],
+            [ms[1], null],
+            [ms[2], 2],
+          ],
+        ],
+        [
+          'feature',
+          [
+            [ms[0], 3],
+            [ms[1], 3],
+            [ms[2], 3],
+          ],
+        ],
+      ]);
+    },
+  );
+
+  it('adds up rows of one series at the same time, as a category axis does', () => {
+    const twice = [...rows, { hour: t[1], type: 'feature', n: 4 }];
+    expect(build({ kind: 'bar', stacked: true }, twice).series[1]!.data).toEqual([
+      [ms[0], 3],
+      [ms[1], 7],
+      [ms[2], 3],
+    ]);
+  });
+
+  it('leaves the points of an unstacked chart as the rows give them', () => {
+    expect(build({ kind: 'line', stacked: false }).series[0]!.data).toEqual([
+      [ms[0], 2],
+      [ms[2], 2],
+    ]);
+  });
+
+  it('keeps the points of a scatter flagged as stacked, which is never stacked', () => {
+    const same = [
+      { hour: t[0], type: 'a', n: 1 },
+      { hour: t[0], type: 'a', n: 5 },
+    ];
+    expect(build({ kind: 'scatter', stacked: true }, same).series[0]!.data).toEqual([
+      [ms[0], 1],
+      [ms[0], 5],
+    ]);
+  });
+
+  it('shows symbols on a stacked line whose points all sit between gaps, however many rows', () => {
+    // Two series that never share an hour: after alignment every point is isolated, and a long line hides symbols.
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      hour: new Date(ms[0]! + i * 3_600_000).toISOString(),
+      type: i % 2 === 0 ? 'a' : 'b',
+      n: 1,
+    }));
+    const option = build({ kind: 'line', stacked: true }, many) as unknown as {
+      series: { showSymbol: boolean }[];
+    };
+    expect(option.series.map((s) => s.showSymbol)).toEqual([true, true]);
+  });
+});

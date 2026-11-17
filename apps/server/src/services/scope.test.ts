@@ -7,8 +7,6 @@ import {
   DatasetSchema,
   type DataTable,
   inferTable,
-  type PipelineInputs,
-  type Transform,
 } from '@patchbay/core';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConnectorService } from '../connectors/registry.ts';
@@ -17,6 +15,7 @@ import { FolderStore } from '../store/folder-store.ts';
 import { HttpError, lastingError, RetryLaterError } from '../util/errors.ts';
 import { HEAVY_PIPELINE_CELLS, heavyWork } from '../util/heavy.ts';
 import { MemoryPressureError, memoryGuard } from '../util/memory-pressure.ts';
+import type { PipelineRunner } from './pipeline-pool.ts';
 
 const fetchMock = vi.hoisted(() => vi.fn<(url: string) => Promise<unknown>>());
 vi.mock('../util/safe-fetch.ts', async (original) => ({
@@ -29,13 +28,17 @@ const { InlineRunner } = await import('./pipeline-pool.ts');
 const { SCOPE_TIMEOUT_MESSAGE, STILL_LOADING_OWN, ScopeTimeoutError, errorResult, stillLoadingMessage } =
   await import('./scope.ts');
 
+type RunArgs = Parameters<PipelineRunner['run']>;
+
+// Runners here forward every argument: dropping the lineage's `open` would quietly change what a run checks.
 class CountingRunner extends InlineRunner {
   runs: string[] = [];
   reads: string[][] = [];
-  override async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs) {
+  override async run(...args: RunArgs) {
+    const [, transforms, inputs] = args;
     this.runs.push(transforms.map((t) => t.type).join(','));
     this.reads.push(Object.keys(inputs?.tables ?? {}));
-    return super.run(table, transforms, inputs);
+    return super.run(...args);
   }
 }
 
@@ -206,6 +209,120 @@ describe('resolution scopes', () => {
       expect(r.error).toBe(message);
       expect(r.table.rows).toEqual([]);
     }
+  });
+
+  it('loads three http sources on one host at once, and the union reading them, with the default limits', async () => {
+    // url is optional: the file's beforeEach(() => fetchMock.mockReset()) returns the mock, which vitest then calls
+    // as a cleanup with no arguments.
+    fetchMock.mockImplementation(async (url?: string) => {
+      await new Promise((r) => setTimeout(r, 20));
+      return [{ check: url?.split('/').pop(), state: 'ok' }];
+    });
+    const data = new DataService(connectors, store);
+    const http = (id: string, path: string) => ({
+      id,
+      name: id,
+      source: { kind: 'http', url: `https://status.example/api/${path}` },
+    });
+    const d = doc(
+      http('components', 'components'),
+      http('incidents', 'incidents'),
+      http('history', 'history'),
+      from('all', 'components', { transforms: [{ type: 'union', with: ['incidents', 'history'] }] }),
+    );
+    const scope = data.scope(target, d);
+    const results = await Promise.all(d.datasets.map((x) => scope.resolve(x)));
+    expect(results.map((r) => r.error)).toEqual([undefined, undefined, undefined, undefined]);
+    expect(results[3]!.table.rows).toHaveLength(3);
+  });
+
+  it('loads five datasets that read aliases of one GraphQL query, and their union, with one request', async () => {
+    fetchMock.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return { data: Object.fromEntries([0, 1, 2, 3, 4].map((i) => [`w${i}`, { nodes: [{ iid: i }] }])) };
+    });
+    const data = new DataService(connectors, store);
+    const body = {
+      query:
+        '{ w0: x { nodes { iid } } w1: x { nodes { iid } } w2: x { nodes { iid } } w3: x { nodes { iid } } w4: x { nodes { iid } } }',
+    };
+    const window = (i: number) => ({
+      id: `w${i}`,
+      name: `W${i}`,
+      source: {
+        kind: 'http',
+        url: 'https://gitlab.example/api/graphql',
+        method: 'POST',
+        body,
+        path: `data.w${i}.nodes`,
+      },
+    });
+    const d = doc(
+      ...[0, 1, 2, 3, 4].map(window),
+      from('day', 'w0', { transforms: [{ type: 'union', with: ['w1', 'w2', 'w3', 'w4'] }] }),
+    );
+    const scope = data.scope(target, d);
+    const results = await Promise.all(d.datasets.map((x) => scope.resolve(x)));
+    expect(results.map((r) => r.error)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(results[5]!.table.rows.map((r) => r.iid).sort()).toEqual([0, 1, 2, 3, 4]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks columns in a dataset that reads one a filter emptied, and not in one that reads an empty source', async () => {
+    const data = new DataService(connectors, store);
+    const d = doc(
+      inline('warm', cities, { transforms: [{ type: 'filter', expr: 'temp > 100' }] }),
+      from('typo', 'warm', { transforms: [{ type: 'derive', as: 'c', expr: 'ctiy' }] }),
+      inline('open', []),
+      from('wall', 'open', { transforms: [{ type: 'derive', as: 'detail', expr: 'name' }] }),
+    );
+    const scope = data.scope(target, d);
+    expect((await scope.resolve(byId(d, 'typo'))).error).toMatch(/Unknown column "ctiy"/);
+    const wall = await scope.resolve(byId(d, 'wall'));
+    expect(wall.error).toBeUndefined();
+    expect(wall.trace?.[0]?.unchecked).toEqual(['name']);
+  });
+
+  it('does not check a join with an empty source, and checks one with a dataset a filter emptied', async () => {
+    const data = new DataService(connectors, store);
+    const d = doc(
+      inline('none', []),
+      inline('regions', [{ code: 'SK', region: 'Central' }], {
+        transforms: [{ type: 'filter', expr: 'code == "XX"' }],
+      }),
+      inline('open', [{ code: 'SK' }], {
+        transforms: [{ type: 'join', with: 'none', on: ['code'], fields: ['name'] }],
+      }),
+      inline('typo', [{ code: 'SK' }], {
+        transforms: [{ type: 'join', with: 'regions', on: ['code'], fields: ['regoin'] }],
+      }),
+    );
+    const scope = data.scope(target, d);
+    const open = await scope.resolve(byId(d, 'open'));
+    expect(open.error).toBeUndefined();
+    expect(open.table.rows).toEqual([{ code: 'SK', name: null }]);
+    expect(open.trace?.[0]?.unchecked).toEqual(['none.code', 'none.name']);
+    expect((await scope.resolve(byId(d, 'typo'))).error).toMatch(/Unknown column "regoin" in "regions"/);
+  });
+
+  it('shares a pipeline result only between runs with the same openness', async () => {
+    const data = new DataService(connectors, store);
+    const empty = inferTable([]);
+    const d = doc(inline('x', [], { transforms: [{ type: 'derive', as: 'detail', expr: 'name' }] }));
+    const read = byId(d, 'x').transforms;
+    // The same empty table object and steps: only the key's openness keeps the second run from reusing the first.
+    const open = await data.processShared(empty, read, undefined, false, true);
+    expect(open.trace[0]?.unchecked).toEqual(['name']);
+    await expect(data.processShared(empty, read, undefined, false, false)).rejects.toThrow(
+      /Unknown column "name"/,
+    );
   });
 
   it('marks a failure that is our own limit with the time after which to ask again', () => {
@@ -768,9 +885,9 @@ describe('final results across scopes', () => {
   it('does not keep a failed run', async () => {
     class Flaky extends InlineRunner {
       fail = 1;
-      override async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs) {
+      override async run(...args: RunArgs) {
         if (this.fail-- > 0) throw new Error('Processing crashed');
-        return super.run(table, transforms, inputs);
+        return super.run(...args);
       }
     }
     const data = new DataService(connectors, store, new Flaky());
@@ -784,9 +901,9 @@ describe('final results across scopes', () => {
 
   it("lets a scope that joins another's computation keep its own deadline", async () => {
     class Slow extends InlineRunner {
-      override async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs) {
+      override async run(...args: RunArgs) {
         await new Promise((r) => setTimeout(r, 150));
-        return super.run(table, transforms, inputs);
+        return super.run(...args);
       }
     }
     const data = new DataService(connectors, store, new Slow());
@@ -814,8 +931,8 @@ describe('final results across scopes', () => {
     try {
       // The parent's run fills memory past the soft line, as a cold burst does before its children get their turn.
       class Filling extends InlineRunner {
-        override async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs) {
-          const r = await super.run(table, transforms, inputs);
+        override async run(...args: RunArgs) {
+          const r = await super.run(...args);
           fraction = 0.75;
           return r;
         }
@@ -858,12 +975,12 @@ describe('final results across scopes', () => {
     try {
       const runs: string[] = [];
       class Filling extends InlineRunner {
-        override async run(table: DataTable, transforms: Transform[], inputs?: PipelineInputs) {
-          runs.push(transforms.map((t) => t.type).join(','));
+        override async run(...args: RunArgs) {
+          runs.push(args[1].map((t) => t.type).join(','));
           await new Promise((r) => setTimeout(r, 10));
           // Past the hard line once the first run is done, as wall screens reconnecting after a restart can do.
           fraction = 0.97;
-          return super.run(table, transforms, inputs);
+          return super.run(...args);
         }
       }
       const data = new DataService(connectors, store, new Filling());

@@ -4,6 +4,7 @@ import {
   DatasetSchema,
   exportFileName,
   FileIdSchema,
+  focusedEntity,
   IdSchema,
   type LiveEvent,
   lineageParameters,
@@ -115,7 +116,8 @@ export function apiRoutes(deps: Deps) {
   const app = new Hono<Env>();
   const { dashboards, data, wire, hub, tokens, connectors, config } = deps;
 
-  const useCaseList: UseCaseInfo[] = deps.useCases.map(useCaseInfo);
+  // The tab row shows the featured use cases; the others keep their dashboards and links (routes/showcase.ts).
+  const useCaseList: UseCaseInfo[] = deps.useCases.filter((u) => u.meta.featured).map(useCaseInfo);
 
   // Per-IP budget for all API traffic, plus a tighter one for writes.
   app.use('*', async (c, next) => {
@@ -591,7 +593,12 @@ export function apiRoutes(deps: Deps) {
             kind: 'widget',
             widget,
             result,
-            options: { theme, entityColors: doc.colors, parameters },
+            options: {
+              theme,
+              entityColors: doc.colors,
+              parameters,
+              focus: focusedEntity(doc, widget, parameters),
+            },
           });
         }
         const results = new Map<string, DatasetResult>();

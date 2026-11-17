@@ -11,6 +11,7 @@ import { now } from './db.ts';
 import { DashboardService, type Principal } from './services/dashboards.ts';
 import { buildTemplate } from './services/templates.ts';
 import type { UseCase } from './showcase/load.ts';
+import { type SourceRequest, sourceTrustKey } from './showcase/trust.ts';
 import type { StoredMeta } from './store/folder-store.ts';
 
 // Counts the requests an http source would send upstream; feeds use another function and stay real.
@@ -61,7 +62,7 @@ const withToken = (): Principal => signedIn('agent@example.com', { viaToken: tru
 /** A use case built the way loadUseCases would, from a real template so the document is valid. */
 function fixtureUseCase(id: string): UseCase {
   return {
-    meta: { id, order: 1, title: id, tab: 'Fixture', description: 'Fixture use case' },
+    meta: { id, order: 1, title: id, tab: 'Fixture', description: 'Fixture use case', featured: true },
     prompt: 'Build a board',
     doc: buildTemplate('blank'),
     dashboardId: useCaseDashboardId(id),
@@ -105,10 +106,28 @@ const setSource = (url: string) => ({
   id: 'news',
   set: { source: { kind: 'feed', url, limit: 30 } },
 });
+const trusted = (...requests: SourceRequest[]) => new Set(requests.map(sourceTrustKey));
+const GQL = 'https://gitlab.example/api/graphql';
+const QUERY = { query: '{ project(fullPath: "a/b") { name } }' };
+const postDataset = (body: unknown) => ({
+  id: 'gql',
+  name: 'GraphQL',
+  refreshSec: 300,
+  transforms: [],
+  source: { kind: 'http', url: GQL, method: 'POST', body },
+});
+const setPostBody = (body: unknown) => ({
+  op: 'updateDataset',
+  id: 'gql',
+  set: { source: { kind: 'http', url: GQL, method: 'POST', body } },
+});
 
 describe('trusted showcase URLs', () => {
   it('lets an anonymous dashboard add exactly a trusted URL and nothing else', async () => {
-    const svc = makeService({ urlSources: 'signed-in', trustedUrls: new Set([FEED]) });
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: FEED, method: 'GET' }),
+    });
     const { envelope, editKey } = await svc.create(anonymous(), {});
     const p = anonymous(editKey);
     const id = envelope.meta.id;
@@ -121,7 +140,10 @@ describe('trusted showcase URLs', () => {
   });
 
   it('allows fetching a trusted URL for an anonymous target and refuses any other', () => {
-    const svc = makeService({ urlSources: 'signed-in', trustedUrls: new Set([FEED]) });
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: FEED, method: 'GET' }),
+    });
     const target = { id: 'abcdef123456', ownerId: null };
     expect(() => svc.assertMayFetchUrl(target, FEED)).not.toThrow();
     expect(() => svc.assertMayFetchUrl(target, `${FEED}?x=1`)).toThrow();
@@ -129,7 +151,10 @@ describe('trusted showcase URLs', () => {
 
   it('trusts a showcase URL for GET only: a POST to it is refused when saved and when fetched', async () => {
     const API_URL = 'https://api.example.com/v1/trusted';
-    const svc = makeService({ urlSources: 'signed-in', trustedUrls: new Set([API_URL]) });
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: API_URL, method: 'GET' }),
+    });
     const { envelope, editKey } = await svc.create(anonymous(), {});
     const p = anonymous(editKey);
     const id = envelope.meta.id;
@@ -155,8 +180,98 @@ describe('trusted showcase URLs', () => {
     expect(() => svc.assertMayFetchUrl(target, API_URL, 'POST')).toThrow(/sign/i);
   });
 
+  it('trusts the exact showcase POST: same address and body, when saved and when fetched', async () => {
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: GQL, method: 'POST', body: QUERY }),
+    });
+    const { envelope, editKey } = await svc.create(anonymous(), {});
+    await expect(
+      svc.applyOps(envelope.meta.id, anonymous(editKey), [{ op: 'addDataset', dataset: postDataset(QUERY) }]),
+    ).resolves.toBeDefined();
+    const target = { id: 'abcdef123456', ownerId: null };
+    expect(() => svc.assertMayFetchUrl(target, GQL, 'POST', QUERY)).not.toThrow();
+    expect(() => svc.assertMayFetchUrl(target, GQL, 'POST', JSON.parse(JSON.stringify(QUERY)))).not.toThrow();
+  });
+
+  it('refuses a POST whose body differs in any way, and the trusted address with another method', async () => {
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: GQL, method: 'POST', body: { a: 1, b: 2 } }),
+    });
+    const { envelope, editKey } = await svc.create(anonymous(), {});
+    const id = envelope.meta.id;
+    const p = anonymous(editKey);
+    await svc.applyOps(id, p, [{ op: 'addDataset', dataset: postDataset({ a: 1, b: 2 }) }]);
+    const target = { id: 'abcdef123456', ownerId: null };
+    for (const body of [{ b: 2, a: 1 }, { a: 1, b: 2, c: 3 }, { a: 1, b: '2' }, { a: 1 }]) {
+      await expect(svc.applyOps(id, p, [setPostBody(body)])).rejects.toThrow(/sign/i);
+      expect(() => svc.assertMayFetchUrl(target, GQL, 'POST', body)).toThrow(/sign/i);
+    }
+    expect(() => svc.assertMayFetchUrl(target, GQL, 'POST')).toThrow(/sign/i);
+    expect(() => svc.assertMayFetchUrl(target, GQL)).toThrow(/sign/i);
+    expect(() => svc.assertMayFetchUrl(target, `${GQL}?x=1`, 'POST', { a: 1, b: 2 })).toThrow(/sign/i);
+  });
+
+  it('refuses a body with a filter reference even when it would bind to the trusted text', async () => {
+    // A short query, so the filter's option value is valid and the only refusal left is the URL_SOURCES one.
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: GQL, method: 'POST', body: { query: '{ a }' } }),
+    });
+    const { envelope, editKey } = await svc.create(anonymous(), {});
+    const p = anonymous(editKey);
+    await expect(
+      svc.applyOps(envelope.meta.id, p, [
+        {
+          op: 'addParameter',
+          parameter: {
+            id: 'q',
+            label: 'Query',
+            type: 'select',
+            options: [{ value: '{ a }' }],
+            default: '{ a }',
+          },
+        },
+        { op: 'addDataset', dataset: postDataset({ query: '$param.q' }) },
+      ]),
+    ).rejects.toThrow(/sign/i);
+  });
+
+  it('refuses a copy that changes only the path of a trusted GET source, at save and at fetch', async () => {
+    const svc = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: FEED, method: 'GET', path: 'data.items' }),
+    });
+    const { envelope, editKey } = await svc.create(anonymous(), {});
+    const id = envelope.meta.id;
+    const p = anonymous(editKey);
+    const source = (path?: string) => ({
+      kind: 'http',
+      url: FEED,
+      ...(path !== undefined ? { path } : {}),
+    });
+    const dataset = (path?: string) => ({ id: 'rows', name: 'Rows', transforms: [], source: source(path) });
+    await expect(
+      svc.applyOps(id, p, [{ op: 'addDataset', dataset: dataset('data.items') }]),
+    ).resolves.toBeDefined();
+    for (const path of [undefined, 'data.other', 'data.items ', '']) {
+      await expect(
+        svc.applyOps(id, p, [{ op: 'updateDataset', id: 'rows', set: { source: source(path) } }]),
+      ).rejects.toThrow(/sign/i);
+    }
+    const target = { id: 'abcdef123456', ownerId: null };
+    expect(() => svc.assertMayFetchUrl(target, FEED, 'GET', undefined, 'data.items')).not.toThrow();
+    for (const path of [undefined, 'data.other', '']) {
+      expect(() => svc.assertMayFetchUrl(target, FEED, 'GET', undefined, path)).toThrow(/sign/i);
+    }
+  });
+
   it('leaves signed-in owners and URL_SOURCES=everyone unaffected', async () => {
-    const strict = makeService({ urlSources: 'signed-in', trustedUrls: new Set([FEED]) });
+    const strict = makeService({
+      urlSources: 'signed-in',
+      trustedSources: trusted({ url: FEED, method: 'GET' }),
+    });
     const owner = signedIn('owner@example.com');
     const { envelope } = await strict.create(owner, {});
     await expect(
@@ -359,6 +474,23 @@ describe('showcase routes', () => {
       writeFileSync(join(base, 'prompt.md'), 'Build a board');
       writeFileSync(join(base, 'dashboard.json'), JSON.stringify(buildTemplate('blank')));
     }
+    // Out of the tab row, still a working use case: its link, dashboard and media stay.
+    const aside = join(showcaseDir, 'aside-case');
+    mkdirSync(aside, { recursive: true });
+    writeFileSync(
+      join(aside, 'meta.json'),
+      JSON.stringify({
+        id: 'aside-case',
+        order: 0,
+        title: 'Aside',
+        tab: 'Aside',
+        description: 'Not in the tab row',
+        featured: false,
+      }),
+    );
+    writeFileSync(join(aside, 'prompt.md'), 'Build a board');
+    writeFileSync(join(aside, 'dashboard.json'), JSON.stringify(buildTemplate('blank')));
+    writeFileSync(join(aside, 'video.mp4'), Buffer.from('0123456789'));
     writeFileSync(join(showcaseDir, 'with-video', 'video.mp4'), Buffer.from('0123456789'));
     writeFileSync(join(showcaseDir, 'with-video', 'poster.jpg'), Buffer.from('jpegdata'));
     writeFileSync(join(showcaseDir, 'with-video', 'video-square.mp4'), Buffer.from('abcdefgh'));
@@ -381,6 +513,19 @@ describe('showcase routes', () => {
     await routeDeps.pipeline.close();
     routeDeps.db.close();
     rmSync(routeDir, { recursive: true, force: true });
+  });
+
+  it('keeps an unfeatured use case out of the list, and its dashboard, link and media working', async () => {
+    const list = (await (await app.request('/api/use-cases')).json()) as UseCaseInfo[];
+    expect(list.map((u) => u.id)).not.toContain('aside-case');
+    expect(routeDeps.useCases.map((u) => u.meta.id)).toContain('aside-case');
+    const link = await app.request('/showcase/aside-case');
+    expect(link.status).toBe(302);
+    expect(link.headers.get('location')).toBe('/d/scasidecase');
+    const video = await app.request('/showcase/aside-case/video.mp4', { headers: { range: 'bytes=0-1' } });
+    expect(video.status).toBe(206);
+    const dash = await app.request('/api/dashboards/scasidecase');
+    expect(dash.status).toBe(200);
   });
 
   it('lists use cases with media URLs carrying cache keys', async () => {
@@ -593,7 +738,215 @@ describe('trusted URLs through the whole app', () => {
 
     const get = await preview({ source: { kind: 'http', url: FEED } });
     expect(get.status).toBe(200);
-    expect(((await get.json()) as { error?: string }).error).toBeUndefined();
+    // The preview answers { result, profile, suggestions }: a refusal would be result.error.
+    const { result } = (await get.json()) as { result: { error?: string; table: { rows: unknown[] } } };
+    expect(result.error).toBeUndefined();
+    expect(result.table.rows.length).toBeGreaterThan(0);
     expect(upstreamJson).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a trusted showcase POST through the whole app', () => {
+  let postDir: string;
+  let postDeps: Deps;
+  let postApp: ReturnType<typeof createApp>;
+
+  beforeAll(async () => {
+    postDir = mkdtempSync(join(tmpdir(), 'patchbay-showcase-post-'));
+    const base = join(postDir, 'showcase', 'graph-demo');
+    mkdirSync(base, { recursive: true });
+    writeFileSync(
+      join(base, 'meta.json'),
+      JSON.stringify({ id: 'graph-demo', order: 1, title: 'Graph', tab: 'Graph', description: 'GraphQL.' }),
+    );
+    writeFileSync(join(base, 'prompt.md'), 'Build a GraphQL board');
+    writeFileSync(
+      join(base, 'dashboard.json'),
+      JSON.stringify({ ...buildTemplate('blank'), datasets: [postDataset(QUERY)] }),
+    );
+    // A second use case whose POST also has a `path`: that part of the request must be trusted as well.
+    const pathed = join(postDir, 'showcase', 'graph-path');
+    mkdirSync(pathed, { recursive: true });
+    writeFileSync(
+      join(pathed, 'meta.json'),
+      JSON.stringify({ id: 'graph-path', order: 2, title: 'Pathed', tab: 'Pathed', description: 'GraphQL.' }),
+    );
+    writeFileSync(join(pathed, 'prompt.md'), 'Build a pathed GraphQL board');
+    writeFileSync(
+      join(pathed, 'dashboard.json'),
+      JSON.stringify({
+        ...buildTemplate('blank'),
+        datasets: [{ ...postDataset(QUERY), source: { ...postDataset(QUERY).source, path: 'data.items' } }],
+      }),
+    );
+    postDeps = await createDeps(
+      loadConfig({
+        NODE_ENV: 'test',
+        DATA_DIR: join(postDir, 'data'),
+        OFFLINE: '1',
+        URL_SOURCES: 'signed-in',
+        PUBLIC_URL: 'http://localhost:8787',
+        SHOWCASE_DIR: join(postDir, 'showcase'),
+        PIPELINE_WORKERS: '0',
+      }),
+    );
+    await syncShowcaseUseCases(postDeps);
+    postApp = createApp(postDeps);
+  });
+
+  afterAll(async () => {
+    postDeps.hub.close();
+    await postDeps.pipeline.close();
+    postDeps.db.close();
+    rmSync(postDir, { recursive: true, force: true });
+  });
+
+  it('lets an anonymous copy load the showcase POST and refuses a copy that changes its body', async () => {
+    const copy = await postDeps.dashboards.duplicate('scgraphdemo', anonymous());
+    const id = copy.envelope.meta.id;
+    const key = { 'x-edit-key': copy.editKey! };
+    upstreamJson.mockClear();
+    const ok = await postApp.request(`/api/dashboards/${id}/data/gql`, { headers: key });
+    const body = (await ok.json()) as { error?: string; table: { rows: unknown[] } };
+    expect(body.error).toBeUndefined();
+    expect(body.table.rows.length).toBeGreaterThan(0);
+    expect(upstreamJson).toHaveBeenCalledWith(GQL, expect.objectContaining({ method: 'POST', body: QUERY }));
+
+    const changed = await postApp.request(`/api/dashboards/${id}/ops`, {
+      method: 'POST',
+      headers: { ...key, 'content-type': 'application/json' },
+      body: JSON.stringify({ ops: [setPostBody({ query: '{ currentUser { username } }' })] }),
+    });
+    expect(changed.status).toBe(400);
+  });
+
+  it('previews the exact showcase POST for an anonymous copy and refuses any other body unsent', async () => {
+    const copy = await postDeps.dashboards.duplicate('scgraphdemo', anonymous());
+    const preview = (dataset: object) =>
+      postApp.request(`/api/dashboards/${copy.envelope.meta.id}/preview`, {
+        method: 'POST',
+        headers: { 'x-edit-key': copy.editKey!, 'content-type': 'application/json' },
+        body: JSON.stringify({ dataset }),
+      });
+    upstreamJson.mockClear();
+    const other = await preview({
+      source: { kind: 'http', url: GQL, method: 'POST', body: { query: '{ x }' } },
+    });
+    expect(JSON.stringify(await other.json())).toMatch(/Sign in/);
+    expect(upstreamJson).not.toHaveBeenCalled();
+    const same = await preview({ source: { kind: 'http', url: GQL, method: 'POST', body: QUERY } });
+    expect(same.status).toBe(200);
+    // The preview answers { result, profile, suggestions }: a refusal would be result.error.
+    const { result } = (await same.json()) as { result: { error?: string; table: { rows: unknown[] } } };
+    expect(result.error).toBeUndefined();
+    expect(result.table.rows.length).toBeGreaterThan(0);
+  });
+
+  // `path` is read from the response and never sent, but it is part of the cache key: a copy that varied it would
+  // send the trusted request again for every value, so it is part of what a copy may not change.
+  const previewWith = (copy: { envelope: { meta: { id: string } }; editKey?: string }, path: string) =>
+    postApp.request(`/api/dashboards/${copy.envelope.meta.id}/preview`, {
+      method: 'POST',
+      headers: { 'x-edit-key': copy.editKey!, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        dataset: { source: { kind: 'http', url: GQL, method: 'POST', body: QUERY, path } },
+      }),
+    });
+
+  it('refuses anonymous previews of the trusted POST that add a path, one after the other, unsent', async () => {
+    const copy = await postDeps.dashboards.duplicate('scgraphdemo', anonymous());
+    upstreamJson.mockClear();
+    for (const path of ['x.one', 'x.two', 'x.three']) {
+      const res = await previewWith(copy, path);
+      expect(JSON.stringify(await res.json())).toMatch(/Sign in/);
+    }
+    expect(upstreamJson).not.toHaveBeenCalled();
+  });
+
+  it('refuses a saved dataset that changes only the path of the trusted POST, and does not fetch one', async () => {
+    const copy = await postDeps.dashboards.duplicate('scgraphdemo', anonymous());
+    const id = copy.envelope.meta.id;
+    const key = { 'x-edit-key': copy.editKey!, 'content-type': 'application/json' };
+    upstreamJson.mockClear();
+    const save = await postApp.request(`/api/dashboards/${id}/ops`, {
+      method: 'POST',
+      headers: key,
+      body: JSON.stringify({
+        ops: [
+          {
+            op: 'updateDataset',
+            id: 'gql',
+            set: { source: { kind: 'http', url: GQL, method: 'POST', body: QUERY, path: 'y.1' } },
+          },
+        ],
+      }),
+    });
+    expect(save.status).toBe(400);
+    // The same dataset reaching the fetch some other way (an imported document) is refused there too.
+    const target = { id, ownerId: null };
+    expect(() => postDeps.dashboards.assertMayFetchUrl(target, GQL, 'POST', QUERY, 'y.1')).toThrow(/sign/i);
+    expect(() => postDeps.dashboards.assertMayFetchUrl(target, GQL, 'POST', QUERY)).not.toThrow();
+    expect(upstreamJson).not.toHaveBeenCalled();
+  });
+
+  it('lets an anonymous copy load a trusted POST that has a path, with one upstream call', async () => {
+    const copy = await postDeps.dashboards.duplicate('scgraphpath', anonymous());
+    upstreamJson.mockClear();
+    upstreamJson.mockResolvedValueOnce({ data: { items: [{ a: 1 }, { a: 2 }] } } as never);
+    const res = await postApp.request(`/api/dashboards/${copy.envelope.meta.id}/data/gql`, {
+      headers: { 'x-edit-key': copy.editKey! },
+    });
+    const body = (await res.json()) as { error?: string; table: { rows: unknown[] } };
+    expect(body.error).toBeUndefined();
+    expect(body.table.rows).toHaveLength(2);
+    expect(upstreamJson).toHaveBeenCalledTimes(1);
+  });
+
+  // A signed-in owner may save any POST. An anonymous duplicate skips the write rule (create does not run
+  // checkUrlSources), so the check at fetch time is the only guard: pin it.
+  describe('an anonymous copy of an owner-made POST dashboard', () => {
+    const ownerDashboard = async (id: string, body: unknown) => {
+      const owner = postDeps.users.upsert({ email: `${id}@example.com`, name: 'Owner' });
+      const at = now();
+      const meta: StoredMeta = {
+        id,
+        ownerId: owner.id,
+        ownerEmail: owner.email,
+        visibility: 'public',
+        editKeyHash: null,
+        version: 1,
+        createdAt: at,
+        updatedAt: at,
+        lastViewedAt: at,
+        lastActor: { kind: 'user', label: 'test' },
+      };
+      const parameters = [
+        { id: 'q', label: 'Query', type: 'select', options: [{ value: '{ a }' }], default: '{ a }' },
+      ];
+      const doc = { ...buildTemplate('blank'), parameters, datasets: [postDataset(body)] };
+      await postDeps.store.create(meta, doc as never, meta.lastActor!, ['Created']);
+      postDeps.index.upsert(meta, { title: doc.title, widgets: 0 });
+    };
+
+    // The bodies must be valid documents: the store re-parses them on read, and an embedded `$param.` (inside a larger
+    // string) is refused on purpose, so a whole-value reference or a variables object is the way to test them.
+    it.each([
+      ['a body that is not a showcase', 'ownermadeone', { query: '{ x }' }],
+      ['a $param. in the body', 'ownermadetwo', { query: '$param.q' }],
+      [
+        'GraphQL variables with a $param.',
+        'ownermadethree',
+        { query: 'query($q: String){ x(q:$q) }', variables: { q: '$param.q' } },
+      ],
+    ])('refuses to send %s, unsent', async (_name, id, body) => {
+      await ownerDashboard(id, body);
+      const copy = await postDeps.dashboards.duplicate(id, anonymous());
+      upstreamJson.mockClear();
+      const res = await postApp.request(`/api/dashboards/${copy.envelope.meta.id}/data/gql`, {
+        headers: { 'x-edit-key': copy.editKey! },
+      });
+      expect(JSON.stringify(await res.json())).toMatch(/Sign in/);
+      expect(upstreamJson).not.toHaveBeenCalled();
+    });
   });
 });
