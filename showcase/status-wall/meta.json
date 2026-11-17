@@ -1,7 +1,8 @@
 {
   "id": "status-wall",
-  "order": 2,
+  "order": 5,
   "title": "A status wall for the office TV",
   "tab": "Status wall",
-  "description": "GitHub, Cloudflare, npm and OpenAI in one wall for the office TV: four status pages combined into one list, problems spelled out, running on its own."
+  "description": "GitHub, Cloudflare, npm and OpenAI in one wall for the office TV: four status pages combined into one list, problems spelled out, running on its own.",
+  "featured": false
 }

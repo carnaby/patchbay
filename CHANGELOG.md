@@ -8,14 +8,13 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ### Added
 
-- Four new use cases on the landing page, each built by an AI agent from the prompt shown and each with a short video
-  of the build and of what you can do with it: a status wall for the office TV (GitHub, Cloudflare, npm and OpenAI
-  status pages combined into one list, in presentation mode), AI SDK downloads with a period filter and click to
-  filter, wealth and life expectancy from World Bank data joined with the country list, and GitLab's latest merges read
-  over GraphQL.
+- Four new showcase dashboards, each built by an AI agent from the prompt in its folder, open at `/showcase/<id>`
+  and not yet in the landing page's tabs: a status wall for the office TV (GitHub, Cloudflare, npm and OpenAI status
+  pages combined into one list, in presentation mode), AI SDK downloads with a period filter and click to filter,
+  wealth and life expectancy from World Bank data joined with the country list, and GitLab's latest merges read over
+  GraphQL.
 - A showcase use case can stay out of the landing page's tabs with `"featured": false` in its `meta.json`; its
-  dashboard, `/showcase/<id>` link and videos keep working. "Bratislava vs Vienna" and "Earthquakes" leave the tabs
-  this way.
+  dashboard, `/showcase/<id>` link and videos keep working.
 
 ### Changed
 
