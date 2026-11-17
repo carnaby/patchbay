@@ -16,6 +16,7 @@ import {
   type DataTable,
   defaultParameterValues,
   dependentsOf,
+  focusedEntity,
   formattingWarnings,
   type LineageDoc,
   lineageParameters,
@@ -40,10 +41,12 @@ import { SCOPES } from '../auth/tokens.ts';
 import type { Deps } from '../context.ts';
 import { chargeSnapshot, snapshotGate } from '../render/gate.ts';
 import type { Principal } from '../services/dashboards.ts';
+import { isStillLoading } from '../services/scope.ts';
 import { listTemplates } from '../services/templates.ts';
 import { optionsLoader, RawParametersSchema, readView, unknownIds } from '../services/view.ts';
 import { HttpError, toHttpError } from '../util/errors.ts';
 import { BusyError } from '../util/gate.ts';
+import { isBusyHostRefusal } from '../util/outbound.ts';
 import { APP_VERSION } from '../util/version.ts';
 import { advertise } from './input-schema.ts';
 import { referenceText, SERVER_INSTRUCTIONS } from './reference.ts';
@@ -65,6 +68,18 @@ const DATA_CHECK_SAMPLE = 3;
 const BUSY_CHECK_SAVED = 'The server is busy, so this dataset was not checked; the change is saved.';
 const BUSY_CHECK_DRY =
   'The server is busy, so this dataset was not checked; the operations are valid, nothing was saved.';
+/**
+ * Data checks that ended with a retry hint, by cause. Both say what was saved; only a per-host refusal by this server
+ * may say the source is not at fault, while a source still loading at the deadline is the source's own slowness.
+ */
+const LIMITED_CHECK_SAVED =
+  "This server's own limit on requests to one host refused the check for now, not the source; the change is saved. Check again with get_data in a few seconds.";
+const LIMITED_CHECK_DRY =
+  "This server's own limit on requests to one host refused the check for now, not the source; the operations are valid, nothing was saved.";
+const stillLoadingCheckSaved = (seconds: number) =>
+  `The source is still loading (see error); the change is saved. Check again with get_data in ${seconds} seconds.`;
+const STILL_LOADING_CHECK_DRY =
+  'The source is still loading (see error); the operations are valid, nothing was saved.';
 
 /**
  * Agents watching an accumulating dataset over MCP saw rows arrive at the rhythm of their own calls, not refreshSec,
@@ -105,6 +120,20 @@ function sampleTable(table: DataTable, limit: number, from: 'start' | 'end' = 's
           note: `Only ${rows.length} of the ${wanted.length} rows asked for fit in one answer; select fewer columns or shorten long text to see more.`,
         }
       : {}),
+  };
+}
+
+/**
+ * Steps that read columns an empty source or an empty joined dataset does not have run without them (core
+ * runPipeline): the agent hears which, because a typo there only shows once rows arrive.
+ */
+function notCheckedNote(trace: DatasetResult['trace']): { notChecked?: string } {
+  const steps = (trace ?? []).filter((s) => s.unchecked?.length);
+  if (!steps.length) return {};
+  const names = [...new Set(steps.flatMap((s) => s.unchecked!))].join(', ');
+  const which = steps.map((s) => s.step + 1).join(', ');
+  return {
+    notChecked: `A dataset returned no rows, so step${steps.length > 1 ? 's' : ''} ${which} could not check ${names}; they are checked when rows arrive. To check the names now, preview a related source that has rows (for example all incidents instead of the open ones).`,
   };
 }
 
@@ -466,6 +495,15 @@ export function createMcp(deps: Deps) {
                 if (!(e instanceof BusyError)) throw e;
                 return { datasetId: d.id, error: args.dryRun ? BUSY_CHECK_DRY : BUSY_CHECK_SAVED };
               }
+              const notes = [
+                ...(r.retryAfterSec && isBusyHostRefusal(r.error)
+                  ? [args.dryRun ? LIMITED_CHECK_DRY : LIMITED_CHECK_SAVED]
+                  : []),
+                ...(r.retryAfterSec && isStillLoading(r)
+                  ? [args.dryRun ? STILL_LOADING_CHECK_DRY : stillLoadingCheckSaved(r.retryAfterSec)]
+                  : []),
+                ...(d.accumulate > 0 ? [ACCUMULATE_NOTE] : []),
+              ];
               return {
                 datasetId: d.id,
                 rowCount: r.table.rows.length,
@@ -474,7 +512,9 @@ export function createMcp(deps: Deps) {
                 sampleRows: fitRows(r.table, r.table.rows.slice(0, DATA_CHECK_SAMPLE), SAMPLE_CHARS / 30),
                 error: r.error,
                 ...(r.warning ? { warning: r.warning } : {}),
-                ...(d.accumulate > 0 ? { note: ACCUMULATE_NOTE } : {}),
+                ...notCheckedNote(r.trace),
+                ...(r.error && r.retryAfterSec ? { retryAfterSec: r.retryAfterSec } : {}),
+                ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
               };
             }),
           );
@@ -543,6 +583,7 @@ export function createMcp(deps: Deps) {
           return json({
             ...sampleTable(result.table, args.sampleRows),
             ...(result.warning ? { warning: result.warning } : {}),
+            ...notCheckedNote(result.trace),
             trace: result.trace,
             profile: profile.columns.map(({ sample: _s, ...c }) => c),
             suggestions: suggestionOps(
@@ -760,7 +801,12 @@ export function createMcp(deps: Deps) {
                     kind: 'widget',
                     widget,
                     result: 'datasetId' in widget ? results.get(widget.datasetId) : undefined,
-                    options: { theme: args.theme, entityColors: doc.colors, parameters: values },
+                    options: {
+                      theme: args.theme,
+                      entityColors: doc.colors,
+                      parameters: values,
+                      focus: focusedEntity(doc, widget, values),
+                    },
                   }
                 : {
                     kind: 'dashboard',

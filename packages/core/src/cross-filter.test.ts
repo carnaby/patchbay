@@ -5,8 +5,10 @@ import {
   crossFilterOf,
   crossFilterPick,
   crossFilterSelection,
+  DatasetSchema,
   DIMMED_OPACITY,
   effectiveSelection,
+  focusedEntity,
   inferTable,
   MapConfigSchema,
   ParameterSchema,
@@ -242,5 +244,87 @@ describe('effectiveSelection', () => {
     const sel = { field: 'src', value: 'Reuters' };
     // The same object: ChartBody memoizes on it.
     expect(effectiveSelection(sel, rows)).toBe(sel);
+  });
+});
+
+describe('the entity a widget is focused on', () => {
+  const pkg = ParameterSchema.parse({
+    id: 'pkg',
+    label: 'Package',
+    type: 'select',
+    options: [{ value: 'ai' }, { value: 'openai' }, { value: 'zod' }],
+    all: 'All packages',
+    default: null,
+  });
+  const period = ParameterSchema.parse({
+    id: 'period',
+    label: 'Period',
+    type: 'dateRange',
+    presets: ['last30d'],
+    default: 'last30d',
+  });
+  const doc = {
+    datasets: [
+      { id: 'raw', name: 'Raw', source: { kind: 'inline', rows: [] }, transforms: [] },
+      {
+        id: 'trend',
+        name: 'Trend',
+        source: { kind: 'dataset', id: 'raw' },
+        transforms: [{ type: 'filter', expr: '$param.pkg == null || package == $param.pkg' }],
+      },
+      {
+        id: 'perday',
+        name: 'Per day',
+        source: { kind: 'dataset', id: 'trend' },
+        transforms: [{ type: 'aggregate', groupBy: ['day'], metrics: [{ op: 'sum', field: 'n', as: 'n' }] }],
+      },
+    ].map((d) => DatasetSchema.parse(d)),
+    parameters: [pkg, period],
+    colors: { ai: 'accent-2', openai: 'accent-3' } as const,
+  };
+  const kpi = WidgetSchema.parse({
+    id: 'k',
+    type: 'kpi',
+    datasetId: 'perday',
+    config: { field: 'n', sparkline: true },
+  });
+  const raw = WidgetSchema.parse({ id: 'r', type: 'kpi', datasetId: 'raw', config: { field: 'n' } });
+
+  it('is the value of a select filter in the lineage when that value has an entity colour', () => {
+    expect(focusedEntity(doc, kpi, { pkg: 'ai', period: null })).toBe('ai');
+  });
+
+  it('is nothing at "All", for a value without a colour, or when the lineage does not read the filter', () => {
+    expect(focusedEntity(doc, kpi, { pkg: null })).toBeNull();
+    expect(focusedEntity(doc, kpi, { pkg: 'zod' })).toBeNull();
+    expect(focusedEntity(doc, kpi, undefined)).toBeNull();
+    expect(focusedEntity(doc, raw, { pkg: 'ai' })).toBeNull();
+  });
+
+  it('is nothing when two select filters name coloured entities, or the filter is not a select', () => {
+    const team = ParameterSchema.parse({
+      id: 'team',
+      label: 'Team',
+      type: 'select',
+      options: [{ value: 'openai' }],
+      all: 'All',
+      default: null,
+    });
+    const two = {
+      ...doc,
+      parameters: [pkg, team],
+      datasets: doc.datasets.map((d) =>
+        d.id === 'trend'
+          ? {
+              ...d,
+              transforms: [{ type: 'filter' as const, expr: 'package == $param.pkg && team == $param.team' }],
+            }
+          : d,
+      ),
+    };
+    expect(focusedEntity(two, kpi, { pkg: 'ai', team: 'openai' })).toBeNull();
+    expect(focusedEntity(two, kpi, { pkg: 'ai', team: null })).toBe('ai');
+    const text = ParameterSchema.parse({ id: 'pkg', label: 'Package', type: 'text' });
+    expect(focusedEntity({ ...doc, parameters: [text] }, kpi, { pkg: 'ai' })).toBeNull();
   });
 });

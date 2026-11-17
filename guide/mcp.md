@@ -98,14 +98,23 @@ median gap between its times) inside it. Data with fewer than two distinct times
 The answer of `apply_operations`:
 
 - `changes`: one line per operation (the same text the version history shows).
-- `dataChecks`: one entry per dataset the batch added or changed, and per dataset built on those, loaded right away so a broken source surfaces at
-  once: `rowCount` (rows after the whole pipeline), `columns` (`name:type`), `sampleRows` (the first 3 rows, a sample,
-  not a count) and `error` when the dataset failed. `warning` (also in `get_data` and `preview_data`) means rows were
-  served with a caveat, not a failure: a source cut to the cell limit, a cached copy after a failed refresh, or a parent
-  over 100,000 rows. `truncated: true` means the result has more rows than the 10,000 that widgets receive.
+- `dataChecks`: one entry per dataset the batch added or changed, and per dataset built on those, loaded right away so
+  a broken source surfaces at once: `rowCount` (rows after the whole pipeline), `columns` (`name:type`), `sampleRows`
+  (the first 3 rows, a sample, not a count) and `error` when the dataset failed. `warning` (also in `get_data` and
+  `preview_data`) means rows were served with a caveat, not a failure: a source cut to the cell limit, a cached copy
+  after a failed refresh, or a parent over 100,000 rows.
+  - `notChecked` names columns that steps read but an empty source does not have; they are checked once it returns
+    rows. When joining a dataset that may be empty, list `fields`: an empty dataset has no columns to bring, so
+    without `fields` the later steps that read them fail.
+  - `truncated: true` means the result has more rows than the 10,000 that widgets receive.
+
   A result larger than 4 MB as JSON comes back as an `error` with its columns and no rows, for every reader alike:
   add `limit`, `select` or `aggregate` steps. Sample rows (here and in `get_data`, `preview_data`) stop at about
-  200,000 characters, with a `note` when fewer rows than asked for fit.
+  200,000 characters, with a `note` when fewer rows than asked for fit. A check with `retryAfterSec` failed for now
+  and may pass by asking again after that many seconds (`get_data`); its `note` says whether the change was saved (in
+  a dry run: the operations are valid, nothing was saved) and names the cause: this server's own limit on requests to
+  one host, which is not the source's fault, or a source still loading when the 20 s for the check ran out. The check
+  of an accumulating dataset has a `note` on where its history is kept; two notes are joined in one.
 - `warnings`, when there is something to fix that did not fail the batch (see "Secrets" and "Colour and formatting").
 
 Sound cues are spelled out in `changes` whenever an operation adds, changes or removes one (trigger, sound, volume and
@@ -141,7 +150,9 @@ Hex keeps working, so older documents and brand colours stay valid, but it does 
 Unmapped series keep the automatic order on the palette slots the map left free, so a mapped colour never appears on
 a second entity. `setMeta { colors }` sets the same kind of map for the whole dashboard; a widget's own map wins. Pie
 and donut slices take their colour from their label, so they keep it when their sizes change. The array form of
-`colors` still works and keeps its old meaning: a palette used in series order.
+`colors` still works and keeps its old meaning: a palette used in series order. A KPI's sparkline takes the colour of
+the entity a select filter narrows its data to (when that value has a dashboard colour); with nothing in focus on a dashboard with
+entity colours it is neutral grey, since a total is no entity.
 
 `apply_operations` adds `warnings` (the batch is still saved) for the widgets it touched, and for the dashboard map
 when it changed:
@@ -153,6 +164,9 @@ when it changed:
 
 Reference lines that cannot be drawn fail the batch: a chart kind without a value axis (pie, donut, funnel, radar,
 heatmap), both or neither of `value` and `stat`, or a `field` that is not one of the chart's `y` columns.
+
+A stacked chart on a time axis lines up its series by time and leaves a gap where a series has no row for a time:
+timeBucket the rows to a common time before stacking, so every series has a point at each one.
 
 ## Live data: `refreshSec` and `accumulate`
 
@@ -241,7 +255,7 @@ everything built on it stays in sync.
 - `join { with, on, how, fields? }` adds columns where keys match: `on: ["country"]` when both sides use the name,
   `[{ "left": "code", "right": "iso" }]` otherwise, up to 4 keys. `how: "left"` (default) keeps every row, `"inner"`
   only rows with a match. Keys must have the same type; a time matches a number (both epoch ms), and text dates
-  become times with `derive date(column)`. A repeated key gives one row per match; a null key matches nothing.
+  and epoch numbers become times with `derive date(column)` (epoch seconds: `date(t * 1000)`). A repeated key gives one row per match; a null key matches nothing.
   Columns this dataset already has get `_<dataset id>`.
 - `union { with, origin?, labels? }` appends the rows of up to 4 datasets, columns matched by name (missing ones are
   null, conflicting types become text). `origin` adds a column naming where each row came from; chart it with
@@ -442,7 +456,8 @@ search. An `http` source sends one with `method: "POST"` and a JSON `body`:
 - GraphQL needs the object `{ "query": "…" }`, not the bare query text. A string body is sent as a JSON string, and a
   string that looks like JSON is refused.
 - **Read queries only.** The request repeats on every refresh, preview and load. An identical body is answered from
-  the 30 s cache; two different bodies on one URL never share a cached response.
+  the 30 s cache; datasets that send the same address and body at the same time share one request, whatever their
+  `path`; two different bodies on one URL never share a cached response.
 - **No secrets in the body.** It is part of the document, so editors, agents, exports and the viewers of a public
   dashboard see it. Keys stay in secrets (below), sent as a header or query parameter; GraphQL and analytics APIs
   read their token from a header.

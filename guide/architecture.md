@@ -147,7 +147,9 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
   CI, demos and screenshots independent of third-party uptime.
 - A **TTL cache with in-flight de-duplication** sits in front of connectors. The TTL is the connector's minimum refresh
   interval, chosen to respect each free tier. If upstream fails, a copy up to an hour old is served with a warning
-  instead of an empty widget.
+  instead of an empty widget. Requests in flight are also shared across paths: datasets that read different parts of
+  one response (GraphQL aliases, a status page's components and incidents) wait for one upstream request, and only the
+  parsed table of each path is cached.
 - **Feeds** (`source.kind: "feed"`) take a user-supplied URL, so they go through the same SSRF guard as the `http`
   source (`safeFetchText`), never through a connector. `apps/server/src/feeds/` finds the feed a web page announces,
   parses RSS, Atom and JSON Feed into fixed columns and turns every text into plain text at parse time, so nothing
@@ -174,7 +176,9 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
   read only datasets of the same document: one document has one owner, one visibility and one set of editors, which
   is what keeps the secret rules intact. Expressions can also use whole-table functions (`col_sum(x, by?)` …),
   computed once per step over the rows at that point of the pipeline. A preview of a draft never adds to a saved
-  dataset's accumulated history, it only reads it.
+  dataset's accumulated history, it only reads it. A source that returns no rows has no known columns, so the
+  lineage stays open there: steps that read its columns run without failing and are checked once rows arrive
+  (`notChecked` names them).
 - **Results are serialised once and shared** (`services/result-wire.ts`). The web app asks for rows as arrays
   (`?rows=arrays`, column names once instead of in every row; `decodeTable` in core turns them back); other clients
   get rows as objects. Concurrent readers of a result and every subscriber of a live push send the same bytes, and the
@@ -225,8 +229,10 @@ tables, the owner and the row cap), so a burst of viewers costs one run of the c
   because following would resend the body elsewhere (307, 308) or turn it into a GET (301 to 303). The cache key adds
   the method and a SHA-256 of the body, so two queries on one URL never share a response; GET keys are unchanged.
   `DashboardService` refuses to preview a POST source for a read-only caller, since a preview sends a body of the
-  caller's choosing; saved POST sources load for every viewer. Under `URL_SOURCES=signed-in` the showcase's URLs are
-  trusted for GET only.
+  caller's choosing; saved POST sources load for every viewer. Under `URL_SOURCES=signed-in` an anonymous dashboard may
+  still send the showcase's own requests: a GET of one of its URLs, or one of its POSTs with exactly the same body
+  (compared by a SHA-256 of the JSON text that is sent). The key is the address, method, body and `path`: `path` is
+  never sent, but each value is its own cache entry, so a copy that varied it could repeat the query at will.
 - **Filters (dashboard parameters).** A dashboard may declare filters (`parameters`) that viewers set in the header; the
   values live in the page URL (`p.<id>`), never in the document. Every scope binds them before anything is resolved
   (`bindDoc` in core): `$param.<id>` in a step becomes a literal token, in a URL a percent-encoded whole path segment or
@@ -374,9 +380,9 @@ the wire but a runtime dependency on both sides for a file that is cached anyway
 
 The landing page can present ready-made use cases. Each one is a folder `showcase/<id>/` with `meta.json` (strict:
 `id` equal to the folder name, lowercase words joined by single hyphens and at least 4 letters or digits, `order`,
-`title` up to 60 characters, `tab` up to 24, `description` up to 200, optional `attachment`), `prompt.md` (1-4000
-characters) and `dashboard.json` (a `DashboardDoc` within the 1 MB document limit, `LIMITS.documentBytes`, measured
-as `DashboardService` measures every write, since every visitor's copy is such a write). Optional files:
+`title` up to 60 characters, `tab` up to 24, `description` up to 200, optional `attachment` and `featured`),
+`prompt.md` (1-4000 characters) and `dashboard.json` (a `DashboardDoc` within the 1 MB document limit,
+`LIMITS.documentBytes`, measured as `DashboardService` measures every write, since every visitor's copy is such a write). Optional files:
 
 - `video.mp4` (16:9 H.264, at most 5 MB) and `poster.jpg` (at most 150 KB), shown before the first frame of either
   video.
@@ -385,6 +391,9 @@ as `DashboardService` measures every write, since every visitor's copy is such a
 - One CSV attachment, the file the prompt came with, declared in `meta.json` as `"attachment": "<name>.csv"`
   (lowercase, at most 60 characters, in the same folder). It must be at most 200 KB and a rectangular CSV with a
   header and at least one row; the landing page shows it as a table and offers it as a download.
+
+`featured` defaults to `true`. With `false` the use case is left out of `GET /api/use-cases`, so the landing page shows
+no tab for it, while its dashboard, `/showcase/<id>`, media and trusted sources stay as they are.
 
 `budget.test.ts` fails when committed media or attachments exceed those sizes. A broken folder (a missing or invalid
 `meta.json`, `prompt.md` or `dashboard.json`, or a document over the limit) is skipped with a warning; when two folders
@@ -399,16 +408,17 @@ sources or reference stored secrets: such a folder is skipped with a warning. Us
 At startup the server reads `SHOWCASE_DIR` and syncs one public dashboard per use case, with the stable id
 `sc<slug without hyphens>`, owned by `system`. These dashboards are read-only for everyone, admins included, never
 pruned and not counted in the anonymous storage limit. A changed `dashboard.json` becomes a new version; an id owned
-by anyone else is never touched. Anyone can make an editable copy. With `URL_SOURCES=signed-in`, the exact http and
-feed URLs used by showcase dashboards are trusted (exact match, no prefixes), so anonymous copies keep working. A use
-case whose sync fails (a corrupt stored dashboard, an id owned by someone else) is left out of the list and the
-routes; a failed sync never keeps the server from starting. An admin can delete a showcase dashboard, but it comes
-back at the next restart.
+by anyone else is never touched. Anyone can make an editable copy. With `URL_SOURCES=signed-in`, the showcase's own
+requests are trusted, so anonymous copies keep working: a GET of an http or feed URL it uses, matched exactly (no
+prefixes), and a POST only with the same URL and exactly the same body. A copy that changes the body, the URL, the
+method or the `path` needs a signed-in owner. A use case whose sync fails (a corrupt stored dashboard, an id owned by
+someone else) is left out of the list and the routes; a failed sync never keeps the server from starting. An admin can delete a
+showcase dashboard, but it comes back at the next restart.
 
 Routes:
 
-- `GET /api/use-cases` lists them (`public, max-age=300`), with media and attachment URLs that carry the content hash
-  as `?v=`, so a deploy that changes a file changes its URL.
+- `GET /api/use-cases` lists the featured ones (`public, max-age=300`), with media and attachment URLs that carry the
+  content hash as `?v=`, so a deploy that changes a file changes its URL.
 - `GET /showcase/<id>` redirects (302) to the dashboard.
 - `/showcase/<id>/video.mp4`, `/video-square.mp4`, `/poster.jpg` and `/<name>.csv` (the declared attachment only,
   matched by name and never used as a path, sent as `text/csv` with `Content-Disposition: attachment`) answer GET and

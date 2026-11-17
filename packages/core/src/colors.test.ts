@@ -17,6 +17,7 @@ import {
   resolveColor,
   STATUS_TEXT,
   seriesColors,
+  sparklineColor,
   THEMES,
 } from './index.ts';
 
@@ -345,5 +346,25 @@ describe('dashboard-wide colours (setMeta)', () => {
 
   it('rejects colours that are neither tokens nor hex', () => {
     expect(() => applyOps(emptyDashboard(), [{ op: 'setMeta', colors: { a: 'red' } }])).toThrow();
+  });
+});
+
+describe('sparkline colour', () => {
+  const light = THEMES.light;
+  const colors = { a: 'accent-2', b: 'accent-3' } as const;
+
+  it('takes the colour of the focused entity', () => {
+    expect(sparklineColor('a', colors, light)).toBe(light.categorical[1]);
+    expect(sparklineColor('zz', { zz: 'accent-3' }, THEMES.dark)).toBe(THEMES.dark.categorical[2]);
+  });
+
+  it('is neutral when nothing is focused on a dashboard with entity colours', () => {
+    expect(sparklineColor(null, colors, light)).toBe(light.muted);
+    expect(sparklineColor('unknown', colors, light)).toBe(light.muted);
+  });
+
+  it('keeps the first palette colour on a dashboard without entity colours', () => {
+    expect(sparklineColor(null, undefined, light)).toBe(light.categorical[0]);
+    expect(sparklineColor(null, {}, light)).toBe(light.categorical[0]);
   });
 });

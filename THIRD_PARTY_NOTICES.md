@@ -8,7 +8,7 @@ own licence file, shipped in `node_modules`, is authoritative.
 
 | Component                                                                        | Version | Licence      | Used for                                      |
 | -------------------------------------------------------------------------------- | ------- | ------------ | --------------------------------------------- |
-| [Apache ECharts](https://echarts.apache.org) (`echarts`)                         | 6.1.0   | Apache-2.0   | Charts and maps in the browser and snapshots  |
+| [Apache ECharts](https://echarts.apache.org) (`echarts`, patched, see below)     | 6.1.0   | Apache-2.0   | Charts and maps in the browser and snapshots  |
 | [ZRender](https://github.com/ecomfe/zrender) (`zrender`)                         | 6.1.0   | BSD-3-Clause | ECharts' rendering engine                     |
 | [MCP TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)     | 2.4.0   | Apache-2.0   | MCP server (`server`, `core`; `hono` 2.0.2)   |
 | [resvg-js](https://github.com/thx/resvg-js) (`@resvg/resvg-js` and its binaries) | 2.6.2   | MPL-2.0      | Rasterising snapshot SVGs to PNG (unmodified) |
@@ -26,6 +26,9 @@ Copyright 2017-2026 The Apache Software Foundation
 This product includes software developed at
 The Apache Software Foundation (https://www.apache.org/).
 ```
+
+Patchbay applies a one-line fix to Apache ECharts 6.1.0 (`patches/echarts@6.1.0.patch`): a time axis no longer keeps a
+look-ahead tick past the end of a month as a label.
 
 resvg-js is used as published, without modification; its source is available at
 the link above under the Mozilla Public License 2.0.

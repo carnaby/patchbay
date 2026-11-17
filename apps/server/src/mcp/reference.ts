@@ -139,7 +139,7 @@ a POST without body sends an empty one.
 - body is any JSON value, usually an object such as { "query": "..." }. Send the object itself, never a string holding JSON
   (a string is sent as a JSON string, and one that looks like JSON is refused). It goes out as application/json, at most ${LIMITS.httpBody.toLocaleString('en-US')} characters as JSON and ${LIMITS.httpBodyDepth} levels deep.
 - Only for read queries. The request is sent again on every refresh, preview, data check and page load (an identical
-  body is answered from a ${HTTP_MIN_REFRESH_SEC} s cache), so never point it at an endpoint that creates, changes or deletes anything.
+  body is answered from a ${HTTP_MIN_REFRESH_SEC} s cache, and datasets that load together with the same address and body share one request whatever their path: one GraphQL query with aliases, such as a: … b: …, can feed several datasets with paths data.a.nodes, data.b.nodes), so never point it at an endpoint that creates, changes or deletes anything.
 - The body is part of the document: editors, agents, exports and the viewers of a public dashboard see it. Never put a key or token in it.
   Bind a secret instead (see Secrets); APIs like GitHub's read the token from a header.
 - A redirect answer to a POST is an error, never followed: the body is not resent anywhere. Use the final address.
@@ -167,6 +167,11 @@ operations below instead of resending the whole pipeline.
   inside it.
 - window { op, field, as?, size?, partitionBy? }   ops: ${WINDOW_OPS.join(', ')} (sort first)
 - fillNull { fields, value }
+A source that returns no rows (an empty list, the usual answer of an open-incidents endpoint) has no columns to check
+against: steps that read a column it lacks run anyway, the column is empty, and preview_data and the data checks list
+them under notChecked. With rows, an unknown column is an error, also after a filter that leaves none.
+When joining a dataset that may be empty, list fields: an empty dataset has no columns to bring, so without fields
+the later steps that read them fail.
 Limits per run: ${PIPELINE_LIMITS.maxMillis / 1000} s, and every table (the source and each step's result) at most
 ${(PIPELINE_LIMITS.maxSize / 1_000_000).toLocaleString('en')} million characters as JSON: on large data filter, aggregate, limit or
 select early. A dataset's result (what its widgets receive, at most 10,000 rows) may be at most ${MAX_RESULT_BYTES / 1024 / 1024} MB
@@ -178,13 +183,14 @@ as JSON; a larger one comes back as an error with its columns and no rows: add l
   refreshSec or accumulate of their own: they refresh when their source does.
 - join { with, on: ["key"] | [{ left, right }], how: "left"|"inner", fields? }: add columns from another dataset.
   "left" (default) keeps every row. Keys must have the same type on both sides (a time matches a number, both are
-  epoch ms; turn text dates into times with derive date(column)). A key that repeats on the other side gives one row
+  epoch ms; turn text dates and epoch numbers into times with derive date(column); epoch seconds: date(t * 1000)). A key that repeats on the other side gives one row
   per match; a null key matches nothing. fields: the columns to bring (default all but the keys); a name this
   dataset already has gets "_<dataset id>".
 - union { with: [ids], origin?: "column", labels?: { id: "label" } }: append rows of other datasets, columns matched
   by name. With origin, chart the result with series: "<origin column>" to compare sources in one chart. Labels
   default to the dataset names (for a derived dataset's own rows, its source dataset's name); set them to keep series
-  values and colours stable when a dataset is renamed. A column with different types becomes text.
+  values and colours stable when a dataset is renamed. A column with different types becomes text; a dataset without
+  rows does not count.
 - Whole-table functions in expressions: ${Object.keys(TABLE_FUNCTIONS).join(', ')} (column, by?). They use the rows at that point of the pipeline.
   Share of total: derive { as: "share", expr: "round(sales / col_sum(sales) * 100, 1)" }.
 - Chains are at most ${LIMITS.datasetDepth} deep; a dataset reads at most ${LIMITS.datasetInputs} others; joins and unions produce at most ${maxRows} rows.
@@ -236,7 +242,7 @@ and widgets per value. Viewers set filters in the dashboard header; values are n
 
 ## Expressions
 Operators: + - * / % ^, == != < <= > >=, && || ! (or: and, or, not), cond ? a : b. Strings in "double" or 'single'
-quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Trigonometry works in radians (convert
+quotes; field names with spaces in \`backticks\`. Times are epoch milliseconds. Epoch seconds become a time with date(t * 1000). Arithmetic on a time (t + 3600000, floor(t / 3600000)) gives a number, not a time: round times with timeBucket. Trigonometry works in radians (convert
 with radians()/degrees()); distance(lat, lon, 48.15, 17.11) gives km to a fixed point. Text built with concat or +
 is at most ${MAX_STRING.toLocaleString('en')} characters (use substr to shorten). Functions:
 ${fns}
@@ -248,6 +254,7 @@ ${tableFns}
 - chart { kind, x, y: [..], series?, horizontal, stacked, smooth, showLabels?, showLegend?, yMin?, yMax?, xMin?, xMax?, logScale, format?, colors?, referenceLines?, crossFilter? }
   kinds: ${CHART_KINDS.join(', ')}. "series" splits long-format data (one row per time+category) into lines/bars.
   xMin/xMax fix the x axis of a scatter with a numeric x.
+  A stacked chart on a time axis lines up its series by time and leaves a gap where a series has no row for a time: timeBucket the rows to a common time before stacking, so every series has a point at each one.
   showLabels puts the value on each mark. Unset, the browser shows none and snapshots label single-series bar charts
   of up to 12 bars; false turns them off in snapshots too.
   pie/donut: x = label, y[0] = value (aggregate first; at most 6 slices are kept). heatmap: x, series = y-axis category, y[0] = value.
@@ -292,7 +299,7 @@ ${tableFns}
   cut to two lines and the rest counted in "+N more problems" (a section left without problem tiles folds into it).
   At most ${STATUS_LIMITS.rows} rows, ${STATUS_LIMITS.sections} sections and ${STATUS_LIMITS.tiles} tiles are read.
   Example: { "id": "infra", "type": "status", "datasetId": "checks", "config": { "entity": "service", "status": "status", "group": "machine", "label": "name", "kind": "kind", "detail": "detail", "since": "since", "link": "url" } }
-format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }
+format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }   percent takes 0-100 (86.1 shows "86.1%"); a ratio (0-1), such as an average of 0/1 values, needs derive x * 100 first.
 
 ## Colours
 Colours are named tokens that adapt to light and dark mode: ${COLOR_TOKENS.slice(0, 8).join(', ')} (the chart palette, in
@@ -304,6 +311,7 @@ always adjusted to stay readable; custom hex below 3:1 contrast gets a warning.
   order.) Pie slices keep their colour by label even when their sizes change.
 - Dashboard-wide: setMeta { colors: { "<entity>": "<colour>" } } applies to every chart and map (a widget's own colors win);
   null removes it. Use it when the same entities (cities, products) appear in several charts.
+  A KPI's sparkline takes the colour of the entity a select filter narrows its data to (when that value has a dashboard colour); with nothing in focus on a dashboard with entity colours it is neutral grey, since a total is no entity.
 - chart referenceLines (max 3): [{ value | stat: ${REFERENCE_STATS.join('|')}, field?, label?, color? }] on ${REFERENCE_LINE_KINDS.join(', ')}.
   Give exactly one of value and stat; stat is computed over the plotted rows of field (default the first y, and
   field must be one of y). Drawn dashed with "label · value"; the axis widens to show it. Default colour neutral.

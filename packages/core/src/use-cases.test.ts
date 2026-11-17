@@ -10,7 +10,7 @@ describe('use cases', () => {
       tab: 'Morning',
       description: 'Clock, news and weather.',
     };
-    expect(UseCaseMetaSchema.parse(meta)).toEqual(meta);
+    expect(UseCaseMetaSchema.parse(meta)).toEqual({ ...meta, featured: true });
     expect(() => UseCaseMetaSchema.parse({ ...meta, extra: 1 })).toThrow();
   });
 

@@ -394,6 +394,20 @@ describe('http sources', () => {
     expect(fetchMock.mock.calls[1]![1]).not.toHaveProperty('privateHosts');
   });
 
+  it('hands the policy the method, path and body of a POST, and no body for a GET', async () => {
+    const policy = vi.fn(() => null);
+    fetchMock.mockResolvedValue([{ ok: 1 }]);
+    const data = new DataService(connectors, store, new InlineRunner(), { urlPolicy: policy });
+    await data.resolve(target, post('https://api.example/q', { q: 'a' }));
+    await data.resolve(target, http('https://api.example/g'));
+    await data.resolve(target, dataset({ kind: 'http', url: 'https://api.example/p', path: 'items' }));
+    expect(policy.mock.calls.map((c) => c.slice(1))).toEqual([
+      ['https://api.example/q', 'POST', { q: 'a' }, undefined],
+      ['https://api.example/g', 'GET', undefined, undefined],
+      ['https://api.example/p', 'GET', undefined, 'items'],
+    ]);
+  });
+
   it('does not share a concurrent fetch between a dashboard with the private hosts and one without', async () => {
     const lan = parsePrivateHosts('192.168.1.0/24')!;
     const policy = (t: { ownerId: string | null }) => (t.ownerId === 'admin' ? lan : null);
@@ -460,21 +474,30 @@ describe('http sources', () => {
     expect(policy).toHaveBeenCalledTimes(2);
   });
 
-  it('limits requests per host, without remembering its own refusal as a failure', async () => {
-    let finish!: (v: unknown) => void;
-    fetchMock.mockImplementation(() => new Promise((r) => (finish = r)));
-    const outbound = new OutboundLimiter({ perHostConcurrency: 1 });
+  it('queues requests to a busy host, refuses beyond the queue, and does not remember that refusal', async () => {
+    const finish: ((v: unknown) => void)[] = [];
+    fetchMock.mockImplementation((url) =>
+      url.startsWith('https://other.example/')
+        ? Promise.resolve([{ x: 1 }])
+        : new Promise((r) => finish.push(r)),
+    );
+    const outbound = new OutboundLimiter({ perHostConcurrency: 1, maxQueuedPerClient: 1 });
     const data = new DataService(connectors, store, new InlineRunner(), { outbound });
-    const slow = data.resolve(target, http('https://host.example/a'));
-    const refused = await data.resolve(target, http('https://host.example/b'));
+    const first = data.resolve(target, http('https://host.example/a'));
+    const second = data.resolve(target, http('https://host.example/b'));
+    const refused = await data.resolve(target, http('https://host.example/c'));
     expect(refused.error).toMatch(/already loading a lot from host\.example/);
-    // Another host is not affected.
-    fetchMock.mockResolvedValueOnce([{ x: 1 }]);
+    expect(refused.retryAfterSec).toBe(10);
+    // Another host is not affected: it neither waits behind host.example nor counts against its queue.
     expect((await data.resolve(target, http('https://other.example/a'))).table.rows).toEqual([{ x: 1 }]);
-    finish([{ y: 1 }]);
-    await slow;
+    await vi.waitFor(() => expect(finish).toHaveLength(1));
+    finish[0]!([{ y: 1 }]);
+    await vi.waitFor(() => expect(finish).toHaveLength(2));
+    finish[1]!([{ y: 2 }]);
+    expect((await first).table.rows).toEqual([{ y: 1 }]);
+    expect((await second).table.rows).toEqual([{ y: 2 }]);
     fetchMock.mockResolvedValue([{ z: 1 }]);
-    expect((await data.resolve(target, http('https://host.example/b'))).table.rows).toEqual([{ z: 1 }]);
+    expect((await data.resolve(target, http('https://host.example/c'))).table.rows).toEqual([{ z: 1 }]);
   });
 
   it('keeps the cache key of a GET exactly as it was, and gives every POST body its own', () => {
@@ -549,6 +572,60 @@ describe('http sources', () => {
       '{"q":"same"}',
       '{"q":"other"}',
     ]);
+  });
+
+  it('sends one request for datasets that read different paths of the same address and body', async () => {
+    const answer = { data: { a: { nodes: [{ n: 1 }] }, b: { nodes: [{ n: 2 }, { n: 3 }] } } };
+    fetchMock.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      return answer;
+    });
+    const data = new DataService(connectors, store);
+    const alias = (path: string) =>
+      dataset({
+        kind: 'http',
+        url: 'https://post.example/aliases',
+        method: 'POST',
+        body: { query: '{ a: x { nodes { n } } b: x { nodes { n } } }' },
+        path,
+      });
+    const [a, b, typo] = await Promise.all(
+      ['data.a.nodes', 'data.b.nodes', 'data.c.nodes'].map((p) => data.resolve(target, alias(p))),
+    );
+    expect(a!.table.rows).toEqual([{ n: 1 }]);
+    expect(b!.table.rows).toEqual([{ n: 2 }, { n: 3 }]);
+    // A path that is not in the response fails alone.
+    expect(typo!.error).toBe('Path "data.c.nodes" not found in the response (stopped at "c")');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Each path is then answered from its own cache entry.
+    expect((await data.resolve(target, alias('data.b.nodes'))).table.rows).toHaveLength(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends one GET for two paths of one address, but never shares across bodies or private hosts', async () => {
+    fetchMock.mockImplementation(async (_url, options) => {
+      await new Promise((r) => setTimeout(r, 20));
+      const o = (options ?? {}) as { body?: unknown; privateHosts?: unknown };
+      return {
+        components: [{ c: o.privateHosts ? 'lan' : 'public' }],
+        incidents: [{ body: o.body ?? null }],
+      };
+    });
+    const lan = parsePrivateHosts('192.168.1.0/24')!;
+    const data = new DataService(connectors, store, new InlineRunner(), {
+      urlPolicy: (t) => (t.ownerId === 'admin' ? lan : null),
+    });
+    const at = (path: string, extra: Record<string, unknown> = {}) =>
+      dataset({ kind: 'http', url: 'https://status.example/summary.json', path, ...extra });
+    await Promise.all([
+      data.resolve(target, at('components')),
+      data.resolve(target, at('incidents')),
+      data.resolve({ id: target.id, ownerId: 'admin' }, at('components')),
+      data.resolve(target, at('incidents', { method: 'POST', body: { q: 1 } })),
+      data.resolve(target, at('components', { method: 'POST', body: { q: 1 } })),
+    ]);
+    // GET public, GET with private hosts, POST {q:1}: three requests, not five.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it('asks the URL policy with the method of an http source', async () => {
