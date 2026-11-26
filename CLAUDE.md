@@ -28,7 +28,8 @@ Monorepo (pnpm): `packages/core` (pure domain logic, shared), `apps/server` (Hon
 - Editing a pipeline means step ops (`diffSteps` in core), not replacing `transforms`, so rebases merge per step.
 - Public documentation lives in `guide/` (deployment, MCP reference, architecture) and `guide/ideas/` (specified
   ideas open to contributors). `docs/` is the maintainer's private, gitignored folder: design proposals, plans,
-  handoffs. Never commit it, never link to it from public files, and keep it out of the Docker build context.
+  handoffs. Never commit it, never link to it from public files (README, `guide/`; this CLAUDE.md may name the
+  handoff and knowledge files for agents), and keep it out of the Docker build context.
 - README images live in `.github/assets/`. `.github/assets/social-preview.png` (1280×640) is uploaded by hand in the
   GitHub repository settings; `apps/web/public/og.png` (1200×630) is the link preview image.
 - Nothing owner-specific in the code: the served `index.html` gets its absolute URLs from `PUBLIC_URL` and, only when
@@ -52,11 +53,25 @@ Monorepo (pnpm): `packages/core` (pure domain logic, shared), `apps/server` (Hon
 - Presentation mode (apps/web/src/editor/presentation.tsx) must keep working without user input after the first
   click: it is used unattended on wall screens and TVs.
 
+## Handoff state (read at session start)
+- Handoff state (gitignored, kept in Tabula): `docs/handoff/patchbay-agent.md`
+- Agent knowledge (gitignored, kept in Tabula): `docs/agents/patchbay-agent.md`
+
+The last session's handoff is imported below. Read it before answering anything, continue from its "Pokračuj tu"
+section and check its "Overený stav" against reality before relying on it.
+
+@docs/handoff/patchbay-agent.md
+
+If the import above is empty (Claude Code on the web, a fresh clone), the file is not on disk: before anything else
+call `recall` for `patchbay` with `include_state: true`, which returns it.
+
 ## Memory (Tabula)
-
-Tabula keeps this project's files that are not in git (handoff state, private specs and plans) and the global rules that apply to every project.
-
-- This project's Tabula project is `patchbay`; `.tabula.json` says which untracked files are synced.
-- At session start call `recall` for `patchbay` with `include_state: false` and follow the global rules. The project state is on disk (restored by the SessionStart hook).
+Tabula keeps this project's files that are not in git (handoff state, private specs and plans) and the global rules
+that apply to every project. This project's Tabula project is `patchbay`; `.tabula.json` says which untracked files
+are synced.
+- At session start call `recall` for `patchbay` and follow the global rules. With the files on disk (the
+  SessionStart hook ran `tabula pull`) pass `include_state: false`.
+- Without the `tabula` command (Claude Code on the web, claude.ai): read synced files with `read_file` and save every
+  new or changed one (spec, plan, `progress.md`, handoff state) with `write_file`.
 - At handoff run `tabula push` after writing the state file.
 - Never write project memories. Add a global rule only when the user explicitly asks.
