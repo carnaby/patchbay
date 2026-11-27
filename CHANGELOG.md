@@ -6,6 +6,11 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Fixed
+
+- Suggestions for an aggregated dataset no longer propose time charts or a trend KPI over a time column with one
+  value, and chart a dimension that is already one row per value without aggregating it again.
+
 ## [0.3.5] - 2026-11-17
 
 ### Added
