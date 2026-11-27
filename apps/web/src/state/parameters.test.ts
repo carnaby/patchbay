@@ -12,6 +12,7 @@ import {
   choicesOfResult,
   dataPickProblem,
   dataValueReady,
+  filterSummaryLine,
   guardAction,
   heldDataValue,
   normalizeRaw,
@@ -141,6 +142,13 @@ describe('describing a view', () => {
     expect(summaryOf(parameters, { region: 'eu', q: 'shoes' }, true)).toBe('Region: EU · Search: "shoes"');
     expect(summaryOf(parameters, {}, true)).toBe('');
     expect(summaryOf(undefined, {})).toBe('');
+  });
+
+  it("gives presentation's filter line, or null when it shows none (an empty search filter says nothing)", () => {
+    expect(filterSummaryLine(parameters, { region: 'eu' })).toBe('Region: EU · Period: Last 7 days');
+    expect(filterSummaryLine([q], {})).toBeNull();
+    expect(filterSummaryLine([q], { q: 'shoes' })).toBe('Search: "shoes"');
+    expect(filterSummaryLine(undefined, {})).toBeNull();
   });
 });
 

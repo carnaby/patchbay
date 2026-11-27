@@ -8,6 +8,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Button, cx, Popover, toast } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
 import { rawQuery, summaryOf, useParameters } from '../state/parameters.ts';
+import { hasStandardZoom, type PresentationFit, presentationFit } from './presentation-scale.ts';
 import {
   CONTROLS_DELAY_MS,
   closesUnattended,
@@ -22,6 +23,12 @@ const IDLE_MS = 2500;
 
 /** Lets widgets far below the page know a presentation is running, without threading a prop through every card. */
 export const PresentingContext = createContext(false);
+
+/**
+ * The CSS zoom around the widgets that read it, so charts can draw their canvas at the scaled pixel ratio. 1 outside
+ * the scaled presentation page: the maximised widget, dialogs and the editor are not zoomed.
+ */
+export const PresentationScaleContext = createContext(1);
 
 export function usePresentation(initial: boolean) {
   const [presenting, setPresenting] = useState(initial);
@@ -88,6 +95,36 @@ export function usePresentation(initial: boolean) {
   return useMemo(
     () => ({ presenting, start, stop, requestFullscreen }),
     [presenting, start, stop, requestFullscreen],
+  );
+}
+
+/**
+ * How a presented dashboard fills this screen, or null to present unscaled: when not presenting, where the browser
+ * has only the legacy `zoom` (its sizes and pointer coordinates differ), and on a phone, whose grid stacks.
+ */
+export function usePresentationFit(active: boolean, contentHeight: number): PresentationFit | null {
+  const [screen, setScreen] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  useEffect(() => {
+    if (!active) return;
+    const update = () =>
+      setScreen((prev) =>
+        prev.width === window.innerWidth && prev.height === window.innerHeight
+          ? prev
+          : { width: window.innerWidth, height: window.innerHeight },
+      );
+    update();
+    window.addEventListener('resize', update);
+    // Full screen changes the viewport; listened to as well, in case a browser reports it without a resize.
+    document.addEventListener('fullscreenchange', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      document.removeEventListener('fullscreenchange', update);
+    };
+  }, [active]);
+  const { width, height } = screen;
+  return useMemo(
+    () => (active && hasStandardZoom() ? presentationFit({ width, height }, contentHeight) : null),
+    [width, height, contentHeight, active],
   );
 }
 

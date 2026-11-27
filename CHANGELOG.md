@@ -6,6 +6,12 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Added
+
+- Presentation mode scales the whole dashboard to the screen: laid out as on a 1280 px wide monitor, about 150 % on a
+  1080p TV, smaller when the dashboard is taller than the screen, with charts drawn sharp at the new size. Browsers
+  without standardized CSS zoom, such as Chrome before 128, present as before.
+
 ### Changed
 
 - A status tile with many failing checks shows its first ones and "+M more" before the tile is folded into "+N more

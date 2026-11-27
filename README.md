@@ -83,7 +83,8 @@ and runs as a single process you can host anywhere.
 - 📰 **News and start-page widgets.** Clocks (digital or analog, any time zone), headlines from any RSS, Atom or JSON
   feed, and a search box.
 - 📺 **Made for wall screens.** In presentation mode the toolbar and cursor hide and the Screen Wake Lock keeps the
-  display on. Any widget can be maximised.
+  display on. The dashboard scales to fill the screen (about 150 % on a 1080p TV), and one taller than the screen
+  shrinks so nothing is cut off, without touching the browser's zoom. Any widget can be maximised.
 - 🔔 **Sound cues.** A widget can play a short built-in sound when its live data changes: a bell when a new order
   arrives, an alert when a price crosses a threshold. Synthesised in the browser (no audio files), edge-triggered,
   never on load, with a cooldown, a global throttle and a per-screen mute.

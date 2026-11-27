@@ -24,7 +24,7 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router';
 import { Logo, ThemeToggle, UserMenu } from '../components/AppShell.tsx';
 import {
@@ -45,6 +45,7 @@ import { relativeTime, setTheme, useDocumentTitle, useMe, useTheme } from '../li
 import { setMuted, useSoundSettings } from '../lib/sounds.ts';
 import { useEditor } from '../state/editor.ts';
 import { useParameterUrl } from '../state/parameter-url.ts';
+import { filterSummaryLine, useParameters } from '../state/parameters.ts';
 import { soundWidgets, useSoundCues } from '../state/sound-cues.ts';
 import { useAutosave, useLiveEvents } from '../state/sync.ts';
 import { ConnectAiPanel } from './ConnectAiPanel.tsx';
@@ -56,13 +57,16 @@ import { Grid } from './Grid.tsx';
 import { ParametersPanel } from './ParametersPanel.tsx';
 import {
   PresentationControls,
+  PresentationScaleContext,
   PresentingContext,
   TvInfo,
   TvInfoContent,
   useIdle,
   usePresentation,
+  usePresentationFit,
   useUnattendedClose,
 } from './presentation.tsx';
+import { presentationContentHeight } from './presentation-scale.ts';
 import { withPresent } from './presentation-state.ts';
 import { PublicSecretsDialogs, SecretsSaveBanner } from './public-secrets.tsx';
 import { SharePanel } from './SharePanel.tsx';
@@ -180,6 +184,11 @@ function Editor({ id }: { id: string }) {
     if (next.toString() !== current.toString()) setSearch(next, { replace: true });
   }, [presenting, setSearch]);
   const idle = useIdle(presenting);
+  // An agent's live edit changes the layout or the filters: the page re-fits without a reload.
+  const raw = useParameters((s) => s.raw);
+  const summary = filterSummaryLine(doc.parameters, raw) !== null;
+  const contentHeight = useMemo(() => presentationContentHeight(doc.layout, summary), [doc.layout, summary]);
+  const fit = usePresentationFit(presenting && doc.widgets.length > 0, contentHeight);
   useEffect(() => {
     if (presenting) setEditing(false);
   }, [presenting, setEditing]);
@@ -403,68 +412,74 @@ function Editor({ id }: { id: string }) {
         {conflict && !presenting ? <ConflictBanner /> : null}
         {presenting ? null : <SecretsSaveBanner />}
 
-        <main className={cx('px-3 sm:px-4', presenting ? 'py-3' : 'py-4')}>
-          {presenting ? <ParameterSummary /> : <FilterBar dashboardId={id} live={live} />}
-          {doc.description && !editing && !presenting ? (
-            <p className="mb-4 max-w-3xl text-sm text-ink-2">{doc.description}</p>
-          ) : null}
-          {editing ? (
-            <DetailsInput
-              field="description"
-              inline
-              label="Dashboard description"
-              placeholder="Add a short description (optional)"
-              className="mb-3 max-w-3xl"
-            />
-          ) : null}
-          {doc.widgets.length === 0 ? (
-            <div className="mx-auto max-w-2xl py-16">
-              <EmptyState
-                icon={<Database className="size-8" />}
-                title="An empty patchbay"
-                action={
-                  access.canEdit ? (
-                    <div className="flex flex-wrap justify-center gap-2">
-                      <Button
-                        variant="primary"
-                        icon={<Database className="size-4" />}
-                        onClick={() => {
-                          setEditing(true);
-                          setPanel('data');
-                        }}
-                      >
-                        Add data
-                      </Button>
-                      <Button
-                        icon={<Plus className="size-4" />}
-                        onClick={() => {
-                          setEditing(true);
-                          addWidget();
-                        }}
-                      >
-                        Add widget
-                      </Button>
-                      <Button icon={<Bot className="size-4" />} onClick={() => setPanel('ai')}>
-                        Let your AI build it
-                      </Button>
-                    </div>
-                  ) : null
-                }
-              >
-                {access.canEdit ? (
-                  <>
-                    Plug in a public API or your own CSV, then pick from suggested charts. Or connect an AI
-                    agent over MCP and ask it to build this dashboard for you; you will see it appear here
-                    live.
-                  </>
-                ) : (
-                  'Nothing here yet.'
-                )}
-              </EmptyState>
-            </div>
-          ) : (
-            <Grid dashboardId={id} live={live} onEditWidget={(wid) => setWidgetId(wid)} />
-          )}
+        {/* No overflow-hidden: were the height estimate ever wrong, a scrollbar beats a cut-off widget. */}
+        <main
+          className={cx('px-3 sm:px-4', presenting ? 'py-3' : 'py-4')}
+          style={fit ? { width: fit.layoutWidth, zoom: fit.scale, marginInline: 'auto' } : undefined}
+        >
+          <PresentationScaleContext.Provider value={fit?.scale ?? 1}>
+            {presenting ? <ParameterSummary /> : <FilterBar dashboardId={id} live={live} />}
+            {doc.description && !editing && !presenting ? (
+              <p className="mb-4 max-w-3xl text-sm text-ink-2">{doc.description}</p>
+            ) : null}
+            {editing ? (
+              <DetailsInput
+                field="description"
+                inline
+                label="Dashboard description"
+                placeholder="Add a short description (optional)"
+                className="mb-3 max-w-3xl"
+              />
+            ) : null}
+            {doc.widgets.length === 0 ? (
+              <div className="mx-auto max-w-2xl py-16">
+                <EmptyState
+                  icon={<Database className="size-8" />}
+                  title="An empty patchbay"
+                  action={
+                    access.canEdit ? (
+                      <div className="flex flex-wrap justify-center gap-2">
+                        <Button
+                          variant="primary"
+                          icon={<Database className="size-4" />}
+                          onClick={() => {
+                            setEditing(true);
+                            setPanel('data');
+                          }}
+                        >
+                          Add data
+                        </Button>
+                        <Button
+                          icon={<Plus className="size-4" />}
+                          onClick={() => {
+                            setEditing(true);
+                            addWidget();
+                          }}
+                        >
+                          Add widget
+                        </Button>
+                        <Button icon={<Bot className="size-4" />} onClick={() => setPanel('ai')}>
+                          Let your AI build it
+                        </Button>
+                      </div>
+                    ) : null
+                  }
+                >
+                  {access.canEdit ? (
+                    <>
+                      Plug in a public API or your own CSV, then pick from suggested charts. Or connect an AI
+                      agent over MCP and ask it to build this dashboard for you; you will see it appear here
+                      live.
+                    </>
+                  ) : (
+                    'Nothing here yet.'
+                  )}
+                </EmptyState>
+              </div>
+            ) : (
+              <Grid dashboardId={id} live={live} onEditWidget={(wid) => setWidgetId(wid)} />
+            )}
+          </PresentationScaleContext.Provider>
         </main>
 
         <DatasetsPanel open={panel === 'data'} onClose={() => setPanel(null)} dashboardId={id} />
