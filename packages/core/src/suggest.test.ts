@@ -480,3 +480,67 @@ describe('status suggestions', () => {
     expect(statusOf(wide)!.widget.config).toEqual({ entity: 'service', status: 'status' });
   });
 });
+
+describe('suggestions after an aggregate', () => {
+  // The ai-sdk-downloads run: aggregated to one row per package, its first and last day the same for every package.
+  const daily = ['ai', '@ai-sdk/openai', '@ai-sdk/anthropic', '@ai-sdk/react'].flatMap((name, i) =>
+    ['2026-11-20', '2026-11-21', '2026-11-22'].map((day, j) => ({
+      package: name,
+      day,
+      downloads: 1000 * (i + 1) + 37 * j,
+    })),
+  );
+  const perPackage: TransformInput[] = [
+    {
+      type: 'aggregate',
+      groupBy: ['package'],
+      metrics: [
+        { op: 'sum', field: 'downloads', as: 'total' },
+        { op: 'min', field: 'day', as: 'first_day' },
+        { op: 'max', field: 'day', as: 'last_day' },
+        { op: 'count', as: 'days' },
+      ],
+    },
+  ];
+  const donutOf = (list: Suggestion[]) =>
+    list.find((s) => s.widget.type === 'chart' && (s.widget.config as { kind: string }).kind === 'donut');
+
+  it('offers no time chart and no trend KPI over a time column with one value', () => {
+    // Dated after the data: the KPI check is only meaningful when "now" is later than the single day.
+    const list = suggest(daily, perPackage, Date.UTC(2026, 10, 27, 12));
+    expect(list.filter((s) => s.title.includes('over time'))).toEqual([]);
+    expect(list.some((s) => s.widget.type === 'kpi' && 'compare' in (s.widget.config as object))).toBe(false);
+  });
+
+  it('charts a key dimension as it is instead of aggregating it again', () => {
+    const list = suggest(daily, perPackage);
+    const bar = barOf(list);
+    expect(bar.transforms).toEqual([{ type: 'sort', by: [{ field: 'total', dir: 'desc' }] }]);
+    expect(bar.score).toBe(92);
+    expect(donutOf(list)!.transforms).toEqual([]);
+  });
+
+  it('still aggregates a dimension that repeats, and offers no bar of ones for a key without a measure', () => {
+    const hosts = ['h1', 'h2', 'h3', 'h4', 'h5'].map((host, i) => ({ host, region: i < 3 ? 'eu' : 'us' }));
+    const titles = suggest(hosts).map((s) => s.title);
+    expect(titles).toContain('Count by region');
+    expect(titles).not.toContain('Count by host');
+    const region = suggest(hosts).find((s) => s.title === 'Count by region')!;
+    expect(region.transforms[0]).toMatchObject({ type: 'aggregate', groupBy: ['region'] });
+  });
+
+  it('takes the first time column with more than one value', () => {
+    const rows = Array.from({ length: 48 }, (_, i) => ({
+      imported: '2026-11-01',
+      time: NOW - (47 - i) * HOUR,
+      v: i,
+    }));
+    const line = suggest(rows).find((s) => s.title.endsWith('over time'))!;
+    expect((line.widget.config as { x: string }).x).toBe('time');
+  });
+
+  it('keeps the Headlines of a feed with a single item', () => {
+    const feed = [{ title: 'Release 1.0', link: 'https://example.com/1', published: '2026-11-20T10:00:00Z' }];
+    expect(suggest(feed).map((s) => s.title)).toContain('Headlines');
+  });
+});

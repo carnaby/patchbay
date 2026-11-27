@@ -18,6 +18,7 @@ import {
   statusSectionTitle,
   statusSummary,
   statusTileFoot,
+  statusTrimText,
   wrapText,
 } from '@patchbay/core';
 import { text, truncate } from './svg.ts';
@@ -81,7 +82,8 @@ function cell(placed: StatusPlaced, theme: ChartTheme, now: number): string {
     );
     return out.join('');
   }
-  for (const check of item.tile.problems) {
+  const hidden = item.tile.problems.length - item.shown;
+  for (const check of item.tile.problems.slice(0, item.shown)) {
     line += M.problemGap;
     out.push(
       text(left, round(line + 12), truncate(statusProblemHead(check, now), chars), {
@@ -95,6 +97,17 @@ function cell(placed: StatusPlaced, theme: ChartTheme, now: number): string {
       out.push(text(left, round(line + 12), detail, { size: M.textSize, color: theme.textPrimary }));
       line += M.lineHeight;
     }
+  }
+  if (hidden > 0) {
+    line += M.problemGap;
+    out.push(
+      text(left, round(line + 12), statusTrimText(hidden), {
+        size: M.textSize,
+        weight: 600,
+        color: theme.textSecondary,
+      }),
+    );
+    line += M.lineHeight;
   }
   const foot = statusTileFoot(item.tile);
   if (foot) {

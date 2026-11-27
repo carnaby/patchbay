@@ -397,14 +397,15 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
   const dims = by('dimension').filter((c) => c.distinct >= 2);
   const lat = by('latitude')[0];
   const lon = by('longitude')[0];
-  const time = times[0];
+  // A time column with one value (the first day of an aggregate, say) has no trend to show.
+  const time = times.find((c) => c.distinct > 1);
 
   if (profile.rows === 0) return [];
 
   // News, releases, posts: a feed, or anything shaped like one. Read as headlines, not as a spreadsheet.
   const titleCol = profile.columns.find((c) => c.name === 'title' && c.type === 'string');
   const linkCol = profile.columns.find((c) => c.name === 'link' && c.type === 'string');
-  if (titleCol && linkCol && time) {
+  if (titleCol && linkCol && times[0]) {
     const second = profile.columns.find((c) => c.name === 'source' && c.type === 'string');
     out.push({
       title: 'Headlines',
@@ -422,7 +423,7 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
           columns: [
             { field: titleCol.name, link: linkCol.name },
             ...(second ? [second.name] : []),
-            time.name,
+            times[0].name,
           ],
         },
       },
@@ -500,20 +501,35 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
 
   for (const dim of dims.slice(0, 2)) {
     const m = values[0];
+    // One row per value (typically after an aggregate): there is nothing left to sum, count or average.
+    const key = dim.distinct === profile.rows && dim.nulls === 0;
+    if (key && !m) continue;
     const summary = m ? summaryOf(m) : null;
     const y = m ? m.name : 'count';
     // Nulls form their own group in aggregate, so they count as a bar.
     const groups = dim.distinct + (dim.nulls ? 1 : 0);
     const limited = groups > MAX_BARS;
     const what =
-      !m || !summary ? 'Count' : summary.op === 'sum' ? label(m) : `${OP_TITLE[summary.op]} ${label(m)}`;
+      !m || !summary
+        ? 'Count'
+        : key || summary.op === 'sum'
+          ? label(m)
+          : `${OP_TITLE[summary.op]} ${label(m)}`;
     const title = `${what} by ${label(dim)}${limited ? `: top ${TOP_N} of ${groups}` : ''}`;
     const metric =
       m && summary ? { op: summary.op, field: m.name, as: m.name } : { op: 'count' as const, as: 'count' };
-    const compared = !m || !summary ? 'row counts' : `${OP_TITLE[summary.op].toLowerCase()} "${m.name}"`;
+    const compared =
+      !m || !summary
+        ? 'row counts'
+        : key
+          ? `"${m.name}"`
+          : `${OP_TITLE[summary.op].toLowerCase()} "${m.name}"`;
     const rationale = [
       `"${dim.name}" is a category with ${groups} values; a sorted bar chart compares ${compared} across them.`,
-      summary && summary.op !== 'sum' ? `${summary.why}.` : '',
+      key
+        ? 'The dataset already has one row per value of this dimension, so nothing is aggregated again.'
+        : '',
+      summary && summary.op !== 'sum' && !key ? `${summary.why}.` : '',
       limited
         ? `Only the top ${TOP_N} of ${groups} are shown and the other ${groups - TOP_N} are left out; remove the limit step to see all of them.`
         : '',
@@ -529,7 +545,7 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
         config: { kind: 'bar', x: dim.name, y: [y], horizontal: groups > 6 },
       },
       transforms: [
-        { type: 'aggregate', groupBy: [dim.name], metrics: [metric] },
+        ...(key ? [] : [{ type: 'aggregate' as const, groupBy: [dim.name], metrics: [metric] }]),
         { type: 'sort', by: [{ field: y, dir: 'desc' }] },
         ...(limited ? [{ type: 'limit' as const, n: TOP_N }] : []),
       ],
@@ -545,9 +561,9 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
           title: `Share of ${label(m)}`,
           config: { kind: 'donut', x: dim.name, y: [m.name] },
         },
-        transforms: [
-          { type: 'aggregate', groupBy: [dim.name], metrics: [{ op: 'sum', field: m.name, as: m.name }] },
-        ],
+        transforms: key
+          ? []
+          : [{ type: 'aggregate', groupBy: [dim.name], metrics: [{ op: 'sum', field: m.name, as: m.name }] }],
         score: 60,
       });
     }
@@ -563,7 +579,15 @@ export function suggestWidgets(profile: TableProfile, options: SuggestOptions = 
           config: { kind: 'bar', x: dim.name, y: [as], horizontal: true, format: { style: 'percent' } },
         },
         transforms: [
-          { type: 'aggregate', groupBy: [dim.name], metrics: [{ op: 'sum', field: m.name, as: m.name }] },
+          ...(key
+            ? []
+            : [
+                {
+                  type: 'aggregate' as const,
+                  groupBy: [dim.name],
+                  metrics: [{ op: 'sum' as const, field: m.name, as: m.name }],
+                },
+              ]),
           { type: 'derive', as, expr: `round(${fieldRef(m.name)} / col_sum(${fieldRef(m.name)}) * 100, 1)` },
           { type: 'sort', by: [{ field: as, dir: 'desc' }] },
         ],

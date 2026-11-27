@@ -4,10 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { GridLayout, type Layout, useContainerWidth, verticalCompactor } from 'react-grid-layout';
 import { IconButton, Kbd } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
+import { GRID_MARGIN, MOBILE_BREAKPOINT, ROW_HEIGHT } from './presentation-scale.ts';
 import { WidgetFrame } from './WidgetFrame.tsx';
-
-const ROW_HEIGHT = 80;
-const MOBILE_BREAKPOINT = 720;
 
 /** Stacked (mobile) heights: compact headline tiles, roomier charts and tables. */
 function mobileHeight(widget: Widget, h: number) {
@@ -102,7 +100,7 @@ export function Grid({
           gridConfig={{
             cols: GRID_COLUMNS,
             rowHeight: ROW_HEIGHT,
-            margin: [12, 12],
+            margin: [GRID_MARGIN, GRID_MARGIN],
             containerPadding: [0, 0],
           }}
           dragConfig={{ enabled: editing, handle: '.pb-drag', cancel: '.pb-no-drag' }}
