@@ -3,12 +3,17 @@
  * where the browser allows it, the cursor hides when idle, and the screen is
  * kept awake with the Screen Wake Lock API so a live dashboard never dims.
  */
-import { Copy, Info, Minimize2 } from 'lucide-react';
+import { AlertTriangle, Copy, Info, Minimize2 } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { Button, cx, Popover, toast } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
-import { rawQuery, summaryOf, useParameters } from '../state/parameters.ts';
-import { hasStandardZoom, type PresentationFit, presentationFit } from './presentation-scale.ts';
+import { filterSummaryLine, rawQuery, summaryOf, useParameters } from '../state/parameters.ts';
+import {
+  hasStandardZoom,
+  type PresentationFit,
+  presentationFit,
+  presentationWarning,
+} from './presentation-scale.ts';
 import {
   CONTROLS_DELAY_MS,
   closesUnattended,
@@ -272,6 +277,9 @@ export function TvInfo({ dashboardId, isPrivate }: { dashboardId: string; isPriv
 export function TvInfoContent({ dashboardId, isPrivate }: { dashboardId: string; isPrivate: boolean }) {
   const parameters = useEditor((s) => s.doc?.parameters);
   const raw = useParameters((s) => s.raw);
+  const layout = useEditor((s) => s.doc?.layout);
+  // Same helper as the presentation, so the warning counts the summary line exactly when it is shown.
+  const warning = presentationWarning(layout ?? [], filterSummaryLine(parameters, raw) !== null);
   // On by default: a wall screen usually exists for one view, and it then keeps showing it unattended.
   const [keep, setKeep] = useState(true);
   const view = rawQuery(raw);
@@ -287,6 +295,12 @@ export function TvInfoContent({ dashboardId, isPrivate }: { dashboardId: string;
           on.
         </li>
       </ol>
+      {warning ? (
+        <p className="mt-3 flex items-start gap-1.5 text-xs text-warn">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+          <span>{warning}</span>
+        </p>
+      ) : null}
       {view ? (
         <label className="mt-3 flex items-start gap-2 text-xs">
           <input
