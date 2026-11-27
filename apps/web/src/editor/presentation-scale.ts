@@ -10,7 +10,8 @@ export const PRESENTATION_PAD_Y = 12;
 /** The filter summary line: `text-xs` 16 px + `mb-2` 8 px. */
 export const SUMMARY_HEIGHT = 24;
 
-// Side padding of the presentation page (px-4); the grid stacks by its container width, not the screen's.
+// Side padding of the presentation <main>: its `sm:px-4` value. Widths below 640 px never reach a fit, so the
+// smaller padding there does not matter. The grid stacks by its container width, not the screen's.
 const PAD_X = 16;
 
 /** Rows have a fixed height, so the grid's height does not depend on its width. */

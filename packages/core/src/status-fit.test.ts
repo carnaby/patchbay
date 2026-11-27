@@ -392,7 +392,9 @@ describe('statusFit', () => {
     const start = performance.now();
     const layout = statusFit(model, { width: 340, height: 162 });
     expect(layout.fits).toBe(true);
-    expect(performance.now() - start).toBeLessThan(250);
+    // Measured ~60 ms; the old quadratic trimming took ~2300 ms. The bound is far from both so a slow CI runner
+    // cannot flake it.
+    expect(performance.now() - start).toBeLessThan(1000);
   });
 
   it('starts the trimming over after a whole tile is hidden, so the others keep as many checks as fit', () => {

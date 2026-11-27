@@ -5,6 +5,7 @@
  */
 import { AlertTriangle, Copy, Info, Minimize2 } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { PresentationScaleContext } from '../components/presentation-scale-context.ts';
 import { Button, cx, Popover, toast } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
 import { filterSummaryLine, rawQuery, summaryOf, useParameters } from '../state/parameters.ts';
@@ -29,11 +30,7 @@ const IDLE_MS = 2500;
 /** Lets widgets far below the page know a presentation is running, without threading a prop through every card. */
 export const PresentingContext = createContext(false);
 
-/**
- * The CSS zoom around the widgets that read it, so charts can draw their canvas at the scaled pixel ratio. 1 outside
- * the scaled presentation page: the maximised widget, dialogs and the editor are not zoomed.
- */
-export const PresentationScaleContext = createContext(1);
+export { PresentationScaleContext };
 
 export function usePresentation(initial: boolean) {
   const [presenting, setPresenting] = useState(initial);
@@ -278,10 +275,11 @@ export function TvInfoContent({ dashboardId, isPrivate }: { dashboardId: string;
   const parameters = useEditor((s) => s.doc?.parameters);
   const raw = useParameters((s) => s.raw);
   const layout = useEditor((s) => s.doc?.layout);
-  // Same helper as the presentation, so the warning counts the summary line exactly when it is shown.
-  const warning = presentationWarning(layout ?? [], filterSummaryLine(parameters, raw) !== null);
   // On by default: a wall screen usually exists for one view, and it then keeps showing it unattended.
   const [keep, setKeep] = useState(true);
+  // Same helper as the presentation, so the warning counts the summary line exactly when it is shown. Without the
+  // kept view the TV opens with the defaults, which show no summary line.
+  const warning = presentationWarning(layout ?? [], filterSummaryLine(parameters, keep ? raw : {}) !== null);
   const view = rawQuery(raw);
   const link = `${window.location.origin}/d/${dashboardId}?present=1${keep && view ? `&${view}` : ''}`;
   return (
@@ -296,8 +294,8 @@ export function TvInfoContent({ dashboardId, isPrivate }: { dashboardId: string;
         </li>
       </ol>
       {warning ? (
-        <p className="mt-3 flex items-start gap-1.5 text-xs text-warn">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+        <p className="mt-3 flex items-start gap-1.5 text-xs text-ink-2">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warn" aria-hidden="true" />
           <span>{warning}</span>
         </p>
       ) : null}

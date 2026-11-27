@@ -20,8 +20,20 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { create } from 'zustand';
+import { PresentationScaleContext } from './presentation-scale-context.ts';
 
 export { clsx as cx };
+
+/**
+ * Every overlay leaves through this. React context crosses a portal but the CSS zoom of the presentation page does
+ * not (the DOM lands in document.body), so a chart in a dialog must not inherit the page's scale.
+ */
+function portalOut(node: ReactNode, target: Element) {
+  return createPortal(
+    <PresentationScaleContext.Provider value={1}>{node}</PresentationScaleContext.Provider>,
+    target,
+  );
+}
 
 type Variant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'accent';
 
@@ -347,7 +359,7 @@ export function Drawer({
   const titleId = useId();
   useOverlay(open, onClose, panel);
   if (!open) return null;
-  return createPortal(
+  return portalOut(
     <div className="fixed inset-0 z-40 flex justify-end">
       <button
         type="button"
@@ -413,7 +425,7 @@ export function Modal({
   const titleId = useId();
   useOverlay(open, onClose, panel);
   if (!open) return null;
-  return createPortal(
+  return portalOut(
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center sm:p-4">
       <button
         type="button"
@@ -659,7 +671,7 @@ export function Popover({
           {children}
         </Modal>
       ) : open ? (
-        createPortal(
+        portalOut(
           <>
             <button
               type="button"
@@ -785,7 +797,7 @@ export function Menu({
         {icon}
       </button>
       {open
-        ? createPortal(
+        ? portalOut(
             <MenuClose.Provider value={close}>
               <button
                 type="button"

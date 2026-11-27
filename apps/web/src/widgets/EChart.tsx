@@ -68,7 +68,10 @@ export function EChart({
     chart.current = instance;
     // Only on a re-init: on the first mount the option effect below gives the first option.
     if (latest.current) {
-      instance.setOption(latest.current, { notMerge: true });
+      // Without the entry animation: a scale change on a wall must not make every chart grow in again.
+      instance.setOption({ ...latest.current, animation: false }, { notMerge: true });
+      // Later updates animate as usual: the option has no animation key, so the default comes back on merge.
+      instance.setOption({ animation: true });
       lastShape.current = shapeOf(latest.current);
     }
     const ro = new ResizeObserver(() => instance.resize());
@@ -107,7 +110,8 @@ export function EChart({
   // Standardized CSS zoom reports offsetX/offsetY in zoomed pixels (Chrome 158 at zoom 1.5: 960 where the chart's
   // own pixel is 640), and zrender 6.1.0 takes offsetX as its local coordinate, so a tap would hit the item 1.5x
   // further. zrender's normalizeEvent (lib/core/event.js:54-55) returns early when the native event already has zrX,
-  // so the right point is written there first, while capturing. Private behaviour: check it on a zrender upgrade.
+  // so the right point is written there first, while capturing. The early return also skips zrender's zrDelta (wheel),
+  // harmless today because no chart uses roam or dataZoom. Private behaviour: check it on a zrender upgrade.
   useEffect(() => {
     const node = el.current;
     if (!node || scale === 1) return;
