@@ -54,6 +54,7 @@ Monorepo (pnpm): `packages/core` (pure domain logic, shared), `apps/server` (Hon
   click: it is used unattended on wall screens and TVs.
 
 ## Handoff state (read at session start)
+
 - Handoff state (gitignored, kept in Tabula): `docs/handoff/patchbay-agent.md`
 - Agent knowledge (gitignored, kept in Tabula): `docs/agents/patchbay-agent.md`
 
@@ -66,9 +67,11 @@ If the import above is empty (Claude Code on the web, a fresh clone), the file i
 call `recall` for `patchbay` with `include_state: true`, which returns it.
 
 ## Memory (Tabula)
+
 Tabula keeps this project's files that are not in git (handoff state, private specs and plans) and the global rules
 that apply to every project. This project's Tabula project is `patchbay`; `.tabula.json` says which untracked files
 are synced.
+
 - At session start call `recall` for `patchbay` and follow the global rules. With the files on disk (the
   SessionStart hook ran `tabula pull`) pass `include_state: false`.
 - Without the `tabula` command (Claude Code on the web, claude.ai): read synced files with `read_file` and save every
