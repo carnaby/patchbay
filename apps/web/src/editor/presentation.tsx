@@ -3,11 +3,18 @@
  * where the browser allows it, the cursor hides when idle, and the screen is
  * kept awake with the Screen Wake Lock API so a live dashboard never dims.
  */
-import { Copy, Info, Minimize2 } from 'lucide-react';
+import { AlertTriangle, Copy, Info, Minimize2 } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { PresentationScaleContext } from '../components/presentation-scale-context.ts';
 import { Button, cx, Popover, toast } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
-import { rawQuery, summaryOf, useParameters } from '../state/parameters.ts';
+import { filterSummaryLine, rawQuery, summaryOf, useParameters } from '../state/parameters.ts';
+import {
+  hasStandardZoom,
+  type PresentationFit,
+  presentationFit,
+  presentationWarning,
+} from './presentation-scale.ts';
 import {
   CONTROLS_DELAY_MS,
   closesUnattended,
@@ -22,6 +29,8 @@ const IDLE_MS = 2500;
 
 /** Lets widgets far below the page know a presentation is running, without threading a prop through every card. */
 export const PresentingContext = createContext(false);
+
+export { PresentationScaleContext };
 
 export function usePresentation(initial: boolean) {
   const [presenting, setPresenting] = useState(initial);
@@ -88,6 +97,36 @@ export function usePresentation(initial: boolean) {
   return useMemo(
     () => ({ presenting, start, stop, requestFullscreen }),
     [presenting, start, stop, requestFullscreen],
+  );
+}
+
+/**
+ * How a presented dashboard fills this screen, or null to present unscaled: when not presenting, where the browser
+ * has only the legacy `zoom` (its sizes and pointer coordinates differ), and on a phone, whose grid stacks.
+ */
+export function usePresentationFit(active: boolean, contentHeight: number): PresentationFit | null {
+  const [screen, setScreen] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  useEffect(() => {
+    if (!active) return;
+    const update = () =>
+      setScreen((prev) =>
+        prev.width === window.innerWidth && prev.height === window.innerHeight
+          ? prev
+          : { width: window.innerWidth, height: window.innerHeight },
+      );
+    update();
+    window.addEventListener('resize', update);
+    // Full screen changes the viewport; listened to as well, in case a browser reports it without a resize.
+    document.addEventListener('fullscreenchange', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      document.removeEventListener('fullscreenchange', update);
+    };
+  }, [active]);
+  const { width, height } = screen;
+  return useMemo(
+    () => (active && hasStandardZoom() ? presentationFit({ width, height }, contentHeight) : null),
+    [width, height, contentHeight, active],
   );
 }
 
@@ -235,8 +274,12 @@ export function TvInfo({ dashboardId, isPrivate }: { dashboardId: string; isPriv
 export function TvInfoContent({ dashboardId, isPrivate }: { dashboardId: string; isPrivate: boolean }) {
   const parameters = useEditor((s) => s.doc?.parameters);
   const raw = useParameters((s) => s.raw);
+  const layout = useEditor((s) => s.doc?.layout);
   // On by default: a wall screen usually exists for one view, and it then keeps showing it unattended.
   const [keep, setKeep] = useState(true);
+  // Same helper as the presentation, so the warning counts the summary line exactly when it is shown. Without the
+  // kept view the TV opens with the defaults, which show no summary line.
+  const warning = presentationWarning(layout ?? [], filterSummaryLine(parameters, keep ? raw : {}) !== null);
   const view = rawQuery(raw);
   const link = `${window.location.origin}/d/${dashboardId}?present=1${keep && view ? `&${view}` : ''}`;
   return (
@@ -250,6 +293,12 @@ export function TvInfoContent({ dashboardId, isPrivate }: { dashboardId: string;
           on.
         </li>
       </ol>
+      {warning ? (
+        <p className="mt-3 flex items-start gap-1.5 text-xs text-ink-2">
+          <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warn" aria-hidden="true" />
+          <span>{warning}</span>
+        </p>
+      ) : null}
       {view ? (
         <label className="mt-3 flex items-start gap-2 text-xs">
           <input

@@ -115,6 +115,17 @@ export function summaryOf(
   return parameterSummary(shown, values);
 }
 
+/**
+ * The line presentation mode shows above the grid, or null when it shows none. The presentation scale counts its
+ * height and the editor's TV warning must agree with it, so "is it shown" is decided only here.
+ */
+export function filterSummaryLine(
+  parameters: readonly Parameter[] | undefined,
+  raw: RawValues,
+): string | null {
+  return summaryOf(parameters, raw) || null;
+}
+
 interface ParameterState {
   /** The dashboard whose URL `raw` was read from; null until it was. Data queries wait for it. */
   dashboardId: string | null;

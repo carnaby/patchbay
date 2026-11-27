@@ -8,7 +8,7 @@ import { SlidersHorizontal, X } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Drawer, IconButton, Input, Select, toast, useNarrowScreen } from '../components/ui.tsx';
 import { useEditor } from '../state/editor.ts';
-import { heldDataValue, type RawValues, summaryOf, useParameters } from '../state/parameters.ts';
+import { filterSummaryLine, heldDataValue, type RawValues, useParameters } from '../state/parameters.ts';
 import { useDataChoices } from './DataOptions.tsx';
 
 const CUSTOM = 'custom';
@@ -75,8 +75,13 @@ export function FilterBar({ dashboardId, live }: { dashboardId: string; live: bo
 export function ParameterSummary() {
   const parameters = useEditor((s) => s.doc?.parameters);
   const raw = useParameters((s) => s.raw);
-  const text = summaryOf(parameters, raw);
-  return text ? <p className="mb-2 text-xs font-medium text-ink-2">{text}</p> : null;
+  const text = filterSummaryLine(parameters, raw);
+  // One line, whatever its length: the presentation scale counts exactly one (SUMMARY_HEIGHT).
+  return text ? (
+    <p className="mb-2 truncate text-xs font-medium text-ink-2" title={text}>
+      {text}
+    </p>
+  ) : null;
 }
 
 function FilterControl({

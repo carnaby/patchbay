@@ -6,6 +6,25 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Added
+
+- Presentation mode scales the whole dashboard to the screen: laid out as on a 1280 px wide monitor, about 150 % on a
+  1080p TV, smaller when the dashboard is taller than the screen, with charts drawn sharp at the new size. Browsers
+  without standardized CSS zoom, such as Chrome before 128, present as before. "Showing this on a TV" now says when a
+  1080p TV would show the dashboard below 100 %.
+- An old browser, such as an older TV, shows a message naming the browsers Patchbay needs (Chrome or Edge 111, Safari
+  16.4, Firefox 128) instead of a black screen.
+
+### Changed
+
+- A status tile with many failing checks shows its first ones and "+M more" before the tile is folded into "+N more
+  problems", in the browser and in snapshots.
+
+### Fixed
+
+- Suggestions for an aggregated dataset no longer propose time charts or a trend KPI over a time column with one
+  value, and chart a dimension that is already one row per value without aggregating it again.
+
 ## [0.3.5] - 2026-11-17
 
 ### Added

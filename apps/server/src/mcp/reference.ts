@@ -296,7 +296,8 @@ ${tableFns}
   into one "+N more sections · 12 ok" line, which goes too before any problem is hidden (the summary line keeps every
   count); a fold that would not make the widget shorter is skipped, so tiles stay named where they fit; problems
   never fold into ok summaries, and only when the problem tiles alone do not fit are their details
-  cut to two lines and the rest counted in "+N more problems" (a section left without problem tiles folds into it).
+  cut to two lines, then each problem tile shows fewer of its failing checks and counts the rest in a "+M more"
+  line, and only then are whole tiles counted in "+N more problems" (a section left without problem tiles folds into it).
   At most ${STATUS_LIMITS.rows} rows, ${STATUS_LIMITS.sections} sections and ${STATUS_LIMITS.tiles} tiles are read.
   Example: { "id": "infra", "type": "status", "datasetId": "checks", "config": { "entity": "service", "status": "status", "group": "machine", "label": "name", "kind": "kind", "detail": "detail", "since": "since", "link": "url" } }
 format: { style: number|compact|percent|currency, decimals?, currency?, prefix?, suffix? }   percent takes 0-100 (86.1 shows "86.1%"); a ratio (0-1), such as an average of 0/1 values, needs derive x * 100 first.

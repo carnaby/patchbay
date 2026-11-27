@@ -27,6 +27,7 @@ beforeAll(async () => {
   writeFileSync(join(dist, 'index.html'), '<!doctype html><title>Patchbay</title>');
   writeFileSync(join(dist, 'sw.js'), '');
   writeFileSync(join(dist, 'theme-init.js'), '');
+  writeFileSync(join(dist, 'legacy-check.js'), '');
   writeFileSync(join(dist, 'manifest.webmanifest'), '{}');
   writeFileSync(join(dist, 'icons', 'icon-192.png'), '');
   writeFileSync(join(dist, 'assets', 'index-abc123.js'), '');
@@ -207,6 +208,7 @@ describe('caching headers', () => {
       '/d/abc',
       '/sw.js',
       '/theme-init.js',
+      '/legacy-check.js',
       '/manifest.webmanifest',
       '/icons/icon-192.png',
     ])

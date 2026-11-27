@@ -397,7 +397,8 @@ is answered at a glance on a phone or an unattended wall screen.
   line, and that line goes too before any problem tile is hidden. A fold that would not make the widget shorter (three
   tiles that fill the row a "+3 more ok" cell would take) is skipped, so tiles keep their names wherever they fit.
   Problem tiles never fold into ok summaries; only when the problem tiles alone do not fit are their details cut to
-  two lines and the rest counted in "+N more problems"; a section left without problem tiles folds into it. The
+  two lines, then each problem tile shows fewer of its failing checks and counts the rest in a "+M more" line, and
+  only then are whole tiles counted in "+N more problems"; a section left without problem tiles folds into it. The
   summary line always counts everything. `render_snapshot` draws the same tiles and folds as a browser showing a
   body of that size.
 - A click (or Enter) on a tile, a fold, a section header or the "+N more sections" line lists all its checks; Escape
