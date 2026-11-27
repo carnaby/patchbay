@@ -499,7 +499,7 @@ export const STATUS_METRICS = {
 
 /** A drawn cell: one tile, or a fold that counts tiles ("+6 more ok", "+2 off", "+3 more problems"). */
 export type StatusItem =
-  | { kind: 'tile'; tile: StatusTile; clamp: boolean }
+  | { kind: 'tile'; tile: StatusTile; clamp: boolean; shown: number }
   | { kind: 'more'; what: 'ok' | 'off' | 'problems'; level: StatusLevel; tiles: StatusTile[] };
 export type StatusMore = Extract<StatusItem, { kind: 'more' }>;
 
@@ -616,14 +616,32 @@ export function statusMoreNames(tiles: readonly StatusTile[]): string {
   return tiles.length > shown.length ? `${shown.join(', ')}, …` : shown.join(', ');
 }
 
-function tileHeight(tile: StatusTile, width: number, clamp: boolean): number {
+/** The "+M more" line of a trimmed problem tile. */
+export function statusTrimText(hidden: number): string {
+  return `+${hidden} more`;
+}
+
+/** Height of the first `shown` checks, as a running sum: `sums[k]` is what the first k checks take. */
+function checkSums(tile: StatusTile, width: number, clamp: boolean): number[] {
   const M = STATUS_METRICS;
   const chars = statusDetailChars(width);
-  let height = M.padY * 2 + M.nameHeight;
+  const sums = [0];
   for (const check of tile.problems) {
     const lines = check.detail ? wrapText(check.detail, chars).length : 0;
-    height += M.problemGap + M.lineHeight * (1 + (clamp ? Math.min(lines, M.clampLines) : lines));
+    sums.push(
+      sums[sums.length - 1]! +
+        M.problemGap +
+        M.lineHeight * (1 + (clamp ? Math.min(lines, M.clampLines) : lines)),
+    );
   }
+  return sums;
+}
+
+function tileHeightFrom(tile: StatusTile, sums: readonly number[], shown: number): number {
+  const M = STATUS_METRICS;
+  let height = M.padY * 2 + M.nameHeight + sums[shown]!;
+  // The trimmed line is drawn like a problem head, under the last shown check and above the foot.
+  if (shown < tile.problems.length) height += M.problemGap + M.lineHeight;
   if (statusTileFoot(tile)) height += M.lineHeight;
   return height;
 }
@@ -686,8 +704,9 @@ interface FitState {
  * Which tiles a box of this size shows. Folds one step at a time, each from the last section upwards, and stops as
  * soon as everything fits: off tiles, then ok tiles, then calm sections to their header line, then the ok and off
  * cells of sections with problems, then the calm header lines at the end into one "+N more sections" line (one more
- * section at a time), then that line too, then details to two lines, then problem tiles into "+N more problems"
- * (a section left without problem tiles folds away with them). A fold of calm tiles or header lines that leaves the
+ * section at a time), then that line too, then details to two lines, then fewer checks per problem tile with a
+ * "+M more" line (round-robin from the last tile; undone if it saves nothing), then problem tiles into "+N more
+ * problems" (a section left without problem tiles folds away with them; the trimming starts over after each). A fold of calm tiles or header lines that leaves the
  * layout as tall as before is undone and the next step tried.
  * What is broken outranks the names of calm sections, whose counts stay in the summary line. Nothing scrolls: the
  * widget runs unattended on wall screens, so what does not fit is folded and counted, never cut off.
@@ -701,16 +720,20 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
   const wide = columns < 3 ? columns : 2;
   const spanWidth = (span: number) => span * columnWidth + (span - 1) * M.gap;
   const moreHeight = M.padY * 2 + M.nameHeight + M.lineHeight;
-  const heights = new Map<StatusTile, [number, number]>();
-  const heightOf = (tile: StatusTile, clamp: boolean): number => {
+  // Wrapping every detail is the costly part and the fit measures hundreds of times (every trim and hide), so each
+  // tile's per-check heights are summed once per clamp state.
+  const heights = new Map<StatusTile, [number[], number[]]>();
+  const heightOf = (tile: StatusTile, clamp: boolean, shown: number): number => {
     let pair = heights.get(tile);
     if (!pair) {
       const w = spanWidth(tile.problems.length ? wide : 1);
-      pair = [tileHeight(tile, w, false), tileHeight(tile, w, true)];
+      pair = [checkSums(tile, w, false), checkSums(tile, w, true)];
       heights.set(tile, pair);
     }
-    return clamp ? pair[1] : pair[0];
+    return tileHeightFrom(tile, clamp ? pair[1] : pair[0], shown);
   };
+  /** Problem tiles trimmed to their first n checks (absent: all of them). */
+  const shownOf = new Map<StatusTile, number>();
   const states: FitState[] = model.sections.map((section) => ({
     section,
     problems: section.tiles.filter((t) => t.problems.length > 0),
@@ -733,11 +756,10 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
   let folded = 0;
   let dropped = false;
 
-  const tileCell = (tile: StatusTile, span: number): Cell => ({
-    item: { kind: 'tile', tile, clamp },
-    span,
-    height: heightOf(tile, clamp),
-  });
+  const tileCell = (tile: StatusTile, span: number): Cell => {
+    const shown = shownOf.get(tile) ?? tile.problems.length;
+    return { item: { kind: 'tile', tile, clamp, shown }, span, height: heightOf(tile, clamp, shown) };
+  };
   const moreCell = (what: StatusMore['what'], level: StatusLevel, tiles: StatusTile[]): Cell => ({
     item: { kind: 'more', what, level, tiles },
     span: 1,
@@ -915,13 +937,43 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
     if (step.undo && next.height >= layout.height) step.undo();
     else layout = next;
   }
+  // Before a whole problem tile goes into "+N more problems", each one names fewer of its checks: one from every
+  // tile in turn, the last tile first, so every failing service keeps its first checks as long as possible. Single
+  // trims often save nothing (a row is as tall as its tallest tile), so they accumulate; the pass is undone only when
+  // all of it together did not make the layout shorter. It always starts from untrimmed tiles: after a tile is hidden
+  // the others may need fewer trims, or none.
+  const trim = (): StatusLayout => {
+    shownOf.clear();
+    const before = measure();
+    if (before.fits) return before;
+    let current = before;
+    const ring = states.flatMap((s) => s.problems).reverse();
+    let trimmed = false;
+    for (let progress = true; progress && !current.fits; ) {
+      progress = false;
+      for (const tile of ring) {
+        const n = shownOf.get(tile) ?? tile.problems.length;
+        if (n <= 1) continue;
+        shownOf.set(tile, n - 1);
+        trimmed = progress = true;
+        current = measure();
+        if (current.fits) break;
+      }
+    }
+    if (trimmed && current.height >= before.height) {
+      shownOf.clear();
+      return before;
+    }
+    return current;
+  };
+  if (!layout.fits) layout = trim();
   // Problems are hidden only for the problem tiles themselves to fit, and then until they do: a tile is counted, never
   // cut. Only a box too small for the summary line and one cell stays over.
   while (!layout.fits) {
     const from = reversed.find((s) => s.problems.length > 0);
     if (!from) break;
     from.hidden.push(from.problems.pop()!);
-    layout = measure();
+    layout = trim();
   }
   return layout;
 }

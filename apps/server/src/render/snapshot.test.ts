@@ -926,6 +926,23 @@ describe('status snapshots', () => {
     expect(body(m, 340, 60)).not.toContain('<rect');
   });
 
+  it('draws the first checks of a trimmed tile and a "+M more" line', () => {
+    const rows = Array.from({ length: 8 }, (_, i) => ({
+      service: 'db',
+      check: `db-c${i + 1}`,
+      status: 'fail',
+    }));
+    const m = statusModel(
+      inferTable(rows),
+      StatusConfigSchema.parse({ entity: 'service', status: 'status', label: 'check', summary: false }),
+    );
+    const svg = body(m, 480, 120);
+    expect(svg).toContain('fail · db-c1');
+    expect(svg).toContain('fail · db-c2');
+    expect(svg).toContain('+6 more');
+    expect(svg).not.toContain('db-c3');
+  });
+
   it('draws control characters from monitor output as plain text instead of failing the snapshot', () => {
     // ANSI colour codes, a NUL and a vertical tab: XML forbids them, and one of them made resvg refuse the whole SVG.
     const output = '\u001b[31mFAILED\u001b[0m: exit 1\u0000\u000b \u001b]0;title\u0007done';

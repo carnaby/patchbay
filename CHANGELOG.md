@@ -6,6 +6,11 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
 
 ## [Unreleased]
 
+### Changed
+
+- A status tile with many failing checks shows its first ones and "+M more" before the tile is folded into "+N more
+  problems", in the browser and in snapshots.
+
 ### Fixed
 
 - Suggestions for an aggregated dataset no longer propose time charts or a trend KPI over a time column with one

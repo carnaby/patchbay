@@ -44,6 +44,7 @@ describe('the status widget in the reference', () => {
       expect(text).toContain(word);
     expect(text).toContain('"+N more ok"');
     expect(text).toContain('"+N more problems"');
+    expect(text).toContain('"+M more"');
     expect(text).toContain('"+N more sections · 12 ok"');
     expect(text).toContain('"type": "status"');
     expect(text).toContain('link (a column of http(s) addresses)');

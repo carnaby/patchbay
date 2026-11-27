@@ -3,6 +3,7 @@ import {
   inferTable,
   STATUS_METRICS,
   StatusConfigSchema,
+  type StatusItem,
   type StatusLayout,
   type StatusModel,
   statusColumns,
@@ -12,6 +13,7 @@ import {
   statusMoreSectionsTitle,
   statusMoreTitle,
   statusSummary,
+  statusTrimText,
   wrapText,
 } from './index.ts';
 import { INFRA_STATUS_CONFIG, infraTable } from './status.fixture.ts';
@@ -324,6 +326,74 @@ describe('statusFit', () => {
     ) &&
     (!layout.moreSections || layout.moreSections.y + STATUS_METRICS.headerHeight <= height);
 
+  /** Every check failing, one tile per service, flat, no summary line: heights are easy to count. */
+  const failingChecks = (services: Record<string, number>, details: Record<string, string> = {}) =>
+    statusModel(
+      inferTable(
+        Object.entries(services).flatMap(([service, n]) =>
+          Array.from({ length: n }, (_, i) => ({
+            service,
+            check: `${service}-c${i + 1}`,
+            status: 'fail',
+            detail: details[service] ?? null,
+          })),
+        ),
+      ),
+      StatusConfigSchema.parse({
+        entity: 'service',
+        status: 'status',
+        label: 'check',
+        detail: 'detail',
+        summary: false,
+      }),
+    );
+  const tileItem = (layout: StatusLayout, entity: string) =>
+    layout.sections
+      .flatMap((s) => s.items)
+      .map((p) => p.item)
+      .find((item) => item.kind === 'tile' && item.tile.entity === entity) as Extract<
+      StatusItem,
+      { kind: 'tile' }
+    >;
+
+  it('shows the first failing checks of a tile and counts the rest instead of hiding the tile', () => {
+    // A tile is 34 tall (padding and name) plus 22 per check; trimmed, one more 22 line says "+M more".
+    // Eight checks take 210; in 120 the tile keeps two (34 + 2 × 22 + 22 = 100), three would take 122.
+    const layout = statusFit(failingChecks({ db: 8 }), { width: 480, height: 120 });
+    expect([layout.fits, layout.hiddenProblems, layout.height]).toEqual([true, 0, 100]);
+    const db = tileItem(layout, 'db');
+    expect(db.shown).toBe(2);
+    expect(db.tile.problems.slice(0, db.shown).map((c) => c.label)).toEqual(['db-c1', 'db-c2']);
+    expect(statusTrimText(db.tile.problems.length - db.shown)).toBe('+6 more');
+  });
+
+  it('trims round-robin from the last tile up, keeping trims that only pay off together', () => {
+    // Two six-check tiles on rows of their own (166 + 8 + 166). The first trim of each saves nothing (a check of 22
+    // becomes the "+M more" line of 22) and is kept; then b, a, b, a, b lose one each: 230 fits in 250.
+    const layout = statusFit(failingChecks({ a: 6, b: 6 }), { width: 480, height: 250 });
+    expect([layout.fits, layout.hiddenProblems, layout.height]).toEqual([true, 0, 230]);
+    expect([tileItem(layout, 'a').shown, tileItem(layout, 'b').shown]).toEqual([3, 2]);
+  });
+
+  it('undoes the trimming when it does not make the layout shorter, then counts tiles as before', () => {
+    // 640 px: four columns, both problem tiles two wide, one row. b (one check, detail clamped to two lines) is 88
+    // tall and sets the row; trimming a to one check (78 → 78) cannot shorten it, so a keeps both checks and b goes
+    // into "+1 more problem" (row 78).
+    const model = failingChecks({ a: 2, b: 1 }, { b: 'x '.repeat(200).trim() });
+    const layout = statusFit(model, { width: 640, height: 80 });
+    expect([layout.fits, layout.hiddenProblems, layout.height]).toEqual([true, 1, 78]);
+    expect(tileItem(layout, 'a').shown).toBe(2);
+  });
+
+  it('starts the trimming over after a whole tile is hidden, so the others keep as many checks as fit', () => {
+    // 8 + 8 checks in 163: trimmed alone, no tile can fall to one check each and still fit (34 + 22 + 22 = 78 each,
+    // 78 + 8 + 78 = 164), so b goes into "+1 more problem"; a then gets a fresh trim from eight checks, not from
+    // the state the trim of the pair left it in (a would be left with 1), and keeps four (34 + 4 × 22 + 22 = 144).
+    const layout = statusFit(failingChecks({ a: 8, b: 8 }), { width: 480, height: 163 });
+    expect([layout.fits, layout.hiddenProblems]).toEqual([true, 1]);
+    expect(tileItem(layout, 'a').shown).toBe(4);
+  });
+
   it.each([3, 4])('counts %i failing machines in a phone body instead of cutting their tiles', (n) => {
     const layout = statusFit(failing(n), { width: 340, height: 162 });
     expect([layout.height, layout.fits, layout.hiddenProblems]).toEqual([78, true, n]);
@@ -338,12 +408,26 @@ describe('statusFit', () => {
   });
 
   it('fits every box that holds the summary line and one fold, and draws nothing below it', () => {
-    for (const model of [infra, flat, failing(3), failing(4), machines(7)]) {
+    const bigDetail = 'x '.repeat(200).trim();
+    for (const model of [
+      infra,
+      flat,
+      failing(3),
+      failing(4),
+      machines(7),
+      failingChecks({ a: 6, b: 4, c: 9 }),
+      failingChecks({ a: 5, b: 1 }, { b: bigDetail }),
+    ]) {
       for (const width of [340, 480, 612]) {
         for (let height = 78; height <= 700; height += 7) {
           const layout = statusFit(model, { width, height });
           expect(layout.fits).toBe(true);
           expect(inside(layout, height)).toBe(true);
+          for (const p of layout.sections.flatMap((s) => s.items)) {
+            if (p.item.kind !== 'tile') continue;
+            const n = p.item.tile.problems.length;
+            expect(n === 0 ? p.item.shown === 0 : p.item.shown >= 1 && p.item.shown <= n).toBe(true);
+          }
         }
       }
     }

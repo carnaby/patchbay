@@ -27,6 +27,7 @@ import {
   statusSummary,
   statusTileFoot,
   statusTilesByKey,
+  statusTrimText,
   THEMES,
   type Widget,
 } from '@patchbay/core';
@@ -261,11 +262,19 @@ function Cell({
         <span className="sr-only">: {STATUS_LEVEL_TEXT[level]}</span>
       </span>
       {item.kind === 'tile'
-        ? item.tile.problems.map((check, i) => (
+        ? item.tile.problems.slice(0, item.shown).map((check, i) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: checks have no identity of their own
             <Problem key={i} check={check} clamp={item.clamp} theme={theme} now={now} />
           ))
         : null}
+      {item.kind === 'tile' && item.shown < item.tile.problems.length ? (
+        <span
+          className="block truncate font-semibold text-ink-2"
+          style={{ marginTop: M.problemGap, ...font(M.textSize, M.lineHeight) }}
+        >
+          {statusTrimText(item.tile.problems.length - item.shown)}
+        </span>
+      ) : null}
       {foot ? (
         <span className="block truncate text-ink-2" style={font(M.textSize, M.lineHeight)}>
           {foot}
