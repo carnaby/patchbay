@@ -12,6 +12,8 @@ Container images are published as `ghcr.io/carnaby/patchbay:<version>`; `latest`
   1080p TV, smaller when the dashboard is taller than the screen, with charts drawn sharp at the new size. Browsers
   without standardized CSS zoom, such as Chrome before 128, present as before. "Showing this on a TV" now says when a
   1080p TV would show the dashboard below 100 %.
+- An old browser, such as an older TV, shows a message naming the browsers Patchbay needs (Chrome or Edge 111, Safari
+  16.4, Firefox 128) instead of a black screen.
 
 ### Changed
 
