@@ -375,14 +375,24 @@ describe('statusFit', () => {
     expect([tileItem(layout, 'a').shown, tileItem(layout, 'b').shown]).toEqual([3, 2]);
   });
 
-  it('undoes the trimming when it does not make the layout shorter, then counts tiles as before', () => {
+  it('shows all the checks of a tile left alone after another tile is hidden', () => {
     // 640 px: four columns, both problem tiles two wide, one row. b (one check, detail clamped to two lines) is 88
-    // tall and sets the row; trimming a to one check (78 → 78) cannot shorten it, so a keeps both checks and b goes
-    // into "+1 more problem" (row 78).
+    // tall and sets the row; trimming a to one check (78 → 78) cannot shorten it, so b goes into
+    // "+1 more problem" and a, no longer trimmed, shows both checks (row 78).
     const model = failingChecks({ a: 2, b: 1 }, { b: 'x '.repeat(200).trim() });
     const layout = statusFit(model, { width: 640, height: 80 });
     expect([layout.fits, layout.hiddenProblems, layout.height]).toEqual([true, 1, 78]);
     expect(tileItem(layout, 'a').shown).toBe(2);
+  });
+
+  it('fits a mass outage in a small box quickly: a hide costs one measure, not a whole trimming', () => {
+    // Hundreds of failing tiles at a phone width, folded one by one. Before the one-check shortcut this took seconds.
+    const model = failingChecks(Object.fromEntries(Array.from({ length: 300 }, (_, i) => [`s${i}`, 3])));
+    statusFit(model, { width: 340, height: 162 });
+    const start = performance.now();
+    const layout = statusFit(model, { width: 340, height: 162 });
+    expect(layout.fits).toBe(true);
+    expect(performance.now() - start).toBeLessThan(250);
   });
 
   it('starts the trimming over after a whole tile is hidden, so the others keep as many checks as fit', () => {

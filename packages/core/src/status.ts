@@ -705,9 +705,9 @@ interface FitState {
  * soon as everything fits: off tiles, then ok tiles, then calm sections to their header line, then the ok and off
  * cells of sections with problems, then the calm header lines at the end into one "+N more sections" line (one more
  * section at a time), then that line too, then details to two lines, then fewer checks per problem tile with a
- * "+M more" line (round-robin from the last tile; undone if it saves nothing), then problem tiles into "+N more
- * problems" (a section left without problem tiles folds away with them; the trimming starts over after each). A fold of calm tiles or header lines that leaves the
- * layout as tall as before is undone and the next step tried.
+ * "+M more" line (round-robin from the last tile, only when one check per tile fits), then problem tiles into "+N
+ * more problems" (a section left without problem tiles folds away with them; the trimming starts over after each).
+ * A fold of calm tiles or header lines that leaves the layout as tall as before is undone and the next step tried.
  * What is broken outranks the names of calm sections, whose counts stay in the summary line. Nothing scrolls: the
  * widget runs unattended on wall screens, so what does not fit is folded and counted, never cut off.
  */
@@ -939,30 +939,30 @@ export function statusFit(model: StatusModel, box: { width: number; height: numb
   }
   // Before a whole problem tile goes into "+N more problems", each one names fewer of its checks: one from every
   // tile in turn, the last tile first, so every failing service keeps its first checks as long as possible. Single
-  // trims often save nothing (a row is as tall as its tallest tile), so they accumulate; the pass is undone only when
-  // all of it together did not make the layout shorter. It always starts from untrimmed tiles: after a tile is hidden
-  // the others may need fewer trims, or none.
+  // trims often save nothing (a row is as tall as its tallest tile), so they accumulate. It always starts from
+  // untrimmed tiles: after a tile is hidden the others may need fewer trims, or none. The round-robin ends with one
+  // check per tile, so it can only succeed when that layout fits: one measure tells, and a mass outage (hundreds of
+  // failing tiles, a hide each) must not pay for the whole round-robin every time.
   const trim = (): StatusLayout => {
     shownOf.clear();
     const before = measure();
     if (before.fits) return before;
-    let current = before;
     const ring = states.flatMap((s) => s.problems).reverse();
-    let trimmed = false;
+    for (const tile of ring) shownOf.set(tile, 1);
+    const floor = measure();
+    shownOf.clear();
+    if (!floor.fits) return before;
+    let current = before;
     for (let progress = true; progress && !current.fits; ) {
       progress = false;
       for (const tile of ring) {
         const n = shownOf.get(tile) ?? tile.problems.length;
         if (n <= 1) continue;
         shownOf.set(tile, n - 1);
-        trimmed = progress = true;
+        progress = true;
         current = measure();
         if (current.fits) break;
       }
-    }
-    if (trimmed && current.height >= before.height) {
-      shownOf.clear();
-      return before;
     }
     return current;
   };
