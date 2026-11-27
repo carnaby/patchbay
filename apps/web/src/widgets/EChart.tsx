@@ -70,8 +70,8 @@ export function EChart({
     if (latest.current) {
       // Without the entry animation: a scale change on a wall must not make every chart grow in again.
       instance.setOption({ ...latest.current, animation: false }, { notMerge: true });
-      // Later updates animate as usual: the option has no animation key, so the default comes back on merge.
-      instance.setOption({ animation: true });
+      // Later updates animate as the option says (buildOption sets the flag), not as the replay did.
+      instance.setOption({ animation: latest.current.animation ?? true });
       lastShape.current = shapeOf(latest.current);
     }
     const ro = new ResizeObserver(() => instance.resize());
