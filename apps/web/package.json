@@ -23,25 +23,25 @@
   },
   "dependencies": {
     "@patchbay/core": "workspace:*",
-    "@tanstack/react-query": "^5.107.1",
+    "@tanstack/react-query": "^5.108.4",
     "clsx": "^2.1.1",
     "echarts": "^6.1.0",
-    "immer": "^11.2.9",
-    "lucide-react": "^1.70.0",
+    "immer": "^11.2.10",
+    "lucide-react": "^1.79.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-grid-layout": "^2.3.0",
     "react-markdown": "^10.1.0",
-    "react-router": "^8.5.1",
+    "react-router": "^8.5.3",
     "zustand": "^5.1.0"
   },
   "devDependencies": {
     "@resvg/resvg-js": "^2.6.2",
     "@tailwindcss/vite": "^4.3.5",
-    "@types/react": "^19.3.0",
+    "@types/react": "^19.3.1",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.2.1",
+    "@vitejs/plugin-react": "^6.3.0",
     "tailwindcss": "^4.3.5",
-    "vite": "^8.3.6"
+    "vite": "^8.3.8"
   }
 }
